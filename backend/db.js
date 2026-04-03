@@ -99,12 +99,13 @@ const normalizeSheetDatesIfNeeded = (db) => {
 const readDb = () => {
   try {
     if (!fs.existsSync(dbPath)) {
-      const initialDb = { users: [], tasks: [] };
+      const initialDb = { users: [], tasks: [], designers: [] };
       fs.writeFileSync(dbPath, JSON.stringify(initialDb, null, 2));
       return initialDb;
     }
     const data = fs.readFileSync(dbPath, 'utf8');
     const parsed = JSON.parse(data);
+    if (!parsed.designers) parsed.designers = [];
     const migratedRes = migrateTasksIfNeeded(parsed);
     const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
     if (migratedRes.migrated || normalizedRes.changed) {
@@ -113,7 +114,7 @@ const readDb = () => {
     return normalizedRes.db;
   } catch (err) {
     console.error('Error reading database:', err);
-    return { users: [], tasks: [] };
+    return { users: [], tasks: [], designers: [] };
   }
 };
 
@@ -126,18 +127,18 @@ const writeDb = (data) => {
 
 const initAdmin = async () => {
   const db = readDb();
-  const adminExists = db.users.find(u => u.username === 'admin');
-  if (!adminExists) {
+  const superAdminExists = db.users.find(u => u.username === 'superadmin');
+  if (!superAdminExists) {
     const hashedPassword = bcrypt.hashSync('admin123', 10);
     db.users.push({
       id: Date.now().toString(),
-      username: 'admin',
+      username: 'superadmin',
       password: hashedPassword,
-      role: 'admin',
-      name: '管理员'
+      role: 'superadmin',
+      name: '超级管理员'
     });
     await writeDb(db);
-    console.log('Admin account created: admin / admin123');
+    console.log('SuperAdmin account created: superadmin / admin123');
   }
 };
 

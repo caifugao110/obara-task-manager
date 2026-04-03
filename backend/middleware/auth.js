@@ -16,11 +16,19 @@ const authMiddleware = (req, res, next) => {
 };
 
 const adminMiddleware = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
     next();
   } else {
-    res.status(403).json({ message: 'Admin resource. Access denied.' });
+    res.status(403).json({ message: '管理员资源，访问被拒绝。' });
   }
 };
 
-module.exports = { authMiddleware, adminMiddleware };
+const superAdminMiddleware = (req, res, next) => {
+  if (req.user && req.user.role === 'superadmin') {
+    next();
+  } else {
+    res.status(403).json({ message: '超级管理员资源，访问被拒绝。' });
+  }
+};
+
+module.exports = { authMiddleware, adminMiddleware, superAdminMiddleware };

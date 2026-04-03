@@ -12,7 +12,8 @@ const ProtectedRoute = ({ children, adminOnly = false }: { children: React.React
     return <Navigate to="/login" replace />;
   }
 
-  if (adminOnly && user?.role !== 'admin') {
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  if (adminOnly && !isAdmin) {
     return <Navigate to="/" replace />;
   }
 
@@ -24,14 +25,7 @@ const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/login" element={!isAuthenticated ? <Login /> : <Navigate to="/" replace />} />
-      <Route 
-        path="/" 
-        element={
-          <ProtectedRoute>
-            <Dashboard />
-          </ProtectedRoute>
-        } 
-      />
+      <Route path="/" element={<Dashboard />} />
       <Route 
         path="/admin" 
         element={

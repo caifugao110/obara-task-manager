@@ -10,25 +10,46 @@ const normalizeDate = (dateStr) => {
   return dateStr.length >= 10 ? dateStr.slice(0, 10) : dateStr;
 };
 
-const createItemSchema = Joi.object({
-  userId: Joi.string().required(),
-  date: Joi.string().isoDate().required(),
-  taskName: Joi.string().allow('').default(''),
+const gunSchema = Joi.object({
+  id: Joi.string().required(),
+  name: Joi.string().allow('').default(''),
   hours: Joi.number().min(0).default(0)
 });
 
+const createItemSchema = Joi.object({
+  designerId: Joi.string().required(),
+  date: Joi.string().isoDate().required(),
+  taskName: Joi.string().allow('').default(''),
+  hours: Joi.number().min(0).default(0),
+  color: Joi.string().allow('').default(''),
+  guns: Joi.array().items(gunSchema).default([])
+});
+
 const updateItemSchema = Joi.object({
-  userId: Joi.string().required(),
+  designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
   itemId: Joi.string().required(),
-  field: Joi.string().valid('taskName', 'hours').required(),
-  value: Joi.alternatives().try(Joi.string().allow(''), Joi.number().min(0)).required()
+  field: Joi.string().valid('taskName', 'hours', 'color', 'guns').required(),
+  value: Joi.alternatives().try(
+    Joi.string().allow(''), 
+    Joi.number().min(0),
+    Joi.array().items(gunSchema)
+  ).required()
 });
 
 const deleteItemSchema = Joi.object({
-  userId: Joi.string().required(),
+  designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
   itemId: Joi.string().required()
+});
+
+const moveItemSchema = Joi.object({
+  sourceDesignerId: Joi.string().required(),
+  sourceDate: Joi.string().isoDate().required(),
+  itemId: Joi.string().required(),
+  targetDesignerId: Joi.string().required(),
+  targetDate: Joi.string().isoDate().required(),
+  newIndex: Joi.number().integer().min(0).optional()
 });
 
 const getMonthYearFromDate = (dateStr) => {
@@ -37,27 +58,25 @@ const getMonthYearFromDate = (dateStr) => {
   return { month: d.getMonth() + 1, year: d.getFullYear() };
 };
 
-const getOrCreateSheet = (data, userId, month, year) => {
+const getOrCreateSheet = (data, designerId, month, year) => {
   if (!data.tasks) data.tasks = [];
-  let sheet = data.tasks.find(t => t.userId === userId && t.month === month && t.year === year);
+  let sheet = data.tasks.find(t => t.designerId === designerId && t.month === month && t.year === year);
   if (!sheet) {
-    sheet = { id: `sheet-${userId}-${year}-${month}`, userId, month, year, days: {} };
+    sheet = { id: `sheet-${designerId}-${year}-${month}`, designerId, month, year, days: {} };
     data.tasks.push(sheet);
   }
   if (!sheet.days || typeof sheet.days !== 'object') sheet.days = {};
   return sheet;
 };
 
-router.get('/', authMiddleware, asyncHandler(async (req, res) => {
-  const { month, year, userId } = req.query;
+router.get('/', asyncHandler(async (req, res) => {
+  const { month, year, designerId } = req.query;
   const data = db.readDb();
 
   let tasks = data.tasks || [];
 
-  if (req.user.role !== 'admin') {
-    tasks = tasks.filter(t => t.userId === req.user.id);
-  } else if (userId) {
-    tasks = tasks.filter(t => t.userId === userId);
+  if (designerId) {
+    tasks = tasks.filter(t => t.designerId === designerId);
   }
 
   if (month && year) {
@@ -75,27 +94,30 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const { userId, date: rawDate, taskName, hours } = validated;
+  const { designerId, date: rawDate, taskName, hours, color, guns } = validated;
   const date = normalizeDate(rawDate);
 
-  if (req.user.role !== 'admin' && userId !== req.user.id) {
-    return res.status(403).json({ message: '没有创建他人任务的权限' });
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以编辑表格' });
   }
 
   const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
-  const sheet = getOrCreateSheet(data, userId, month, year);
+  const sheet = getOrCreateSheet(data, designerId, month, year);
 
   if (!sheet.days[date]) sheet.days[date] = [];
   const item = {
     id: `item-${Date.now().toString()}${Math.random().toString(36).slice(2, 9)}`,
     taskName,
-    hours
+    hours,
+    color,
+    guns
   };
   sheet.days[date].push(item);
 
   await db.writeDb(data);
-  res.status(201).json({ sheetId: sheet.id, userId, month, year, date, item, sheet });
+  res.status(201).json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
 }));
 
 router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
@@ -104,14 +126,15 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const { userId, date: rawDate, itemId, field, value } = validated;
+  const { designerId, date: rawDate, itemId, field, value } = validated;
   const date = normalizeDate(rawDate);
   const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
-  const sheet = getOrCreateSheet(data, userId, month, year);
+  const sheet = getOrCreateSheet(data, designerId, month, year);
 
-  if (req.user.role !== 'admin' && sheet.userId !== req.user.id) {
-    return res.status(403).json({ message: '没有修改他人任务的权限' });
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以编辑表格' });
   }
 
   const items = Array.isArray(sheet.days[date]) ? sheet.days[date] : [];
@@ -122,13 +145,17 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
 
   if (field === 'hours') {
     items[idx].hours = typeof value === 'number' ? value : (parseFloat(value) || 0);
+  } else if (field === 'color') {
+    items[idx].color = value;
+  } else if (field === 'guns') {
+    items[idx].guns = value;
   } else {
     items[idx].taskName = value;
   }
 
   sheet.days[date] = items;
   await db.writeDb(data);
-  res.json({ sheetId: sheet.id, userId, month, year, date, item: items[idx], sheet });
+  res.json({ sheetId: sheet.id, designerId, month, year, date, item: items[idx], sheet });
 }));
 
 router.delete('/item', authMiddleware, asyncHandler(async (req, res) => {
@@ -137,14 +164,15 @@ router.delete('/item', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const { userId, date: rawDate, itemId } = validated;
+  const { designerId, date: rawDate, itemId } = validated;
   const date = normalizeDate(rawDate);
   const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
-  const sheet = getOrCreateSheet(data, userId, month, year);
+  const sheet = getOrCreateSheet(data, designerId, month, year);
 
-  if (req.user.role !== 'admin' && sheet.userId !== req.user.id) {
-    return res.status(403).json({ message: '没有删除他人任务的权限' });
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以编辑表格' });
   }
 
   const items = Array.isArray(sheet.days[date]) ? sheet.days[date] : [];
@@ -156,7 +184,53 @@ router.delete('/item', authMiddleware, asyncHandler(async (req, res) => {
   if (sheet.days[date].length === 0) delete sheet.days[date];
 
   await db.writeDb(data);
-  res.json({ message: '任务条目已删除', sheetId: sheet.id, userId, month, year, date, sheet });
+  res.json({ message: '任务条目已删除', sheetId: sheet.id, designerId, month, year, date, sheet });
+}));
+
+router.post('/move', authMiddleware, asyncHandler(async (req, res) => {
+  const { error, value: validated } = moveItemSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const { sourceDesignerId, sourceDate, itemId, targetDesignerId, targetDate, newIndex } = validated;
+  const sDate = normalizeDate(sourceDate);
+  const tDate = normalizeDate(targetDate);
+
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以移动任务' });
+  }
+
+  const data = db.readDb();
+  
+  // Source
+  const sMY = getMonthYearFromDate(sDate);
+  const sSheet = getOrCreateSheet(data, sourceDesignerId, sMY.month, sMY.year);
+  const sItems = Array.isArray(sSheet.days[sDate]) ? sSheet.days[sDate] : [];
+  
+  const itemIdx = sItems.findIndex(i => i.id === itemId);
+  if (itemIdx === -1) {
+    return res.status(404).json({ message: '源任务不存在' });
+  }
+  
+  const [item] = sItems.splice(itemIdx, 1);
+  if (sItems.length === 0) delete sSheet.days[sDate];
+  else sSheet.days[sDate] = sItems;
+
+  // Target
+  const tMY = getMonthYearFromDate(tDate);
+  const tSheet = getOrCreateSheet(data, targetDesignerId, tMY.month, tMY.year);
+  if (!tSheet.days[tDate]) tSheet.days[tDate] = [];
+  
+  if (typeof newIndex === 'number' && newIndex >= 0) {
+    tSheet.days[tDate].splice(newIndex, 0, item);
+  } else {
+    tSheet.days[tDate].push(item);
+  }
+
+  await db.writeDb(data);
+  res.json({ message: '任务已移动', sourceSheet: sSheet, targetSheet: tSheet });
 }));
 
 module.exports = router;

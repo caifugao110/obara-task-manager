@@ -1,162 +1,466 @@
-# Obara 工时/任务管理系统
+# Obara 任务管理系统
 
-一个轻量级的“Excel 表格风格”工时填报与任务管理系统：支持管理员查看全员数据、普通用户仅能维护自己的数据；支持按月切换、按天录入多个任务、每日汇总、每月汇总，并通过 Socket.IO 实现多人实时同步刷新。
+一个轻量级的「Excel 表格风格」任务管理系统，支持多用户协作、实时同步和权限控制。
+
+## 📋 目录
+
+- [项目简介](#项目简介)
+- [功能特性](#功能特性)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [项目结构](#项目结构)
+- [使用说明](#使用说明)
+- [权限模型](#权限模型)
+- [API 接口](#api-接口)
+- [数据存储](#数据存储)
+- [常见问题](#常见问题)
+- [生产部署](#生产部署)
+
+---
+
+## 项目简介
+
+Obara 任务管理系统是一个基于 Web 的工时记录与任务管理工具，采用 Excel 风格的表格界面，支持按月切换、按天录入多个任务、每日汇总、每月汇总，并通过 Socket.IO 实现多人实时同步刷新。
+
+**核心特点：**
+- 🖥️ Excel 风格界面 —— 网格线、周末高亮、冻结列、底部总计行
+- 👥 多用户协作 —— 管理员查看全员，普通用户仅看自己
+- ⚡ 实时同步 —— 任一用户修改，其他客户端自动刷新
+- 💾 自动保存 —— 编辑后自动保存（带防抖）
+
+---
 
 ## 功能特性
 
-- Excel 风格表格：网格线、周末高亮、冻结列（设计员）、底部总计行
-- 按天多任务：每个用户每天可添加多条任务，每条任务都有对应工时
-- 工时统计：
-  - 单用户：每天小计 + 本月总工时
-  - 全员：底部汇总行（每日总计 + 本月总计）
-- 自动保存：编辑单元格后自动保存（带防抖）
-- 实时同步：任意用户修改后，其它客户端自动刷新
-- 权限控制：
-  - 管理员：admin 可查看/编辑所有用户
-  - 普通用户：仅能查看/编辑自己的任务与工时
+### 1. 任务管理
+- **按月展示**：顶部切换月份，表格按用户展示
+- **按天多任务**：每个用户每天可添加多条任务
+- **任务详情**：每条任务包含任务名称和工时
+
+### 2. 工时统计
+| 统计维度 | 说明 |
+|---------|------|
+| 单用户每日小计 | 单元格右下角数字 |
+| 单用户本月总工时 | 最右侧「月总工时」列 |
+| 全员每日总计 | 底部汇总行每日总计 |
+| 全员本月总计 | 底部汇总行本月总计 |
+
+### 3. 自动保存
+- 编辑单元格后自动保存
+- 带防抖机制（300ms 延迟）
+- 保存成功/失败有视觉反馈
+
+### 4. 实时同步
+- 基于 Socket.IO 实现
+- 任意用户修改后，其他客户端自动刷新
+- 支持多人同时操作
+
+### 5. 权限控制
+| 角色 | Dashboard | 用户管理 | 任务操作 |
+|------|-----------|---------|---------|
+| 管理员 | 查看/编辑所有用户 | 管理用户 | 增删改任意 |
+| 普通用户 | 仅看自己 | 无 | 仅操作自己的 |
+
+---
 
 ## 技术栈
 
-- 前端：React + TypeScript + Vite + TailwindCSS + Axios + Socket.IO Client
-- 后端：Node.js + Express + Joi + Socket.IO
-- 存储：本地 JSON 文件（backend/db.json）
+### 前端
+| 技术 | 用途 |
+|------|------|
+| React 18 | UI 框架 |
+| TypeScript | 类型安全 |
+| Vite | 构建工具 |
+| TailwindCSS | 样式框架 |
+| Axios | HTTP 请求 |
+| Socket.IO Client | 实时通信 |
 
-## 目录结构
+### 后端
+| 技术 | 用途 |
+|------|------|
+| Node.js | 运行环境 |
+| Express | Web 框架 |
+| Joi | 数据验证 |
+| Socket.IO | WebSocket 服务 |
+| jsonwebtoken | JWT 认证 |
+| bcrypt | 密码加密 |
 
+### 存储
+- **本地 JSON 文件** (`backend/db.json`)
+- 适合开发/内网轻量使用
+
+---
+
+## 快速开始
+
+### 环境要求
+
+| 软件 | 版本要求 |
+|------|---------|
+| Node.js | 18+ (推荐 LTS) |
+| npm | 9+ |
+| 操作系统 | Windows / macOS / Linux |
+
+### 方式一：一键启动（推荐 Windows）
+
+```bash
+# 双击运行 start.bat
+start.bat
 ```
-webtask-obara/
-  backend/                 后端服务（API + Socket.IO）
-    routes/                路由：auth/users/tasks
-    middleware/            鉴权中间件
-    db.json                数据文件（本地 JSON 存储）
-    server.js              服务入口
-  frontend/                前端应用（Vite）
-    src/pages/             页面：Login/Dashboard/Admin
+
+脚本会自动：
+1. 检查 Node.js 环境
+2. 检查端口占用
+3. 安装依赖（如未安装）
+4. 启动后端服务（端口 5000）
+5. 启动前端服务（端口 5173）
+6. 自动打开浏览器
+
+### 方式二：手动启动
+
+#### 1. 克隆项目
+
+```bash
+git clone <repository-url>
+cd obara-task-manager
 ```
 
-## 环境要求
+#### 2. 安装依赖
 
-- Node.js 18+（推荐）
-- npm 9+（或使用 pnpm/yarn，但本文以 npm 为例）
-
-## 本地启动（开发模式）
-
-### 1) 安装依赖
-
-后端：
-
+**后端：**
 ```bash
 cd backend
 npm install
 ```
 
-前端：
-
+**前端：**
 ```bash
-cd ../frontend
+cd frontend
 npm install
 ```
 
-### 2) 配置环境变量
+#### 3. 配置环境变量
 
-后端读取 `backend/.env`：
+创建 `backend/.env` 文件：
 
 ```env
 PORT=5000
+JWT_SECRET=your-secret-key-change-in-production
 ```
 
-说明：
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| PORT | 后端监听端口 | 5000 |
+| JWT_SECRET | JWT 签名密钥 | (内置默认值) |
 
-- `PORT`：后端监听端口，默认 5000
+#### 4. 启动服务
 
-### 3) 启动后端
-
+**后端：**
 ```bash
 cd backend
 npm run dev
 ```
+成功输出：`Server running on port 5000`
 
-成功后会看到：
-
-- `Server running on port 5000`
-
-> 说明：后端使用 nodemon 进行热更新，并已配置忽略 `db.json`，避免自动保存写文件触发频繁重启（见 backend/nodemon.json）。
-
-### 4) 启动前端
-
+**前端：**
 ```bash
 cd frontend
 npm run dev
 ```
+成功输出：`Local: http://localhost:5173/`
 
-成功后会看到类似：
+#### 5. 访问系统
 
-- `Local: http://localhost:5173/`
+打开浏览器访问：`http://localhost:5173`
 
-前端已配置代理：
+**默认管理员账号：**
+- 用户名：`admin`
+- 密码：`admin123`
 
-- `/api` → `http://127.0.0.1:5000`
-- `/socket.io`（WebSocket）→ `http://127.0.0.1:5000`
+---
 
-因此开发环境下不需要单独配置前端的 API BaseURL。
+## 项目结构
+
+```
+obara-task-manager/
+├── start.bat                 # Windows 一键启动脚本
+├── README.md                 # 项目文档
+│
+├── backend/                  # 后端服务
+│   ├── .env                 # 环境变量配置
+│   ├── package.json         # 后端依赖
+│   ├── nodemon.json         # nodemon 配置
+│   ├── server.js            # 服务入口
+│   ├── db.json              # 数据存储文件
+│   │
+│   ├── routes/              # 路由模块
+│   │   ├── auth.js         # 认证路由
+│   │   ├── users.js        # 用户管理路由
+│   │   └── tasks.js        # 任务管理路由
+│   │
+│   ├── middleware/          # 中间件
+│   │   └── auth.js         # 鉴权中间件
+│   │
+│   └── utils/              # 工具函数
+│       └── db.js           # 数据库操作
+│
+└── frontend/               # 前端应用
+    ├── package.json        # 前端依赖
+    ├── vite.config.ts      # Vite 配置
+    ├── index.html          # 入口 HTML
+    ├── tailwind.config.js  # Tailwind 配置
+    │
+    ├── src/
+    │   ├── main.tsx        # React 入口
+    │   ├── App.tsx         # 根组件
+    │   │
+    │   ├── components/     # 公共组件
+    │   │   ├── Login.tsx
+    │   │   ├── Layout.tsx
+    │   │   └── ...
+    │   │
+    │   ├── pages/          # 页面组件
+    │   │   ├── Login.tsx
+    │   │   ├── Dashboard.tsx
+    │   │   └── Admin.tsx
+    │   │
+    │   ├── hooks/          # 自定义 Hooks
+    │   │   ├── useAuth.ts
+    │   │   ├── useTasks.ts
+    │   │   └── useSocket.ts
+    │   │
+    │   ├── services/       # API 服务
+    │   │   ├── api.ts
+    │   │   └── auth.ts
+    │   │
+    │   ├── types/          # TypeScript 类型
+    │   │   └── index.ts
+    │   │
+    │   └── utils/          # 工具函数
+    │       ├── date.ts
+    │       └── helpers.ts
+    │
+    └── public/             # 静态资源
+```
+
+---
 
 ## 使用说明
 
 ### 登录
 
-打开：`http://localhost:5173/`
+1. 打开 `http://localhost:5173/`
+2. 输入用户名和密码
+3. 点击「登录」按钮
 
-系统内置初始化管理员（若 `db.json` 中不存在 `admin` 用户，会在后端启动时自动创建）：
+**首次使用：**
+- 系统会自动创建默认管理员（如 `db.json` 中不存在 admin 用户）
+- 初始账号：`admin` / `admin123`
 
-- 用户名：`admin`
-- 密码：`admin123`
+### Dashboard 任务录入
 
-你也可以在“用户管理”页创建普通用户账号。
+Dashboard 按「月」展示任务数据：
 
-### 任务/工时录入（Dashboard）
+#### 界面元素
+| 元素 | 位置 | 说明 |
+|------|------|------|
+| 月份切换 | 顶部左右箭头 | 切换上/下月 |
+| 用户行 | 左侧 | 每行一个用户 |
+| 日期列 | 顶部 | 1日到31日 |
+| 月总工时 | 最右侧 | 用户本月累计 |
+| 底部汇总 | 表格底部 | 全员每日/月总计 |
 
-Dashboard 为“按月”展示：
+#### 操作步骤
 
-- 顶部左右箭头切换月份
-- 表格按“用户”展示一行
-- 每个日期单元格内可添加多条任务（任务名称 + 工时）
+**添加任务：**
+1. 点击某天单元格内的「添加」按钮
+2. 输入任务名称
+3. 输入工时（支持 0.5 步进）
+4. 系统自动保存
 
-#### 添加任务
+**编辑任务：**
+- 直接点击任务名称或工时进行编辑
+- 修改后自动保存
 
-- 在某一天的单元格内点击“添加”，即可新增一条任务
-- 每个日期可反复添加多条任务
+**删除任务：**
+- 点击任务右侧的删除按钮
 
-#### 编辑任务与工时
+### 用户管理（仅管理员）
 
-- 任务名称：输入文本
-- 工时：输入数字（支持 0.5 步进）
-- 输入后会自动保存，并在多端实时刷新
+1. 点击顶部导航「用户管理」
+2. 可查看用户列表
+3. 点击「新增用户」创建新用户
+4. 点击用户右侧「删除」移除用户
 
-#### 删除任务
-
-- 每条任务右侧有删除按钮，点击即可删除该任务
-
-### 工时统计说明
-
-页面内的统计是实时计算的：
-
-- **单元格右下角数字**：该用户当日所有任务工时合计（当日小计）
-- **最右侧“月总工时”**：该用户本月所有日期累计工时
-- **底部“全员总计”**：全员每日总计 + 本月总计
+---
 
 ## 权限模型
 
-- 管理员（admin）：
-  - Dashboard：可查看所有用户及其任务/工时
-  - 用户管理：可管理用户
-  - 任务/工时：可新增/编辑/删除任意用户的任务
-- 普通用户（user）：
-  - Dashboard：仅能看到自己的数据
-  - 任务/工时：仅能新增/编辑/删除自己的任务
+### 角色说明
 
-## 数据存储结构（backend/db.json）
+#### 管理员 (admin)
+- ✅ Dashboard：查看/编辑所有用户
+- ✅ 用户管理：创建/删除用户
+- ✅ 任务操作：增/删/改任意用户的任务
 
-本项目使用本地 JSON 文件存储，结构大致如下：
+#### 普通用户 (user)
+- ✅ Dashboard：仅能看到自己的数据
+- ❌ 用户管理：不可访问
+- ✅ 任务操作：仅能操作自己的任务
+
+### 权限验证
+
+所有 API 请求都需要携带 JWT Token：
+```http
+Authorization: Bearer <token>
+```
+
+后端中间件会自动验证 token 并检查权限。
+
+---
+
+## API 接口
+
+### 认证接口
+
+#### POST /api/auth/login
+登录并获取 Token
+
+**请求体：**
+```json
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+**响应：**
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIs...",
+  "user": {
+    "id": "xxx",
+    "username": "admin",
+    "role": "admin",
+    "name": "管理员"
+  }
+}
+```
+
+---
+
+### 用户管理接口
+
+#### GET /api/users
+获取用户列表（需管理员权限）
+
+**响应：**
+```json
+[
+  {
+    "id": "xxx",
+    "username": "admin",
+    "role": "admin",
+    "name": "管理员"
+  }
+]
+```
+
+#### POST /api/users
+创建新用户（需管理员权限）
+
+**请求体：**
+```json
+{
+  "username": "newuser",
+  "password": "123456",
+  "name": "新用户",
+  "role": "user"
+}
+```
+
+#### DELETE /api/users/:id
+删除用户（需管理员权限）
+
+---
+
+### 任务管理接口
+
+#### GET /api/tasks
+获取任务数据
+
+**查询参数：**
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| month | 是 | 月份 (1-12) |
+| year | 是 | 年份 |
+| userId | 否 | 用户ID（仅管理员可用） |
+
+**响应：**
+```json
+{
+  "userId": "xxx",
+  "month": 4,
+  "year": 2026,
+  "days": {
+    "2026-04-01": [
+      { "id": "item1", "taskName": "任务A", "hours": 8 }
+    ]
+  }
+}
+```
+
+#### POST /api/tasks/item
+新增任务条目
+
+**请求体：**
+```json
+{
+  "userId": "xxx",
+  "date": "2026-04-01",
+  "taskName": "新任务",
+  "hours": 4
+}
+```
+
+#### PUT /api/tasks/item
+更新任务条目
+
+**请求体：**
+```json
+{
+  "userId": "xxx",
+  "date": "2026-04-01",
+  "itemId": "item1",
+  "field": "hours",
+  "value": 6
+}
+```
+
+| field | 说明 |
+|-------|------|
+| taskName | 任务名称 |
+| hours | 工时 |
+
+#### DELETE /api/tasks/item
+删除任务条目
+
+**请求体：**
+```json
+{
+  "userId": "xxx",
+  "date": "2026-04-01",
+  "itemId": "item1"
+}
+```
+
+---
+
+## 数据存储
+
+### 数据文件
+
+`backend/db.json` 结构：
 
 ```json
 {
@@ -177,11 +481,10 @@ Dashboard 为“按月”展示：
       "year": 2026,
       "days": {
         "2026-04-01": [
-          { "id": "任务条目ID", "taskName": "任务A", "hours": 8 },
-          { "id": "任务条目ID", "taskName": "任务B", "hours": 2.5 }
+          { "id": "任务条目ID", "taskName": "任务A", "hours": 8 }
         ],
         "2026-04-02": [
-          { "id": "任务条目ID", "taskName": "任务C", "hours": 4 }
+          { "id": "任务条目ID", "taskName": "任务B", "hours": 2.5 }
         ]
       }
     }
@@ -189,51 +492,182 @@ Dashboard 为“按月”展示：
 }
 ```
 
-说明：
+### 数据说明
 
-- `tasks` 是“用户 + 月份”的数据集合（每个用户每个月最多一条）
-- `days` 使用日期字符串作为 key，value 为该日期的任务数组
+- **users**：用户列表，密码使用 bcrypt 加密
+- **tasks**：任务数据，按「用户+月份」存储
+- **days**：以日期字符串为 key，值为当天任务数组
 
-> 提示：系统在启动/读取数据时会自动把旧结构迁移到新结构（旧的“任务行 + hours map”会被转换为按天任务数组）。
+> ⚠️ 注意：系统在启动时会自动迁移旧数据结构（旧的「任务行 + hours map」会转换为新的按天任务数组）
 
-## 主要接口（后端）
+---
 
-所有接口都需要 `Authorization: Bearer <token>` 头（登录后前端会自动带上）。
+## 常见问题
 
-- `POST /api/auth/login`：登录，返回 token 与用户信息
-- `GET /api/users`：获取用户列表（管理员）
-- `POST /api/users`：创建用户（管理员）
-- `DELETE /api/users/:id`：删除用户（管理员）
-- `GET /api/tasks?month=&year=&userId=`：按月获取用户月表
-  - 管理员：可选 `userId` 过滤
-  - 普通用户：自动限制为本人
-- `POST /api/tasks/item`：新增某天的任务条目（body: `{ userId, date, taskName?, hours? }`）
-- `PUT /api/tasks/item`：更新某天的任务条目（body: `{ userId, date, itemId, field, value }`，field=taskName|hours）
-- `DELETE /api/tasks/item`：删除某天的任务条目（body: `{ userId, date, itemId }`）
+### Q1: 前端能打开但数据加载失败 (500/401)
 
-## 常见问题排查
+**排查步骤：**
+1. 确认后端已启动且端口为 5000
+2. 检查 `frontend/vite.config.ts` 代理配置
+3. 确认已登录，浏览器 LocalStorage 中有 token
+4. 退出登录后重新登录
 
-### 1) 前端能打开但数据加载失败（500/401）
+### Q2: 后端频繁重启
 
-- 确认后端已启动且端口与 `frontend/vite.config.ts` 代理一致（默认 5000）
-- 确认已登录，浏览器本地存储中有 token（退出后会清理）
+**原因：** nodemon 监听 `db.json` 文件变化导致
 
-### 2) 后端频繁重启
+**解决方案：**
+确认 `backend/nodemon.json` 存在并配置：
+```json
+{
+  "ignore": ["db.json"]
+}
+```
 
-- 确认 `backend/nodemon.json` 存在并包含 `ignore: ["db.json"]`
+### Q3: 修改后没有实时同步
 
-### 3) 修改后没有实时同步
+**排查步骤：**
+1. 确认后端 Socket.IO 正常启动
+2. 确认前端代理 `/socket.io` 已配置
+3. 测试：打开两个浏览器窗口，分别登录不同账号
+4. 在一端修改任务，另一端应自动刷新
 
-- 确认后端 Socket.IO 正常启动，前端代理 `/socket.io` 已配置
-- 多开两个浏览器窗口分别登录，测试一端修改后另一端是否自动刷新
+### Q4: 端口被占用
 
-## 生产部署建议（可选）
+**常见端口：**
+- 后端：5000
+- 前端：5173
 
-当前项目为开发/内网轻量使用设计：
+**解决方案：**
+```bash
+# Windows 查看端口占用
+netstat -ano | findstr "5000"
 
-- 存储使用本地 `db.json`，不适合多实例部署与高并发
-- 若要生产化，建议替换为数据库（MySQL/Postgres/SQLite 等）并增加迁移、备份与审计
+# 结束占用进程
+taskkill /PID <PID> /F
+```
+
+### Q5: Node_modules 安装失败
+
+**解决方案：**
+1. 删除 `node_modules` 和 `package-lock.json`
+2. 清除 npm 缓存：`npm cache clean --force`
+3. 重新安装：`npm install`
+
+### Q6: 忘记管理员密码
+
+**解决方案：**
+1. 停止后端服务
+2. 编辑 `backend/db.json`，找到 admin 用户
+3. 将 password 字段替换为：`$2a$10$...`（admin123 的 bcrypt 哈希）
+4. 重启后端
+
+---
+
+## 生产部署
+
+### 部署架构
+
+```
+                    ┌─────────────┐
+                    │   Nginx     │
+                    │  (端口 80)  │
+                    └──────┬──────┘
+                           │
+           ┌───────────────┼───────────────┐
+           │               │               │
+           ▼               ▼               ▼
+     ┌──────────┐    ┌──────────┐    ┌──────────┐
+     │ Frontend │    │ Backend  │    │  Socket  │
+     │ (5173)  │    │ (5000)   │    │   IO     │
+     └──────────┘    └──────────┘    └──────────┘
+                            │
+                            ▼
+                     ┌──────────┐
+                     │  db.json │
+                     └──────────┘
+```
+
+### 前端构建
+
+```bash
+cd frontend
+npm run build
+```
+
+构建产物位于 `frontend/dist/`
+
+### 后端配置建议
+
+1. **使用 PM2 管理进程**：
+```bash
+npm install -g pm2
+pm2 start backend/server.js --name obara-backend
+```
+
+2. **使用反向代理**：
+- Nginx 配置转发前后端请求
+- 启用 HTTPS
+
+3. **数据库建议**：
+当前使用本地 JSON 文件，适合开发/小规模使用。
+
+如需生产化，建议迁移到：
+- SQLite（轻量，无需单独安装）
+- MySQL/PostgreSQL（成熟稳定）
+- MongoDB（文档存储友好）
+
+### 备份建议
+
+- 定期备份 `backend/db.json`
+- 可使用 Git 进行版本控制（注意 `.gitignore` 排除敏感数据）
+
+---
+
+## 附录
+
+### 依赖版本参考
+
+```json
+// backend/package.json
+{
+  "dependencies": {
+    "express": "^4.18.x",
+    "socket.io": "^4.6.x",
+    "jsonwebtoken": "^9.0.x",
+    "bcrypt": "^5.1.x",
+    "joi": "^17.x",
+    "cors": "^2.8.x",
+    "nodemon": "^3.x"
+  }
+}
+
+// frontend/package.json
+{
+  "dependencies": {
+    "react": "^18.x",
+    "react-dom": "^18.x",
+    "axios": "^1.6.x",
+    "socket.io-client": "^4.6.x"
+  }
+}
+```
+
+### 浏览器兼容性
+
+| 浏览器 | 最低版本 |
+|--------|---------|
+| Chrome | 90+ |
+| Firefox | 88+ |
+| Safari | 14+ |
+| Edge | 90+ |
+
+---
 
 ## License
 
-MIT（如需指定其它协议可自行调整）
+MIT License
+
+---
+
+**文档更新时间：2026-04-03**

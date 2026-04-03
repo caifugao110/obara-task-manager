@@ -31,10 +31,12 @@ const db = require('./db');
 // Routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
+const designerRoutes = require('./routes/designers');
 const taskRoutes = require('./routes/tasks');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/designers', designerRoutes);
 app.use('/api/tasks', taskRoutes);
 
 // Error Handling Middleware

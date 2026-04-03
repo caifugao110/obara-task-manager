@@ -36,7 +36,7 @@ const Login = () => {
             <LogIn className="text-white" size={32} />
           </div>
           <h2 className="text-3xl font-black text-gray-800 tracking-tight">Obara Task Manager</h2>
-          <p className="text-gray-400 mt-2 font-medium">任务管理系统 • 内部员工登录</p>
+          <p className="text-gray-400 mt-2 font-medium">任务管理系统 • 技术开发二部</p>
         </div>
 
         {/* Login Form */}
@@ -100,9 +100,9 @@ const Login = () => {
           </form>
 
           <div className="mt-8 pt-6 border-t border-gray-50 text-center">
-            <div className="inline-block bg-gray-50 px-4 py-2 rounded-lg">
-              <span className="text-xs font-bold text-gray-400 tracking-wide uppercase">默认管理入口</span>
-              <p className="text-[10px] text-gray-300 font-medium mt-1">账号：admin / 密码：admin123</p>
+            <div className="inline-flex items-center gap-2 bg-amber-50 border border-amber-100 px-4 py-2 rounded-lg">
+              <AlertCircle size={14} className="text-amber-600" />
+              <span className="text-xs font-bold text-amber-700">只允许管理人员登录</span>
             </div>
           </div>
         </div>
