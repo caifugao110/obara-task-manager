@@ -7,13 +7,16 @@ const asyncHandler = require('express-async-handler');
 
 const designerSchema = Joi.object({
   name: Joi.string().min(1).max(50).required(),
-  group: Joi.string().allow('').default('')
+  group: Joi.string().allow('').default(''),
+  hidden: Joi.boolean().default(false),
+  order: Joi.number().default(0)
 });
 
 // Get all designers (Public access for rendering table)
 router.get('/', asyncHandler(async (req, res) => {
   const data = db.readDb();
-  res.json(data.designers || []);
+  const designers = (data.designers || []).sort((a, b) => (a.order || 0) - (b.order || 0));
+  res.json(designers);
 }));
 
 // Create designer (Admin only)
@@ -23,13 +26,15 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const { name, group } = req.body;
+  const { name, group, hidden, order } = req.body;
   const data = db.readDb();
 
   const newDesigner = {
     id: Date.now().toString(),
     name,
-    group: group || ''
+    group: group || '',
+    hidden: hidden || false,
+    order: order || 0
   };
 
   data.designers.push(newDesigner);
@@ -51,12 +56,33 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
     return res.status(404).json({ message: '设计人员不存在' });
   }
 
-  const { name, group } = req.body;
-  data.designers[index].name = name;
-  data.designers[index].group = group;
+  const { name, group, hidden, order } = req.body;
+  if (name !== undefined) data.designers[index].name = name;
+  if (group !== undefined) data.designers[index].group = group;
+  if (hidden !== undefined) data.designers[index].hidden = hidden;
+  if (order !== undefined) data.designers[index].order = order;
 
   await db.writeDb(data);
   res.json(data.designers[index]);
+}));
+
+// Reorder designers (Admin only)
+router.post('/reorder', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids)) {
+    return res.status(400).json({ message: '输入格式不正确' });
+  }
+
+  const data = db.readDb();
+  ids.forEach((id, index) => {
+    const designer = data.designers.find(d => d.id === id);
+    if (designer) {
+      designer.order = index;
+    }
+  });
+
+  await db.writeDb(data);
+  res.json({ message: '排序已更新' });
 }));
 
 // Delete designer (Admin only)

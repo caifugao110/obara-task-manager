@@ -51,3 +51,6 @@ coverage/
 
 # nodemon config (dev tool)
 nodemon.json
+
+# Trae AI tool data
+.trae/

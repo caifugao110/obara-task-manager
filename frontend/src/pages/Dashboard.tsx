@@ -3,22 +3,24 @@ import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import {
-  DndContext,
-  closestCenter,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent,
-  DragStartEvent,
-  DragOverEvent,
-  DragOverlay,
-  defaultDropAnimationSideEffects,
-  useDroppable,
-} from '@dnd-kit/core';
+    DndContext,
+    rectIntersection,
+    pointerWithin,
+    PointerSensor,
+    useSensor,
+    useSensors,
+    CollisionDetection,
+    DragEndEvent,
+    DragStartEvent,
+    DragOverEvent,
+    DragOverlay,
+    defaultDropAnimationSideEffects,
+    useDroppable,
+  } from '@dnd-kit/core';
 import {
   arrayMove,
   SortableContext,
@@ -39,6 +41,7 @@ interface TaskItem {
   hours: number | string;
   color?: string;
   guns?: GunItem[];
+  leaveType?: 'sick' | 'vacation' | 'trip' | null;
 }
 
 interface TaskSheet {
@@ -53,6 +56,7 @@ interface Designer {
   id: string;
   name: string;
   group?: string;
+  hidden?: boolean;
 }
 
 interface User {
@@ -62,7 +66,7 @@ interface User {
   role: 'superadmin' | 'admin';
 }
 
-const SortableTask = ({ item, designerId, date, isAdmin }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGun }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void }) => {
   const {
     attributes,
     listeners,
@@ -88,34 +92,130 @@ const SortableTask = ({ item, designerId, date, isAdmin }: { item: TaskItem, des
     opacity: isDragging ? 0.3 : 1,
   };
 
+  const getTypeStyle = () => {
+    if (item.leaveType === 'sick') return { backgroundColor: '#fee2e2' };
+    if (item.leaveType === 'vacation') return { backgroundColor: '#dbeafe' };
+    if (item.leaveType === 'trip') return { backgroundColor: '#fef9c3' };
+    return {};
+  };
+
+  const typeLabel = (() => {
+    if (item.leaveType === 'sick') return '事假';
+    if (item.leaveType === 'vacation') return '休假';
+    if (item.leaveType === 'trip') {
+      const name = (item.taskName || '').trim();
+      if (!name) return '出差';
+      return name.endsWith('出差') ? name : `${name}出差`;
+    }
+    return '';
+  })();
+
   return (
     <div 
       ref={setNodeRef} 
-      style={style} 
+      style={{ ...style, ...getTypeStyle() }} 
       {...attributes} 
       {...listeners}
-      className="grid grid-cols-[12rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5"
+      className={`grid grid-cols-[12rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${(item.leaveType === 'sick' || item.leaveType === 'vacation') ? 'opacity-90' : ''}`}
     >
       {/* Main Task Row */}
-      <div className="border-r border-gray-200 px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium pointer-events-none">
-        {item.taskName || <span className="text-gray-300 italic">无</span>}
+      <div 
+        className="border-r border-gray-200 px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer"
+        onClick={(e) => {
+          if (e.ctrlKey || e.metaKey) return;
+          e.stopPropagation();
+          isAdmin && onTaskClick(item, designerId, date, 'task');
+        }}
+      >
+        <div className={`flex items-center ${item.leaveType ? 'justify-center' : 'justify-start'} w-full px-1`}>
+            {typeLabel ? (
+              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : 'bg-yellow-100 text-yellow-800'}`}>
+                {typeLabel}
+              </span>
+            ) : (
+              item.taskName || <span className="text-gray-300 italic">无</span>
+            )}
+          </div>
       </div>
-      <div className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold pointer-events-none">
+      <div 
+        className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold hover:bg-blue-50/50 transition cursor-pointer"
+        onClick={(e) => {
+          if (e.ctrlKey || e.metaKey) return;
+          e.stopPropagation();
+          isAdmin && onTaskClick(item, designerId, date, 'hours');
+        }}
+      >
         {item.guns && item.guns.length > 0 ? '' : item.hours}
       </div>
 
       {/* Gun Rows */}
-      {(item.guns || []).map(gun => (
+      {(item.guns || []).map((gun, index) => (
         <React.Fragment key={gun.id}>
-          <div className="border-r border-gray-200 px-3 py-0.5 min-h-[17px] flex items-center text-[10px] text-gray-500 border-t border-gray-200/50 italic bg-black/5 pointer-events-none">
-            - {gun.name || '未命名'}
-          </div>
-          <div className="px-1 py-0.5 min-h-[17px] flex items-center justify-center text-[10px] font-mono text-blue-500 border-t border-gray-200/50 bg-black/5 pointer-events-none">
+          <div 
+            className="border-r border-gray-200 px-3 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey) return;
+              e.stopPropagation();
+              isAdmin && onTaskClick(item, designerId, date, 'gun', index);
+            }}
+          >
+            <div className="flex-1">- {gun.name || '未命名'}</div>
+             {isAdmin && (
+               <button 
+                 className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-red-500 transition-opacity"
+                 onClick={(e) => {
+                   e.stopPropagation();
+                   onDeleteGun(item, designerId, date, index);
+                 }}
+               >
+                 <Trash2 size={12} />
+               </button>
+             )}
+            </div>
+          <div 
+            className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey) return;
+              e.stopPropagation();
+              isAdmin && onTaskClick(item, designerId, date, 'gunHours', index);
+            }}
+          >
             {gun.hours}
           </div>
         </React.Fragment>
       ))}
     </div>
+  );
+};
+
+const SortableDesignerTbody = ({ designer, isAdmin, children }: { designer: Designer, isAdmin: boolean, children: (args: { attributes: any, listeners: any, isDragging: boolean }) => React.ReactNode }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: `designer-${designer.id}`,
+    data: {
+      type: 'designer',
+      designerId: designer.id,
+      group: designer.group || '未分组',
+    },
+    disabled: !isAdmin,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <tbody ref={setNodeRef} style={style}>
+      {children({ attributes, listeners, isDragging })}
+    </tbody>
   );
 };
 
@@ -156,6 +256,13 @@ const Dashboard = () => {
   const [modalDesignerId, setModalDesignerId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<TaskItem[] | null>(null);
   const [activeTask, setActiveTask] = useState<{item: TaskItem, designerId: string, date: string} | null>(null);
+  const [focusTarget, setFocusTarget] = useState<{itemId: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number} | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isOverDelete, setIsOverDelete] = useState(false);
+  const lastOverIdRef = useRef<string | null>(null);
+
+  // Input refs for modal focus
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -164,6 +271,20 @@ const Dashboard = () => {
       },
     })
   );
+
+  const collisionDetection: CollisionDetection = useCallback((args) => {
+    const pointer = pointerWithin(args);
+    if (pointer.length) return pointer;
+    return rectIntersection(args);
+  }, []);
+
+  // Delete Area Droppable
+  const deleteAreaDroppable = useDroppable({
+    id: 'delete-area',
+    data: {
+      type: 'delete-area'
+    }
+  });
 
   const handleDragStart = (event: DragStartEvent) => {
     if (!isAdmin) return;
@@ -175,20 +296,78 @@ const Dashboard = () => {
         designerId: data.designerId,
         date: data.date,
       });
+      setIsDragging(true);
     }
   };
 
-  const handleDragEnd = async (event: DragEndEvent) => {
-    setActiveTask(null);
+  const handleDragOver = (event: DragOverEvent) => {
     if (!isAdmin) return;
-    
     const { active, over } = event;
-    if (!over) return;
+    const activeType = active.data.current?.type;
+    if (activeType !== 'task') {
+      setIsOverDelete(false);
+      return;
+    }
+    lastOverIdRef.current = over?.id ? String(over.id) : null;
+    setIsOverDelete(over?.id === 'delete-area');
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    setIsDragging(false);
+    setIsOverDelete(false);
+    setActiveTask(null);
 
     const sourceData = active.data.current;
-    const targetData = over.data.current;
+    const targetData = over?.data.current;
+    const overId = over?.id ? String(over.id) : lastOverIdRef.current;
+    lastOverIdRef.current = null;
 
-    if (!sourceData || !targetData) return;
+    if (!isAdmin) return;
+
+    if (sourceData?.type === 'designer' && targetData?.type === 'designer') {
+      const group = sourceData.group;
+      if (group !== targetData.group) return;
+
+      const groupIds = designers.filter(d => (d.group || '未分组') === group).map(d => d.id);
+      const oldIndex = groupIds.indexOf(sourceData.designerId);
+      const newIndex = groupIds.indexOf(targetData.designerId);
+      if (oldIndex === -1 || newIndex === -1) return;
+
+      const nextGroupIds = arrayMove(groupIds, oldIndex, newIndex);
+      const groupOf = new Map(designers.map(d => [d.id, d.group || '未分组']));
+      let ptr = 0;
+      const nextIds = designers.map(d => d.id).map(id => (groupOf.get(id) === group ? nextGroupIds[ptr++] : id));
+
+      const byId = new Map(designers.map(d => [d.id, d]));
+      const nextDesigners = nextIds.map(id => byId.get(id)).filter(Boolean) as Designer[];
+      setDesigners(nextDesigners);
+
+      try {
+        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+        await axios.post('/api/designers/reorder', { ids: nextIds }, authHeader);
+        addToast('排序已保存', 'success');
+      } catch (err) {
+        addToast('排序保存失败', 'error');
+        fetchData();
+      }
+      return;
+    }
+    
+    // Handle delete if dragged to delete area
+    if (overId === 'delete-area') {
+      if (sourceData?.type === 'task') {
+        try {
+          await deleteItem(sourceData.designerId, sourceData.date, active.id as string);
+          addToast('任务已删除', 'success');
+        } catch (err: any) {
+          addToast('删除失败', 'error');
+        }
+      }
+      return;
+    }
+
+    if (!over || !sourceData || !targetData) return;
 
     const sourceId = active.id as string;
     const sourceDesignerId = sourceData.designerId;
@@ -240,7 +419,8 @@ const Dashboard = () => {
   }), [daysInMonth, firstDayOfMonth]);
 
   const filteredDesigners = useMemo(() => {
-    if (selectedDesignerId === 'all') return designers;
+    const base = designers.filter(d => !d.hidden || selectedDesignerId === d.id);
+    if (selectedDesignerId === 'all') return base;
     return designers.filter(d => d.id === selectedDesignerId);
   }, [designers, selectedDesignerId]);
 
@@ -279,10 +459,72 @@ const Dashboard = () => {
     return () => window.removeEventListener('keydown', handleEsc);
   }, [modalOpen]);
 
+  // Handle focus when modal opens with focus target
+  useEffect(() => {
+    if (!modalOpen || !focusTarget) return;
+    
+    const { itemId, type, gunIndex } = focusTarget;
+    let refKey = '';
+    
+    switch (type) {
+      case 'task':
+        refKey = `task-${itemId}`;
+        break;
+      case 'hours':
+        refKey = `hours-${itemId}`;
+        break;
+      case 'gun':
+        if (gunIndex !== undefined) {
+          refKey = `gun-${itemId}-${gunIndex}`;
+        }
+        break;
+      case 'gunHours':
+        if (gunIndex !== undefined) {
+          refKey = `gunHours-${itemId}-${gunIndex}`;
+        }
+        break;
+    }
+    
+    const tryFocus = () => {
+      if (refKey && inputRefs.current[refKey]) {
+        const input = inputRefs.current[refKey];
+        input?.focus();
+        // Just focus, let the browser handle cursor position based on the click
+        return true;
+      }
+      return false;
+    };
+    
+    // Try immediately, then retry a few times
+    if (!tryFocus()) {
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        if (tryFocus() || attempts > 5) {
+          clearInterval(interval);
+        }
+      }, 50);
+    }
+  }, [modalOpen, focusTarget]);
+
   const openModal = (designerId: string, date: string) => {
     setModalDesignerId(designerId);
     setModalDate(date);
+    setFocusTarget(null);
     setModalOpen(true);
+  };
+
+  const onTaskClick = (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => {
+    setModalDesignerId(designerId);
+    setModalDate(date);
+    setFocusTarget({ itemId: item.id, type, gunIndex });
+    setModalOpen(true);
+  };
+
+  const onDeleteGun = (item: TaskItem, designerId: string, date: string, gunIndex: number) => {
+    if (!window.confirm('确定要删除该子任务(枪名)吗？')) return;
+    const newGuns = (item.guns || []).filter((_, i) => i !== gunIndex);
+    handleItemChange(designerId, date, item.id, 'guns', newGuns);
   };
 
   const addToast = (message: string, type: 'success' | 'error') => {
@@ -361,6 +603,9 @@ const Dashboard = () => {
   const calculateDailyTotal = (designerId: string, date: string) => {
     const items = getItems(designerId, date);
     return items.reduce((sum, it) => {
+      // Skip leave tasks from hour calculation
+      if (it.leaveType === 'sick' || it.leaveType === 'vacation') return sum;
+      
       const mainHours = typeof it.hours === 'number' ? it.hours : (parseFloat(it.hours) || 0);
       const gunsHours = (it.guns || []).reduce((gSum, g) => gSum + (typeof g.hours === 'number' ? g.hours : (parseFloat(g.hours) || 0)), 0);
       return sum + (it.guns && it.guns.length > 0 ? gunsHours : mainHours);
@@ -387,7 +632,7 @@ const Dashboard = () => {
 
   const debouncedSave = useDebounce(saveItem, 500);
 
-  const handleItemChange = (designerId: string, date: string, itemId: string, field: 'taskName' | 'hours' | 'color' | 'guns', raw: any) => {
+  const handleItemChange = (designerId: string, date: string, itemId: string, field: 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType', raw: any) => {
     setSheets(prev => {
       const next = prev.map(sheet => {
         if (sheet.designerId !== designerId) return sheet;
@@ -477,18 +722,14 @@ const Dashboard = () => {
     if (!clipboard || !user) return;
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      for (const item of clipboard) {
-        await axios.post('/api/tasks/item', { 
-          designerId, 
-          date, 
-          taskName: item.taskName, 
-          hours: item.hours, 
-          color: item.color,
-          guns: item.guns 
-        }, authHeader);
-      }
+      const res = await axios.post('/api/tasks/item/batch', { 
+        designerId, 
+        date, 
+        items: clipboard 
+      }, authHeader);
+      
       addToast('已粘贴任务内容', 'success');
-      fetchSheets();
+      upsertSheet(res.data.sheet);
       socketRef.current?.emit('task_updated');
     } catch (err) {
       addToast('粘贴失败', 'error');
@@ -509,6 +750,7 @@ const Dashboard = () => {
       </div>
 
       <header className="bg-[#217346] text-white px-6 py-2 flex items-center justify-between shadow-md">
+        
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-2">
             <FileSpreadsheet size={24} />
@@ -538,6 +780,13 @@ const Dashboard = () => {
               <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-white/80" size={14} />
             </div>
           )}
+          <Link 
+            to="/leaderboard" 
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+          >
+            <FileSpreadsheet size={16} className="text-blue-200" />
+            <span>任务报表</span>
+          </Link>
         </div>
 
         <div className="flex items-center space-x-4">
@@ -567,10 +816,25 @@ const Dashboard = () => {
 
       <DndContext 
         sensors={sensors}
-        collisionDetection={closestCenter}
+        collisionDetection={collisionDetection}
         onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
+        {/* Delete Area - positioned at top center of page */}
+        <div 
+          id="delete-area" 
+          ref={deleteAreaDroppable.setNodeRef}
+          className={`fixed top-4 left-1/2 transform -translate-x-1/2 h-16 px-10 flex items-center justify-center border-2 transition-all duration-300 z-[100] shadow-xl backdrop-blur-md rounded-xl ${
+            isDragging ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-10 pointer-events-none'
+          } ${
+            isOverDelete ? 'bg-red-600 border-red-400 scale-110' : 'bg-red-500/80 border-red-300'
+          } text-white font-bold text-base`}
+        >
+          <Trash2 size={24} className={`mr-2 ${isOverDelete ? 'animate-bounce' : 'animate-pulse'}`} />
+          {isOverDelete ? '松开以删除任务' : '拖到此处删除任务'}
+        </div>
+
         <main className="flex-1 overflow-auto p-4">
           <div className="bg-white shadow-sm border border-gray-300 inline-block min-w-full">
             <table className="border-collapse text-[12px] table-fixed w-max min-w-full">
@@ -596,9 +860,9 @@ const Dashboard = () => {
                   <th className="sticky right-0 z-30 bg-[#f8f9fa] border border-gray-300 shadow-[-1px_0_0_0_#d1d5db]"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
-                {sortedGroups.map(group => (
-                  <React.Fragment key={group}>
+              {sortedGroups.map(group => (
+                <React.Fragment key={group}>
+                  <tbody>
                     <tr className="bg-gray-200/80 cursor-pointer hover:bg-gray-300 transition-colors" onClick={() => toggleGroup(group)}>
                       <td 
                         className="sticky left-0 z-30 bg-gray-200 border border-gray-300 px-3 py-1.5 font-black text-gray-700 shadow-[1px_0_0_0_#d1d5db]"
@@ -611,78 +875,98 @@ const Dashboard = () => {
                         </div>
                       </td>
                     </tr>
+                  </tbody>
 
-                    {!collapsedGroups[group] && designersByGroup[group].map(d => (
-                      <React.Fragment key={d.id}>
-                        <tr className="align-top hover:bg-blue-50/20 group/row transition-colors">
-                          <td className="sticky left-0 z-20 bg-white border border-gray-300 px-2 py-3 font-bold text-gray-800 text-center shadow-[1px_0_0_0_#d1d5db] group-hover/row:bg-blue-50/40">
-                            {d.name}
-                          </td>
-                          {days.map(day => {
-                            const items = getItems(d.id, day.fullDate);
-                            return (
-                              <DroppableCell 
-                                key={`${d.id}-${day.fullDate}`}
-                                designerId={d.id}
-                                date={day.fullDate}
-                                colSpan={2}
-                                className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] relative group/cell`}
-                                onContextMenu={(e: any) => {
-                                  if (!user) return;
-                                  e.preventDefault();
-                                  handleCopy(d.id, day.fullDate);
-                                }}
-                                onClick={(e: any) => {
-                                  if (!user) return;
-                                  if (e.ctrlKey) {
-                                    handlePaste(d.id, day.fullDate);
-                                  } else {
-                                    openModal(d.id, day.fullDate);
-                                  }
-                                }}
-                                title={user ? "左键:编辑 | Ctrl+左键:粘贴 | 右键:复制" : ""}
-                              >
-                                <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
-                                  <div className="flex flex-col min-h-[40px]">
-                                    {items.map(item => (
-                                      <SortableTask key={item.id} item={item} designerId={d.id} date={day.fullDate} isAdmin={isAdmin} />
-                                    ))}
-                                    {user && (
-                                      <div 
-                                        className="h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity cursor-pointer hover:bg-blue-50/50"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          openModal(d.id, day.fullDate);
-                                        }}
-                                      >
-                                        <Plus size={14} />
+                  {!collapsedGroups[group] && (
+                    <SortableContext items={designersByGroup[group].map(d => `designer-${d.id}`)} strategy={verticalListSortingStrategy}>
+                      {designersByGroup[group].map(d => (
+                        <SortableDesignerTbody key={d.id} designer={d} isAdmin={isAdmin}>
+                          {({ attributes, listeners }) => (
+                            <>
+                              <tr className="align-top hover:bg-blue-50/20 group/row transition-colors">
+                                <td className="sticky left-0 z-20 bg-white border border-gray-300 px-2 py-3 font-bold text-gray-800 text-center shadow-[1px_0_0_0_#d1d5db] group-hover/row:bg-blue-50/40">
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    {isAdmin && (
+                                      <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-0.5 hover:bg-blue-100 rounded">
+                                        <GripVertical size={14} className="text-gray-400" />
                                       </div>
                                     )}
+                                    <span>{d.name}</span>
                                   </div>
-                                </SortableContext>
-                              </DroppableCell>
-                            );
-                          })}
-                          <td className="sticky right-0 z-20 bg-[#f8f9fa] border border-gray-300 px-2 py-3 font-bold text-center text-green-700 shadow-[-1px_0_0_0_#d1d5db] group-hover/row:bg-green-50/40">
-                            {calculateMonthlyTotal(d.id).toFixed(1)}
-                          </td>
-                        </tr>
-                        <tr className="bg-blue-50/10 text-[10px]">
-                          <td className="sticky left-0 z-20 bg-blue-50/30 border border-gray-300 px-2 py-0.5 font-bold text-gray-500 text-right shadow-[1px_0_0_0_#d1d5db]">
-                            当日合计
-                          </td>
-                          {days.map(day => (
-                            <td key={`total-${d.id}-${day.fullDate}`} colSpan={2} className={`border border-gray-300 px-1 py-0.5 text-center font-bold text-blue-600 ${day.isWeekend ? 'bg-[#fff2cc]/20' : ''}`}>
-                              {calculateDailyTotal(d.id, day.fullDate) || ''}
-                            </td>
-                          ))}
-                          <td className="sticky right-0 z-20 bg-blue-50/30 border border-gray-300 shadow-[-1px_0_0_0_#d1d5db]"></td>
-                        </tr>
-                      </React.Fragment>
-                    ))}
-                  </React.Fragment>
-                ))}
-              </tbody>
+                                </td>
+                                {days.map(day => {
+                                  const items = getItems(d.id, day.fullDate);
+                                  return (
+                                    <DroppableCell 
+                                      key={`${d.id}-${day.fullDate}`}
+                                      designerId={d.id}
+                                      date={day.fullDate}
+                                      colSpan={2}
+                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] relative group/cell`}
+                                      onContextMenu={(e: any) => {
+                                        if (!user) return;
+                                        e.preventDefault();
+                                  if (!isAdmin) return;
+                                  if (e.ctrlKey || e.metaKey) {
+                                    if (!clipboard) {
+                                      addToast('剪贴板为空', 'error');
+                                      return;
+                                    }
+                                    handlePaste(d.id, day.fullDate);
+                                  } else {
+                                    handleCopy(d.id, day.fullDate);
+                                  }
+                                      }}
+                                      onClick={(e: any) => {
+                                        if (!isAdmin) return;
+                                  openModal(d.id, day.fullDate);
+                                      }}
+                                title={isAdmin ? "左键:编辑 | 右键:复制 | Ctrl/⌘+右键:粘贴" : ""}
+                                    >
+                                      <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                                        <div className="flex flex-col min-h-[40px]">
+                                          {items.map(item => (
+                                            <SortableTask key={item.id} item={item} designerId={d.id} date={day.fullDate} isAdmin={isAdmin} onTaskClick={onTaskClick} onDeleteGun={onDeleteGun} />
+                                          ))}
+                                          {isAdmin && (
+                                            <div 
+                                              className="h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity cursor-pointer hover:bg-blue-50/50"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                openModal(d.id, day.fullDate);
+                                              }}
+                                            >
+                                              <Plus size={14} />
+                                            </div>
+                                          )}
+                                        </div>
+                                      </SortableContext>
+                                    </DroppableCell>
+                                  );
+                                })}
+                                <td className="sticky right-0 z-20 bg-[#f8f9fa] border border-gray-300 px-2 py-3 font-bold text-center text-green-700 shadow-[-1px_0_0_0_#d1d5db] group-hover/row:bg-green-50/40">
+                                  {calculateMonthlyTotal(d.id).toFixed(1)}
+                                </td>
+                              </tr>
+                              <tr className="bg-blue-50/10 text-[10px]">
+                                <td className="sticky left-0 z-20 bg-blue-50/30 border border-gray-300 px-2 py-0.5 font-bold text-gray-500 text-right shadow-[1px_0_0_0_#d1d5db]">
+                                  当日合计
+                                </td>
+                                {days.map(day => (
+                                  <td key={`total-${d.id}-${day.fullDate}`} colSpan={2} className={`border border-gray-300 px-1 py-0.5 text-center font-bold text-blue-600 ${day.isWeekend ? 'bg-[#fff2cc]/20' : ''}`}>
+                                    {calculateDailyTotal(d.id, day.fullDate) || ''}
+                                  </td>
+                                ))}
+                                <td className="sticky right-0 z-20 bg-blue-50/30 border border-gray-300 shadow-[-1px_0_0_0_#d1d5db]"></td>
+                              </tr>
+                            </>
+                          )}
+                        </SortableDesignerTbody>
+                      ))}
+                    </SortableContext>
+                  )}
+                </React.Fragment>
+              ))}
             </table>
           </div>
         </main>
@@ -741,16 +1025,100 @@ const Dashboard = () => {
             <div className="flex-1 overflow-auto p-4 bg-gray-100/50">
               {(() => {
                 const items = getItems(modalDesignerId, modalDate);
+                
                 return (
                   <div className={items.length > 3 ? "grid grid-cols-2 gap-4 min-w-0" : "flex flex-col gap-4 min-w-0"}>
                     {items.map(item => {
                       const hasGuns = item.guns && item.guns.length > 0;
+                      const isLeave = item.leaveType === 'sick' || item.leaveType === 'vacation';
+                      const isTrip = item.leaveType === 'trip';
+                      const tripPlace = (() => {
+                        const name = (item.taskName || '').trim();
+                        if (!name) return '';
+                        return name.endsWith('出差') ? name.slice(0, -2) : name;
+                      })();
                       return (
-                        <div key={item.id} className="flex flex-col gap-2 p-4 bg-white rounded-xl border-2 border-gray-200 shadow-sm hover:border-blue-300 transition group/item h-fit min-w-0">
+                        <div key={item.id} className={`flex flex-col gap-2 p-4 bg-white rounded-xl border-2 border-gray-200 shadow-sm hover:border-blue-300 transition group/item h-fit min-w-0 ${isLeave ? 'bg-gradient-to-r from-red-50 to-blue-50' : isTrip ? 'bg-gradient-to-r from-yellow-50 to-white' : ''}`}>
+                          {isLeave ? (
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-sm font-bold px-3 py-1.5 rounded-lg ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-blue-100 text-blue-700 border border-blue-300'}`}>
+                                  {item.leaveType === 'sick' ? '🏖️ 事假' : '🌴 休假'}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <div className="w-24">
+                                  <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">请假工时</label>
+                                  <input
+                                    ref={el => inputRefs.current[`hours-${item.id}`] = el}
+                                    type="number"
+                                    step="0.5"
+                                    min="0"
+                                    className="w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none focus:bg-white"
+                                    value={item.hours}
+                                    onChange={(e) => handleItemChange(modalDesignerId, modalDate, item.id, 'hours', e.target.value)}
+                                    placeholder="工时"
+                                  />
+                                </div>
+                                <button
+                                  onClick={() => deleteItem(modalDesignerId, modalDate, item.id)}
+                                  className="mt-4 p-2 text-gray-300 hover:text-red-600 transition"
+                                  title="删除任务"
+                                >
+                                  <Trash2 size={20} />
+                                </button>
+                              </div>
+                            </div>
+                          ) : isTrip ? (
+                            <div className="flex flex-col gap-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-bold px-3 py-1.5 rounded-lg bg-yellow-100 text-yellow-800 border border-yellow-300">
+                                  出差
+                                </span>
+                                <button
+                                  onClick={() => deleteItem(modalDesignerId, modalDate, item.id)}
+                                  className="p-2 text-gray-300 hover:text-red-600 transition"
+                                  title="删除任务"
+                                >
+                                  <Trash2 size={20} />
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1">
+                                  <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">地点/客户</label>
+                                  <input
+                                    ref={el => inputRefs.current[`task-${item.id}`] = el}
+                                    className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                                    value={tripPlace}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      const nextName = val ? `${val}出差` : '出差';
+                                      handleItemChange(modalDesignerId, modalDate, item.id, 'taskName', nextName);
+                                    }}
+                                    placeholder="输入地点或者客户"
+                                  />
+                                </div>
+                                <div className="w-24">
+                                  <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">工时</label>
+                                  <input
+                                    ref={el => inputRefs.current[`hours-${item.id}`] = el}
+                                    type="number"
+                                    step="0.5"
+                                    min="0"
+                                    className="w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none focus:bg-white"
+                                    value={item.hours}
+                                    onChange={(e) => handleItemChange(modalDesignerId, modalDate, item.id, 'hours', e.target.value)}
+                                    placeholder="工时"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
                           <div className="flex items-center gap-2">
                             <div className="flex-1">
                               <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">任务内容</label>
                               <input
+                                ref={el => inputRefs.current[`task-${item.id}`] = el}
                                 className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                                 value={item.taskName}
                                 onChange={(e) => handleItemChange(modalDesignerId, modalDate, item.id, 'taskName', e.target.value)}
@@ -760,6 +1128,7 @@ const Dashboard = () => {
                             <div className="w-24">
                               <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">总工时</label>
                               <input
+                                ref={el => inputRefs.current[`hours-${item.id}`] = el}
                                 type="number"
                                 step="0.5"
                                 min="0"
@@ -778,11 +1147,12 @@ const Dashboard = () => {
                               <Trash2 size={20} />
                             </button>
                           </div>
+                          )}
 
-                          {/* Guns Section */}
+                          {!isLeave && !isTrip && (
                           <div className="mt-2 pl-4 border-l-2 border-gray-100 flex flex-col gap-2">
                             <div className="flex items-center justify-between">
-                              <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">子任务 (枪名)</span>
+                              <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">枪名</span>
                               <button 
                                 onClick={() => {
                                   const newGuns = [...(item.guns || []), { id: `gun-${Date.now()}`, name: '', hours: 0 }];
@@ -796,6 +1166,7 @@ const Dashboard = () => {
                             {(item.guns || []).map((gun, gIdx) => (
                               <div key={gun.id} className="flex items-center gap-2 bg-gray-50/50 p-2 rounded-lg group/gun">
                                 <input 
+                                  ref={el => inputRefs.current[`gun-${item.id}-${gIdx}`] = el}
                                   className="flex-1 h-8 px-2 bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs transition"
                                   value={gun.name}
                                   placeholder="枪名..."
@@ -806,6 +1177,7 @@ const Dashboard = () => {
                                   }}
                                 />
                                 <input 
+                                  ref={el => inputRefs.current[`gunHours-${item.id}-${gIdx}`] = el}
                                   type="number"
                                   step="0.5"
                                   min="0"
@@ -830,8 +1202,45 @@ const Dashboard = () => {
                               </div>
                             ))}
                           </div>
+                          )}
 
-                          {isAdmin && (
+                          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-50">
+                            <span className="text-[10px] text-gray-400 font-bold uppercase">任务类型:</span>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleItemChange(modalDesignerId, modalDate, item.id, 'leaveType', 'sick')}
+                                className={`px-3 py-1 text-xs font-bold rounded transition ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-gray-100 text-gray-600 border border-gray-300 hover:bg-gray-200'}`}
+                              >
+                                事假
+                              </button>
+                              <button
+                                onClick={() => handleItemChange(modalDesignerId, modalDate, item.id, 'leaveType', 'vacation')}
+                                className={`px-3 py-1 text-xs font-bold rounded transition ${item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-100 text-gray-600 border border-gray-300 hover:bg-gray-200'}`}
+                              >
+                                休假
+                              </button>
+                              <button
+                                onClick={() => {
+                                  handleItemChange(modalDesignerId, modalDate, item.id, 'leaveType', 'trip');
+                                  if (!item.taskName || !item.taskName.trim()) {
+                                    handleItemChange(modalDesignerId, modalDate, item.id, 'taskName', '出差');
+                                  }
+                                }}
+                                className={`px-3 py-1 text-xs font-bold rounded transition ${item.leaveType === 'trip' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-gray-100 text-gray-600 border border-gray-300 hover:bg-gray-200'}`}
+                              >
+                                出差
+                              </button>
+                              <button
+                                onClick={() => handleItemChange(modalDesignerId, modalDate, item.id, 'leaveType', null)}
+                                className={`px-3 py-1 text-xs font-bold rounded transition ${!item.leaveType ? 'bg-gray-100 text-gray-800 border border-gray-400' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
+                              >
+                                无
+                              </button>
+                            </div>
+                          </div>
+                          
+                          {isAdmin && !isLeave && !isTrip && (
+                          <>
                             <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-50">
                               <span className="text-[10px] text-gray-400 font-bold uppercase">标记颜色:</span>
                               <div className="flex flex-wrap gap-1.5">
@@ -846,6 +1255,7 @@ const Dashboard = () => {
                                 ))}
                               </div>
                             </div>
+                          </>
                           )}
                         </div>
                       );

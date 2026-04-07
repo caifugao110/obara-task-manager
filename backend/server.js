@@ -33,11 +33,13 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const designerRoutes = require('./routes/designers');
 const taskRoutes = require('./routes/tasks');
+const settingsRoutes = require('./routes/settings');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/designers', designerRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {

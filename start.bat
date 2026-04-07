@@ -81,27 +81,61 @@ echo [%CYAN%2/7%NORMAL%] %BOLD%检查端口占用...%NORMAL%
 netstat -ano 2>nul | findstr ":%BACKEND_PORT% " >nul 2>&1
 if not errorlevel 1 (
     echo %YELLOW%[警告] 后端端口 %BACKEND_PORT% 已被占用%NORMAL%
-    echo %YELLOW%  尝试查找占用进程...%NORMAL%
+    echo %YELLOW%  尝试查找并关闭占用进程...%NORMAL%
     for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BACKEND_PORT% " ^| findstr "LISTENING"') do (
         for /f "delims=" %%b in ('wmic process where "ProcessId=%%a" get Name 2^>nul') do (
-            echo %YELLOW%  PID %%a: %%b%NORMAL%
+            echo %YELLOW%  找到进程: PID %%a: %%b%NORMAL%
+            echo %YELLOW%  正在终止进程...%NORMAL%
+            taskkill /F /PID %%a >nul 2>&1
+            if not errorlevel 1 (
+                echo %GREEN%  [✓] 进程已终止%NORMAL%
+            ) else (
+                echo %RED%  [✗] 无法终止进程，请手动关闭%NORMAL%
+            )
         )
     )
-    echo %YELLOW%  如果服务正在运行，前端可能已连接到现有后端%NORMAL%
+    timeout /t 1 >nul
+    netstat -ano 2>nul | findstr ":%BACKEND_PORT% " >nul 2>&1
+    if not errorlevel 1 (
+        echo %RED%  后端端口 %BACKEND_PORT% 仍被占用，继续尝试启动...%NORMAL%
+    ) else (
+        echo %GREEN%[✓]%NORMAL% 后端端口 %BACKEND_PORT% 已释放
+    )
 ) else (
     echo %GREEN%[✓]%NORMAL% 后端端口 %BACKEND_PORT% 可用
 )
 
 netstat -ano 2>nul | findstr ":%FRONTEND_PORT% " >nul 2>&1
 if not errorlevel 1 (
-    echo %RED%[错误] 前端端口 %FRONTEND_PORT% 已被占用%NORMAL%
-    echo %RED%  请关闭占用端口的程序后重试%NORMAL%
-    echo %YELLOW%  可能的解决方案:%NORMAL%
-    echo %YELLOW%    - 关闭正在运行的同名应用%NORMAL%
-    echo %YELLOW%    - 修改 frontend/vite.config.ts 中的端口%NORMAL%
-    exit /b 1
+    echo %YELLOW%[警告] 前端端口 %FRONTEND_PORT% 已被占用%NORMAL%
+    echo %YELLOW%  尝试查找并关闭占用进程...%NORMAL%
+    for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%FRONTEND_PORT% " ^| findstr "LISTENING"') do (
+        for /f "delims=" %%b in ('wmic process where "ProcessId=%%a" get Name 2^>nul') do (
+            echo %YELLOW%  找到进程: PID %%a: %%b%NORMAL%
+            echo %YELLOW%  正在终止进程...%NORMAL%
+            taskkill /F /PID %%a >nul 2>&1
+            if not errorlevel 1 (
+                echo %GREEN%  [✓] 进程已终止%NORMAL%
+            ) else (
+                echo %RED%  [✗] 无法终止进程，请手动关闭%NORMAL%
+            )
+        )
+    )
+    timeout /t 1 >nul
+    netstat -ano 2>nul | findstr ":%FRONTEND_PORT% " >nul 2>&1
+    if not errorlevel 1 (
+        echo %RED%[错误] 前端端口 %FRONTEND_PORT% 仍被占用%NORMAL%
+        echo %RED%  请关闭占用端口的程序后重试%NORMAL%
+        echo %YELLOW%  可能的解决方案:%NORMAL%
+        echo %YELLOW%    - 关闭正在运行的同名应用%NORMAL%
+        echo %YELLOW%    - 修改 frontend/vite.config.ts 中的端口%NORMAL%
+        exit /b 1
+    ) else (
+        echo %GREEN%[✓]%NORMAL% 前端端口 %FRONTEND_PORT% 已释放
+    )
+) else (
+    echo %GREEN%[✓]%NORMAL% 前端端口 %FRONTEND_PORT% 可用
 )
-echo %GREEN%[✓]%NORMAL% 前端端口 %FRONTEND_PORT% 可用
 exit /b 0
 
 :install_deps

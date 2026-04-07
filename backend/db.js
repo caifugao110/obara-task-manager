@@ -99,13 +99,15 @@ const normalizeSheetDatesIfNeeded = (db) => {
 const readDb = () => {
   try {
     if (!fs.existsSync(dbPath)) {
-      const initialDb = { users: [], tasks: [], designers: [] };
+      const initialDb = { users: [], tasks: [], designers: [], settings: { leaderboard: { enabled: true, allowAdmins: true, allowViewers: false } } };
       fs.writeFileSync(dbPath, JSON.stringify(initialDb, null, 2));
       return initialDb;
     }
     const data = fs.readFileSync(dbPath, 'utf8');
     const parsed = JSON.parse(data);
     if (!parsed.designers) parsed.designers = [];
+    if (!parsed.settings) parsed.settings = {};
+    if (!parsed.settings.leaderboard) parsed.settings.leaderboard = { enabled: true, allowAdmins: true, allowViewers: false };
     const migratedRes = migrateTasksIfNeeded(parsed);
     const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
     if (migratedRes.migrated || normalizedRes.changed) {

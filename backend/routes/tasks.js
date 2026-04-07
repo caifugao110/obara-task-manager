@@ -22,18 +22,22 @@ const createItemSchema = Joi.object({
   taskName: Joi.string().allow('').default(''),
   hours: Joi.number().min(0).default(0),
   color: Joi.string().allow('').default(''),
-  guns: Joi.array().items(gunSchema).default([])
+  guns: Joi.array().items(gunSchema).default([]),
+  leaveType: Joi.string().valid('sick', 'vacation', 'trip', null).allow(null).default(null),
+  fontSize: Joi.string().allow('').default(''),
+  textColor: Joi.string().allow('').default('')
 });
 
 const updateItemSchema = Joi.object({
   designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
   itemId: Joi.string().required(),
-  field: Joi.string().valid('taskName', 'hours', 'color', 'guns').required(),
+  field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'fontSize', 'textColor').required(),
   value: Joi.alternatives().try(
     Joi.string().allow(''), 
     Joi.number().min(0),
-    Joi.array().items(gunSchema)
+    Joi.array().items(gunSchema),
+    Joi.string().valid('sick', 'vacation', 'trip', null).allow(null)
   ).required()
 });
 
@@ -88,6 +92,44 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json(tasks);
 }));
 
+router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
+  const { designerId, date: rawDate, items: pasteItems } = req.body;
+  if (!designerId || !rawDate || !Array.isArray(pasteItems)) {
+    return res.status(400).json({ message: '输入参数不正确' });
+  }
+
+  const date = normalizeDate(rawDate);
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以编辑表格' });
+  }
+
+  const data = db.readDb();
+  const { month, year } = getMonthYearFromDate(date);
+  const sheet = getOrCreateSheet(data, designerId, month, year);
+
+  if (!sheet.days[date]) sheet.days[date] = [];
+  
+  const addedItems = [];
+  for (const item of pasteItems) {
+    const newItem = {
+      id: `item-${Date.now().toString()}${Math.random().toString(36).slice(2, 9)}`,
+      taskName: item.taskName || '',
+      hours: typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0),
+      color: item.color || '',
+      guns: Array.isArray(item.guns) ? item.guns : [],
+      leaveType: item.leaveType || null,
+      fontSize: item.fontSize || '',
+      textColor: item.textColor || ''
+    };
+    sheet.days[date].push(newItem);
+    addedItems.push(newItem);
+  }
+
+  await db.writeDb(data);
+  res.status(201).json({ sheetId: sheet.id, designerId, month, year, date, items: addedItems, sheet });
+}));
+
 router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
   const { error, value: validated } = createItemSchema.validate(req.body, { stripUnknown: true });
   if (error) {
@@ -112,7 +154,10 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
     taskName,
     hours,
     color,
-    guns
+    guns,
+    leaveType: validated.leaveType || null,
+    fontSize: validated.fontSize || '',
+    textColor: validated.textColor || ''
   };
   sheet.days[date].push(item);
 
@@ -149,6 +194,8 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     items[idx].color = value;
   } else if (field === 'guns') {
     items[idx].guns = value;
+  } else if (field === 'leaveType') {
+    items[idx].leaveType = value;
   } else {
     items[idx].taskName = value;
   }

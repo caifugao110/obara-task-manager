@@ -1,14 +1,103 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { UserPlus, Trash2, Shield, User, ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw } from 'lucide-react';
+import { UserPlus, Trash2, Shield, User, ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key } from 'lucide-react';
+import { format } from 'date-fns';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 interface DesignerData {
   id: string;
   name: string;
   group: string;
+  hidden?: boolean;
 }
+
+const SortableDesignerRow = ({ 
+  designer, 
+  onUpdateGroup, 
+  onToggleHide, 
+  onDelete 
+}: { 
+  designer: DesignerData, 
+  onUpdateGroup: (id: string, group: string) => void,
+  onToggleHide: (id: string, hidden: boolean) => void,
+  onDelete: (id: string) => void 
+}) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: designer.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 10 : 1,
+  };
+
+  return (
+    <tr 
+      ref={setNodeRef} 
+      style={style} 
+      className={`hover:bg-blue-50/30 transition group ${designer.hidden ? 'opacity-50' : ''}`}
+    >
+      <td className="px-6 py-4 font-bold text-gray-700">
+        <div className="flex items-center gap-2">
+          <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 rounded">
+            <GripVertical size={16} className="text-gray-400" />
+          </div>
+          {designer.name}
+        </div>
+      </td>
+      <td className="px-6 py-4">
+        <input 
+          type="text" 
+          className="bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none text-gray-600 transition w-32"
+          defaultValue={designer.group || ''}
+          onBlur={(e) => onUpdateGroup(designer.id, e.target.value)}
+          placeholder="未分组"
+        />
+      </td>
+      <td className="px-6 py-4 text-right">
+        <div className="flex items-center justify-end gap-1">
+          <button 
+            onClick={() => onToggleHide(designer.id, !designer.hidden)}
+            className={`p-2 rounded-lg transition-all duration-200 ${designer.hidden ? 'text-blue-500 bg-blue-50' : 'text-gray-300 hover:text-blue-600 hover:bg-blue-50'}`}
+            title={designer.hidden ? '取消隐藏' : '隐藏人员'}
+          >
+            {designer.hidden ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+          <button 
+            onClick={() => onDelete(designer.id)}
+            className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
+            title="移除人员"
+          >
+            <Trash2 size={18} />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+};
 
 interface UserData {
   id: string;
@@ -16,6 +105,12 @@ interface UserData {
   name: string;
   role: 'superadmin' | 'admin';
   group?: string;
+}
+
+interface Toast {
+  message: string;
+  type: 'success' | 'error';
+  id: number;
 }
 
 const Admin = () => {
@@ -28,16 +123,27 @@ const Admin = () => {
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newName, setNewName] = useState('');
-  const [newRole, setNewRole] = useState<'superadmin' | 'admin'>('admin');
+  const [newRole, setNewRole] = useState<'admin'>('admin');
   
   // Designer Form
   const [newDesignerName, setNewDesignerName] = useState('');
   const [newDesignerGroup, setNewDesignerGroup] = useState('');
 
   const [toasts, setToasts] = useState<Toast[]>([]);
-
+  const [resetPasswordUserId, setResetPasswordUserId] = useState<string | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [resetPasswordSubmitting, setResetPasswordSubmitting] = useState(false);
+  
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5,
+      },
+    })
+  );
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
@@ -75,7 +181,7 @@ const Admin = () => {
         username: newUsername,
         password: newPassword,
         name: newName || newUsername,
-        role: newRole
+        role: 'admin'
       }, authHeader);
       
       addToast('管理员账号创建成功', 'success');
@@ -109,11 +215,42 @@ const Admin = () => {
     const designer = designers.find(d => d.id === id);
     if (!designer) return;
     try {
-      await axios.put(`/api/designers/${id}`, { name: designer.name, group }, authHeader);
+      await axios.put(`/api/designers/${id}`, { name: designer.name, group, hidden: designer.hidden }, authHeader);
       addToast('分组更新成功', 'success');
       fetchData();
     } catch (err: any) {
       addToast(err.response?.data?.message || '更新失败', 'error');
+    }
+  };
+
+  const handleToggleHideDesigner = async (id: string, hidden: boolean) => {
+    const designer = designers.find(d => d.id === id);
+    if (!designer) return;
+    try {
+      await axios.put(`/api/designers/${id}`, { name: designer.name, group: designer.group, hidden }, authHeader);
+      addToast(hidden ? '人员已隐藏' : '已取消隐藏', 'success');
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '操作失败', 'error');
+    }
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      const oldIndex = designers.findIndex((d) => d.id === active.id);
+      const newIndex = designers.findIndex((d) => d.id === over.id);
+      const newDesigners = arrayMove(designers, oldIndex, newIndex);
+      
+      setDesigners(newDesigners);
+      
+      try {
+        await axios.post('/api/designers/reorder', { ids: newDesigners.map(d => d.id) }, authHeader);
+        addToast('排序已保存', 'success');
+      } catch (err) {
+        addToast('排序保存失败', 'error');
+        fetchData();
+      }
     }
   };
 
@@ -130,6 +267,32 @@ const Admin = () => {
       fetchData();
     } catch (err: any) {
       addToast(err.response?.data?.message || '删除失败', 'error');
+    }
+  };
+
+  const handleResetPassword = async (id: string) => {
+    if (!isSuperAdmin) return;
+    setResetPasswordUserId(id);
+    setResetPasswordValue('');
+  };
+
+  const submitResetPassword = async () => {
+    if (!isSuperAdmin) return;
+    if (!resetPasswordUserId) return;
+    if (resetPasswordValue.length < 6) {
+      addToast('密码至少6位', 'error');
+      return;
+    }
+    setResetPasswordSubmitting(true);
+    try {
+      await axios.put(`/api/users/${resetPasswordUserId}`, { password: resetPasswordValue }, authHeader);
+      addToast('密码已重置', 'success');
+      setResetPasswordUserId(null);
+      setResetPasswordValue('');
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '重置失败', 'error');
+    } finally {
+      setResetPasswordSubmitting(false);
     }
   };
 
@@ -163,6 +326,67 @@ const Admin = () => {
         ))}
       </div>
 
+      {resetPasswordUserId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div 
+            className="absolute inset-0 bg-black/40" 
+            onClick={() => {
+              if (resetPasswordSubmitting) return;
+              setResetPasswordUserId(null);
+              setResetPasswordValue('');
+            }} 
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <div className="font-bold text-gray-800">
+                重置密码 - {users.find(u => u.id === resetPasswordUserId)?.name}
+              </div>
+              <button
+                className="p-1 rounded hover:bg-gray-100 text-gray-500"
+                onClick={() => {
+                  if (resetPasswordSubmitting) return;
+                  setResetPasswordUserId(null);
+                  setResetPasswordValue('');
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-5">
+              <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">新密码</label>
+              <input
+                type="password"
+                className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
+                value={resetPasswordValue}
+                onChange={(e) => setResetPasswordValue(e.target.value)}
+                placeholder="至少6位"
+                disabled={resetPasswordSubmitting}
+              />
+            </div>
+            <div className="px-5 py-4 bg-white border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-50 transition"
+                onClick={() => {
+                  if (resetPasswordSubmitting) return;
+                  setResetPasswordUserId(null);
+                  setResetPasswordValue('');
+                }}
+                disabled={resetPasswordSubmitting}
+              >
+                取消
+              </button>
+              <button
+                className="px-4 py-2 rounded-lg bg-purple-600 text-white font-bold hover:bg-purple-700 transition disabled:opacity-50"
+                onClick={submitResetPassword}
+                disabled={resetPasswordSubmitting}
+              >
+                确认重置
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
@@ -194,44 +418,41 @@ const Admin = () => {
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-lg font-bold text-gray-800">任务表格人员名单</h2>
+              <h2 className="text-lg font-bold text-gray-800">设计人员表格名单</h2>
               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{designers.length} 位设计人员</span>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="bg-white text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
-                    <th className="px-6 py-4">姓名</th>
-                    <th className="px-6 py-4">分组</th>
-                    <th className="px-6 py-4 text-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm divide-y divide-gray-50">
-                  {designers.map(d => (
-                    <tr key={d.id} className="hover:bg-blue-50/30 transition group">
-                      <td className="px-6 py-4 font-bold text-gray-700">{d.name}</td>
-                      <td className="px-6 py-4">
-                        <input 
-                          type="text" 
-                          className="bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none text-gray-600 transition w-32"
-                          defaultValue={d.group || ''}
-                          onBlur={(e) => handleUpdateDesignerGroup(d.id, e.target.value)}
-                          placeholder="未分组"
-                        />
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button 
-                          onClick={() => handleDeleteDesigner(d.id)}
-                          className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
-                          title="移除人员"
-                        >
-                          <Trash2 size={18} />
-                        </button>
-                      </td>
+              <DndContext 
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-white text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
+                      <th className="px-6 py-4">姓名</th>
+                      <th className="px-6 py-4">分组</th>
+                      <th className="px-6 py-4 text-right">操作</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="text-sm divide-y divide-gray-50">
+                    <SortableContext 
+                      items={designers.map(d => d.id)} 
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {designers.map(d => (
+                        <SortableDesignerRow 
+                          key={d.id} 
+                          designer={d} 
+                          onUpdateGroup={handleUpdateDesignerGroup}
+                          onToggleHide={handleToggleHideDesigner}
+                          onDelete={handleDeleteDesigner}
+                        />
+                      ))}
+                    </SortableContext>
+                  </tbody>
+                </table>
+              </DndContext>
             </div>
           </div>
 
@@ -260,7 +481,7 @@ const Admin = () => {
                   className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
                   value={newDesignerGroup}
                   onChange={(e) => setNewDesignerGroup(e.target.value)}
-                  placeholder="例如: 设计一部"
+                  placeholder="例如: 设计一课"
                 />
               </div>
               <button 
@@ -307,15 +528,26 @@ const Admin = () => {
                         )}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        {isSuperAdmin && u.id !== currentUser?.id && (
-                          <button 
-                            onClick={() => handleDeleteUser(u.id)}
-                            className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
-                            title="删除账号"
-                          >
-                            <Trash2 size={18} />
-                          </button>
-                        )}
+                        <div className="flex items-center justify-end gap-1">
+                          {isSuperAdmin && u.role === 'admin' && (
+                            <button 
+                              onClick={() => handleResetPassword(u.id)}
+                              className="p-2 text-gray-300 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all duration-200"
+                              title="重置密码"
+                            >
+                              <Key size={18} />
+                            </button>
+                          )}
+                          {isSuperAdmin && u.id !== currentUser?.id && (
+                            <button 
+                              onClick={() => handleDeleteUser(u.id)}
+                              className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
+                              title="删除账号"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -370,10 +602,9 @@ const Admin = () => {
                 <select 
                   className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition cursor-pointer"
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value as 'superadmin' | 'admin')}
+                  onChange={(e) => setNewRole(e.target.value as 'admin')}
                 >
                   <option value="admin">一般管理员</option>
-                  <option value="superadmin">超级管理员</option>
                 </select>
               </div>
               <button 

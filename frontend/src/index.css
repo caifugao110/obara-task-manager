@@ -2,6 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Toggle Switch Styles */
+.toggle-checkbox:checked {
+  right: 0;
+  border-color: #3b82f6;
+}
+
+.toggle-checkbox:checked + .toggle-label {
+  background-color: #3b82f6;
+}
+
+.toggle-checkbox {
+  right: 0;
+  border-color: #d1d5db;
+}
+
+.toggle-label {
+  background-color: #d1d5db;
+  transition: background-color 0.2s ease-in-out;
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
