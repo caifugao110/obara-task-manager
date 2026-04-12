@@ -34,6 +34,11 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     return res.status(401).json({ message: '用户名或密码错误' }); // Generic message for security
   }
 
+  // Check if user is disabled
+  if (user.disabled) {
+    return res.status(403).json({ message: '账号已被禁用，请联系管理员', code: 'ACCOUNT_DISABLED' });
+  }
+
   const isMatch = bcrypt.compareSync(password, user.password);
   if (!isMatch) {
     return res.status(401).json({ message: '用户名或密码错误' });

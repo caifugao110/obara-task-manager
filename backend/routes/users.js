@@ -19,12 +19,27 @@ const userUpdateSchema = Joi.object({
   password: Joi.string().min(6),
   name: Joi.string().min(2).max(50),
   role: Joi.string().valid('superadmin', 'admin'),
-  group: Joi.string().allow('')
+  group: Joi.string().allow(''),
+  disabled: Joi.boolean()
 });
 
 // Get all login users (Admins and SuperAdmins)
 router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
+  
+  // Migrate existing users to add disabled field if not exists
+  let migrated = false;
+  data.users.forEach(u => {
+    if (u.disabled === undefined) {
+      u.disabled = false;
+      migrated = true;
+    }
+  });
+  
+  if (migrated) {
+    await db.writeDb(data);
+  }
+  
   const users = data.users.map(u => {
     const { password, ...rest } = u;
     return rest;
@@ -56,7 +71,8 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
     password: bcrypt.hashSync(password, 10),
     role: role || 'admin',
     name: name || username,
-    group: group || ''
+    group: group || '',
+    disabled: true // 新创建的管理员默认禁用，需要超级管理员手动启用
   };
 
   data.users.push(newUser);
@@ -84,7 +100,7 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
   }
 
   const targetUser = data.users[userIndex];
-  const { username, password, role, name, group } = req.body;
+  const { username, password, role, name, group, disabled } = req.body;
 
   if (username && username !== targetUser.username && data.users.find(u => u.username === username)) {
     return res.status(400).json({ message: '用户名已存在' });
@@ -95,6 +111,7 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
   if (role && req.user.role === 'superadmin') targetUser.role = role;
   if (name) targetUser.name = name;
   if (group !== undefined) targetUser.group = group;
+  if (disabled !== undefined) targetUser.disabled = disabled;
 
   await db.writeDb(data);
 

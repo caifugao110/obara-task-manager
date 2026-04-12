@@ -137,7 +137,8 @@ const initAdmin = async () => {
       username: 'superadmin',
       password: hashedPassword,
       role: 'superadmin',
-      name: '超级管理员'
+      name: '超级管理员',
+      disabled: false // 初始超级管理员默认启用
     });
     await writeDb(db);
     console.log('SuperAdmin account created: superadmin / admin123');

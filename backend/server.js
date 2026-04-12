@@ -59,6 +59,14 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('task_refreshed', data);
   });
 
+  socket.on('start_editing', (data) => {
+    socket.broadcast.emit('user_editing', data);
+  });
+
+  socket.on('stop_editing', () => {
+    socket.broadcast.emit('user_stopped_editing');
+  });
+
   socket.on('disconnect', () => {
     console.log('User disconnected');
   });

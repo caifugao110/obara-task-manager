@@ -23,7 +23,7 @@ const createItemSchema = Joi.object({
   hours: Joi.number().min(0).default(0),
   color: Joi.string().allow('').default(''),
   guns: Joi.array().items(gunSchema).default([]),
-  leaveType: Joi.string().valid('sick', 'vacation', 'trip', null).allow(null).default(null),
+  leaveType: Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null).default(null),
   fontSize: Joi.string().allow('').default(''),
   textColor: Joi.string().allow('').default('')
 });
@@ -37,7 +37,7 @@ const updateItemSchema = Joi.object({
     Joi.string().allow(''), 
     Joi.number().min(0),
     Joi.array().items(gunSchema),
-    Joi.string().valid('sick', 'vacation', 'trip', null).allow(null)
+    Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null)
   ).required()
 });
 

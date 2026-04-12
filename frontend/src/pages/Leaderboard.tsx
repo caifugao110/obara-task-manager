@@ -15,9 +15,9 @@ interface LeaderboardData {
   designerId: string;
   designerName: string;
   hours: number;
-  leaveDays: number;
   sickDays: number;
   vacationDays: number;
+  illnessDays: number;
 }
 
 interface Toast {
@@ -41,6 +41,8 @@ const Leaderboard = () => {
   
   const [leaderboardSettings, setLeaderboardSettings] = useState({ enabled: true, allowAdmins: true, allowViewers: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [showAllHours, setShowAllHours] = useState(false);
+  const [showAllLeave, setShowAllLeave] = useState(false);
 
   const isSuperAdmin = user?.role === 'superadmin';
   const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
@@ -168,9 +170,9 @@ const Leaderboard = () => {
           designerId: designer.id,
           designerName: designer.name,
           hours: 0,
-          leaveDays: 0,
           sickDays: 0,
-          vacationDays: 0
+          vacationDays: 0,
+          illnessDays: 0
         });
       });
 
@@ -178,15 +180,16 @@ const Leaderboard = () => {
         const designerData = leaderboardMap.get(sheet.designerId);
         if (designerData) {
           (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([date, items]) => {
-            let hasLeave = false;
-            let sickDay = false;
-            let vacationDay = false;
-
             items.forEach((item: any) => {
-              if (item.leaveType === 'sick' || item.leaveType === 'vacation') {
-                hasLeave = true;
-                if (item.leaveType === 'sick') sickDay = true;
-                else if (item.leaveType === 'vacation') vacationDay = true;
+              if (item.leaveType === 'sick') {
+                const hours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
+                designerData.sickDays += hours;
+              } else if (item.leaveType === 'vacation') {
+                const hours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
+                designerData.vacationDays += hours;
+              } else if (item.leaveType === 'illness') {
+                const hours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
+                designerData.illnessDays += hours;
               } else {
                 const mainHours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
                 const gunsHours = (item.guns || []).reduce((sum: number, gun: any) => {
@@ -195,12 +198,6 @@ const Leaderboard = () => {
                 designerData.hours += item.guns && item.guns.length > 0 ? gunsHours : mainHours;
               }
             });
-
-            if (hasLeave) {
-              designerData.leaveDays += 1;
-              if (sickDay) designerData.sickDays += 1;
-              if (vacationDay) designerData.vacationDays += 1;
-            }
           });
         }
       });
@@ -243,7 +240,7 @@ const Leaderboard = () => {
   );
 
   const sortedByLeave = useMemo(() => 
-    [...leaderboardData].sort((a, b) => b.leaveDays - a.leaveDays), 
+    [...leaderboardData].sort((a, b) => (b.sickDays + b.vacationDays + b.illnessDays) - (a.sickDays + a.vacationDays + a.illnessDays)), 
     [leaderboardData]
   );
 
@@ -476,13 +473,20 @@ const Leaderboard = () => {
                 <h2 className="text-lg font-bold flex items-center text-gray-800">
                   <Clock className="mr-2 text-blue-600" size={22} />
                   月度工时排行
-                  <span className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider">Top 10</span>
+                  {leaderboardData.length > 10 && (
+                    <span 
+                      className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider cursor-pointer hover:bg-blue-200"
+                      onClick={() => setShowAllHours(!showAllHours)}
+                    >
+                      {showAllHours ? '收起' : `显示全部`}
+                    </span>
+                  )}
                 </h2>
               </div>
               
               <div className="p-4">
                 <div className="space-y-3">
-                  {sortedByHours.slice(0, 10).map((item, index) => (
+                  {(showAllHours ? sortedByHours : sortedByHours.slice(0, 10)).map((item, index) => (
                     <div 
                       key={item.designerId} 
                       className={`flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
@@ -514,13 +518,20 @@ const Leaderboard = () => {
                 <h2 className="text-lg font-bold flex items-center text-gray-800">
                   <Calendar className="mr-2 text-red-600" size={22} />
                   月度请假排行
-                  <span className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider">Top 10</span>
+                  {leaderboardData.length > 10 && (
+                    <span 
+                      className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider cursor-pointer hover:bg-red-200"
+                      onClick={() => setShowAllLeave(!showAllLeave)}
+                    >
+                      {showAllLeave ? '收起' : `显示全部`}
+                    </span>
+                  )}
                 </h2>
               </div>
               
               <div className="p-4">
                 <div className="space-y-3">
-                  {sortedByLeave.slice(0, 10).map((item, index) => (
+                  {(showAllLeave ? sortedByLeave : sortedByLeave.slice(0, 10)).map((item, index) => (
                     <div 
                       key={item.designerId} 
                       className={`flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
@@ -536,17 +547,26 @@ const Leaderboard = () => {
                       <div className="flex-1 ml-3">
                         <div className="font-bold text-gray-800">{item.designerName}</div>
                         <div className="flex gap-2 mt-1">
-                          <span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded">
-                            事假 {item.sickDays}h
-                          </span>
-                          <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">
-                            休假 {item.vacationDays}h
-                          </span>
+                          {item.sickDays > 0 && (
+                            <span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded">
+                              事假 {item.sickDays.toFixed(1)}h
+                            </span>
+                          )}
+                          {item.vacationDays > 0 && (
+                            <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">
+                              休假 {item.vacationDays.toFixed(1)}h
+                            </span>
+                          )}
+                          {item.illnessDays > 0 && (
+                            <span className="text-[10px] font-bold text-pink-500 bg-pink-50 px-2 py-0.5 rounded">
+                              病假 {item.illnessDays.toFixed(1)}h
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-xl font-black text-gray-700">{item.leaveDays}</div>
-                        <div className="text-[10px] text-gray-400 font-bold uppercase">Total</div>
+                        <div className="text-xl font-black text-gray-700">{(item.sickDays + item.vacationDays + item.illnessDays).toFixed(1)}</div>
+                        <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
                       </div>
                     </div>
                   ))}

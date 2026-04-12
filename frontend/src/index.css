@@ -48,3 +48,28 @@ body {
     background-color: #ffffff;
   }
 }
+
+/* Table header sticky styles */
+.table-header-row {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.table-header-row-secondary {
+  position: sticky;
+  top: 40px;
+  z-index: 30;
+}
+
+.table-cell-sticky-left {
+  position: sticky;
+  left: 0;
+  z-index: 20;
+}
+
+.table-cell-sticky-right {
+  position: sticky;
+  right: 0;
+  z-index: 20;
+}

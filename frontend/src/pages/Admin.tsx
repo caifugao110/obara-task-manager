@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { UserPlus, Trash2, Shield, User, ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key } from 'lucide-react';
+import { UserPlus, Trash2, Shield, User, ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft } from 'lucide-react';
 import { format } from 'date-fns';
 import {
   DndContext,
@@ -29,12 +29,12 @@ interface DesignerData {
 
 const SortableDesignerRow = ({ 
   designer, 
-  onUpdateGroup, 
+  onEdit,
   onToggleHide, 
   onDelete 
 }: { 
   designer: DesignerData, 
-  onUpdateGroup: (id: string, group: string) => void,
+  onEdit: (id: string) => void,
   onToggleHide: (id: string, hidden: boolean) => void,
   onDelete: (id: string) => void 
 }) => {
@@ -60,25 +60,26 @@ const SortableDesignerRow = ({
       style={style} 
       className={`hover:bg-blue-50/30 transition group ${designer.hidden ? 'opacity-50' : ''}`}
     >
-      <td className="px-6 py-4 font-bold text-gray-700">
+      <td className="px-6 py-4 font-bold text-gray-700 align-middle">
         <div className="flex items-center gap-2">
           <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 rounded">
             <GripVertical size={16} className="text-gray-400" />
           </div>
-          {designer.name}
+          <span className="align-middle">{designer.name}</span>
         </div>
       </td>
       <td className="px-6 py-4">
-        <input 
-          type="text" 
-          className="bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none text-gray-600 transition w-32"
-          defaultValue={designer.group || ''}
-          onBlur={(e) => onUpdateGroup(designer.id, e.target.value)}
-          placeholder="未分组"
-        />
+        <span className="text-gray-600 font-medium">{designer.group || '未分组'}</span>
       </td>
       <td className="px-6 py-4 text-right">
         <div className="flex items-center justify-end gap-1">
+          <button 
+            onClick={() => onEdit(designer.id)}
+            className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200"
+            title="编辑人员信息"
+          >
+            <Edit2 size={18} />
+          </button>
           <button 
             onClick={() => onToggleHide(designer.id, !designer.hidden)}
             className={`p-2 rounded-lg transition-all duration-200 ${designer.hidden ? 'text-blue-500 bg-blue-50' : 'text-gray-300 hover:text-blue-600 hover:bg-blue-50'}`}
@@ -105,6 +106,7 @@ interface UserData {
   name: string;
   role: 'superadmin' | 'admin';
   group?: string;
+  disabled?: boolean;
 }
 
 interface Toast {
@@ -133,6 +135,12 @@ const Admin = () => {
   const [resetPasswordUserId, setResetPasswordUserId] = useState<string | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
   const [resetPasswordSubmitting, setResetPasswordSubmitting] = useState(false);
+  
+  // Edit Designer Modal
+  const [editDesignerModalOpen, setEditDesignerModalOpen] = useState(false);
+  const [editingDesignerId, setEditingDesignerId] = useState<string | null>(null);
+  const [editingDesignerName, setEditingDesignerName] = useState('');
+  const [editingDesignerGroup, setEditingDesignerGroup] = useState('');
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const authHeader = { headers: { Authorization: `Bearer ${token}` } };
@@ -211,18 +219,6 @@ const Admin = () => {
     }
   };
 
-  const handleUpdateDesignerGroup = async (id: string, group: string) => {
-    const designer = designers.find(d => d.id === id);
-    if (!designer) return;
-    try {
-      await axios.put(`/api/designers/${id}`, { name: designer.name, group, hidden: designer.hidden }, authHeader);
-      addToast('分组更新成功', 'success');
-      fetchData();
-    } catch (err: any) {
-      addToast(err.response?.data?.message || '更新失败', 'error');
-    }
-  };
-
   const handleToggleHideDesigner = async (id: string, hidden: boolean) => {
     const designer = designers.find(d => d.id === id);
     if (!designer) return;
@@ -276,6 +272,19 @@ const Admin = () => {
     setResetPasswordValue('');
   };
 
+  const handleToggleUserDisabled = async (id: string) => {
+    if (!isSuperAdmin) return;
+    const user = users.find(u => u.id === id);
+    if (!user) return;
+    try {
+      await axios.put(`/api/users/${id}`, { disabled: !user.disabled }, authHeader);
+      addToast(user.disabled ? '账号已启用' : '账号已禁用', 'success');
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '操作失败', 'error');
+    }
+  };
+
   const submitResetPassword = async () => {
     if (!isSuperAdmin) return;
     if (!resetPasswordUserId) return;
@@ -304,6 +313,34 @@ const Admin = () => {
       fetchData();
     } catch (err: any) {
       addToast(err.response?.data?.message || '移除失败', 'error');
+    }
+  };
+
+  const handleEditDesigner = (id: string) => {
+    const designer = designers.find(d => d.id === id);
+    if (designer) {
+      setEditingDesignerId(id);
+      setEditingDesignerName(designer.name);
+      setEditingDesignerGroup(designer.group || '');
+      setEditDesignerModalOpen(true);
+    }
+  };
+
+  const handleSaveDesigner = async () => {
+    if (!editingDesignerId) return;
+    try {
+      const designer = designers.find(d => d.id === editingDesignerId);
+      if (!designer) return;
+      await axios.put(`/api/designers/${editingDesignerId}`, { 
+        name: editingDesignerName, 
+        group: editingDesignerGroup, 
+        hidden: designer.hidden 
+      }, authHeader);
+      addToast('设计人员信息已更新', 'success');
+      setEditDesignerModalOpen(false);
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '更新失败', 'error');
     }
   };
 
@@ -387,6 +424,63 @@ const Admin = () => {
         </div>
       )}
 
+      {editDesignerModalOpen && editingDesignerId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div 
+            className="absolute inset-0 bg-black/40" 
+            onClick={() => setEditDesignerModalOpen(false)} 
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-[#217346] text-white border-b border-gray-200 flex items-center justify-between">
+              <div className="font-bold text-lg">编辑设计人员</div>
+              <button
+                className="p-1 rounded hover:bg-[#1a5c38] transition"
+                onClick={() => setEditDesignerModalOpen(false)}
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">姓名</label>
+                <input
+                  type="text"
+                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
+                  value={editingDesignerName}
+                  onChange={(e) => setEditingDesignerName(e.target.value)}
+                  placeholder="输入姓名"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">所属分组</label>
+                <input
+                  type="text"
+                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
+                  value={editingDesignerGroup}
+                  onChange={(e) => setEditingDesignerGroup(e.target.value)}
+                  placeholder="例如：设计一课"
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition"
+                onClick={() => setEditDesignerModalOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white font-bold hover:bg-blue-700 transition"
+                onClick={handleSaveDesigner}
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
@@ -435,7 +529,7 @@ const Admin = () => {
                       <th className="px-6 py-4 text-right">操作</th>
                     </tr>
                   </thead>
-                  <tbody className="text-sm divide-y divide-gray-50">
+                  <tbody className="text-sm divide-y divide-gray-50 align-middle">
                     <SortableContext 
                       items={designers.map(d => d.id)} 
                       strategy={verticalListSortingStrategy}
@@ -444,7 +538,7 @@ const Admin = () => {
                         <SortableDesignerRow 
                           key={d.id} 
                           designer={d} 
-                          onUpdateGroup={handleUpdateDesignerGroup}
+                          onEdit={handleEditDesigner}
                           onToggleHide={handleToggleHideDesigner}
                           onDelete={handleDeleteDesigner}
                         />
@@ -529,6 +623,15 @@ const Admin = () => {
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-1">
+                          {isSuperAdmin && u.id !== currentUser?.id && (
+                            <button 
+                              onClick={() => handleToggleUserDisabled(u.id)}
+                              className={`p-2 rounded-lg transition-all duration-200 ${u.disabled ? 'text-gray-400 hover:text-green-600 hover:bg-green-50' : 'text-green-600 hover:text-gray-400 hover:bg-gray-50'}`}
+                              title={u.disabled ? '启用账号' : '禁用账号'}
+                            >
+                              <ToggleLeft size={18} className={u.disabled ? 'opacity-50' : ''} />
+                            </button>
+                          )}
                           {isSuperAdmin && u.role === 'admin' && (
                             <button 
                               onClick={() => handleResetPassword(u.id)}
