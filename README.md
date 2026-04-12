@@ -1,181 +1,72 @@
 # Obara 任务管理系统
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
+[![React](https://img.shields.io/badge/React-18-blue.svg)](https://reactjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)](https://www.typescriptlang.org/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
+
 一个轻量级的「Excel 表格风格」任务管理系统，支持多用户协作、实时同步和权限控制。
 
-## 📋 目录
+## 🚀 快速开始
 
-- [项目简介](#项目简介)
-- [功能特性](#功能特性)
-- [技术栈](#技术栈)
-- [快速开始](#快速开始)
-- [项目结构](#项目结构)
-- [使用说明](#使用说明)
-- [权限模型](#权限模型)
-- [API 接口](#api-接口)
-- [数据存储](#数据存储)
-- [常见问题](#常见问题)
-- [生产部署](#生产部署)
-
----
-
-## 项目简介
-
-Obara 任务管理系统是一个基于 Web 的工时记录与任务管理工具，采用 Excel 风格的表格界面，支持按月切换、按天录入多个任务、每日汇总、每月汇总，并通过 Socket.IO 实现多人实时同步刷新。
-
-**核心特点：**
-- 🖥️ Excel 风格界面 —— 网格线、周末高亮、冻结列、底部总计行
-- 👥 多用户协作 —— 管理员查看全员，普通用户仅看自己
-- ⚡ 实时同步 —— 任一用户修改，其他客户端自动刷新
-- 💾 自动保存 —— 编辑后自动保存（带防抖）
-
----
-
-## 功能特性
-
-### 1. 任务管理
-- **按月展示**：顶部切换月份，表格按用户展示
-- **按天多任务**：每个用户每天可添加多条任务
-- **任务详情**：每条任务包含任务名称和工时
-
-### 2. 工时统计
-| 统计维度 | 说明 |
-|---------|------|
-| 单用户每日小计 | 单元格右下角数字 |
-| 单用户本月总工时 | 最右侧「月总工时」列 |
-| 全员每日总计 | 底部汇总行每日总计 |
-| 全员本月总计 | 底部汇总行本月总计 |
-
-### 3. 自动保存
-- 编辑单元格后自动保存
-- 带防抖机制（300ms 延迟）
-- 保存成功/失败有视觉反馈
-
-### 4. 实时同步
-- 基于 Socket.IO 实现
-- 任意用户修改后，其他客户端自动刷新
-- 支持多人同时操作
-
-### 5. 权限控制
-| 角色 | Dashboard | 用户管理 | 任务操作 |
-|------|-----------|---------|---------|
-| 管理员 | 查看/编辑所有用户 | 管理用户 | 增删改任意 |
-| 普通用户 | 仅看自己 | 无 | 仅操作自己的 |
-
----
-
-## 技术栈
-
-### 前端
-| 技术 | 用途 |
-|------|------|
-| React 18 | UI 框架 |
-| TypeScript | 类型安全 |
-| Vite | 构建工具 |
-| TailwindCSS | 样式框架 |
-| Axios | HTTP 请求 |
-| Socket.IO Client | 实时通信 |
-
-### 后端
-| 技术 | 用途 |
-|------|------|
-| Node.js | 运行环境 |
-| Express | Web 框架 |
-| Joi | 数据验证 |
-| Socket.IO | WebSocket 服务 |
-| jsonwebtoken | JWT 认证 |
-| bcrypt | 密码加密 |
-
-### 存储
-- **本地 JSON 文件** (`backend/db.json`)
-- 适合开发/内网轻量使用
-
----
-
-## 快速开始
-
-### 环境要求
-
-| 软件 | 版本要求 |
-|------|---------|
-| Node.js | 18+ (推荐 LTS) |
-| npm | 9+ |
-| 操作系统 | Windows / macOS / Linux |
-
-### 方式一：一键启动（推荐 Windows）
+### 方式一：使用 Docker（推荐 - 最简单）
 
 ```bash
-# 双击运行 start.bat
+# 1. 克隆项目
+git clone https://github.com/caifugao110/obara-task-manager.git
+cd obara-task-manager
+
+# 2. 一键启动
+docker-compose up -d
+
+# 3. 访问系统
+打开浏览器访问：http://localhost
+
+# 默认管理员账号：
+# 用户名：superadmin
+# 密码：admin123
+```
+
+### 方式二：本地开发
+
+#### Windows 用户
+
+```bash
+# 双击运行
 start.bat
 ```
 
-脚本会自动：
-1. 检查 Node.js 环境
-2. 检查端口占用
-3. 安装依赖（如未安装）
-4. 启动后端服务（端口 5000）
-5. 启动前端服务（端口 5173）
-6. 自动打开浏览器
-
-### 方式二：手动启动
-
-#### 1. 克隆项目
+#### macOS/Linux 用户
 
 ```bash
-git clone <repository-url>
+# 赋予执行权限
+chmod +x start.sh
+
+# 运行脚本
+./start.sh
+```
+
+### 方式三：手动启动
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/caifugao110/obara-task-manager.git
 cd obara-task-manager
-```
 
-#### 2. 安装依赖
+# 2. 安装所有依赖
+npm run install:all
 
-**后端：**
-```bash
-cd backend
-npm install
-```
-
-**前端：**
-```bash
-cd frontend
-npm install
-```
-
-#### 3. 配置环境变量
-
-创建 `backend/.env` 文件：
-
-```env
-PORT=5000
-JWT_SECRET=your-secret-key-change-in-production
-```
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| PORT | 后端监听端口 | 5000 |
-| JWT_SECRET | JWT 签名密钥 | (内置默认值) |
-
-#### 4. 启动服务
-
-**后端：**
-```bash
-cd backend
+# 3. 启动开发服务器
 npm run dev
+
+# 4. 访问系统
+打开浏览器访问：http://localhost:5173
+
+# 默认管理员账号：
+# 用户名：superadmin
+# 密码：admin123
 ```
-成功输出：`Server running on port 5000`
-
-**前端：**
-```bash
-cd frontend
-npm run dev
-```
-成功输出：`Local: http://localhost:5173/`
-
-#### 5. 访问系统
-
-打开浏览器访问：`http://localhost:5173`
-
-**默认管理员账号：**
-- 用户名：`admin`
-- 密码：`admin123`
 
 ---
 

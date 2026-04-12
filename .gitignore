@@ -1,11 +1,18 @@
+# ======================
+# Obara Task Manager .gitignore
+# ======================
+
 # Dependencies
 node_modules/
-*/node_modules/
+.pnpm-store/
+.npm/
 
 # Environment variables
 .env
 .env.local
 .env.*.local
+.env.development
+.env.production
 
 # Build outputs
 dist/
@@ -14,9 +21,9 @@ build/
 */build/
 
 # Data files (local JSON storage)
-*.json
-!package.json
-!package-lock.json
+backend/db.json
+backend/*.data.json
+*.data.json
 
 # Logs
 logs/
@@ -25,6 +32,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 
 # Editor directories and files
 .vscode/
@@ -34,14 +42,24 @@ pnpm-debug.log*
 *.njsproj
 *.sln
 *.sw?
+*~
+.#*
 
 # OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+desktop.ini
 
 # Test
 coverage/
 .nyc_output/
+*.lcov
+.husky/
 
 # TypeScript build cache
 *.tsbuildinfo
@@ -49,8 +67,28 @@ coverage/
 # Vite dev server cache
 .vite/
 
-# nodemon config (dev tool)
-nodemon.json
+# PM2
+.pm2/
 
 # Trae AI tool data
 .trae/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+
+# Docker
+.dockerignore
+
+# Documentation (optional)
+*.md.backup
+docs/build/
+
+# Package manager locks (keep only one based on your choice)
+# package-lock.json (keep if using npm)
+# yarn.lock (keep if using yarn)
+# pnpm-lock.yaml (keep if using pnpm)
+

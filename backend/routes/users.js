@@ -72,7 +72,7 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
     role: role || 'admin',
     name: name || username,
     group: group || '',
-    disabled: true // 新创建的管理员默认禁用，需要超级管理员手动启用
+    disabled: false // 新创建的管理员默认启用
   };
 
   data.users.push(newUser);
