@@ -7,14 +7,14 @@ import { useState, useCallback, useEffect } from 'react';
 import { tasksAPI } from '../services/api';
 import type { TaskSheet, TaskItem } from '../types';
 
-interface UseTasksOptions {
+export interface UseTasksOptions {
   month: number;
   year: number;
   designerId?: string;
   autoFetch?: boolean;
 }
 
-interface UseTasksReturn {
+export interface UseTasksReturn {
   sheets: TaskSheet[];
   loading: boolean;
   error: Error | null;

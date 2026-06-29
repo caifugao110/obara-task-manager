@@ -67,6 +67,16 @@ interface User {
   role: 'superadmin' | 'admin';
 }
 
+type TaskField = 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType';
+
+type PendingChange = {
+  designerId: string;
+  date: string;
+  itemId: string;
+  field: TaskField;
+  value: any;
+};
+
 const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGun, onDeleteTask, selectedTask, onSelectTask }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, selectedTask: {itemId: string, designerId: string, date: string} | null, onSelectTask: (itemId: string, designerId: string, date: string) => void }) => {
   const isSelected = selectedTask && selectedTask.itemId === item.id && selectedTask.designerId === designerId && selectedTask.date === date;
 
@@ -906,7 +916,7 @@ const Dashboard = () => {
     return Object.entries(sheet.days).reduce((sum, [date]) => sum + calculateDailyTotal(designerId, date), 0);
   };
 
-  const saveItem = async (designerId: string, date: string, itemId: string, field: 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType', value: any) => {
+  const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       await axios.put('/api/tasks/item', { designerId, date, itemId, field, value }, authHeader);
@@ -921,9 +931,9 @@ const Dashboard = () => {
   const debouncedSave = useDebounce(saveItem, 500);
 
   // 存储待保存的任务更改
-  const [pendingChanges, setPendingChanges] = useState<Array<{designerId: string, date: string, itemId: string, field: 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType', value: any}>>([]);
+  const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
 
-  const handleItemChange = (designerId: string, date: string, itemId: string, field: 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType', raw: any) => {
+  const handleItemChange = (designerId: string, date: string, itemId: string, field: TaskField, raw: any) => {
     setSheets(prev => {
       const next = prev.map(sheet => {
         if (sheet.designerId !== designerId) return sheet;
@@ -1798,7 +1808,7 @@ const Dashboard = () => {
                                             const filtered = prev.filter(change => 
                                               !(change.designerId === modalDesignerId && change.date === modalDate && change.itemId === item.id && (change.field === 'leaveType' || change.field === 'taskName' || change.field === 'guns'))
                                             );
-                                            const changes = [
+                                            const changes: PendingChange[] = [
                                               ...filtered,
                                               { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'guns', value: [] },
                                               { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'leaveType', value: 'trip' }
@@ -1946,16 +1956,19 @@ const Dashboard = () => {
                     } else {
                       // 保存所有待保存的更改
                       try {
+                        const currentFocusTarget = focusTarget;
+                        if (!currentFocusTarget) return;
+
                         // 先更新本地 sheets 状态
                         setSheets(prev => {
                           const next = prev.map(sheet => {
                             if (sheet.designerId !== modalDesignerId || !sheet.days?.[modalDate]) return sheet;
                             const dayItems = [...sheet.days[modalDate]];
-                            const itemIndex = dayItems.findIndex(i => i.id === focusTarget?.itemId);
+                            const itemIndex = dayItems.findIndex(i => i.id === currentFocusTarget.itemId);
                             if (itemIndex === -1) return sheet;
                             
                             // 应用所有 pendingChanges 到这个 item
-                            const itemChanges = pendingChanges.filter(change => change.itemId === focusTarget.itemId);
+                            const itemChanges = pendingChanges.filter(change => change.itemId === currentFocusTarget.itemId);
                             const updatedItem = { ...dayItems[itemIndex] };
                             itemChanges.forEach(change => {
                               updatedItem[change.field as keyof TaskItem] = change.value;

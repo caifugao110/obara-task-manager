@@ -80,9 +80,6 @@ temp/
 *.bak
 *.swp
 
-# Docker
-.dockerignore
-
 # Documentation (optional)
 *.md.backup
 docs/build/

@@ -342,38 +342,3 @@ export interface DateFormatOptions {
   weekday?: 'long' | 'short' | 'narrow';
 }
 
-// 导出所有类型
-export type {
-  UserRole,
-  User,
-  LoginCredentials,
-  LoginResponse,
-  AuthContextType,
-  TaskItem,
-  GunItem,
-  TaskSheet,
-  CreateTaskParams,
-  UpdateTaskParams,
-  DeleteTaskParams,
-  MoveTaskParams,
-  Designer,
-  CreateDesignerParams,
-  UpdateDesignerParams,
-  LeaderboardData,
-  LeaderboardSettings,
-  SpecSearchResult,
-  ApiError,
-  ApiResponse,
-  Toast,
-  HistoryRecord,
-  DayInfo,
-  GroupInfo,
-  TaskModalProps,
-  AddModeType,
-  DragData,
-  DragOverlayProps,
-  AxiosConfig,
-  SocketEvents,
-  DebounceFunction,
-  DateFormatOptions,
-};

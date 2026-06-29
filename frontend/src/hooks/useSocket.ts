@@ -6,7 +6,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-interface SocketEventData {
+export interface SocketEventData {
   designerId: string;
   date: string;
   userId: string;
@@ -14,7 +14,7 @@ interface SocketEventData {
   name: string;
 }
 
-interface UseSocketOptions {
+export interface UseSocketOptions {
   onTaskRefresh?: () => void;
   onUserEditing?: (data: SocketEventData) => void;
   onUserStoppedEditing?: () => void;
@@ -22,7 +22,7 @@ interface UseSocketOptions {
   onConnect?: () => void;
 }
 
-interface UseSocketReturn {
+export interface UseSocketReturn {
   socket: Socket | null;
   isConnected: boolean;
   emitTaskUpdated: () => void;
