@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { Link } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical } from 'lucide-react';
+import { Link, useLocation } from 'react-router-dom';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import {
@@ -132,6 +132,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGu
   return (
     <div
       ref={setNodeRef}
+      data-task-id={item.id}
+      data-designer-id={designerId}
+      data-date={date}
       style={{ ...style, ...getTypeStyle() }}
       {...attributes}
       {...listeners}
@@ -279,7 +282,22 @@ interface Toast {
 
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
-  const [currentDate, setCurrentDate] = useState(new Date());
+  const location = useLocation();
+  const jumpTarget = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const date = params.get('date');
+    const designerId = params.get('designerId');
+    const itemId = params.get('itemId');
+    if (!date || !designerId || !itemId) return null;
+    return { date, designerId, itemId };
+  }, [location.search]);
+  const [currentDate, setCurrentDate] = useState(() => {
+    if (jumpTarget?.date) {
+      const [year, month] = jumpTarget.date.split('-').map(Number);
+      if (year && month) return new Date(year, month - 1, 1);
+    }
+    return new Date();
+  });
   const [designers, setDesigners] = useState<Designer[]>([]);
   const [sheets, setSheets] = useState<TaskSheet[]>([]);
   const [loading, setLoading] = useState(true);
@@ -305,6 +323,7 @@ const Dashboard = () => {
   const [history, setHistory] = useState<{operation: string, data: any, timestamp: number}[]>([]);
   const [tableHeight, setTableHeight] = useState<number>(0);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+  const handledJumpKeyRef = useRef<string | null>(null);
 
   // Calculate table height dynamically
   useEffect(() => {
@@ -538,6 +557,44 @@ const Dashboard = () => {
   }, [filteredDesigners]);
 
   const sortedGroups = useMemo(() => Object.keys(designersByGroup).sort(), [designersByGroup]);
+
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const [year, month] = jumpTarget.date.split('-').map(Number);
+    if (!year || !month) return;
+    if (currentDate.getFullYear() !== year || currentDate.getMonth() !== month - 1) {
+      setCurrentDate(new Date(year, month - 1, 1));
+    }
+  }, [jumpTarget, currentDate]);
+
+  useEffect(() => {
+    if (!jumpTarget || loading || sheets.length === 0 || designers.length === 0) return;
+    const jumpKey = `${jumpTarget.designerId}-${jumpTarget.date}-${jumpTarget.itemId}`;
+    if (handledJumpKeyRef.current === jumpKey) return;
+
+    const designer = designers.find(d => d.id === jumpTarget.designerId);
+    const sheet = sheets.find(s => s.designerId === jumpTarget.designerId);
+    const targetExists = sheet?.days?.[jumpTarget.date]?.some(item => item.id === jumpTarget.itemId);
+    if (!designer || !targetExists) return;
+
+    handledJumpKeyRef.current = jumpKey;
+    const group = designer.group || '未分组';
+    setCollapsedGroups(prev => {
+      const next = { ...prev, [group]: false };
+      localStorage.setItem('collapsedGroups', JSON.stringify(next));
+      return next;
+    });
+    setSelectedTask({ itemId: jumpTarget.itemId, designerId: jumpTarget.designerId, date: jumpTarget.date });
+
+    window.setTimeout(() => {
+      const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
+      const target = document.querySelector(
+        `[data-task-id="${escapeSelector(jumpTarget.itemId)}"][data-designer-id="${escapeSelector(jumpTarget.designerId)}"][data-date="${escapeSelector(jumpTarget.date)}"]`
+      ) as HTMLElement | null;
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      target?.focus({ preventScroll: true });
+    }, 120);
+  }, [jumpTarget, loading, sheets, designers]);
 
 
 
@@ -1124,6 +1181,13 @@ const Dashboard = () => {
           >
             <FileSpreadsheet size={16} className="text-blue-200" />
             <span>任务报表</span>
+          </Link>
+          <Link
+            to="/work-hours"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+          >
+            <Clock size={16} className="text-amber-200" />
+            <span>工时管理</span>
           </Link>
         </div>
 

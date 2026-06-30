@@ -20,6 +20,21 @@ interface LeaderboardData {
   illnessDays: number;
 }
 
+interface TaskSearchResult {
+  designerId: string;
+  designerName: string;
+  itemId: string;
+  taskName: string;
+  color: string;
+  date: string;
+  guns: { name: string; hours: number | string }[];
+}
+
+interface GunSearchResult extends TaskSearchResult {
+  gunName: string;
+  gunHours: number | string;
+}
+
 interface Toast {
   message: string;
   type: 'success' | 'error';
@@ -37,7 +52,9 @@ const Leaderboard = () => {
   
   // Specification tracking
   const [specNumber, setSpecNumber] = useState('');
-  const [specResults, setSpecResults] = useState<{designerId: string, designerName: string, taskName: string, color: string, date: string}[]>([]);
+  const [specResults, setSpecResults] = useState<TaskSearchResult[]>([]);
+  const [gunName, setGunName] = useState('');
+  const [gunResults, setGunResults] = useState<GunSearchResult[]>([]);
   
   const [leaderboardSettings, setLeaderboardSettings] = useState({ enabled: true, allowAdmins: true, allowViewers: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -46,6 +63,10 @@ const Leaderboard = () => {
 
   const isSuperAdmin = user?.role === 'superadmin';
   const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+
+  const buildTaskLink = (result: TaskSearchResult) => (
+    `/?designerId=${encodeURIComponent(result.designerId)}&date=${encodeURIComponent(result.date)}&itemId=${encodeURIComponent(result.itemId)}`
+  );
 
   // Extract specification number from task name (only 5 digit number)
   const extractSpecNumber = (taskName: string): string | null => {
@@ -69,7 +90,7 @@ const Leaderboard = () => {
       const res = await axios.get(`/api/tasks?month=${month}&year=${year}`, authHeader);
       const tasks = res.data;
 
-      const results: {designerId: string, designerName: string, taskName: string, color: string, date: string}[] = [];
+      const results: TaskSearchResult[] = [];
 
       tasks.forEach((sheet: any) => {
         const designer = designers.find(d => d.id === sheet.designerId);
@@ -83,7 +104,12 @@ const Leaderboard = () => {
               results.push({
                 designerId: sheet.designerId,
                 designerName: designer.name,
+                itemId: item.id,
                 taskName: item.taskName,
+                guns: (item.guns || []).map((gun: any) => ({
+                  name: String(gun.name || '').trim() || '未命名枪名',
+                  hours: gun.hours || 0
+                })),
                 color: item.color || '#ffffff',
                 date
               });
@@ -98,6 +124,59 @@ const Leaderboard = () => {
       addToast('搜索失败', 'error');
     }
   }, [specNumber, currentDate, designers, token]);
+
+  const searchByGunName = useCallback(async (currentGunName?: string) => {
+    const targetGunName = (currentGunName !== undefined ? currentGunName : gunName).trim();
+    if (!targetGunName) {
+      setGunResults([]);
+      return;
+    }
+
+    try {
+      const month = currentDate.getMonth() + 1;
+      const year = currentDate.getFullYear();
+      const res = await axios.get(`/api/tasks?month=${month}&year=${year}`, authHeader);
+      const tasks = res.data;
+      const normalizedTarget = targetGunName.toLowerCase();
+      const results: GunSearchResult[] = [];
+
+      tasks.forEach((sheet: any) => {
+        const designer = designers.find(d => d.id === sheet.designerId);
+        if (!designer) return;
+
+        (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([date, items]) => {
+          items.forEach((item: any) => {
+            (item.guns || []).forEach((gun: any) => {
+              const currentName = String(gun.name || '').trim();
+              if (currentName && currentName.toLowerCase().includes(normalizedTarget)) {
+                results.push({
+                  designerId: sheet.designerId,
+                  designerName: designer.name,
+                  itemId: item.id,
+                  taskName: item.taskName || '未命名任务',
+                  guns: item.guns || [],
+                  gunName: currentName,
+                  gunHours: gun.hours || 0,
+                  color: item.color || '#ffffff',
+                  date
+                });
+              }
+            });
+          });
+        });
+      });
+
+      setGunResults(results);
+    } catch (err: any) {
+      console.error('Error searching gun:', err);
+      addToast('枪名搜索失败', 'error');
+    }
+  }, [gunName, currentDate, designers, token]);
+
+  const refreshSearches = () => {
+    if (specNumber.length === 5) searchBySpecNumber(specNumber);
+    if (gunName.trim()) searchByGunName(gunName);
+  };
 
   const canViewLeaderboard = useMemo(() => {
     if (isSuperAdmin) return true;
@@ -352,9 +431,9 @@ const Leaderboard = () => {
             </button>
           </div>
           <button 
-            onClick={fetchLeaderboardData}
+            onClick={refreshSearches}
             className="p-2 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
-            title="刷新数据"
+            title="刷新搜索"
           >
             <RefreshCw size={18} className="text-blue-600" />
           </button>
@@ -419,9 +498,10 @@ const Leaderboard = () => {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {specResults.map((result, index) => (
-                    <div 
+                    <Link
                       key={`${result.designerId}-${result.date}-${index}`}
-                      className="p-4 rounded-xl border-2 transition hover:shadow-lg bg-white border-gray-100"
+                      to={buildTaskLink(result)}
+                      className="block p-4 rounded-xl border-2 transition hover:shadow-lg hover:border-blue-200 bg-white border-gray-100"
                     >
                       <div className="flex items-center justify-between mb-2">
                         <span className="font-bold text-gray-800">{result.designerName}</span>
@@ -431,18 +511,26 @@ const Leaderboard = () => {
                         className="text-sm px-2 py-1.5 rounded border border-gray-100 font-medium"
                         style={{ backgroundColor: result.color || '#f9fafb' }}
                       >
-                        {result.taskName}
+                          {result.taskName}
                       </div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <div 
-                          className="w-3 h-3 rounded-full border border-gray-300"
-                          style={{ backgroundColor: result.color || '#ffffff' }}
-                        ></div>
-                        <span className="text-[10px] text-gray-400 uppercase font-bold">
-                          {result.color ? '标记颜色' : '无颜色'}
-                        </span>
+                      <div className="mt-2 space-y-1">
+                        {result.guns.length > 0 ? (
+                          result.guns.map((gun, gunIndex) => (
+                            <div
+                              key={`${result.itemId}-${gun.name}-${gunIndex}`}
+                              className="text-sm font-black text-blue-700 bg-blue-50 border border-blue-100 px-2 py-1 rounded"
+                            >
+                              {gun.name} <span className="text-xs text-gray-500 ml-1">{gun.hours}h</span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-sm font-bold text-gray-400 bg-gray-50 border border-gray-100 px-2 py-1 rounded">
+                            暂无枪名
+                          </div>
+                        )}
                       </div>
-                    </div>
+                      <div className="mt-2 text-right text-xs font-bold text-blue-600">点击定位</div>
+                    </Link>
                   ))}
                 </div>
               </div>
@@ -461,180 +549,76 @@ const Leaderboard = () => {
           </div>
         </div>
 
-        {leaderboardLoading ? (
-          <div className="flex items-center justify-center py-20">
-            <RefreshCw className="animate-spin text-blue-600 mb-4" size={40} />
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+          <div className="px-6 py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white">
+            <h2 className="text-lg font-bold flex items-center">
+              <TrendingUp className="mr-2" size={22} />
+              枪名周期管理
+            </h2>
+            <p className="text-emerald-100 text-sm mt-1">输入枪名匹配设计员、任务与日期</p>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Hours Leaderboard */}
-            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-              <div className="px-6 py-5 bg-gray-50 border-b border-gray-100">
-                <h2 className="text-lg font-bold flex items-center text-gray-800">
-                  <Clock className="mr-2 text-blue-600" size={22} />
-                  月度工时排行
-                  {leaderboardData.length > 10 && (
-                    <span 
-                      className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider cursor-pointer hover:bg-blue-200"
-                      onClick={() => setShowAllHours(!showAllHours)}
-                    >
-                      {showAllHours ? '收起' : `显示全部`}
-                    </span>
-                  )}
-                </h2>
-              </div>
-              
-              <div className="p-4">
-                <div className="space-y-3">
-                  {(showAllHours ? sortedByHours : sortedByHours.slice(0, 10)).map((item, index) => (
-                    <div 
-                      key={item.designerId} 
-                      className={`flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
-                        index === 0 ? 'bg-blue-50/50 border border-blue-100' :
-                        index === 1 ? 'bg-gray-50/50 border border-gray-100' :
-                        index === 2 ? 'bg-orange-50/50 border border-orange-100' :
-                        'bg-white border border-gray-50 hover:bg-gray-50'
-                      }`}
-                    >
-                      <div className="w-10 flex justify-center">
-                        {getRankIcon(index)}
-                      </div>
-                      <div className="flex-1 ml-3">
-                        <div className="font-bold text-gray-800">{item.designerName}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xl font-black text-blue-700">{item.hours.toFixed(1)}</div>
-                        <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+
+          <div className="p-6">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 mb-2">枪名</label>
+                <input
+                  type="text"
+                  value={gunName}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setGunName(val);
+                    searchByGunName(val);
+                  }}
+                  placeholder="输入枪名关键词"
+                  className="w-full h-12 px-4 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:border-emerald-400 focus:bg-white transition text-gray-800 text-lg"
+                />
               </div>
             </div>
 
-            {/* Leave Leaderboard */}
-            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-              <div className="px-6 py-5 bg-gray-50 border-b border-gray-100">
-                <h2 className="text-lg font-bold flex items-center text-gray-800">
-                  <Calendar className="mr-2 text-red-600" size={22} />
-                  月度请假排行
-                  {leaderboardData.length > 10 && (
-                    <span 
-                      className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider cursor-pointer hover:bg-red-200"
-                      onClick={() => setShowAllLeave(!showAllLeave)}
+            {gunResults.length > 0 ? (
+              <div className="space-y-4">
+                <div className="text-sm font-bold text-gray-600">
+                  找到 <span className="text-emerald-600">{gunResults.length}</span> 个匹配枪名
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {gunResults.map((result, index) => (
+                    <Link
+                      key={`${result.designerId}-${result.date}-${result.itemId}-${index}`}
+                      to={buildTaskLink(result)}
+                      className="block p-4 rounded-xl border-2 transition hover:shadow-lg hover:border-emerald-200 bg-white border-gray-100"
                     >
-                      {showAllLeave ? '收起' : `显示全部`}
-                    </span>
-                  )}
-                </h2>
-              </div>
-              
-              <div className="p-4">
-                <div className="space-y-3">
-                  {(showAllLeave ? sortedByLeave : sortedByLeave.slice(0, 10)).map((item, index) => (
-                    <div 
-                      key={item.designerId} 
-                      className={`flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
-                        index === 0 ? 'bg-red-50/50 border border-red-100' :
-                        index === 1 ? 'bg-gray-50/50 border border-gray-100' :
-                        index === 2 ? 'bg-orange-50/50 border border-orange-100' :
-                        'bg-white border border-gray-50 hover:bg-gray-50'
-                      }`}
-                    >
-                      <div className="w-10 flex justify-center">
-                        {getRankIcon(index)}
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-bold text-gray-800">{result.designerName}</span>
+                        <span className="text-xs text-gray-500">{result.date}</span>
                       </div>
-                      <div className="flex-1 ml-3">
-                        <div className="font-bold text-gray-800">{item.designerName}</div>
-                        <div className="flex gap-2 mt-1">
-                          {item.sickDays > 0 && (
-                            <span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded">
-                              事假 {item.sickDays.toFixed(1)}h
-                            </span>
-                          )}
-                          {item.vacationDays > 0 && (
-                            <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">
-                              休假 {item.vacationDays.toFixed(1)}h
-                            </span>
-                          )}
-                          {item.illnessDays > 0 && (
-                            <span className="text-[10px] font-bold text-pink-500 bg-pink-50 px-2 py-0.5 rounded">
-                              病假 {item.illnessDays.toFixed(1)}h
-                            </span>
-                          )}
-                        </div>
+                      <div className="text-sm font-black text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded mb-2">
+                        {result.gunName} <span className="text-xs text-gray-500 ml-1">{result.gunHours}h</span>
                       </div>
-                      <div className="text-right">
-                        <div className="text-xl font-black text-gray-700">{(item.sickDays + item.vacationDays + item.illnessDays).toFixed(1)}</div>
-                        <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
+                      <div
+                        className="text-sm px-2 py-1.5 rounded border border-gray-100 font-medium"
+                        style={{ backgroundColor: result.color || '#f9fafb' }}
+                      >
+                        {result.taskName}
                       </div>
-                    </div>
+                      <div className="mt-2 text-right text-xs font-bold text-emerald-600">点击定位</div>
+                    </Link>
                   ))}
                 </div>
               </div>
-            </div>
+            ) : gunName.trim() ? (
+              <div className="text-center py-8 text-gray-400">
+                <TrendingUp size={40} className="mx-auto mb-2 opacity-50" />
+                <p>未找到匹配该枪名的任务</p>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-gray-400">
+                <TrendingUp size={40} className="mx-auto mb-2 opacity-50" />
+                <p>输入枪名开始查询周期信息</p>
+              </div>
+            )}
           </div>
-        )}
-
-        {/* Settings for Super Admin */}
-        {isSuperAdmin && (
-          <div className="mt-8 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
-              <Shield className="mr-2 text-purple-600" size={22} />
-              报表查看权限设置
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                <div>
-                  <div className="font-bold text-gray-700">启用报表功能</div>
-                  <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">Global Toggle</div>
-                </div>
-                <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
-                  <input 
-                    type="checkbox" 
-                    checked={leaderboardSettings.enabled}
-                    onChange={(e) => updateLeaderboardSettings({ enabled: e.target.checked })}
-                    disabled={!settingsLoaded}
-                    className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                  />
-                  <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${leaderboardSettings.enabled ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
-                </div>
-              </div>
-              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                <div>
-                  <div className="font-bold text-gray-700">一般管理员</div>
-                  <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">Admin Access</div>
-                </div>
-                <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
-                  <input 
-                    type="checkbox" 
-                    checked={leaderboardSettings.allowAdmins}
-                    onChange={(e) => updateLeaderboardSettings({ allowAdmins: e.target.checked })}
-                    disabled={!settingsLoaded}
-                    className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                  />
-                  <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${leaderboardSettings.allowAdmins ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
-                </div>
-              </div>
-              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                <div>
-                  <div className="font-bold text-gray-700">普通查看者</div>
-                  <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">Viewer Access</div>
-                </div>
-                <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
-                  <input 
-                    type="checkbox" 
-                    checked={leaderboardSettings.allowViewers}
-                    onChange={(e) => updateLeaderboardSettings({ allowViewers: e.target.checked })}
-                    disabled={!settingsLoaded}
-                    className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                  />
-                  <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${leaderboardSettings.allowViewers ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        </div>
       </main>
 
       <footer className="bg-white border-t border-gray-200 px-6 py-3">

@@ -5,6 +5,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Admin from './pages/Admin';
 import Leaderboard from './pages/Leaderboard';
+import WorkHours from './pages/WorkHours';
 
 const ProtectedRoute = ({ children, adminOnly = false }: { children: React.ReactNode, adminOnly?: boolean }) => {
   const { isAuthenticated, user } = useAuth();
@@ -36,6 +37,7 @@ const AppRoutes = () => {
         } 
       />
       <Route path="/leaderboard" element={<Leaderboard />} />
+      <Route path="/work-hours" element={<WorkHours />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
