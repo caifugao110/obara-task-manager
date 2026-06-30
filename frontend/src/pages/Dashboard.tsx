@@ -591,7 +591,9 @@ const Dashboard = () => {
 
   const [isAddMode, setIsAddMode] = useState(false);
   const [selectedTaskType, setSelectedTaskType] = useState<'none' | 'trip' | 'sick' | 'vacation' | 'illness'>('none');
+  const [addModeTaskName, setAddModeTaskName] = useState<string>('');
   const [addModeHours, setAddModeHours] = useState<number>(0);
+  const [addModeGuns, setAddModeGuns] = useState<GunItem[]>([]);
   const [addModeColor, setAddModeColor] = useState<string>('#dcfce7');
 
   const openModal = (designerId: string, date: string, addMode: boolean = false) => {
@@ -599,7 +601,10 @@ const Dashboard = () => {
     setModalDate(date);
     setFocusTarget(null);
     setIsAddMode(addMode);
+    setSelectedTaskType('none');
+    setAddModeTaskName('');
     setAddModeHours(0);
+    setAddModeGuns([]);
     setAddModeColor('#dcfce7');
     setModalOpen(true);
   };
@@ -1475,6 +1480,8 @@ const Dashboard = () => {
                               <input
                                 ref={el => inputRefs.current['task-new'] = el}
                                 className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                                value={addModeTaskName}
+                                onChange={(e) => setAddModeTaskName(e.target.value)}
                                 placeholder="输入主任务名称..."
                                 autoFocus
                               />
@@ -1486,10 +1493,11 @@ const Dashboard = () => {
                                 type="number"
                                 step="0.5"
                                 min="0"
-                                className="w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none focus:bg-white"
-                                defaultValue="0"
+                                className={`w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
+                                value={addModeGuns.length > 0 ? addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0) : addModeHours}
                                 placeholder="工时"
                                 onChange={(e) => setAddModeHours(parseFloat(e.target.value) || 0)}
+                                disabled={addModeGuns.length > 0}
                               />
                             </div>
                             <button
@@ -1512,14 +1520,53 @@ const Dashboard = () => {
                             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">枪名</span>
                             <button 
                               onClick={() => {
-                                // 这里可以添加添加枪名的逻辑
+                                setAddModeGuns(prev => [...prev, { id: `gun-new-${Date.now()}`, name: '', hours: 0 }]);
                               }}
-                              className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 transition font-bold"
-                              disabled={!inputRefs.current['task-new']?.value?.trim()}
+                              className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                              disabled={!addModeTaskName.trim()}
                             >
                               + 添加枪名
                             </button>
                           </div>
+                          {addModeGuns.map((gun, gIdx) => (
+                            <div key={gun.id} className="flex items-center gap-2 bg-gray-50/50 p-2 rounded-lg group/gun">
+                              <input
+                                ref={el => inputRefs.current[`gun-new-${gIdx}`] = el}
+                                className="flex-1 h-8 px-2 bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs transition"
+                                value={gun.name}
+                                placeholder="枪名..."
+                                onChange={(e) => {
+                                  setAddModeGuns(prev => {
+                                    const next = [...prev];
+                                    next[gIdx] = { ...next[gIdx], name: e.target.value };
+                                    return next;
+                                  });
+                                }}
+                              />
+                              <input
+                                ref={el => inputRefs.current[`gunHours-new-${gIdx}`] = el}
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                value={gun.hours}
+                                placeholder="工时"
+                                onChange={(e) => {
+                                  setAddModeGuns(prev => {
+                                    const next = [...prev];
+                                    next[gIdx] = { ...next[gIdx], hours: parseFloat(e.target.value) || 0 };
+                                    return next;
+                                  });
+                                }}
+                              />
+                              <button
+                                onClick={() => setAddModeGuns(prev => prev.filter((_, i) => i !== gIdx))}
+                                className="p-1 text-red-400 hover:text-red-600 transition"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))}
                         </div>
                         )}
 
@@ -1531,6 +1578,8 @@ const Dashboard = () => {
                                 if (inputRefs.current['task-new']) {
                                   inputRefs.current['task-new'].value = '';
                                 }
+                                setAddModeTaskName('');
+                                setAddModeGuns([]);
                                 setSelectedTaskType('none');
                               }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'none' ? 'bg-gray-100 text-gray-800 border border-gray-400' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
@@ -1542,6 +1591,8 @@ const Dashboard = () => {
                                 if (inputRefs.current['task-new']) {
                                   inputRefs.current['task-new'].value = '';
                                 }
+                                setAddModeTaskName('');
+                                setAddModeGuns([]);
                                 setSelectedTaskType('trip');
                               }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'trip' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
@@ -1549,19 +1600,31 @@ const Dashboard = () => {
                               出差
                             </button>
                             <button
-                              onClick={() => setSelectedTaskType('sick')}
+                              onClick={() => {
+                                setAddModeTaskName('');
+                                setAddModeGuns([]);
+                                setSelectedTaskType('sick');
+                              }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'sick' ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
                             >
                               事假
                             </button>
                             <button
-                              onClick={() => setSelectedTaskType('vacation')}
+                              onClick={() => {
+                                setAddModeTaskName('');
+                                setAddModeGuns([]);
+                                setSelectedTaskType('vacation');
+                              }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'vacation' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
                             >
                               休假
                             </button>
                             <button
-                              onClick={() => setSelectedTaskType('illness')}
+                              onClick={() => {
+                                setAddModeTaskName('');
+                                setAddModeGuns([]);
+                                setSelectedTaskType('illness');
+                              }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'illness' ? 'bg-pink-100 text-pink-700 border border-pink-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
                             >
                               病假
@@ -1920,7 +1983,10 @@ const Dashboard = () => {
                   onClick={async () => {
                     if (isAddMode) {
                       // 在添加模式下，保存用户输入的任务
-                      const hours = addModeHours || 0;
+                      const guns = selectedTaskType === 'none' ? addModeGuns : [];
+                      const hours = guns.length > 0
+                        ? guns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0)
+                        : addModeHours || 0;
                       const leaveType = selectedTaskType === 'none' ? null : selectedTaskType;
                       let taskName = '';
                       
@@ -1929,8 +1995,7 @@ const Dashboard = () => {
                         const place = taskInput?.value?.trim() || '';
                         taskName = place ? `${place}出差` : '出差';
                       } else if (selectedTaskType === 'none') {
-                        const taskInput = inputRefs.current['task-new'];
-                        taskName = taskInput?.value?.trim() || '未命名';
+                        taskName = addModeTaskName.trim() || '未命名';
                       }
                       
                       try {
@@ -1941,7 +2006,8 @@ const Dashboard = () => {
                           taskName, 
                           leaveType, 
                           hours,
-                          color: addModeColor
+                          color: addModeColor,
+                          guns
                         }, authHeader);
                         upsertSheet(res.data.sheet);
                         socketRef.current?.emit('task_updated');
@@ -2001,6 +2067,10 @@ const Dashboard = () => {
                   }}
                   disabled={(() => {
                     if (isAddMode) {
+                      if (selectedTaskType === 'none') {
+                        const totalGunHours = addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0);
+                        return !addModeTaskName.trim() || (addModeGuns.length > 0 ? totalGunHours === 0 : addModeHours === 0);
+                      }
                       return addModeHours === 0;
                     }
                     if (focusTarget && focusTarget.itemId) {
