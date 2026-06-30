@@ -99,7 +99,17 @@ const normalizeSheetDatesIfNeeded = (db) => {
 const readDb = () => {
   try {
     if (!fs.existsSync(dbPath)) {
-      const initialDb = { users: [], tasks: [], designers: [], settings: { leaderboard: { enabled: true, allowAdmins: true, allowViewers: false } } };
+      const initialDb = {
+        users: [],
+        tasks: [],
+        designers: [],
+        loginLogs: [],
+        settings: {
+          leaderboard: { enabled: true, allowAdmins: true, allowViewers: false },
+          workHours: { enabled: true, allowAdmins: true, allowViewers: false },
+          system: { allowGuestView: true, allowMultiDevice: true }
+        }
+      };
       fs.writeFileSync(dbPath, JSON.stringify(initialDb, null, 2));
       return initialDb;
     }
@@ -108,6 +118,15 @@ const readDb = () => {
     if (!parsed.designers) parsed.designers = [];
     if (!parsed.settings) parsed.settings = {};
     if (!parsed.settings.leaderboard) parsed.settings.leaderboard = { enabled: true, allowAdmins: true, allowViewers: false };
+    if (!parsed.settings.workHours) {
+      parsed.settings.workHours = parsed.settings.leaderboard
+        ? { ...parsed.settings.leaderboard }
+        : { enabled: true, allowAdmins: true, allowViewers: false };
+    }
+    if (!parsed.settings.system) {
+      parsed.settings.system = { allowGuestView: true, allowMultiDevice: true };
+    }
+    if (!parsed.loginLogs) parsed.loginLogs = [];
     const migratedRes = migrateTasksIfNeeded(parsed);
     const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
     if (migratedRes.migrated || normalizedRes.changed) {

@@ -116,7 +116,7 @@ interface Toast {
 }
 
 const Admin = () => {
-  const { token, logout, user: currentUser } = useAuth();
+  const { token, logout, user: currentUser, authReady } = useAuth();
   const [users, setUsers] = useState<UserData[]>([]);
   const [designers, setDesigners] = useState<DesignerData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -143,7 +143,10 @@ const Admin = () => {
   const [editingDesignerGroup, setEditingDesignerGroup] = useState('');
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
-  const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+  const authHeader = useMemo(
+    () => (token ? { headers: { Authorization: `Bearer ${token}` } } : undefined),
+    [token]
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -162,24 +165,32 @@ const Admin = () => {
   };
 
   const fetchData = useCallback(async () => {
+    if (!token || !authHeader) return;
+
+    setLoading(true);
     try {
-      const [usersRes, designersRes] = await Promise.all([
-        axios.get('/api/users', authHeader),
-        axios.get('/api/designers')
-      ]);
-      setUsers(usersRes.data);
-      setDesigners(designersRes.data);
+      const usersRes = await axios.get('/api/users', authHeader);
+      setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     } catch (err: any) {
-      console.error('Error fetching data:', err);
-      addToast('无法加载数据', 'error');
+      console.error('Error fetching users:', err);
+      addToast('无法加载管理员列表', 'error');
+    }
+
+    try {
+      const designersRes = await axios.get('/api/designers/manage', authHeader);
+      setDesigners(Array.isArray(designersRes.data) ? designersRes.data : []);
+    } catch (err: any) {
+      console.error('Error fetching designers:', err);
+      addToast('无法加载设计人员列表', 'error');
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, authHeader]);
 
   useEffect(() => {
+    if (!authReady || !token) return;
     fetchData();
-  }, [fetchData]);
+  }, [authReady, token, fetchData]);
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -344,7 +355,7 @@ const Admin = () => {
     }
   };
 
-  if (loading) return (
+  if (!authReady || loading) return (
     <div className="flex flex-col items-center justify-center h-screen bg-gray-50">
       <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
       <div className="text-gray-600 font-medium">正在加载用户数据...</div>
@@ -529,22 +540,31 @@ const Admin = () => {
                       <th className="px-6 py-4 text-right">操作</th>
                     </tr>
                   </thead>
-                  <tbody className="text-sm divide-y divide-gray-50 align-middle">
-                    <SortableContext 
-                      items={designers.map(d => d.id)} 
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {designers.map(d => (
-                        <SortableDesignerRow 
-                          key={d.id} 
-                          designer={d} 
-                          onEdit={handleEditDesigner}
-                          onToggleHide={handleToggleHideDesigner}
-                          onDelete={handleDeleteDesigner}
-                        />
-                      ))}
-                    </SortableContext>
-                  </tbody>
+                  <SortableContext
+                    items={designers.map(d => d.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <tbody className="text-sm divide-y divide-gray-50 align-middle">
+                      {designers.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="px-6 py-12 text-center">
+                            <p className="font-bold text-gray-500">暂无设计人员</p>
+                            <p className="text-sm text-gray-400 mt-1">请在右侧表单添加第一位设计人员，添加后将显示在工作台表格中</p>
+                          </td>
+                        </tr>
+                      ) : (
+                        designers.map(d => (
+                          <SortableDesignerRow
+                            key={d.id}
+                            designer={d}
+                            onEdit={handleEditDesigner}
+                            onToggleHide={handleToggleHideDesigner}
+                            onDelete={handleDeleteDesigner}
+                          />
+                        ))
+                      )}
+                    </tbody>
+                  </SortableContext>
                 </table>
               </DndContext>
             </div>

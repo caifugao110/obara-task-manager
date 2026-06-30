@@ -6,8 +6,17 @@ import Dashboard from './pages/Dashboard';
 import Admin from './pages/Admin';
 import Leaderboard from './pages/Leaderboard';
 import WorkHours from './pages/WorkHours';
+import SystemSettings from './pages/SystemSettings';
 
-const ProtectedRoute = ({ children, adminOnly = false }: { children: React.ReactNode, adminOnly?: boolean }) => {
+const ProtectedRoute = ({
+  children,
+  adminOnly = false,
+  superAdminOnly = false
+}: {
+  children: React.ReactNode;
+  adminOnly?: boolean;
+  superAdminOnly?: boolean;
+}) => {
   const { isAuthenticated, user } = useAuth();
 
   if (!isAuthenticated) {
@@ -15,6 +24,12 @@ const ProtectedRoute = ({ children, adminOnly = false }: { children: React.React
   }
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const isSuperAdmin = user?.role === 'superadmin';
+
+  if (superAdminOnly && !isSuperAdmin) {
+    return <Navigate to="/" replace />;
+  }
+
   if (adminOnly && !isAdmin) {
     return <Navigate to="/" replace />;
   }
@@ -28,13 +43,21 @@ const AppRoutes = () => {
     <Routes>
       <Route path="/login" element={!isAuthenticated ? <Login /> : <Navigate to="/" replace />} />
       <Route path="/" element={<Dashboard />} />
-      <Route 
-        path="/admin" 
+      <Route
+        path="/admin"
         element={
           <ProtectedRoute adminOnly>
             <Admin />
           </ProtectedRoute>
-        } 
+        }
+      />
+      <Route
+        path="/system-settings"
+        element={
+          <ProtectedRoute superAdminOnly>
+            <SystemSettings />
+          </ProtectedRoute>
+        }
       />
       <Route path="/leaderboard" element={<Leaderboard />} />
       <Route path="/work-hours" element={<WorkHours />} />

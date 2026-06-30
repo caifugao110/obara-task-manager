@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { authMiddleware, adminMiddleware, guestViewMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 
@@ -13,7 +13,14 @@ const designerSchema = Joi.object({
 });
 
 // Get all designers (Public access for rendering table)
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', guestViewMiddleware, asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const designers = (data.designers || []).sort((a, b) => (a.order || 0) - (b.order || 0));
+  res.json(designers);
+}));
+
+// Get all designers for admin management (Authenticated admin only)
+router.get('/manage', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const designers = (data.designers || []).sort((a, b) => (a.order || 0) - (b.order || 0));
   res.json(designers);

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, guestViewMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 
@@ -73,7 +73,7 @@ const getOrCreateSheet = (data, designerId, month, year) => {
   return sheet;
 };
 
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', guestViewMiddleware, asyncHandler(async (req, res) => {
   const { month, year, designerId } = req.query;
   const data = db.readDb();
 

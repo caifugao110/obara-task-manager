@@ -12,7 +12,8 @@ import {
   LogOut,
   Medal,
   RefreshCw,
-  Shield
+  Shield,
+  Users
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -60,6 +61,7 @@ const WorkHours = () => {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const isSuperAdmin = user?.role === 'superadmin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const authHeader = useMemo(() => token ? { headers: { Authorization: `Bearer ${token}` } } : {}, [token]);
 
   const addToast = (message: string, type: 'success' | 'error') => {
@@ -79,7 +81,7 @@ const WorkHours = () => {
 
   const fetchSettings = useCallback(async () => {
     try {
-      const res = await axios.get('/api/settings/leaderboard');
+      const res = await axios.get('/api/settings/work-hours');
       setSettings(res.data);
     } catch (err) {
       console.error('Error fetching work hours settings:', err);
@@ -95,7 +97,7 @@ const WorkHours = () => {
     if (!isSuperAdmin) return;
 
     try {
-      await axios.put('/api/settings/leaderboard', updated, authHeader);
+      await axios.put('/api/settings/work-hours', updated, authHeader);
       addToast('权限设置已保存', 'success');
     } catch (err) {
       console.error('Error saving work hours settings:', err);
@@ -243,6 +245,37 @@ const WorkHours = () => {
             <p className="text-gray-400 mt-2">
               {isClosed ? '请联系超级管理员开启此功能' : '请联系超级管理员开启对应权限'}
             </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (designers.length === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
+        <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
+          <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
+            <ChevronLeft size={20} />
+            <span>返回工作台</span>
+          </Link>
+          {user && (
+            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
+              <LogOut size={18} />
+              <span>退出</span>
+            </button>
+          )}
+        </header>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center max-w-md px-6">
+            <Users size={64} className="mx-auto text-gray-300 mb-4" />
+            <h2 className="text-xl font-bold text-gray-600">暂无设计人员</h2>
+            <p className="text-gray-400 mt-2">工时管理需要设计人员数据才能使用，请先在管理后台添加设计人员。</p>
+            {isAdmin && (
+              <Link to="/admin" className="inline-block mt-6 px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition">
+                前往添加设计人员
+              </Link>
+            )}
           </div>
         </div>
       </div>

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, Clock, Calendar, TrendingUp, Medal, Sun, Cloud, Umbrella, FileSpreadsheet, BarChart2, Shield } from 'lucide-react';
+import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, Clock, Calendar, TrendingUp, Medal, Sun, Cloud, Umbrella, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface DesignerData {
@@ -206,6 +206,8 @@ const Leaderboard = () => {
     } catch (err: any) {
       console.error('Error fetching designers:', err);
       addToast('无法加载人员数据', 'error');
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -307,11 +309,7 @@ const Leaderboard = () => {
     }
   }, [loading, designers, fetchLeaderboardData]);
 
-  useEffect(() => {
-    if (designers.length > 0) {
-      setLoading(false);
-    }
-  }, [designers]);
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
   const sortedByHours = useMemo(() => 
     [...leaderboardData].sort((a, b) => b.hours - a.hours), 
@@ -374,6 +372,37 @@ const Leaderboard = () => {
             <p className="text-gray-400 mt-2">
               {isClosed ? '请联系超级管理员开启此功能' : '请联系超级管理员开启对应权限'}
             </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (designers.length === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
+        <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
+          <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
+            <ChevronLeft size={20} />
+            <span>返回工作台</span>
+          </Link>
+          {user && (
+            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
+              <LogOut size={18} />
+              <span>退出</span>
+            </button>
+          )}
+        </header>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center max-w-md px-6">
+            <Users size={64} className="mx-auto text-gray-300 mb-4" />
+            <h2 className="text-xl font-bold text-gray-600">暂无设计人员</h2>
+            <p className="text-gray-400 mt-2">任务报表需要设计人员数据才能使用，请先在管理后台添加设计人员。</p>
+            {isAdmin && (
+              <Link to="/admin" className="inline-block mt-6 px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition">
+                前往添加设计人员
+              </Link>
+            )}
           </div>
         </div>
       </div>
@@ -619,6 +648,39 @@ const Leaderboard = () => {
             )}
           </div>
         </div>
+
+        {isSuperAdmin && (
+          <div className="mt-8 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
+              <Shield className="mr-2 text-purple-600" size={22} />
+              任务报表查看权限设置
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {[
+                { label: '启用任务报表', detail: 'Global Toggle', key: 'enabled' as const },
+                { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
+                { label: '普通查看者', detail: 'Viewer Access', key: 'allowViewers' as const }
+              ].map(item => (
+                <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
+                  <div>
+                    <div className="font-bold text-gray-700">{item.label}</div>
+                    <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">{item.detail}</div>
+                  </div>
+                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                    <input
+                      type="checkbox"
+                      checked={leaderboardSettings[item.key]}
+                      onChange={(e) => updateLeaderboardSettings({ [item.key]: e.target.checked })}
+                      disabled={!settingsLoaded}
+                      className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                    />
+                    <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${leaderboardSettings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
 
       <footer className="bg-white border-t border-gray-200 px-6 py-3">

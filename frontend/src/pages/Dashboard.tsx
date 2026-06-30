@@ -3,7 +3,7 @@ import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import {
@@ -301,6 +301,8 @@ const Dashboard = () => {
   const [designers, setDesigners] = useState<Designer[]>([]);
   const [sheets, setSheets] = useState<TaskSheet[]>([]);
   const [loading, setLoading] = useState(true);
+  const [systemSettingsLoaded, setSystemSettingsLoaded] = useState(false);
+  const [allowGuestView, setAllowGuestView] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const [selectedDesignerId, setSelectedDesignerId] = useState<string>('all');
@@ -801,18 +803,36 @@ const Dashboard = () => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const designersRes = await axios.get('/api/designers');
-      setDesigners(designersRes.data);
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+      const designersRes = await axios.get('/api/designers', headers ? { headers } : undefined);
+      setDesigners(Array.isArray(designersRes.data) ? designersRes.data : []);
       await fetchSheets();
     } catch (err: any) {
       console.error('Error fetching data:', err);
-      addToast('数据加载失败', 'error');
+      if (err.response?.data?.code === 'GUEST_VIEW_DISABLED') {
+        setAllowGuestView(false);
+      } else {
+        addToast('数据加载失败', 'error');
+      }
     } finally {
       setLoading(false);
     }
-  }, [fetchSheets]);
+  }, [fetchSheets, token]);
 
   useEffect(() => {
+    axios.get('/api/system/settings')
+      .then(res => {
+        const guestAllowed = res.data.allowGuestView ?? true;
+        setAllowGuestView(guestAllowed);
+        if (!guestAllowed && !user) setLoading(false);
+      })
+      .catch(() => setAllowGuestView(true))
+      .finally(() => setSystemSettingsLoaded(true));
+  }, [user]);
+
+  useEffect(() => {
+    if (!systemSettingsLoaded) return;
+    if (!allowGuestView && !user) return;
     fetchData();
 
     socketRef.current = io('/', {
@@ -838,7 +858,7 @@ const Dashboard = () => {
     return () => {
       socketRef.current?.disconnect();
     };
-  }, [fetchData, fetchSheets]);
+  }, [fetchData, fetchSheets, systemSettingsLoaded, allowGuestView, user]);
 
   useEffect(() => {
     const handleTaskCopy = (e: Event) => {
@@ -1079,12 +1099,32 @@ const Dashboard = () => {
     setCurrentDate(newDate);
   };
 
-  if (loading) return (
+  if (!systemSettingsLoaded || loading) return (
     <div className="flex flex-col items-center justify-center h-screen bg-gray-50">
       <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
       <div className="text-gray-600 font-medium">正在加载数据...</div>
     </div>
   );
+
+  if (!allowGuestView && !user) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col">
+        <header className="bg-[#217346] text-white px-6 py-3 flex items-center justify-between shadow-md">
+          <h1 className="text-lg font-bold">Obara 任务管理系统</h1>
+        </header>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <FileSpreadsheet size={64} className="mx-auto text-gray-300 mb-4" />
+            <h2 className="text-xl font-bold text-gray-600">请先登录后查看</h2>
+            <p className="text-gray-400 mt-2">管理员已关闭未登录用户的查看权限</p>
+            <Link to="/login" className="inline-block mt-6 px-6 py-2 bg-[#217346] hover:bg-[#1a5c38] text-white font-bold rounded transition">
+              前往登录
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const PRESET_COLORS = [
     { label: '无', value: '' },
@@ -1132,6 +1172,7 @@ const Dashboard = () => {
   };
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const isSuperAdmin = user?.role === 'superadmin';
 
   return (
     <div className="min-h-screen bg-[#f3f3f3] flex flex-col font-sans">
@@ -1189,6 +1230,15 @@ const Dashboard = () => {
             <Clock size={16} className="text-amber-200" />
             <span>工时管理</span>
           </Link>
+          {isSuperAdmin && (
+            <Link
+              to="/system-settings"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+            >
+              <Settings size={16} className="text-purple-200" />
+              <span>系统设置</span>
+            </Link>
+          )}
         </div>
 
         <div className="flex items-center space-x-4">

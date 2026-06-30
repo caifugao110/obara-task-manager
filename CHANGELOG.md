@@ -6,16 +6,41 @@
 
 ## [未发布]
 
+### 新增
+
+- **系统设置**页面（`/system-settings`，仅超级管理员）
+  - 导出任务数据为 xlsx（仅含有数据的月份）
+  - 从 xlsx 导入任务数据（按工作表年月覆盖对应数据）
+  - 登录管理：未登录查看主页面开关、多设备同时在线开关
+  - 管理员登录历史查看
+- **任务报表查看权限设置**（独立于工时管理）
+- **工时管理查看权限设置**（独立 API：`/api/settings/work-hours`）
+- 工作台顶部 **系统设置** 入口（超级管理员可见）
+- 认证会话校验接口 `GET /api/auth/validate`
+- 管理后台专用设计员列表接口 `GET /api/designers/manage`
+- 登录历史记录（`loginLogs`）与单设备登录（`sessionToken` / `sessionId`）
+- Socket 事件：`register_user`、`session_invalidated`
+
+### 改进
+
+- 任务报表、工时管理、用户管理在无设计人员时显示明确提示，不再无限加载
+- 用户管理页分离管理员与设计员加载错误提示
+- 关闭未登录查看时，任务与设计员读取接口需登录
+- `AuthContext` 增加 `authReady`，避免 Token 未就绪时发起错误请求
+
+### 修复
+
+- 任务报表页面在无设计人员时 loading 无法结束的问题
+- 用户管理页设计人员列表在 Token 未就绪或权限不足时误报「无法加载数据」的问题
+
 ### 变更
 
-- 移除非 Windows 部署相关代码、脚本和文档。
-- 仅保留 Windows 部署方式。
-- 更新 README 和部署指南，使启动说明统一指向 `start.bat` 与 Windows 手动部署流程。
+- 后端新增依赖：`xlsx`、`multer`
+- `db.json` 结构扩展：`settings.system`、`settings.workHours`、`loginLogs`、用户 `sessionToken`
 
 ### 计划功能
 
 - 任务模板功能
-- 导出 Excel 报表
 - 邮件通知
 - 多语言支持
 - 移动端适配
@@ -71,5 +96,5 @@
 - `MINOR`：向后兼容的功能新增
 - `PATCH`：向后兼容的问题修复
 
-**项目链接**：https://github.com/caifugao110/obara-task-manager
+**项目链接**：https://github.com/caifugao110/obara-task-manager  
 **许可证**：MIT

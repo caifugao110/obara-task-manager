@@ -34,12 +34,14 @@ const userRoutes = require('./routes/users');
 const designerRoutes = require('./routes/designers');
 const taskRoutes = require('./routes/tasks');
 const settingsRoutes = require('./routes/settings');
+const systemRoutes = require('./routes/system');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/designers', designerRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/system', systemRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
@@ -51,8 +53,24 @@ app.use((err, req, res, next) => {
 });
 
 // Socket.io connection
+app.set('io', io);
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
+
+  socket.on('register_user', (token) => {
+    if (!token || typeof token !== 'string') return;
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'obara_task_secret_key_2026');
+      if (decoded?.id) {
+        socket.join(`user:${decoded.id}`);
+        socket.data.userId = decoded.id;
+      }
+    } catch {
+      // ignore invalid token
+    }
+  });
 
   socket.on('task_updated', (data) => {
     // Broadcast to everyone except sender

@@ -117,9 +117,21 @@ chore: 构建过程或辅助工具变动
 ```
 obara-task-manager/
 ├── backend/          # 后端服务（Node.js + Express）
+│   └── routes/       # auth, users, designers, tasks, settings, system
 ├── frontend/         # 前端应用（React + TypeScript）
-└── docs/            # 文档
+│   └── src/pages/    # Dashboard, Leaderboard, WorkHours, Admin, SystemSettings
+└── docs/             # API 文档
 ```
+
+### 主要页面（手动测试参考）
+
+| 路径 | 说明 |
+|------|------|
+| `/` | 工作台 |
+| `/leaderboard` | 任务报表 |
+| `/work-hours` | 工时管理 |
+| `/admin` | 用户管理（需管理员） |
+| `/system-settings` | 系统设置（需超级管理员） |
 
 ### 技术栈
 
@@ -135,6 +147,7 @@ obara-task-manager/
 - Express 5
 - Socket.IO 4
 - JSON 文件存储
+- xlsx / multer（系统导入导出）
 
 ### 运行测试
 
