@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
-import { format } from 'date-fns';
+import { format, isWeekend } from 'date-fns';
 import {
   AlertCircle,
   BarChart2,
@@ -26,10 +26,16 @@ interface WorkHoursData {
   designerId: string;
   designerName: string;
   hours: number;
+  workdayHours: number;
+  designHours: number;
+  workdayDesignHours: number;
+  tripHours: number;
+  workdayTripHours: number;
   sickDays: number;
   vacationDays: number;
   illnessDays: number;
   leaveDetails: LeaveDetail[];
+  tripDetails: TripDetail[];
 }
 
 interface LeaveDetail {
@@ -37,6 +43,13 @@ interface LeaveDetail {
   type: 'sick' | 'vacation' | 'illness';
   typeLabel: string;
   hours: number;
+}
+
+interface TripDetail {
+  date: string;
+  taskName: string;
+  hours: number;
+  isWeekend: boolean;
 }
 
 interface Toast {
@@ -58,6 +71,8 @@ const WorkHours = () => {
   const [settings, setSettings] = useState(defaultSettings);
   const [showAllHours, setShowAllHours] = useState(false);
   const [showAllLeave, setShowAllLeave] = useState(false);
+  const [excludeWeekendOvertime, setExcludeWeekendOvertime] = useState(false);
+  const [excludeVacationLeave, setExcludeVacationLeave] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const isSuperAdmin = user?.role === 'superadmin';
@@ -75,7 +90,7 @@ const WorkHours = () => {
     if (!settings.enabled) return false;
     if (!user) return settings.allowViewers;
     if (user.role === 'admin' && settings.allowAdmins) return true;
-    if (user.role === 'designer' && settings.allowViewers) return true;
+    if (user.role === 'user' && settings.allowViewers) return true;
     return false;
   }, [isSuperAdmin, settings, user]);
 
@@ -93,6 +108,19 @@ const WorkHours = () => {
 
   const updateSettings = async (next: Partial<typeof settings>) => {
     const updated = { ...settings, ...next };
+    if (next.enabled === false) {
+      updated.allowAdmins = false;
+      updated.allowViewers = false;
+    }
+    if (next.enabled === true) {
+      updated.allowAdmins = true;
+      updated.allowViewers = true;
+    }
+    if (next.allowAdmins === false && updated.allowViewers) {
+      addToast('游客/普通用户权限开启时，不能关闭一般管理员权限', 'error');
+      return;
+    }
+    if (updated.allowViewers) updated.allowAdmins = true;
     setSettings(updated);
     if (!isSuperAdmin) return;
 
@@ -107,7 +135,7 @@ const WorkHours = () => {
 
   const fetchDesigners = useCallback(async () => {
     try {
-      const res = await axios.get('/api/designers');
+      const res = await axios.get('/api/designers', authHeader);
       setDesigners(res.data);
     } catch (err) {
       console.error('Error fetching designers:', err);
@@ -115,7 +143,7 @@ const WorkHours = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authHeader]);
 
   const fetchWorkHoursData = useCallback(async () => {
     if (designers.length === 0) return;
@@ -132,10 +160,16 @@ const WorkHours = () => {
           designerId: designer.id,
           designerName: designer.name,
           hours: 0,
+          workdayHours: 0,
+          designHours: 0,
+          workdayDesignHours: 0,
+          tripHours: 0,
+          workdayTripHours: 0,
           sickDays: 0,
           vacationDays: 0,
           illnessDays: 0,
-          leaveDetails: []
+          leaveDetails: [],
+          tripDetails: []
         });
       });
 
@@ -146,6 +180,7 @@ const WorkHours = () => {
         (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([date, items]) => {
           items.forEach((item: any) => {
             const itemHours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
+            const isWeekendDate = isWeekend(new Date(`${date}T00:00:00`));
             if (item.leaveType === 'sick') {
               designerData.sickDays += itemHours;
               designerData.leaveDetails.push({ date, type: 'sick', typeLabel: '事假', hours: itemHours });
@@ -165,7 +200,29 @@ const WorkHours = () => {
             const gunsHours = (item.guns || []).reduce((sum: number, gun: any) => {
               return sum + (typeof gun.hours === 'number' ? gun.hours : (parseFloat(gun.hours) || 0));
             }, 0);
-            designerData.hours += item.guns && item.guns.length > 0 ? gunsHours : itemHours;
+            const taskHours = item.guns && item.guns.length > 0 ? gunsHours : itemHours;
+            designerData.hours += taskHours;
+            if (!isWeekendDate) {
+              designerData.workdayHours += taskHours;
+            }
+            if (item.leaveType === 'trip') {
+              designerData.tripHours += taskHours;
+              if (!isWeekendDate) {
+                designerData.workdayTripHours += taskHours;
+              }
+              designerData.tripDetails.push({
+                date,
+                taskName: item.taskName || '出差',
+                hours: taskHours,
+                isWeekend: isWeekendDate
+              });
+              return;
+            }
+
+            designerData.designHours += taskHours;
+            if (!isWeekendDate) {
+              designerData.workdayDesignHours += taskHours;
+            }
           });
         });
       });
@@ -188,14 +245,44 @@ const WorkHours = () => {
     if (!loading && canViewWorkHours) fetchWorkHoursData();
   }, [loading, canViewWorkHours, fetchWorkHoursData]);
 
+  const getDisplayedWorkHours = useCallback(
+    (item: WorkHoursData) => excludeWeekendOvertime ? item.workdayHours : item.hours,
+    [excludeWeekendOvertime]
+  );
+
+  const getDisplayedLeaveHours = useCallback(
+    (item: WorkHoursData) => item.sickDays + item.illnessDays + (excludeVacationLeave ? 0 : item.vacationDays),
+    [excludeVacationLeave]
+  );
+
+  const getDisplayedDesignHours = useCallback(
+    (item: WorkHoursData) => excludeWeekendOvertime ? item.workdayDesignHours : item.designHours,
+    [excludeWeekendOvertime]
+  );
+
+  const getDisplayedTripHours = useCallback(
+    (item: WorkHoursData) => excludeWeekendOvertime ? item.workdayTripHours : item.tripHours,
+    [excludeWeekendOvertime]
+  );
+
+  const getDisplayedTripDetails = useCallback(
+    (item: WorkHoursData) => excludeWeekendOvertime ? item.tripDetails.filter(detail => !detail.isWeekend) : item.tripDetails,
+    [excludeWeekendOvertime]
+  );
+
+  const getWeekendOvertimeHours = useCallback(
+    (item: WorkHoursData) => Math.max(0, item.hours - item.workdayHours),
+    []
+  );
+
   const sortedByHours = useMemo(
-    () => [...workHoursData].sort((a, b) => b.hours - a.hours),
-    [workHoursData]
+    () => [...workHoursData].sort((a, b) => getDisplayedWorkHours(b) - getDisplayedWorkHours(a)),
+    [getDisplayedWorkHours, workHoursData]
   );
 
   const sortedByLeave = useMemo(
-    () => [...workHoursData].sort((a, b) => (b.sickDays + b.vacationDays + b.illnessDays) - (a.sickDays + a.vacationDays + a.illnessDays)),
-    [workHoursData]
+    () => [...workHoursData].sort((a, b) => getDisplayedLeaveHours(b) - getDisplayedLeaveHours(a)),
+    [getDisplayedLeaveHours, workHoursData]
   );
 
   const getRankIcon = (index: number) => {
@@ -354,58 +441,139 @@ const WorkHours = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
               <div className="px-6 py-5 bg-gray-50 border-b border-gray-100">
-                <h2 className="text-lg font-bold flex items-center text-gray-800">
-                  <Clock className="mr-2 text-blue-600" size={22} />
-                  月度工时排行
-                  {workHoursData.length > 10 && (
-                    <button
-                      className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-blue-200"
-                      onClick={() => setShowAllHours(!showAllHours)}
-                    >
-                      {showAllHours ? '收起' : '显示全部'}
-                    </button>
-                  )}
-                </h2>
+                <div className="flex items-center justify-between gap-4">
+                  <h2 className="text-lg font-bold flex items-center text-gray-800">
+                    <Clock className="mr-2 text-blue-600" size={22} />
+                    月度工时排行
+                    {workHoursData.length > 10 && (
+                      <button
+                        className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-blue-200"
+                        onClick={() => setShowAllHours(!showAllHours)}
+                      >
+                        {showAllHours ? '收起' : '显示全部'}
+                      </button>
+                    )}
+                  </h2>
+                  <label className="flex items-center gap-2 text-xs font-bold text-gray-600 cursor-pointer select-none">
+                    <span>不包含周末加班</span>
+                    <span className="relative inline-flex h-5 w-9 items-center">
+                      <input
+                        type="checkbox"
+                        checked={excludeWeekendOvertime}
+                        onChange={(e) => setExcludeWeekendOvertime(e.target.checked)}
+                        className="peer sr-only"
+                      />
+                      <span className="absolute inset-0 rounded-full bg-gray-300 transition peer-checked:bg-blue-500"></span>
+                      <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4"></span>
+                    </span>
+                  </label>
+                </div>
               </div>
               <div className="p-4 space-y-3">
-                {(showAllHours ? sortedByHours : sortedByHours.slice(0, 10)).map((item, index) => (
-                  <div key={item.designerId} className={`flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
-                    index === 0 ? 'bg-blue-50/50 border border-blue-100' :
-                    index === 1 ? 'bg-gray-50/50 border border-gray-100' :
-                    index === 2 ? 'bg-orange-50/50 border border-orange-100' :
-                    'bg-white border border-gray-50 hover:bg-gray-50'
-                  }`}>
-                    <div className="w-10 flex justify-center">{getRankIcon(index)}</div>
-                    <div className="flex-1 ml-3 font-bold text-gray-800">{item.designerName}</div>
-                    <div className="text-right">
-                      <div className="text-xl font-black text-blue-700">{item.hours.toFixed(1)}</div>
-                      <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
+                {(showAllHours ? sortedByHours : sortedByHours.slice(0, 10)).map((item, index) => {
+                  const visibleTripDetails = getDisplayedTripDetails(item);
+                  return (
+                    <div key={item.designerId} className={`relative group/hours flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
+                      index === 0 ? 'bg-blue-50/50 border border-blue-100' :
+                      index === 1 ? 'bg-gray-50/50 border border-gray-100' :
+                      index === 2 ? 'bg-orange-50/50 border border-orange-100' :
+                      'bg-white border border-gray-50 hover:bg-gray-50'
+                    }`}>
+                      <div className="w-10 flex justify-center">{getRankIcon(index)}</div>
+                      <div className="flex-1 ml-3">
+                        <div className="font-bold text-gray-800">{item.designerName}</div>
+                        {getWeekendOvertimeHours(item) > 0 && (
+                          <div className="flex gap-2 mt-1">
+                            <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
+                              周末加班 {getWeekendOvertimeHours(item).toFixed(1)}h
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xl font-black text-blue-700">{getDisplayedWorkHours(item).toFixed(1)}</div>
+                        <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
+                      </div>
+                      <div className="pointer-events-none absolute right-3 bottom-full z-40 mb-2 hidden w-80 rounded-xl border border-gray-200 bg-white p-3 shadow-2xl group-hover/hours:block">
+                        <div className="mb-3 flex items-center justify-between">
+                          <span className="text-sm font-black text-gray-800">{item.designerName} 工时明细</span>
+                          <span className="text-xs font-bold text-gray-400">{getDisplayedWorkHours(item).toFixed(1)}h</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+                            <div className="text-[10px] font-black text-blue-500">设计计划总工时</div>
+                            <div className="mt-1 text-lg font-black text-blue-700">{getDisplayedDesignHours(item).toFixed(1)}h</div>
+                          </div>
+                          <div className="rounded-lg border border-yellow-100 bg-yellow-50 px-3 py-2">
+                            <div className="text-[10px] font-black text-yellow-600">出差总工时</div>
+                            <div className="mt-1 text-lg font-black text-yellow-800">{getDisplayedTripHours(item).toFixed(1)}h</div>
+                          </div>
+                        </div>
+                        <div className="mt-3">
+                          <div className="mb-2 text-xs font-black text-gray-700">出差明细</div>
+                          {visibleTripDetails.length > 0 ? (
+                            <div className="max-h-56 space-y-2 overflow-auto pr-1">
+                              {[...visibleTripDetails]
+                                .sort((a, b) => a.date.localeCompare(b.date))
+                                .map((detail, detailIndex) => (
+                                  <div key={`${item.designerId}-trip-${detail.date}-${detailIndex}`} className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-2 py-1.5">
+                                    <span className="w-24 text-xs font-bold text-gray-600">{detail.date}</span>
+                                    <span className="min-w-0 flex-1 truncate text-xs font-bold text-yellow-800">{detail.taskName}</span>
+                                    <span className="text-xs font-black text-gray-700">{detail.hours.toFixed(1)}h</span>
+                                  </div>
+                                ))}
+                            </div>
+                          ) : (
+                            <div className="rounded-lg bg-gray-50 px-3 py-2 text-center text-xs font-bold text-gray-400">
+                              暂无出差明细
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
               <div className="px-6 py-5 bg-gray-50 border-b border-gray-100">
-                <h2 className="text-lg font-bold flex items-center text-gray-800">
-                  <Calendar className="mr-2 text-red-600" size={22} />
-                  月度请假排行
-                  {workHoursData.length > 10 && (
-                    <button
-                      className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-red-200"
-                      onClick={() => setShowAllLeave(!showAllLeave)}
-                    >
-                      {showAllLeave ? '收起' : '显示全部'}
-                    </button>
-                  )}
-                </h2>
+                <div className="flex items-center justify-between gap-4">
+                  <h2 className="text-lg font-bold flex items-center text-gray-800">
+                    <Calendar className="mr-2 text-red-600" size={22} />
+                    月度请假排行
+                    {workHoursData.length > 10 && (
+                      <button
+                        className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-red-200"
+                        onClick={() => setShowAllLeave(!showAllLeave)}
+                      >
+                        {showAllLeave ? '收起' : '显示全部'}
+                      </button>
+                    )}
+                  </h2>
+                  <label className="flex items-center gap-2 text-xs font-bold text-gray-600 cursor-pointer select-none">
+                    <span>不包含休假</span>
+                    <span className="relative inline-flex h-5 w-9 items-center">
+                      <input
+                        type="checkbox"
+                        checked={excludeVacationLeave}
+                        onChange={(e) => setExcludeVacationLeave(e.target.checked)}
+                        className="peer sr-only"
+                      />
+                      <span className="absolute inset-0 rounded-full bg-gray-300 transition peer-checked:bg-red-500"></span>
+                      <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4"></span>
+                    </span>
+                  </label>
+                </div>
               </div>
               <div className="p-4 space-y-3">
                 {(showAllLeave ? sortedByLeave : sortedByLeave.slice(0, 10)).map((item, index) => {
-                  const totalLeave = item.sickDays + item.vacationDays + item.illnessDays;
+                  const totalLeave = getDisplayedLeaveHours(item);
+                  const visibleLeaveDetails = excludeVacationLeave
+                    ? item.leaveDetails.filter(detail => detail.type !== 'vacation')
+                    : item.leaveDetails;
                   return (
                     <div key={item.designerId} className={`relative group/leave flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
                       index === 0 ? 'bg-red-50/50 border border-red-100' :
@@ -418,7 +586,7 @@ const WorkHours = () => {
                         <div className="font-bold text-gray-800">{item.designerName}</div>
                         <div className="flex gap-2 mt-1">
                           {item.sickDays > 0 && <span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded">事假 {item.sickDays.toFixed(1)}h</span>}
-                          {item.vacationDays > 0 && <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">休假 {item.vacationDays.toFixed(1)}h</span>}
+                          {!excludeVacationLeave && item.vacationDays > 0 && <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">休假 {item.vacationDays.toFixed(1)}h</span>}
                           {item.illnessDays > 0 && <span className="text-[10px] font-bold text-pink-500 bg-pink-50 px-2 py-0.5 rounded">病假 {item.illnessDays.toFixed(1)}h</span>}
                         </div>
                       </div>
@@ -426,14 +594,14 @@ const WorkHours = () => {
                         <div className="text-xl font-black text-gray-700">{totalLeave.toFixed(1)}</div>
                         <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
                       </div>
-                      <div className="pointer-events-none absolute right-3 top-full z-30 mt-2 hidden w-72 rounded-xl border border-gray-200 bg-white p-3 shadow-2xl group-hover/leave:block">
+                      <div className="pointer-events-none absolute right-3 bottom-full z-40 mb-2 hidden w-72 rounded-xl border border-gray-200 bg-white p-3 shadow-2xl group-hover/leave:block">
                         <div className="mb-2 flex items-center justify-between">
                           <span className="text-sm font-black text-gray-800">{item.designerName} 请假明细</span>
                           <span className="text-xs font-bold text-gray-400">{totalLeave.toFixed(1)}h</span>
                         </div>
-                        {item.leaveDetails.length > 0 ? (
+                        {visibleLeaveDetails.length > 0 ? (
                           <div className="max-h-64 space-y-2 overflow-auto pr-1">
-                            {item.leaveDetails
+                            {[...visibleLeaveDetails]
                               .sort((a, b) => a.date.localeCompare(b.date))
                               .map((detail, detailIndex) => (
                                 <div key={`${item.designerId}-${detail.date}-${detail.type}-${detailIndex}`} className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-2 py-1.5">
@@ -469,7 +637,7 @@ const WorkHours = () => {
               {[
                 { label: '启用工时管理', detail: 'Global Toggle', key: 'enabled' as const },
                 { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-                { label: '普通查看者', detail: 'Viewer Access', key: 'allowViewers' as const }
+                { label: '游客/普通用户', detail: 'Guest Access', key: 'allowViewers' as const }
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                   <div>

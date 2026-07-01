@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 interface User {
   id: string;
   username: string;
-  role: 'superadmin' | 'admin' | 'designer';
+  role: 'superadmin' | 'admin' | 'user';
   name: string;
 }
 

@@ -53,8 +53,10 @@ const Leaderboard = () => {
   // Specification tracking
   const [specNumber, setSpecNumber] = useState('');
   const [specResults, setSpecResults] = useState<TaskSearchResult[]>([]);
+  const [specFullSearch, setSpecFullSearch] = useState(false);
   const [gunName, setGunName] = useState('');
   const [gunResults, setGunResults] = useState<GunSearchResult[]>([]);
+  const [gunFullSearch, setGunFullSearch] = useState(false);
   
   const [leaderboardSettings, setLeaderboardSettings] = useState({ enabled: true, allowAdmins: true, allowViewers: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -68,6 +70,17 @@ const Leaderboard = () => {
     `/?designerId=${encodeURIComponent(result.designerId)}&date=${encodeURIComponent(result.date)}&itemId=${encodeURIComponent(result.itemId)}`
   );
 
+  const buildTasksUrl = (fullSearch: boolean) => {
+    if (fullSearch) return '/api/tasks';
+    const month = currentDate.getMonth() + 1;
+    const year = currentDate.getFullYear();
+    return `/api/tasks?month=${month}&year=${year}`;
+  };
+
+  const sortByDateAsc = <T extends TaskSearchResult>(results: T[]) => (
+    [...results].sort((a, b) => a.date.localeCompare(b.date))
+  );
+
   // Extract specification number from task name (only 5 digit number)
   const extractSpecNumber = (taskName: string): string | null => {
     if (!taskName) return null;
@@ -77,7 +90,7 @@ const Leaderboard = () => {
   };
 
   // Search for tasks by specification number
-  const searchBySpecNumber = useCallback(async (currentSpec?: string) => {
+  const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean) => {
     const targetSpec = currentSpec !== undefined ? currentSpec : specNumber;
     if (targetSpec.length !== 5) {
       setSpecResults([]);
@@ -85,9 +98,7 @@ const Leaderboard = () => {
     }
 
     try {
-      const month = currentDate.getMonth() + 1;
-      const year = currentDate.getFullYear();
-      const res = await axios.get(`/api/tasks?month=${month}&year=${year}`, authHeader);
+      const res = await axios.get(buildTasksUrl(fullSearchOverride ?? specFullSearch), authHeader);
       const tasks = res.data;
 
       const results: TaskSearchResult[] = [];
@@ -118,14 +129,14 @@ const Leaderboard = () => {
         });
       });
 
-      setSpecResults(results);
+      setSpecResults(sortByDateAsc(results));
     } catch (err: any) {
       console.error('Error searching spec:', err);
       addToast('搜索失败', 'error');
     }
-  }, [specNumber, currentDate, designers, token]);
+  }, [specNumber, currentDate, designers, token, specFullSearch]);
 
-  const searchByGunName = useCallback(async (currentGunName?: string) => {
+  const searchByGunName = useCallback(async (currentGunName?: string, fullSearchOverride?: boolean) => {
     const targetGunName = (currentGunName !== undefined ? currentGunName : gunName).trim();
     if (!targetGunName) {
       setGunResults([]);
@@ -133,9 +144,7 @@ const Leaderboard = () => {
     }
 
     try {
-      const month = currentDate.getMonth() + 1;
-      const year = currentDate.getFullYear();
-      const res = await axios.get(`/api/tasks?month=${month}&year=${year}`, authHeader);
+      const res = await axios.get(buildTasksUrl(fullSearchOverride ?? gunFullSearch), authHeader);
       const tasks = res.data;
       const normalizedTarget = targetGunName.toLowerCase();
       const results: GunSearchResult[] = [];
@@ -166,12 +175,12 @@ const Leaderboard = () => {
         });
       });
 
-      setGunResults(results);
+      setGunResults(sortByDateAsc(results));
     } catch (err: any) {
       console.error('Error searching gun:', err);
       addToast('枪名搜索失败', 'error');
     }
-  }, [gunName, currentDate, designers, token]);
+  }, [gunName, currentDate, designers, token, gunFullSearch]);
 
   const refreshSearches = () => {
     if (specNumber.length === 5) searchBySpecNumber(specNumber);
@@ -186,7 +195,7 @@ const Leaderboard = () => {
 
     const role = user.role;
     if (role === 'admin' && leaderboardSettings.allowAdmins) return true;
-    if (role === 'designer' && leaderboardSettings.allowViewers) return true;
+    if (role === 'user' && leaderboardSettings.allowViewers) return true;
     
     return false;
   }, [user, leaderboardSettings, isSuperAdmin]);
@@ -201,7 +210,8 @@ const Leaderboard = () => {
 
   const fetchDesigners = useCallback(async () => {
     try {
-      const res = await axios.get('/api/designers');
+      const headers = token ? { headers: { Authorization: `Bearer ${token}` } } : undefined;
+      const res = await axios.get('/api/designers', headers);
       setDesigners(res.data);
     } catch (err: any) {
       console.error('Error fetching designers:', err);
@@ -209,7 +219,7 @@ const Leaderboard = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   const fetchLeaderboardSettings = useCallback(async () => {
     try {
@@ -225,6 +235,19 @@ const Leaderboard = () => {
 
   const updateLeaderboardSettings = async (next: Partial<typeof leaderboardSettings>) => {
     const updated = { ...leaderboardSettings, ...next };
+    if (next.enabled === false) {
+      updated.allowAdmins = false;
+      updated.allowViewers = false;
+    }
+    if (next.enabled === true) {
+      updated.allowAdmins = true;
+      updated.allowViewers = true;
+    }
+    if (next.allowAdmins === false && updated.allowViewers) {
+      addToast('游客/普通用户权限开启时，不能关闭一般管理员权限', 'error');
+      return;
+    }
+    if (updated.allowViewers) updated.allowAdmins = true;
     setLeaderboardSettings(updated);
     if (!isSuperAdmin) return;
     try {
@@ -309,6 +332,12 @@ const Leaderboard = () => {
     }
   }, [loading, designers, fetchLeaderboardData]);
 
+  useEffect(() => {
+    if (loading || designers.length === 0) return;
+    if (specNumber.length === 5) searchBySpecNumber(specNumber);
+    if (gunName.trim()) searchByGunName(gunName);
+  }, [currentDate, specFullSearch, gunFullSearch]);
+
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
   const sortedByHours = useMemo(() => 
@@ -368,7 +397,7 @@ const Leaderboard = () => {
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <BarChart2 size={64} className="mx-auto text-gray-300 mb-4" />
-            <h2 className="text-xl font-bold text-gray-600">{isClosed ? '报表功能已关闭' : '暂无权限访问报表'}</h2>
+            <h2 className="text-xl font-bold text-gray-600">{isClosed ? '报表功能已关闭' : '暂无权限访问任务报表'}</h2>
             <p className="text-gray-400 mt-2">
               {isClosed ? '请联系超级管理员开启此功能' : '请联系超级管理员开启对应权限'}
             </p>
@@ -486,10 +515,29 @@ const Leaderboard = () => {
         {/* Specification Progress Management */}
         <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-8">
           <div className="px-6 py-5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
-            <h2 className="text-lg font-bold flex items-center">
-              <BarChart2 className="mr-2" size={22} />
-              仕样进度管理
-            </h2>
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-lg font-bold flex items-center">
+                <BarChart2 className="mr-2" size={22} />
+                仕样进度管理
+              </h2>
+              <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
+                <span>全表搜索</span>
+                <span className="relative inline-flex h-5 w-9 items-center">
+                  <input
+                    type="checkbox"
+                    checked={specFullSearch}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setSpecFullSearch(next);
+                      if (specNumber.length === 5) searchBySpecNumber(specNumber, next);
+                    }}
+                    className="peer sr-only"
+                  />
+                  <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
+                  <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4 peer-checked:bg-blue-600"></span>
+                </span>
+              </label>
+            </div>
             <p className="text-blue-100 text-sm mt-1">输入五位仕样号查看任务状态</p>
           </div>
           
@@ -580,11 +628,30 @@ const Leaderboard = () => {
 
         <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
           <div className="px-6 py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white">
-            <h2 className="text-lg font-bold flex items-center">
-              <TrendingUp className="mr-2" size={22} />
-              枪名周期管理
-            </h2>
-            <p className="text-emerald-100 text-sm mt-1">输入枪名匹配设计员、任务与日期</p>
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-lg font-bold flex items-center">
+                <TrendingUp className="mr-2" size={22} />
+                枪名周期管理
+              </h2>
+              <label className="flex items-center gap-2 text-xs font-bold text-emerald-50 cursor-pointer select-none">
+                <span>全表搜索</span>
+                <span className="relative inline-flex h-5 w-9 items-center">
+                  <input
+                    type="checkbox"
+                    checked={gunFullSearch}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setGunFullSearch(next);
+                      if (gunName.trim()) searchByGunName(gunName, next);
+                    }}
+                    className="peer sr-only"
+                  />
+                  <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
+                  <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4 peer-checked:bg-emerald-600"></span>
+                </span>
+              </label>
+            </div>
+            <p className="text-emerald-100 text-sm mt-1">输入枪名查看枪名生命周期</p>
           </div>
 
           <div className="p-6">
@@ -659,7 +726,7 @@ const Leaderboard = () => {
               {[
                 { label: '启用任务报表', detail: 'Global Toggle', key: 'enabled' as const },
                 { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-                { label: '普通查看者', detail: 'Viewer Access', key: 'allowViewers' as const }
+                { label: '游客/普通用户', detail: 'Guest Access', key: 'allowViewers' as const }
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                   <div>

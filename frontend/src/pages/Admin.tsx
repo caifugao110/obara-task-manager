@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { UserPlus, Trash2, Shield, User, ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft } from 'lucide-react';
+import { UserPlus, Trash2, Shield, User, ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download } from 'lucide-react';
 import { format } from 'date-fns';
 import {
   DndContext,
@@ -104,7 +104,7 @@ interface UserData {
   id: string;
   username: string;
   name: string;
-  role: 'superadmin' | 'admin';
+  role: 'superadmin' | 'admin' | 'user';
   group?: string;
   disabled?: boolean;
 }
@@ -125,7 +125,7 @@ const Admin = () => {
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newName, setNewName] = useState('');
-  const [newRole, setNewRole] = useState<'admin'>('admin');
+  const [newRole, setNewRole] = useState<'admin' | 'user'>('admin');
   
   // Designer Form
   const [newDesignerName, setNewDesignerName] = useState('');
@@ -141,6 +141,9 @@ const Admin = () => {
   const [editingDesignerId, setEditingDesignerId] = useState<string | null>(null);
   const [editingDesignerName, setEditingDesignerName] = useState('');
   const [editingDesignerGroup, setEditingDesignerGroup] = useState('');
+  const [bulkImportType, setBulkImportType] = useState<'designers' | 'users' | null>(null);
+  const [bulkImportText, setBulkImportText] = useState('');
+  const [bulkImportSubmitting, setBulkImportSubmitting] = useState(false);
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const authHeader = useMemo(
@@ -162,6 +165,98 @@ const Admin = () => {
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 3000);
+  };
+
+  const parseTableText = (text: string) => {
+    return text
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const delimiter = line.includes('\t') ? '\t' : ',';
+        return line.split(delimiter).map(cell => cell.trim().replace(/^\uFEFF/, '').replace(/^"|"$/g, ''));
+      });
+  };
+
+  const normalizeRole = (role?: string): 'admin' | 'user' => {
+    const value = (role || '').trim().toLowerCase();
+    if (value === 'user' || value === '普通用户') return 'user';
+    return 'admin';
+  };
+
+  const getRoleLabel = (role: UserData['role']) => {
+    if (role === 'superadmin') return '超级管理员';
+    if (role === 'admin') return '一般管理员';
+    return '普通用户';
+  };
+
+  const downloadTemplate = (type: 'designers' | 'users') => {
+    const csv = type === 'designers'
+      ? 'name,group\n张三,设计一课\n李四,设计二课\n'
+      : 'username,password,name,role\nuser001,123456,普通用户A,user\nadmin001,123456,管理员A,admin\n';
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = type === 'designers' ? '设计人员导入模板.csv' : '登录用户导入模板.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleBulkFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setBulkImportText(text);
+    e.target.value = '';
+  };
+
+  const handleBulkImport = async () => {
+    if (!bulkImportType || !authHeader) return;
+    const rows = parseTableText(bulkImportText);
+    if (rows.length === 0) {
+      addToast('请先粘贴或选择要导入的表格内容', 'error');
+      return;
+    }
+
+    const dataRows = rows[0]?.some(cell => ['name', 'group', 'username', 'password', 'role'].includes(cell.toLowerCase()))
+      ? rows.slice(1)
+      : rows;
+
+    setBulkImportSubmitting(true);
+    try {
+      let successCount = 0;
+      if (bulkImportType === 'designers') {
+        for (const row of dataRows) {
+          const [name, group = ''] = row;
+          if (!name) continue;
+          await axios.post('/api/designers', { name, group }, authHeader);
+          successCount++;
+        }
+      } else {
+        if (!isSuperAdmin) return;
+        for (const row of dataRows) {
+          const [username, password, name, role] = row;
+          if (!username || !password || !name) continue;
+          await axios.post('/api/users', {
+            username,
+            password,
+            name,
+            role: normalizeRole(role)
+          }, authHeader);
+          successCount++;
+        }
+      }
+
+      addToast(`已导入 ${successCount} 条数据`, 'success');
+      setBulkImportType(null);
+      setBulkImportText('');
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '批量导入失败', 'error');
+    } finally {
+      setBulkImportSubmitting(false);
+    }
   };
 
   const fetchData = useCallback(async () => {
@@ -200,13 +295,14 @@ const Admin = () => {
         username: newUsername,
         password: newPassword,
         name: newName || newUsername,
-        role: 'admin'
+        role: newRole
       }, authHeader);
       
-      addToast('管理员账号创建成功', 'success');
+      addToast('登录用户创建成功', 'success');
       setNewUsername('');
       setNewPassword('');
       setNewName('');
+      setNewRole('admin');
       fetchData();
     } catch (err: any) {
       addToast(err.response?.data?.message || '创建失败', 'error');
@@ -267,7 +363,7 @@ const Admin = () => {
       addToast('不能删除自己', 'error');
       return;
     }
-    if (!window.confirm('确定要删除该管理员吗？')) return;
+    if (!window.confirm('确定要删除该登录用户吗？')) return;
     try {
       await axios.delete(`/api/users/${id}`, authHeader);
       addToast('账号已删除', 'success');
@@ -492,6 +588,91 @@ const Admin = () => {
         </div>
       )}
 
+      {bulkImportType && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => {
+              if (bulkImportSubmitting) return;
+              setBulkImportType(null);
+              setBulkImportText('');
+            }}
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl w-[680px] max-w-[94vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <div className="font-bold text-gray-800">
+                {bulkImportType === 'designers' ? '批量添加设计人员' : '批量添加登录用户'}
+              </div>
+              <button
+                className="p-1 rounded hover:bg-gray-100 text-gray-500"
+                onClick={() => {
+                  if (bulkImportSubmitting) return;
+                  setBulkImportType(null);
+                  setBulkImportText('');
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => downloadTemplate(bulkImportType)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 transition"
+                >
+                  <Download size={16} />
+                  下载模板
+                </button>
+                <label className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 transition cursor-pointer">
+                  <Upload size={16} />
+                  选择表格文件
+                  <input
+                    type="file"
+                    accept=".csv,.txt,.tsv"
+                    className="hidden"
+                    onChange={handleBulkFileChange}
+                  />
+                </label>
+              </div>
+              <textarea
+                className="h-64 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm font-mono outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                value={bulkImportText}
+                onChange={(e) => setBulkImportText(e.target.value)}
+                placeholder={
+                  bulkImportType === 'designers'
+                    ? '可直接从外部表格复制两列：姓名、分组'
+                    : '可直接从外部表格复制四列：用户名、密码、姓名、角色(admin/user)'
+                }
+              />
+              <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700">
+                支持 CSV、TSV，或从 Excel/WPS 复制后直接粘贴。第一行可以保留模板表头。
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-white border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-50 transition"
+                onClick={() => {
+                  if (bulkImportSubmitting) return;
+                  setBulkImportType(null);
+                  setBulkImportText('');
+                }}
+                disabled={bulkImportSubmitting}
+              >
+                取消
+              </button>
+              <button
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white font-bold hover:bg-blue-700 transition disabled:opacity-50"
+                onClick={handleBulkImport}
+                disabled={bulkImportSubmitting}
+              >
+                确认导入
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
@@ -523,8 +704,21 @@ const Admin = () => {
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-lg font-bold text-gray-800">设计人员表格名单</h2>
-              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{designers.length} 位设计人员</span>
+              <h2 className="text-lg font-bold text-gray-800">设计人员列表</h2>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkImportType('designers');
+                    setBulkImportText('');
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-100 transition"
+                >
+                  <Upload size={14} />
+                  批量添加设计人员
+                </button>
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{designers.length} 位设计人员</span>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <DndContext 
@@ -612,8 +806,22 @@ const Admin = () => {
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-8 border-t border-gray-200">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-lg font-bold text-gray-800">系统管理员列表</h2>
-              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{users.length} 个管理员</span>
+              <h2 className="text-lg font-bold text-gray-800">登录用户列表</h2>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkImportType('users');
+                    setBulkImportText('');
+                  }}
+                  disabled={!isSuperAdmin}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-purple-50 px-3 py-1.5 text-xs font-bold text-purple-600 hover:bg-purple-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Upload size={14} />
+                  批量添加登录用户
+                </button>
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{users.length} 个用户</span>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left">
@@ -631,15 +839,15 @@ const Admin = () => {
                       <td className="px-6 py-4 font-bold text-gray-700">{u.name}</td>
                       <td className="px-6 py-4 text-gray-500 font-medium">{u.username}</td>
                       <td className="px-6 py-4">
-                        {u.role === 'superadmin' ? (
-                          <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-[10px] font-black flex items-center w-fit ring-1 ring-red-200">
-                            <Shield size={12} className="mr-1.5" /> 超级管理员
-                          </span>
-                        ) : (
-                          <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-[10px] font-black flex items-center w-fit ring-1 ring-purple-200">
-                            <Shield size={12} className="mr-1.5" /> 一般管理员
-                          </span>
-                        )}
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-black flex items-center w-fit ring-1 ${
+                          u.role === 'superadmin'
+                            ? 'bg-red-100 text-red-700 ring-red-200'
+                            : u.role === 'admin'
+                              ? 'bg-purple-100 text-purple-700 ring-purple-200'
+                              : 'bg-gray-100 text-gray-700 ring-gray-200'
+                        }`}>
+                          <Shield size={12} className="mr-1.5" /> {getRoleLabel(u.role)}
+                        </span>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -652,7 +860,7 @@ const Admin = () => {
                               <ToggleLeft size={18} className={u.disabled ? 'opacity-50' : ''} />
                             </button>
                           )}
-                          {isSuperAdmin && u.role === 'admin' && (
+                          {isSuperAdmin && u.role !== 'superadmin' && (
                             <button 
                               onClick={() => handleResetPassword(u.id)}
                               className="p-2 text-gray-300 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all duration-200"
@@ -682,7 +890,7 @@ const Admin = () => {
           <div className={`bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit ${!isSuperAdmin ? 'opacity-50 pointer-events-none' : ''}`}>
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
-                <Shield size={20} className="mr-2 text-purple-600" /> 新增管理员
+                <Shield size={20} className="mr-2 text-purple-600" /> 新增登录用户
               </h2>
               {!isSuperAdmin && <p className="text-[10px] text-red-500 mt-1">仅超级管理员可操作</p>}
             </div>
@@ -725,16 +933,17 @@ const Admin = () => {
                 <select 
                   className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition cursor-pointer"
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value as 'admin')}
+                  onChange={(e) => setNewRole(e.target.value as 'admin' | 'user')}
                 >
                   <option value="admin">一般管理员</option>
+                  <option value="user">普通用户</option>
                 </select>
               </div>
               <button 
                 type="submit" 
                 className="w-full bg-purple-600 text-white py-3.5 rounded-lg font-bold hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all duration-200 active:scale-[0.98]"
               >
-                创建账号
+                创建登录用户
               </button>
             </form>
           </div>

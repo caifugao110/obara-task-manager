@@ -104,7 +104,7 @@ export const usersAPI = {
     username: string;
     password: string;
     name: string;
-    role: 'superadmin' | 'admin';
+    role: 'superadmin' | 'admin' | 'user';
     group?: string;
   }): Promise<User> => {
     const response = await axiosInstance.post<User>('/users', userData);
@@ -120,7 +120,7 @@ export const usersAPI = {
       username?: string;
       password?: string;
       name?: string;
-      role?: 'superadmin' | 'admin';
+      role?: 'superadmin' | 'admin' | 'user';
       group?: string;
       disabled?: boolean;
     }

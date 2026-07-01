@@ -10,7 +10,7 @@ const userCreateSchema = Joi.object({
   username: Joi.string().alphanum().min(3).max(30).required(),
   password: Joi.string().min(6).required(),
   name: Joi.string().min(2).max(50).required(),
-  role: Joi.string().valid('superadmin', 'admin').default('admin'),
+  role: Joi.string().valid('superadmin', 'admin', 'user').default('admin'),
   group: Joi.string().allow('').default('')
 });
 
@@ -18,12 +18,12 @@ const userUpdateSchema = Joi.object({
   username: Joi.string().alphanum().min(3).max(30),
   password: Joi.string().min(6),
   name: Joi.string().min(2).max(50),
-  role: Joi.string().valid('superadmin', 'admin'),
+  role: Joi.string().valid('superadmin', 'admin', 'user'),
   group: Joi.string().allow(''),
   disabled: Joi.boolean()
 });
 
-// Get all login users (Admins and SuperAdmins)
+// Get all login users
 router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
   
@@ -47,10 +47,10 @@ router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res)
   res.json(users);
 }));
 
-// Create login user (SuperAdmin can create Admin/SuperAdmin, Admin cannot create anyone)
+// Create login user (SuperAdmin can create Admin/User, Admin cannot create anyone)
 router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   if (req.user.role !== 'superadmin') {
-    return res.status(403).json({ message: '只有超级管理员可以增加管理员' });
+    return res.status(403).json({ message: '只有超级管理员可以增加登录用户' });
   }
 
   const { error } = userCreateSchema.validate(req.body);
@@ -122,7 +122,7 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
 // Delete login user (SuperAdmin only)
 router.delete('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   if (req.user.role !== 'superadmin') {
-    return res.status(403).json({ message: '只有超级管理员可以删除管理员' });
+    return res.status(403).json({ message: '只有超级管理员可以删除登录用户' });
   }
 
   const data = db.readDb();

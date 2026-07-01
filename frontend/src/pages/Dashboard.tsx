@@ -43,6 +43,10 @@ interface TaskItem {
   color?: string;
   guns?: GunItem[];
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
+  createdAt?: string;
+  createdBy?: { id: string; username: string; name: string };
+  updatedAt?: string;
+  updatedBy?: { id: string; username: string; name: string };
 }
 
 interface TaskSheet {
@@ -64,7 +68,7 @@ interface User {
   id: string;
   username: string;
   name: string;
-  role: 'superadmin' | 'admin';
+  role: 'superadmin' | 'admin' | 'user';
 }
 
 type TaskField = 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType';
@@ -77,8 +81,15 @@ type PendingChange = {
   value: any;
 };
 
-const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGun, onDeleteTask, selectedTask, onSelectTask }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, selectedTask: {itemId: string, designerId: string, date: string} | null, onSelectTask: (itemId: string, designerId: string, date: string) => void }) => {
-  const isSelected = selectedTask && selectedTask.itemId === item.id && selectedTask.designerId === designerId && selectedTask.date === date;
+const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
+
+type SelectedTask = { itemId: string; designerId: string; date: string };
+
+const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__${selection.date}__${selection.itemId}`;
+
+const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGun, onDeleteTask, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
+  const currentSelection = { itemId: item.id, designerId, date };
+  const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
 
   const {
     attributes,
@@ -135,6 +146,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGu
       data-task-id={item.id}
       data-designer-id={designerId}
       data-date={date}
+      title={isAdmin ? metadataTitle : undefined}
       style={{ ...style, ...getTypeStyle() }}
       {...attributes}
       {...listeners}
@@ -144,15 +156,15 @@ const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGu
           if (e.key === 'Delete') {
             e.preventDefault();
             onDeleteTask(item, designerId, date);
-          } else if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
             e.preventDefault();
             const copyEvent = new CustomEvent('task-copy', { detail: { item, designerId, date } });
             window.dispatchEvent(copyEvent);
-          } else if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
+          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
             e.preventDefault();
             const cutEvent = new CustomEvent('task-cut', { detail: { item, designerId, date } });
             window.dispatchEvent(cutEvent);
-          } else if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
             e.preventDefault();
             const pasteEvent = new CustomEvent('task-paste', { detail: { item, designerId, date } });
             window.dispatchEvent(pasteEvent);
@@ -160,10 +172,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGu
         }
       }}
       onClick={(e) => {
-        if (e.ctrlKey || e.metaKey) return;
         e.stopPropagation();
         if (isAdmin) {
-          onSelectTask(item.id, designerId, date);
+          onSelectTask(item.id, designerId, date, e.ctrlKey || e.metaKey);
         }
       }}
       onDoubleClick={(e) => {
@@ -303,6 +314,8 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [systemSettingsLoaded, setSystemSettingsLoaded] = useState(false);
   const [allowGuestView, setAllowGuestView] = useState(true);
+  const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
+  const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const [selectedDesignerId, setSelectedDesignerId] = useState<string>('all');
@@ -319,7 +332,11 @@ const Dashboard = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [isOverDelete, setIsOverDelete] = useState(false);
   const lastOverIdRef = useRef<string | null>(null);
-  const [selectedTask, setSelectedTask] = useState<{itemId: string, designerId: string, date: string} | null>(null);
+  const [selectedTasks, setSelectedTasks] = useState<SelectedTask[]>([]);
+  const selectedTasksRef = useRef<SelectedTask[]>([]);
+  useEffect(() => {
+    selectedTasksRef.current = selectedTasks;
+  }, [selectedTasks]);
   const [selectedCell, setSelectedCell] = useState<{designerId: string, date: string} | null>(null);
   const [editingUser, setEditingUser] = useState<{designerId: string, date: string, username: string, name: string} | null>(null);
   const [history, setHistory] = useState<{operation: string, data: any, timestamp: number}[]>([]);
@@ -408,15 +425,15 @@ const Dashboard = () => {
     if (isCtrlDrag && sourceData?.type === 'task' && targetData?.type === 'cell') {
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        const res = await axios.post('/api/tasks/item', { 
+        const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date });
+        const res = await axios.post('/api/tasks/item/batch', { 
           designerId: targetData.designerId, 
           date: targetData.date, 
-          taskName: sourceData.item.taskName || '', 
-          hours: sourceData.item.hours || 0, 
-          color: sourceData.item.color || '', 
-          guns: sourceData.item.guns || [], 
-          leaveType: sourceData.item.leaveType || null 
+          items: payloads.map(payload => payload.item)
         }, authHeader);
+        addToHistory('batchAdd', {
+          items: (res.data.items || []).map((created: TaskItem) => ({ designerId: targetData.designerId, date: targetData.date, itemId: created.id }))
+        });
         upsertSheet(res.data.sheet);
         socketRef.current?.emit('task_updated');
         setActiveTask(null);
@@ -487,26 +504,41 @@ const Dashboard = () => {
 
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        await axios.post('/api/tasks/move', {
-          sourceDesignerId,
-          sourceDate,
-          itemId: sourceId,
-          targetDesignerId,
-          targetDate,
-          newIndex
-        }, authHeader);
+        const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceDesignerId, date: sourceDate });
+        const movedPayloads = payloads.filter(payload => !(payload.designerId === targetDesignerId && payload.date === targetDate && payload.item.id === over.id));
+        if (movedPayloads.length === 0) {
+          setActiveTask(null);
+          return;
+        }
+
+        for (const payload of movedPayloads) {
+          await axios.post('/api/tasks/move', {
+            sourceDesignerId: payload.designerId,
+            sourceDate: payload.date,
+            itemId: payload.item.id,
+            targetDesignerId,
+            targetDate,
+            newIndex: movedPayloads.length === 1 ? newIndex : undefined
+          }, authHeader);
+        }
         
         // Add to history for undo
-        addToHistory('move', {
-          sourceDesignerId,
-          sourceDate,
-          targetDesignerId,
-          targetDate,
-          itemId: sourceId
+        addToHistory('batchMove', {
+          items: movedPayloads.map(payload => ({
+            sourceDesignerId: payload.designerId,
+            sourceDate: payload.date,
+            targetDesignerId,
+            targetDate,
+            itemId: payload.item.id
+          }))
         });
         
         socketRef.current?.emit('task_updated');
+        socketRef.current?.emit('stop_editing');
         fetchSheets();
+        setSelectedTasks([]);
+        setSelectedCell(null);
+        setEditingUser(null);
         addToast('任务已移动', 'success');
       } catch (err: any) {
         addToast('移动失败', 'error');
@@ -586,7 +618,7 @@ const Dashboard = () => {
       localStorage.setItem('collapsedGroups', JSON.stringify(next));
       return next;
     });
-    setSelectedTask({ itemId: jumpTarget.itemId, designerId: jumpTarget.designerId, date: jumpTarget.date });
+    setSelectedTasks([{ itemId: jumpTarget.itemId, designerId: jumpTarget.designerId, date: jumpTarget.date }]);
 
     window.setTimeout(() => {
       const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
@@ -651,9 +683,11 @@ const Dashboard = () => {
   const [isAddMode, setIsAddMode] = useState(false);
   const [selectedTaskType, setSelectedTaskType] = useState<'none' | 'trip' | 'sick' | 'vacation' | 'illness'>('none');
   const [addModeTaskName, setAddModeTaskName] = useState<string>('');
+  const [addModeTripPlace, setAddModeTripPlace] = useState<string>('');
   const [addModeHours, setAddModeHours] = useState<number>(0);
   const [addModeGuns, setAddModeGuns] = useState<GunItem[]>([]);
   const [addModeColor, setAddModeColor] = useState<string>('#dcfce7');
+  const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string }>>({});
 
   const openModal = (designerId: string, date: string, addMode: boolean = false) => {
     setModalDesignerId(designerId);
@@ -662,9 +696,11 @@ const Dashboard = () => {
     setIsAddMode(addMode);
     setSelectedTaskType('none');
     setAddModeTaskName('');
+    setAddModeTripPlace('');
     setAddModeHours(0);
     setAddModeGuns([]);
     setAddModeColor('#dcfce7');
+    setTaskTypeDrafts({});
     setModalOpen(true);
   };
 
@@ -673,6 +709,7 @@ const Dashboard = () => {
     setModalDate(date);
     setFocusTarget({ itemId: item.id, type, gunIndex });
     setIsAddMode(false);
+    setTaskTypeDrafts({});
     setModalOpen(true);
   };
 
@@ -716,7 +753,7 @@ const Dashboard = () => {
   }, [currentDate, token]);
 
   const addToHistory = (operation: string, data: any) => {
-    setHistory(prev => [...prev, { operation, data, timestamp: Date.now() }]);
+    setHistory(prev => [...prev, { operation, data, timestamp: Date.now() }].slice(-5));
   };
 
   const performUndo = useCallback(async (operation: {operation: string, data: any, timestamp: number}) => {
@@ -749,6 +786,36 @@ const Dashboard = () => {
           socketRef.current?.emit('task_updated');
           addToast('操作已撤销', 'success');
           break;
+
+        case 'batchAdd':
+          const { items } = operation.data;
+          for (const added of items || []) {
+            await axios.delete('/api/tasks/item', {
+              ...authHeader,
+              data: { designerId: added.designerId, date: added.date, itemId: added.itemId }
+            });
+          }
+          fetchSheets();
+          socketRef.current?.emit('task_updated');
+          addToast('操作已撤销', 'success');
+          break;
+
+        case 'batchDelete':
+          for (const deleted of operation.data.items || []) {
+            await axios.post('/api/tasks/item', {
+              designerId: deleted.designerId,
+              date: deleted.date,
+              taskName: deleted.item.taskName || '',
+              hours: deleted.item.hours || 0,
+              color: deleted.item.color || '',
+              guns: deleted.item.guns || [],
+              leaveType: deleted.item.leaveType || null
+            }, authHeader);
+          }
+          fetchSheets();
+          socketRef.current?.emit('task_updated');
+          addToast('操作已撤销', 'success');
+          break;
         
         case 'move':
           // Reverse move operation
@@ -760,6 +827,21 @@ const Dashboard = () => {
             targetDesignerId: sourceDesignerId,
             targetDate: sourceDate
           }, authHeader);
+          fetchSheets();
+          socketRef.current?.emit('task_updated');
+          addToast('操作已撤销', 'success');
+          break;
+
+        case 'batchMove':
+          for (const moved of operation.data.items || []) {
+            await axios.post('/api/tasks/move', {
+              sourceDesignerId: moved.targetDesignerId,
+              sourceDate: moved.targetDate,
+              itemId: moved.itemId,
+              targetDesignerId: moved.sourceDesignerId,
+              targetDate: moved.sourceDate
+            }, authHeader);
+          }
           fetchSheets();
           socketRef.current?.emit('task_updated');
           addToast('操作已撤销', 'success');
@@ -782,12 +864,14 @@ const Dashboard = () => {
     };
 
     const handleUndo = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         if (history.length > 0) {
           const lastOperation = history[history.length - 1];
           performUndo(lastOperation);
           setHistory(prev => prev.slice(0, -1));
+        } else {
+          addToast('暂无可撤销操作', 'error');
         }
       }
     };
@@ -820,10 +904,16 @@ const Dashboard = () => {
   }, [fetchSheets, token]);
 
   useEffect(() => {
-    axios.get('/api/system/settings')
-      .then(res => {
-        const guestAllowed = res.data.allowGuestView ?? true;
+    Promise.all([
+      axios.get('/api/system/settings'),
+      axios.get('/api/settings/leaderboard'),
+      axios.get('/api/settings/work-hours')
+    ])
+      .then(([systemRes, leaderboardRes, workHoursRes]) => {
+        const guestAllowed = systemRes.data.allowGuestView ?? true;
         setAllowGuestView(guestAllowed);
+        setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
+        setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
         if (!guestAllowed && !user) setLoading(false);
       })
       .catch(() => setAllowGuestView(true))
@@ -842,6 +932,7 @@ const Dashboard = () => {
     });
 
     socketRef.current.on('task_refreshed', () => {
+      setEditingUser(null);
       fetchSheets();
     });
 
@@ -863,31 +954,36 @@ const Dashboard = () => {
   useEffect(() => {
     const handleTaskCopy = (e: Event) => {
       const customEvent = e as CustomEvent;
-      const { item } = customEvent.detail;
-      const taskName = item.taskName || '未命名';
-      const leaveTypeLabel = item.leaveType === 'sick' ? '事假' : item.leaveType === 'vacation' ? '休假' : item.leaveType === 'illness' ? '病假' : item.leaveType === 'trip' ? '出差' : '';
-      const displayName = leaveTypeLabel || taskName;
-      setClipboard([item]);
-      addToast('任务已复制', 'success');
+      const { item, designerId, date } = customEvent.detail;
+      const payloads = getSelectedTaskPayloads({ item, designerId, date });
+      setClipboard(payloads.map(payload => payload.item));
+      addToast('粘贴已准备', 'success');
     };
 
     const handleTaskCut = async (e: Event) => {
       const customEvent = e as CustomEvent;
       const { item, designerId, date } = customEvent.detail;
       if (!user) return;
+      const payloads = getSelectedTaskPayloads({ item, designerId, date });
+      if (payloads.length === 0) return;
       
-      // Copy to clipboard first
-      setClipboard([item]);
+      setClipboard(payloads.map(payload => payload.item));
+      addToast('剪切已准备', 'success');
       
-      // Then delete the original task
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        await axios.delete('/api/tasks/item', { ...authHeader, data: { designerId, date, itemId: item.id } });
-        upsertSheet((await axios.get(`/api/tasks?month=${currentDate.getMonth() + 1}&year=${currentDate.getFullYear()}`, authHeader)).data);
+        for (const payload of payloads) {
+          await axios.delete('/api/tasks/item', { ...authHeader, data: { designerId: payload.designerId, date: payload.date, itemId: payload.item.id } });
+        }
+        addToHistory('batchDelete', {
+          items: payloads.map(payload => ({ designerId: payload.designerId, date: payload.date, item: payload.item }))
+        });
+        fetchSheets();
         socketRef.current?.emit('task_updated');
-        addToast('任务已剪切', 'success');
-        setSelectedTask(null);
+        socketRef.current?.emit('stop_editing');
+        setSelectedTasks([]);
         setSelectedCell(null);
+        setEditingUser(null);
       } catch (err) {
         addToast('剪切失败', 'error');
       }
@@ -901,26 +997,23 @@ const Dashboard = () => {
         addToast('请先复制任务', 'error');
         return;
       }
+      addToast('任务已复制', 'success');
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        const itemToPaste = clipboardRef.current[0];
-        const taskName = itemToPaste.taskName || '未命名';
-        const leaveTypeLabel = itemToPaste.leaveType === 'sick' ? '事假' : itemToPaste.leaveType === 'vacation' ? '休假' : itemToPaste.leaveType === 'illness' ? '病假' : itemToPaste.leaveType === 'trip' ? '出差' : '';
-        const displayName = leaveTypeLabel || taskName;
-        const res = await axios.post('/api/tasks/item', { 
+        const res = await axios.post('/api/tasks/item/batch', { 
           designerId, 
           date, 
-          taskName: itemToPaste.taskName || '', 
-          hours: itemToPaste.hours || 0, 
-          color: itemToPaste.color || '', 
-          guns: itemToPaste.guns || [], 
-          leaveType: itemToPaste.leaveType || null 
+          items: clipboardRef.current
         }, authHeader);
-        addToast('任务已粘贴', 'success');
+        addToHistory('batchAdd', {
+          items: (res.data.items || []).map((created: TaskItem) => ({ designerId, date, itemId: created.id }))
+        });
         upsertSheet(res.data.sheet);
         socketRef.current?.emit('task_updated');
-        setSelectedTask(null);
+        socketRef.current?.emit('stop_editing');
+        setSelectedTasks([]);
         setSelectedCell(null);
+        setEditingUser(null);
       } catch (err) {
         addToast('粘贴失败', 'error');
       }
@@ -935,7 +1028,7 @@ const Dashboard = () => {
       window.removeEventListener('task-cut', handleTaskCut);
       window.removeEventListener('task-paste', handleTaskPaste);
     };
-  }, [clipboard, user, token, currentDate]);
+  }, [clipboard, user, token, fetchSheets, upsertSheet, sheets]);
 
   const sheetByDesignerId = useMemo(() => {
     const map: Record<string, TaskSheet | undefined> = {};
@@ -962,6 +1055,37 @@ const Dashboard = () => {
     return Array.isArray(sheet?.days?.[date]) ? sheet.days[date] : [];
   };
 
+  function getSelectedTaskPayloads(fallback: { item: TaskItem; designerId: string; date: string }) {
+    const fallbackSelection = { itemId: fallback.item.id, designerId: fallback.designerId, date: fallback.date };
+    const selections = selectedTasksRef.current;
+    const activeSelections = selections.some(selection => taskSelectionKey(selection) === taskSelectionKey(fallbackSelection))
+      ? selections
+      : [fallbackSelection];
+
+    return activeSelections
+      .map(selection => {
+        const item = getAllItems(selection.designerId, selection.date).find(task => task.id === selection.itemId);
+        return item ? { item, designerId: selection.designerId, date: selection.date } : null;
+      })
+      .filter(Boolean) as { item: TaskItem; designerId: string; date: string }[];
+  }
+
+  const handleSelectTask = (itemId: string, designerId: string, date: string, append: boolean) => {
+    const nextSelection = { itemId, designerId, date };
+    if (!append) {
+      setSelectedTasks([nextSelection]);
+      return;
+    }
+
+    setSelectedTasks(prev => {
+      const key = taskSelectionKey(nextSelection);
+      if (prev.some(selection => taskSelectionKey(selection) === key)) {
+        return prev.filter(selection => taskSelectionKey(selection) !== key);
+      }
+      return [...prev, nextSelection];
+    });
+  };
+
   // 获取考虑 pendingChanges 后的任务字段值
   const getItemFieldWithPendingChanges = (itemId: string, field: string) => {
     const pendingChange = pendingChanges.find(change => change.itemId === itemId && change.field === field);
@@ -978,6 +1102,15 @@ const Dashboard = () => {
       updatedItem[change.field as keyof TaskItem] = change.value;
     });
     return updatedItem;
+  };
+
+  const hasInvalidNamedGunHours = (guns?: GunItem[]) => {
+    return (guns || []).some(gun => {
+      const name = String(gun.name || '').trim();
+      if (!name) return false;
+      const hours = typeof gun.hours === 'number' ? gun.hours : (parseFloat(String(gun.hours)) || 0);
+      return hours <= 0;
+    });
   };
  
   const calculateDailyTotal = (designerId: string, date: string) => {
@@ -1155,6 +1288,7 @@ const Dashboard = () => {
 
   const handlePaste = async (designerId: string, date: string) => {
     if (!clipboard || !user) return;
+    addToast('任务已复制', 'success');
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axios.post('/api/tasks/item/batch', { 
@@ -1163,9 +1297,15 @@ const Dashboard = () => {
         items: clipboard 
       }, authHeader);
       
-      addToast('任务已粘贴', 'success');
       upsertSheet(res.data.sheet);
+      addToHistory('batchAdd', {
+        items: (res.data.items || []).map((item: TaskItem) => ({ designerId, date, itemId: item.id }))
+      });
       socketRef.current?.emit('task_updated');
+      socketRef.current?.emit('stop_editing');
+      setSelectedTasks([]);
+      setSelectedCell(null);
+      setEditingUser(null);
     } catch (err) {
       addToast('粘贴失败', 'error');
     }
@@ -1173,6 +1313,33 @@ const Dashboard = () => {
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isSuperAdmin = user?.role === 'superadmin';
+
+  const canShowAccessLink = (access: typeof defaultAccessSettings) => {
+    if (isSuperAdmin) return true;
+    if (!access.enabled) return false;
+    if (!user) return access.allowViewers;
+    if (user.role === 'admin') return access.allowAdmins;
+    if (user.role === 'user') return access.allowViewers;
+    return false;
+  };
+
+  const formatTaskMetaTime = (value?: string) => {
+    if (!value) return '暂无记录';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '暂无记录';
+    return format(date, 'yyyy-MM-dd HH:mm');
+  };
+
+  const buildTaskMetadataTitle = (item: TaskItem) => {
+    const creator = item.createdBy?.name || item.createdBy?.username || '暂无记录';
+    const updater = item.updatedBy?.name || item.updatedBy?.username || '暂无记录';
+    return [
+      `创建者：${creator}`,
+      `创建时间：${formatTaskMetaTime(item.createdAt)}`,
+      `最后修改者：${updater}`,
+      `最后修改时间：${formatTaskMetaTime(item.updatedAt)}`
+    ].join('\n');
+  };
 
   return (
     <div className="min-h-screen bg-[#f3f3f3] flex flex-col font-sans">
@@ -1216,20 +1383,24 @@ const Dashboard = () => {
               <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-white/80" size={14} />
             </div>
           )}
-          <Link 
-            to="/leaderboard" 
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
-          >
-            <FileSpreadsheet size={16} className="text-blue-200" />
-            <span>任务报表</span>
-          </Link>
-          <Link
-            to="/work-hours"
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
-          >
-            <Clock size={16} className="text-amber-200" />
-            <span>工时管理</span>
-          </Link>
+          {canShowAccessLink(leaderboardAccess) && (
+              <Link 
+                to="/leaderboard" 
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+              >
+                <FileSpreadsheet size={16} className="text-blue-200" />
+                <span>任务报表</span>
+              </Link>
+          )}
+          {canShowAccessLink(workHoursAccess) && (
+              <Link
+                to="/work-hours"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+              >
+                <Clock size={16} className="text-amber-200" />
+                <span>工时管理</span>
+              </Link>
+          )}
           {isSuperAdmin && (
             <Link
               to="/system-settings"
@@ -1345,7 +1516,7 @@ const Dashboard = () => {
                                       className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] relative group/cell`}
                                       onClick={(e: React.MouseEvent) => {
                                         if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
-                                          setSelectedTask(null);
+                                          setSelectedTasks([]);
                                           setSelectedCell(null);
                                           socketRef.current?.emit('stop_editing');
                                         }
@@ -1354,13 +1525,25 @@ const Dashboard = () => {
                                       <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
                                         <div className="flex flex-col min-h-[40px]">
                                           {items.map(item => (
-                                            <SortableTask key={item.id} item={item} designerId={d.id} date={day.fullDate} isAdmin={isAdmin} onTaskClick={onTaskClick} onDeleteGun={onDeleteGun} onDeleteTask={onDeleteTask} selectedTask={selectedTask} onSelectTask={(itemId, designerId, date) => {
-                                          setSelectedTask({itemId, designerId, date});
-                                          setSelectedCell(null);
-                                          if (user) {
-                                            socketRef.current?.emit('start_editing', { designerId, date, userId: user.id, username: user.username, name: user.name });
-                                          }
-                                        }} />
+                                            <SortableTask
+                                              key={item.id}
+                                              item={item}
+                                              designerId={d.id}
+                                              date={day.fullDate}
+                                              isAdmin={isAdmin}
+                                              onTaskClick={onTaskClick}
+                                              onDeleteGun={onDeleteGun}
+                                              onDeleteTask={onDeleteTask}
+                                              selectedTasks={selectedTasks}
+                                              metadataTitle={buildTaskMetadataTitle(item)}
+                                              onSelectTask={(itemId, designerId, date, append) => {
+                                                handleSelectTask(itemId, designerId, date, append);
+                                                setSelectedCell(null);
+                                                if (user) {
+                                                  socketRef.current?.emit('start_editing', { designerId, date, userId: user.id, username: user.username, name: user.name });
+                                                }
+                                              }}
+                                            />
                                           ))}
                                           {isAdmin && (
                                             <div 
@@ -1368,7 +1551,7 @@ const Dashboard = () => {
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 setSelectedCell({ designerId: d.id, date: day.fullDate });
-                                                setSelectedTask(null);
+                                                setSelectedTasks([]);
                                                 if (user) {
                                                   socketRef.current?.emit('start_editing', { designerId: d.id, date: day.fullDate, userId: user.id, username: user.username, name: user.name });
                                                 }
@@ -1378,7 +1561,7 @@ const Dashboard = () => {
                                                 openModal(d.id, day.fullDate, true);
                                               }}
                                               onKeyDown={(e) => {
-                                                if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+                                                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
                                                   e.preventDefault();
                                                   e.stopPropagation();
                                                   // 实现粘贴功能
@@ -1568,6 +1751,8 @@ const Dashboard = () => {
                                 <input
                                   ref={el => inputRefs.current['task-new'] = el}
                                   className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                                  value={addModeTripPlace}
+                                  onChange={(e) => setAddModeTripPlace(e.target.value)}
                                   placeholder="输入地点或者客户"
                                   autoFocus
                                 />
@@ -1689,11 +1874,6 @@ const Dashboard = () => {
                           <div className="flex gap-2">
                             <button
                               onClick={() => {
-                                if (inputRefs.current['task-new']) {
-                                  inputRefs.current['task-new'].value = '';
-                                }
-                                setAddModeTaskName('');
-                                setAddModeGuns([]);
                                 setSelectedTaskType('none');
                               }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'none' ? 'bg-gray-100 text-gray-800 border border-gray-400' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
@@ -1702,10 +1882,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                if (inputRefs.current['task-new']) {
-                                  inputRefs.current['task-new'].value = '';
-                                }
-                                setAddModeTaskName('');
                                 setAddModeGuns([]);
                                 setSelectedTaskType('trip');
                               }}
@@ -1715,7 +1891,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                setAddModeTaskName('');
                                 setAddModeGuns([]);
                                 setSelectedTaskType('sick');
                               }}
@@ -1725,7 +1900,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                setAddModeTaskName('');
                                 setAddModeGuns([]);
                                 setSelectedTaskType('vacation');
                               }}
@@ -1735,7 +1909,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                setAddModeTaskName('');
                                 setAddModeGuns([]);
                                 setSelectedTaskType('illness');
                               }}
@@ -1783,6 +1956,32 @@ const Dashboard = () => {
                           if (!name) return '';
                           return name.endsWith('出差') ? name.slice(0, -2) : name;
                         })();
+                        const itemDraft = taskTypeDrafts[currentItem.id] || {};
+                        const rememberCurrentTypeDraft = () => {
+                          setTaskTypeDrafts(prev => {
+                            const nextDraft = { ...(prev[currentItem.id] || {}) };
+                            if (!currentItem.leaveType) {
+                              nextDraft.designName = currentItem.taskName || '';
+                              nextDraft.designGuns = currentItem.guns || [];
+                            }
+                            if (currentItem.leaveType === 'trip') {
+                              nextDraft.tripName = currentItem.taskName || '出差';
+                            }
+                            return { ...prev, [currentItem.id]: nextDraft };
+                          });
+                        };
+                        const getDesignDraftName = () => {
+                          if (itemDraft.designName !== undefined) return itemDraft.designName;
+                          return !currentItem.leaveType ? (currentItem.taskName || '') : '';
+                        };
+                        const getDesignDraftGuns = () => {
+                          if (itemDraft.designGuns !== undefined) return itemDraft.designGuns;
+                          return !currentItem.leaveType ? (currentItem.guns || []) : [];
+                        };
+                        const getTripDraftName = () => {
+                          if (itemDraft.tripName !== undefined) return itemDraft.tripName;
+                          return currentItem.leaveType === 'trip' ? (currentItem.taskName || '出差') : '出差';
+                        };
                         return (
                           <div key={currentItem.id} className={`flex flex-col gap-2 p-4 bg-white rounded-xl border-2 border-gray-200 shadow-sm hover:border-blue-300 transition group/item h-fit min-w-0 ${isLeave ? 'bg-gradient-to-r from-red-50 to-blue-50' : isTrip ? 'bg-gradient-to-r from-yellow-50 to-white' : ''}`}>
                             {isLeave ? (
@@ -1839,6 +2038,10 @@ const Dashboard = () => {
                                       onChange={(e) => {
                                         const val = e.target.value;
                                         const nextName = val ? `${val}出差` : '出差';
+                                        setTaskTypeDrafts(prev => ({
+                                          ...prev,
+                                          [currentItem.id]: { ...(prev[currentItem.id] || {}), tripName: nextName }
+                                        }));
                                         handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', nextName);
                                       }}
                                       placeholder="输入地点或者客户"
@@ -1867,7 +2070,13 @@ const Dashboard = () => {
                                   ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
                                   className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                                   value={currentItem.taskName}
-                                  onChange={(e) => handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', e.target.value)}
+                                  onChange={(e) => {
+                                    setTaskTypeDrafts(prev => ({
+                                      ...prev,
+                                      [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: e.target.value, designGuns: currentItem.guns || [] }
+                                    }));
+                                    handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', e.target.value);
+                                  }}
                                   placeholder="请输入主任务名称，不能为空..."
                                 />
                               </div>
@@ -1902,6 +2111,10 @@ const Dashboard = () => {
                                 <button 
                                   onClick={() => {
                                     const newGuns = [...(currentItem.guns || []), { id: `gun-${Date.now()}`, name: '', hours: 0 }];
+                                    setTaskTypeDrafts(prev => ({
+                                      ...prev,
+                                      [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
+                                    }));
                                     handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
                                   }}
                                   disabled={!currentItem.taskName || !currentItem.taskName.trim()}
@@ -1920,6 +2133,10 @@ const Dashboard = () => {
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
                                       newGuns[gIdx] = { ...newGuns[gIdx], name: e.target.value };
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
+                                      }));
                                       handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
                                     }}
                                   />
@@ -1934,12 +2151,20 @@ const Dashboard = () => {
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
                                       newGuns[gIdx] = { ...newGuns[gIdx], hours: parseFloat(e.target.value) || 0 };
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
+                                      }));
                                       handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
                                     }}
                                   />
                                   <button 
                                     onClick={() => {
                                       const newGuns = (currentItem.guns || []).filter((_, i) => i !== gIdx);
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
+                                      }));
                                       handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
                                     }}
                                     className="p-1 text-red-400 hover:text-red-600 transition"
@@ -1962,7 +2187,9 @@ const Dashboard = () => {
                                     <>
                                       <button
                                         onClick={() => {
-                                          // 只更新 pendingChanges，不更新 sheets，等待保存时再同步更新
+                                          rememberCurrentTypeDraft();
+                                          const designName = getDesignDraftName();
+                                          const designGuns = getDesignDraftGuns();
                                           setPendingChanges(prev => {
                                             const filtered = prev.filter(change => 
                                               !(change.designerId === modalDesignerId && change.date === modalDate && change.itemId === item.id && (change.field === 'leaveType' || change.field === 'taskName' || change.field === 'guns'))
@@ -1970,7 +2197,8 @@ const Dashboard = () => {
                                             return [
                                               ...filtered,
                                               { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'leaveType', value: null },
-                                              { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'taskName', value: '' }
+                                              { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'taskName', value: designName },
+                                              { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'guns', value: designGuns }
                                             ];
                                           });
                                         }}
@@ -1980,7 +2208,8 @@ const Dashboard = () => {
                                       </button>
                                       <button
                                         onClick={() => {
-                                          // 只更新 pendingChanges，不更新 sheets，等待保存时再同步更新
+                                          rememberCurrentTypeDraft();
+                                          const tripName = getTripDraftName();
                                           setPendingChanges(prev => {
                                             const filtered = prev.filter(change => 
                                               !(change.designerId === modalDesignerId && change.date === modalDate && change.itemId === item.id && (change.field === 'leaveType' || change.field === 'taskName' || change.field === 'guns'))
@@ -1988,11 +2217,9 @@ const Dashboard = () => {
                                             const changes: PendingChange[] = [
                                               ...filtered,
                                               { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'guns', value: [] },
-                                              { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'leaveType', value: 'trip' }
+                                              { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'leaveType', value: 'trip' },
+                                              { designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'taskName', value: tripName }
                                             ];
-                                            if (!item.taskName || !item.taskName.trim()) {
-                                              changes.push({ designerId: modalDesignerId, date: modalDate, itemId: item.id, field: 'taskName', value: '出差' });
-                                            }
                                             return changes;
                                           });
                                         }}
@@ -2002,7 +2229,7 @@ const Dashboard = () => {
                                       </button>
                                       <button
                                         onClick={() => {
-                                          // 只更新 pendingChanges，不更新 sheets，等待保存时再同步更新
+                                          rememberCurrentTypeDraft();
                                           setPendingChanges(prev => {
                                             const filtered = prev.filter(change => 
                                               !(change.designerId === modalDesignerId && change.date === modalDate && change.itemId === item.id && (change.field === 'leaveType' || change.field === 'guns'))
@@ -2020,7 +2247,7 @@ const Dashboard = () => {
                                       </button>
                                       <button
                                         onClick={() => {
-                                          // 只更新 pendingChanges，不更新 sheets，等待保存时再同步更新
+                                          rememberCurrentTypeDraft();
                                           setPendingChanges(prev => {
                                             const filtered = prev.filter(change => 
                                               !(change.designerId === modalDesignerId && change.date === modalDate && change.itemId === item.id && (change.field === 'leaveType' || change.field === 'guns'))
@@ -2038,7 +2265,7 @@ const Dashboard = () => {
                                       </button>
                                       <button
                                         onClick={() => {
-                                          // 只更新 pendingChanges，不更新 sheets，等待保存时再同步更新
+                                          rememberCurrentTypeDraft();
                                           setPendingChanges(prev => {
                                             const filtered = prev.filter(change => 
                                               !(change.designerId === modalDesignerId && change.date === modalDate && change.itemId === item.id && (change.field === 'leaveType' || change.field === 'guns'))
@@ -2092,7 +2319,7 @@ const Dashboard = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-500">主任务为空或者当前主任务工时为 0 时无法保存</span>
+                <span className="text-xs text-gray-500">主任务为空、工时为 0，或已填写枪名的工时为 0 时无法保存</span>
                 <button
                   onClick={async () => {
                     if (isAddMode) {
@@ -2105,8 +2332,7 @@ const Dashboard = () => {
                       let taskName = '';
                       
                       if (selectedTaskType === 'trip') {
-                        const taskInput = inputRefs.current['task-new'];
-                        const place = taskInput?.value?.trim() || '';
+                        const place = addModeTripPlace.trim();
                         taskName = place ? `${place}出差` : '出差';
                       } else if (selectedTaskType === 'none') {
                         taskName = addModeTaskName.trim() || '未命名';
@@ -2183,7 +2409,7 @@ const Dashboard = () => {
                     if (isAddMode) {
                       if (selectedTaskType === 'none') {
                         const totalGunHours = addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0);
-                        return !addModeTaskName.trim() || (addModeGuns.length > 0 ? totalGunHours === 0 : addModeHours === 0);
+                        return !addModeTaskName.trim() || hasInvalidNamedGunHours(addModeGuns) || (addModeGuns.length > 0 ? totalGunHours === 0 : addModeHours === 0);
                       }
                       return addModeHours === 0;
                     }
@@ -2197,7 +2423,7 @@ const Dashboard = () => {
                         
                         if (hasGuns) {
                           const totalGunsHours = (item.guns || []).reduce((sum, g) => sum + (typeof g.hours === 'number' ? g.hours : (parseFloat(g.hours as string) || 0)), 0);
-                          return totalGunsHours === 0;
+                          return hasInvalidNamedGunHours(item.guns) || totalGunsHours === 0;
                         }
                         
                         if (!leaveType) {

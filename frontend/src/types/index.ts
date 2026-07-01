@@ -7,7 +7,7 @@
 /**
  * 用户角色类型
  */
-export type UserRole = 'superadmin' | 'admin' | 'designer';
+export type UserRole = 'superadmin' | 'admin' | 'user';
 
 /**
  * 用户接口
@@ -62,6 +62,16 @@ export interface TaskItem {
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
   fontSize?: string;
   textColor?: string;
+  createdAt?: string;
+  createdBy?: UserMeta;
+  updatedAt?: string;
+  updatedBy?: UserMeta;
+}
+
+export interface UserMeta {
+  id: string;
+  username: string;
+  name: string;
 }
 
 /**

@@ -13,9 +13,15 @@ const accessSettingsSchema = Joi.object({
   allowViewers: Joi.boolean().required()
 });
 
+const normalizeAccessSettings = (settings = defaultAccessSettings) => {
+  const normalized = { ...defaultAccessSettings, ...settings };
+  if (normalized.allowViewers) normalized.allowAdmins = true;
+  return normalized;
+};
+
 const getAccessSettings = (key) => asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const settings = data.settings?.[key] || defaultAccessSettings;
+  const settings = normalizeAccessSettings(data.settings?.[key]);
   res.json(settings);
 });
 
@@ -27,9 +33,9 @@ const updateAccessSettings = (key) => [authMiddleware, superAdminMiddleware, asy
 
   const data = db.readDb();
   if (!data.settings) data.settings = {};
-  data.settings[key] = value;
+  data.settings[key] = normalizeAccessSettings(value);
   await db.writeDb(data);
-  res.json(value);
+  res.json(data.settings[key]);
 })];
 
 router.get('/leaderboard', getAccessSettings('leaderboard'));

@@ -1,45 +1,37 @@
 # Windows 部署指南
 
-本文档只保留 Windows 部署方式。项目不再提供非 Windows 的一键脚本或相关部署配置。
+本文档说明 Obara 任务管理系统在 Windows 环境下的启动、部署、备份和排障方式。
 
 ## 环境要求
 
 | 软件 | 版本 | 说明 |
 |------|------|------|
-| Windows | Windows 10/11 或 Windows Server | 推荐启用 PowerShell 或 CMD |
+| Windows | Windows 10/11 或 Windows Server | 推荐使用 PowerShell 或 CMD |
 | Node.js | 18+ | 安装时勾选加入 PATH |
-| npm | 9+ | 随 Node.js 一起安装 |
-| Git | 任意较新版本 | 用于拉取代码 |
+| npm | 9+ | 随 Node.js 安装 |
+| Git | 较新版本 | 用于拉取代码 |
 
 ## 一键启动
 
-在项目根目录双击或在 CMD 中运行：
+在项目根目录运行：
 
 ```bat
 start.bat
 ```
 
-脚本会完成以下工作：
+脚本会检查端口、安装依赖、启动后端和前端，并打开浏览器。
 
-1. 检查 Node.js 是否可用。
-2. 检查默认端口 `5000` 和 `5173`。
-3. 安装后端依赖。
-4. 安装前端依赖。
-5. 启动后端开发服务。
-6. 启动前端开发服务。
-7. 打开浏览器访问前端页面。
-
-启动完成后访问：
+默认访问地址：
 
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
-默认管理员账号：
+默认超级管理员账号：
 
-- 用户名：superadmin
-- 密码：admin123
+- 用户名：`superadmin`
+- 密码：`admin123`
 
-## 手动部署
+## 手动启动
 
 ```bat
 git clone https://github.com/caifugao110/obara-task-manager.git
@@ -48,7 +40,7 @@ npm run install:all
 npm run dev
 ```
 
-如果只需要分别启动前后端：
+分别启动前后端：
 
 ```bat
 npm run dev:backend
@@ -80,9 +72,9 @@ cd frontend
 npm run preview
 ```
 
-如需长期运行，建议在 Windows 上使用受控的进程管理方式，例如 Windows 服务管理工具、任务计划程序或 PM2。
+长期运行时，建议使用 Windows 服务、任务计划程序或 PM2 等进程管理工具。
 
-## 配置说明
+## 环境变量
 
 后端默认读取以下环境变量：
 
@@ -96,49 +88,76 @@ RATE_LIMIT_MAX=20
 DB_PATH=./db.json
 ```
 
-生产环境务必修改 `JWT_SECRET`，并定期备份 `backend/db.json`。
+生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。
 
-## 数据文件结构
+## 数据文件
 
-`backend/db.json` 主要包含：
+默认数据文件为 `backend/db.json`。主要字段：
 
 | 字段 | 说明 |
 |------|------|
-| `users` | 管理员账号，含 `sessionToken`（单设备登录） |
-| `designers` | 工作台设计人员列表 |
-| `tasks` | 按设计员 + 年月存储的任务 sheet |
-| `loginLogs` | 管理员登录历史（最多保留 500 条） |
+| `users` | 登录用户，角色包括 `superadmin`、`admin`、`user` |
+| `designers` | 设计人员列表 |
+| `tasks` | 按设计人员、年月保存的任务表 |
+| `loginLogs` | 登录历史 |
 | `settings.leaderboard` | 任务报表访问权限 |
 | `settings.workHours` | 工时管理访问权限 |
-| `settings.system` | 系统设置（未登录查看、多设备登录） |
+| `settings.system` | 系统设置，如未登录查看、多设备登录 |
 
-首次启动或旧版升级时，`db.js` 会自动补全缺失的默认配置。
+首次启动或旧版本升级时，`backend/db.js` 会自动补齐缺失的默认配置。
 
-## 系统设置与备份
+## 权限开关联动
 
-超级管理员登录后，在工作台点击 **系统设置**：
+任务报表和工时管理各自有独立权限设置：
 
-- **导出 xlsx**：按有数据的月份导出任务，适合定期备份与离线查看
-- **导入 xlsx**：从导出格式或相同结构的文件恢复指定月份数据
-- **登录管理**：控制未登录是否可访问工作台、是否允许多设备同时在线
+```json
+{
+  "enabled": true,
+  "allowAdmins": true,
+  "allowViewers": false
+}
+```
 
-仍建议同时保留 `db.json` 文件级备份：
+规则：
+
+- `enabled=false` 时，前端会自动关闭 `allowAdmins` 和 `allowViewers`。
+- `enabled=true` 时，前端会自动打开 `allowAdmins` 和 `allowViewers`。
+- `allowViewers=true` 时，`allowAdmins` 必须为 `true`。
+- 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于游客/普通用户。
+
+## 备份与恢复
+
+推荐同时保留文件级备份和 xlsx 导出备份。
+
+复制数据库文件：
 
 ```bat
-copy backend\db.json backup-db-20260630.json
+copy backend\db.json backup-db-20260701.json
 ```
+
+通过页面备份：
+
+1. 使用超级管理员登录。
+2. 进入“系统设置”。
+3. 导出 xlsx 数据。
+
+恢复方式：
+
+- 小规模恢复可以直接替换 `backend/db.json`。
+- 任务数据恢复可以通过“系统设置”导入 xlsx。
 
 ## 安全建议
 
-1. 生产环境修改默认 superadmin 密码。
+1. 生产环境修改默认 `superadmin` 密码。
 2. 设置强随机 `JWT_SECRET`。
-3. 若部署在公网，建议关闭 `allowGuestView`，仅允许登录后访问。
-4. 若需限制账号共享，关闭 `allowMultiDevice`。
-5. 限制 `backend/db.json` 文件读写权限。
+3. 公网部署时建议关闭未登录查看主页面。
+4. 如需限制账号共享，关闭多设备同时在线。
+5. 限制 `backend/db.json` 的系统读写权限。
+6. 定期备份 `backend/db.json`。
 
 ## 常见问题
 
-### 端口被占用怎么办？
+### 端口被占用
 
 后端默认端口为 `5000`，前端默认端口为 `5173`。
 
@@ -153,46 +172,41 @@ taskkill /PID <PID> /F
 - 后端端口：`backend/.env` 中的 `PORT`
 - 前端端口：`frontend/vite.config.ts` 中的 `server.port`
 
-### 如何备份数据？
-
-方式一：复制 `backend/db.json`。
-
-```bat
-copy backend\db.json backup-db-20260629.json
-```
-
-方式二：超级管理员在 **系统设置** 中导出 xlsx。
-
-### 如何重置管理员密码？
-
-停止后端服务后，编辑 `backend/db.json` 中管理员用户的 `password` 字段，替换为新的 bcrypt 哈希，然后重新启动后端服务。
-
-### 前端请求后端失败怎么办？
+### 前端请求后端失败
 
 1. 确认后端已启动。
 2. 确认 `http://localhost:5000` 可访问。
 3. 检查 `frontend/vite.config.ts` 中 `/api` 和 `/socket.io` 的代理配置。
-4. 重新登录，确认浏览器 LocalStorage 中存在 token。
-5. 若已关闭「未登录可查看主页面」，需先登录才能加载任务数据。
+4. 重新登录，确认浏览器 LocalStorage 中存在 Token。
+5. 如果关闭了未登录查看主页面，需要先登录才能加载任务和设计人员。
 
-### 任务报表 / 工时管理提示无设计人员？
+### 任务报表或工时管理提示无设计人员
 
-在 **用户管理**（`/admin`）中添加设计人员。工作台表格、报表与工时模块均依赖 `designers` 数据。
+确认管理后台“设计人员列表”中存在设计人员。管理员和超级管理员读取设计人员时需要有效 Token。
 
-### 用户管理页看不到设计人员？
+### 权限设置保存后结果和请求体不同
 
-1. 确认使用 admin 或 superadmin 账号登录。
-2. 管理页通过 `/api/designers/manage` 加载，需有效 Token。
-3. 添加后刷新页面；若仍异常，检查浏览器控制台与后端日志。
+这是正常行为。后端会规范化权限设置：当 `allowViewers=true` 时，`allowAdmins` 会自动变为 `true`。
 
 ## 日志查看
 
-一键启动会分别打开前端和后端命令行窗口。查看对应窗口输出即可排查启动和运行问题。
+一键启动会打开前端和后端命令行窗口。排障时查看对应窗口输出即可。
 
-手动启动时可直接查看当前 CMD 或 PowerShell 输出。
+手动启动时直接查看当前 PowerShell 或 CMD 输出。
 
-## 技术支持
+## 验证命令
 
-如遇问题，请先查看本文档、[README](README.md) 和 [API 文档](docs/API.md)，再通过项目 Issues 反馈。
+前端类型检查：
 
-**最后更新**：2026-06-30
+```bat
+cd frontend
+..\node_modules\.bin\tsc.cmd --noEmit
+```
+
+后端语法检查示例：
+
+```bat
+node --check backend\routes\settings.js
+```
+
+最后更新：2026-07-01

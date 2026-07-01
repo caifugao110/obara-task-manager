@@ -16,6 +16,40 @@ const gunSchema = Joi.object({
   hours: Joi.number().min(0).default(0)
 });
 
+const validateNamedGunHours = (guns) => {
+  if (!Array.isArray(guns)) return null;
+  const invalidGun = guns.find(gun => {
+    const name = String(gun?.name || '').trim();
+    if (!name) return false;
+    const hours = typeof gun.hours === 'number' ? gun.hours : (parseFloat(gun.hours) || 0);
+    return hours <= 0;
+  });
+  return invalidGun ? '枪名存在时，每个枪名的工时都必须大于 0' : null;
+};
+
+const getUserMeta = (user) => ({
+  id: user.id,
+  username: user.username,
+  name: user.name || user.username
+});
+
+const withCreateMeta = (item, user) => {
+  const now = new Date().toISOString();
+  const userMeta = getUserMeta(user);
+  return {
+    ...item,
+    createdAt: now,
+    createdBy: userMeta,
+    updatedAt: now,
+    updatedBy: userMeta
+  };
+};
+
+const touchItem = (item, user) => {
+  item.updatedAt = new Date().toISOString();
+  item.updatedBy = getUserMeta(user);
+};
+
 const createItemSchema = Joi.object({
   designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
@@ -112,7 +146,12 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
   
   const addedItems = [];
   for (const item of pasteItems) {
-    const newItem = {
+    const gunError = validateNamedGunHours(item.guns);
+    if (gunError) {
+      return res.status(400).json({ message: gunError });
+    }
+
+    const newItem = withCreateMeta({
       id: `item-${Date.now().toString()}${Math.random().toString(36).slice(2, 9)}`,
       taskName: item.taskName || '',
       hours: typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0),
@@ -121,7 +160,7 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
       leaveType: item.leaveType || null,
       fontSize: item.fontSize || '',
       textColor: item.textColor || ''
-    };
+    }, req.user);
     sheet.days[date].push(newItem);
     addedItems.push(newItem);
   }
@@ -138,6 +177,10 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
 
   const { designerId, date: rawDate, taskName, hours, color, guns } = validated;
   const date = normalizeDate(rawDate);
+  const gunError = validateNamedGunHours(guns);
+  if (gunError) {
+    return res.status(400).json({ message: gunError });
+  }
 
   const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
   if (!isAdmin) {
@@ -149,7 +192,7 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
   const sheet = getOrCreateSheet(data, designerId, month, year);
 
   if (!sheet.days[date]) sheet.days[date] = [];
-  const item = {
+  const item = withCreateMeta({
     id: `item-${Date.now().toString()}${Math.random().toString(36).slice(2, 9)}`,
     taskName,
     hours,
@@ -158,7 +201,7 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
     leaveType: validated.leaveType || null,
     fontSize: validated.fontSize || '',
     textColor: validated.textColor || ''
-  };
+  }, req.user);
   sheet.days[date].push(item);
 
   await db.writeDb(data);
@@ -188,6 +231,13 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(404).json({ message: '任务条目不存在' });
   }
 
+  if (field === 'guns') {
+    const gunError = validateNamedGunHours(value);
+    if (gunError) {
+      return res.status(400).json({ message: gunError });
+    }
+  }
+
   if (field === 'hours') {
     items[idx].hours = typeof value === 'number' ? value : (parseFloat(value) || 0);
   } else if (field === 'color') {
@@ -199,6 +249,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   } else {
     items[idx].taskName = value;
   }
+  touchItem(items[idx], req.user);
 
   sheet.days[date] = items;
   await db.writeDb(data);
@@ -271,8 +322,10 @@ router.post('/move', authMiddleware, asyncHandler(async (req, res) => {
   if (!tSheet.days[tDate]) tSheet.days[tDate] = [];
   
   if (typeof newIndex === 'number' && newIndex >= 0) {
+    touchItem(item, req.user);
     tSheet.days[tDate].splice(newIndex, 0, item);
   } else {
+    touchItem(item, req.user);
     tSheet.days[tDate].push(item);
   }
 
