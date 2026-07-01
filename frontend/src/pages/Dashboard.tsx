@@ -81,11 +81,21 @@ type PendingChange = {
   value: any;
 };
 
+type EditingSession = {
+  designerId: string;
+  date: string;
+  userId: string;
+  username: string;
+  name: string;
+};
+
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 type SelectedTask = { itemId: string; designerId: string; date: string };
 
 const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__${selection.date}__${selection.itemId}`;
+
+const editingSessionKey = (designerId: string, date: string) => `${designerId}__${date}`;
 
 const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGun, onDeleteTask, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
   const currentSelection = { itemId: item.id, designerId, date };
@@ -338,7 +348,7 @@ const Dashboard = () => {
     selectedTasksRef.current = selectedTasks;
   }, [selectedTasks]);
   const [selectedCell, setSelectedCell] = useState<{designerId: string, date: string} | null>(null);
-  const [editingUser, setEditingUser] = useState<{designerId: string, date: string, username: string, name: string} | null>(null);
+  const [editingSessions, setEditingSessions] = useState<Record<string, EditingSession>>({});
   const [history, setHistory] = useState<{operation: string, data: any, timestamp: number}[]>([]);
   const [tableHeight, setTableHeight] = useState<number>(0);
   const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -372,6 +382,62 @@ const Dashboard = () => {
     })
   );
 
+  const getEditingSession = useCallback(
+    (designerId: string, date: string) => editingSessions[editingSessionKey(designerId, date)],
+    [editingSessions]
+  );
+
+  const getBlockingEditingSession = useCallback(
+    (designerId: string, date: string) => {
+      const session = getEditingSession(designerId, date);
+      if (!session || session.userId === user?.id) return null;
+      return session;
+    },
+    [getEditingSession, user?.id]
+  );
+
+  const warnIfCellLocked = useCallback(
+    (designerId: string, date: string) => {
+      const session = getBlockingEditingSession(designerId, date);
+      if (!session) return false;
+      addToast(`${session.name || session.username} 正在编辑该区域`, 'error');
+      return true;
+    },
+    [getBlockingEditingSession]
+  );
+
+  const startEditingCell = useCallback(
+    (designerId: string, date: string) => {
+      if (!user) return;
+      setEditingSessions(prev => {
+        const next = { ...prev };
+        Object.entries(next).forEach(([key, session]) => {
+          if (session.userId === user.id && key !== editingSessionKey(designerId, date)) {
+            delete next[key];
+          }
+        });
+        next[editingSessionKey(designerId, date)] = {
+          designerId,
+          date,
+          userId: user.id,
+          username: user.username,
+          name: user.name
+        };
+        return next;
+      });
+      socketRef.current?.emit('start_editing', { designerId, date, userId: user.id, username: user.username, name: user.name });
+    },
+    [user]
+  );
+
+  const stopEditingCell = useCallback((designerId?: string | null, date?: string | null) => {
+    if (designerId && date) {
+      socketRef.current?.emit('stop_editing', { designerId, date });
+      return;
+    }
+    socketRef.current?.emit('stop_editing');
+  }, []);
+
   const collisionDetection: CollisionDetection = useCallback((args) => {
     const pointer = pointerWithin(args);
     if (pointer.length) return pointer;
@@ -389,6 +455,7 @@ const Dashboard = () => {
       (event.activatorEvent as MouseEvent | KeyboardEvent).ctrlKey;
     
     if (data_current?.type === 'task') {
+      if (warnIfCellLocked(data_current.designerId, data_current.date)) return;
       setActiveTask({
         item: data_current.item,
         designerId: data_current.designerId,
@@ -423,6 +490,10 @@ const Dashboard = () => {
     const isCtrlDrag = activeTask?.isCtrlDrag;
 
     if (isCtrlDrag && sourceData?.type === 'task' && targetData?.type === 'cell') {
+      if (warnIfCellLocked(targetData.designerId, targetData.date)) {
+        setActiveTask(null);
+        return;
+      }
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date });
@@ -492,6 +563,11 @@ const Dashboard = () => {
       let targetDate = targetData.date;
       let newIndex: number | undefined = undefined;
 
+      if (warnIfCellLocked(sourceDesignerId, sourceDate) || warnIfCellLocked(targetDesignerId, targetDate)) {
+        setActiveTask(null);
+        return;
+      }
+
       if (targetData.type === 'task') {
         const targetItems = getItems(targetDesignerId, targetDate);
         newIndex = targetItems.findIndex(i => i.id === over.id);
@@ -534,11 +610,10 @@ const Dashboard = () => {
         });
         
         socketRef.current?.emit('task_updated');
-        socketRef.current?.emit('stop_editing');
+        stopEditingCell();
         fetchSheets();
         setSelectedTasks([]);
         setSelectedCell(null);
-        setEditingUser(null);
         addToast('任务已移动', 'success');
       } catch (err: any) {
         addToast('移动失败', 'error');
@@ -690,6 +765,8 @@ const Dashboard = () => {
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string }>>({});
 
   const openModal = (designerId: string, date: string, addMode: boolean = false) => {
+    if (warnIfCellLocked(designerId, date)) return;
+    startEditingCell(designerId, date);
     setModalDesignerId(designerId);
     setModalDate(date);
     setFocusTarget(null);
@@ -705,6 +782,8 @@ const Dashboard = () => {
   };
 
   const onTaskClick = (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => {
+    if (warnIfCellLocked(designerId, date)) return;
+    startEditingCell(designerId, date);
     setModalDesignerId(designerId);
     setModalDate(date);
     setFocusTarget({ itemId: item.id, type, gunIndex });
@@ -714,12 +793,14 @@ const Dashboard = () => {
   };
 
   const onDeleteGun = (item: TaskItem, designerId: string, date: string, gunIndex: number) => {
+    if (warnIfCellLocked(designerId, date)) return;
     const newGuns = (item.guns || []).filter((_, i) => i !== gunIndex);
     handleItemChange(designerId, date, item.id, 'guns', newGuns);
     addToast('枪名已删除', 'success');
   };
 
   const onDeleteTask = (item: TaskItem, designerId: string, date: string) => {
+    if (warnIfCellLocked(designerId, date)) return;
     deleteItem(designerId, date, item.id);
   };
 
@@ -859,7 +940,7 @@ const Dashboard = () => {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && modalOpen) {
         setModalOpen(false);
-        socketRef.current?.emit('stop_editing');
+        stopEditingCell(modalDesignerId, modalDate);
       }
     };
 
@@ -932,18 +1013,47 @@ const Dashboard = () => {
     });
 
     socketRef.current.on('task_refreshed', () => {
-      setEditingUser(null);
       fetchSheets();
     });
 
-    socketRef.current.on('user_editing', (data: { designerId: string, date: string, userId: string, username: string, name: string }) => {
-      if (user && data.userId !== user.id) {
-        setEditingUser({ designerId: data.designerId, date: data.date, username: data.username, name: data.name });
-      }
+    socketRef.current.on('editing_state', (sessions: EditingSession[]) => {
+      const next: Record<string, EditingSession> = {};
+      (Array.isArray(sessions) ? sessions : []).forEach(session => {
+        if (!session?.designerId || !session?.date) return;
+        next[editingSessionKey(session.designerId, session.date)] = session;
+      });
+      setEditingSessions(next);
     });
 
-    socketRef.current.on('user_stopped_editing', () => {
-      setEditingUser(null);
+    socketRef.current.on('user_editing', (data: EditingSession) => {
+      if (!data?.designerId || !data?.date) return;
+      setEditingSessions(prev => ({
+        ...prev,
+        [editingSessionKey(data.designerId, data.date)]: data
+      }));
+    });
+
+    socketRef.current.on('editing_blocked', (data: EditingSession) => {
+      if (!data?.designerId || !data?.date) return;
+      setEditingSessions(prev => ({
+        ...prev,
+        [editingSessionKey(data.designerId, data.date)]: data
+      }));
+      setSelectedCell(null);
+      setSelectedTasks([]);
+      setModalOpen(false);
+      addToast(`${data.name || data.username} 正在编辑该区域`, 'error');
+    });
+
+    socketRef.current.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
+      if (!data?.designerId || !data?.date) return;
+      setEditingSessions(prev => {
+        const key = editingSessionKey(data.designerId, data.date);
+        if (!prev[key]) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     });
 
     return () => {
@@ -966,6 +1076,7 @@ const Dashboard = () => {
       if (!user) return;
       const payloads = getSelectedTaskPayloads({ item, designerId, date });
       if (payloads.length === 0) return;
+      if (payloads.some(payload => warnIfCellLocked(payload.designerId, payload.date))) return;
       
       setClipboard(payloads.map(payload => payload.item));
       addToast('剪切已准备', 'success');
@@ -980,10 +1091,9 @@ const Dashboard = () => {
         });
         fetchSheets();
         socketRef.current?.emit('task_updated');
-        socketRef.current?.emit('stop_editing');
+        stopEditingCell();
         setSelectedTasks([]);
         setSelectedCell(null);
-        setEditingUser(null);
       } catch (err) {
         addToast('剪切失败', 'error');
       }
@@ -997,6 +1107,7 @@ const Dashboard = () => {
         addToast('请先复制任务', 'error');
         return;
       }
+      if (warnIfCellLocked(designerId, date)) return;
       addToast('任务已复制', 'success');
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
@@ -1010,10 +1121,9 @@ const Dashboard = () => {
         });
         upsertSheet(res.data.sheet);
         socketRef.current?.emit('task_updated');
-        socketRef.current?.emit('stop_editing');
+        stopEditingCell(designerId, date);
         setSelectedTasks([]);
         setSelectedCell(null);
-        setEditingUser(null);
       } catch (err) {
         addToast('粘贴失败', 'error');
       }
@@ -1112,16 +1222,27 @@ const Dashboard = () => {
       return hours <= 0;
     });
   };
+
+  const isMeaningfulTask = (item: TaskItem) => {
+    if (item.leaveType) return true;
+    const taskName = (item.taskName || '').trim();
+    const gunsEmpty = !item.guns || item.guns.length === 0 || item.guns.every((g: any) => !g.name || g.name.trim() === '未命名');
+    return Boolean(taskName || !gunsEmpty);
+  };
+
+  const getTaskHours = (item: TaskItem) => {
+    const mainHours = typeof item.hours === 'number' ? item.hours : (parseFloat(String(item.hours)) || 0);
+    const gunsHours = (item.guns || []).reduce((gSum, g) => gSum + (typeof g.hours === 'number' ? g.hours : (parseFloat(String(g.hours)) || 0)), 0);
+    return item.guns && item.guns.length > 0 ? gunsHours : mainHours;
+  };
  
   const calculateDailyTotal = (designerId: string, date: string) => {
     const items = getItems(designerId, date);
     return items.reduce((sum, it) => {
       // Skip leave tasks from hour calculation
       if (it.leaveType === 'sick' || it.leaveType === 'vacation' || it.leaveType === 'illness') return sum;
-      
-      const mainHours = typeof it.hours === 'number' ? it.hours : (parseFloat(it.hours) || 0);
-      const gunsHours = (it.guns || []).reduce((gSum, g) => gSum + (typeof g.hours === 'number' ? g.hours : (parseFloat(g.hours) || 0)), 0);
-      return sum + (it.guns && it.guns.length > 0 ? gunsHours : mainHours);
+
+      return sum + getTaskHours(it);
     }, 0);
   };
 
@@ -1130,6 +1251,38 @@ const Dashboard = () => {
     if (!sheet?.days) return 0;
     return Object.entries(sheet.days).reduce((sum, [date]) => sum + calculateDailyTotal(designerId, date), 0);
   };
+
+  const monthlyFooterStats = useMemo(() => {
+    const visibleDesignerIds = new Set(filteredDesigners.map(d => d.id));
+    return sheets.reduce(
+      (stats, sheet) => {
+        if (!visibleDesignerIds.has(sheet.designerId)) return stats;
+
+        (Object.entries(sheet.days || {}) as [string, TaskItem[]][]).forEach(([date, items]) => {
+          const isWeekendDate = isWeekend(new Date(`${date}T00:00:00`));
+          (Array.isArray(items) ? items : []).filter(isMeaningfulTask).forEach(item => {
+            const hours = getTaskHours(item);
+            if (item.leaveType === 'sick' || item.leaveType === 'vacation' || item.leaveType === 'illness') {
+              stats.leaveHours += hours;
+              return;
+            }
+            if (item.leaveType === 'trip') {
+              stats.tripHours += hours;
+              if (isWeekendDate) stats.weekendOvertimeHours += hours;
+              return;
+            }
+            stats.designTaskCount += 1;
+            if (isWeekendDate) stats.weekendOvertimeHours += hours;
+          });
+        });
+
+        return stats;
+      },
+      { designTaskCount: 0, weekendOvertimeHours: 0, tripHours: 0, leaveHours: 0 }
+    );
+  }, [filteredDesigners, sheets]);
+
+  const formatFooterHours = (hours: number) => `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} h`;
 
   const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
     try {
@@ -1288,6 +1441,7 @@ const Dashboard = () => {
 
   const handlePaste = async (designerId: string, date: string) => {
     if (!clipboard || !user) return;
+    if (warnIfCellLocked(designerId, date)) return;
     addToast('任务已复制', 'success');
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
@@ -1302,10 +1456,9 @@ const Dashboard = () => {
         items: (res.data.items || []).map((item: TaskItem) => ({ designerId, date, itemId: item.id }))
       });
       socketRef.current?.emit('task_updated');
-      socketRef.current?.emit('stop_editing');
+      stopEditingCell(designerId, date);
       setSelectedTasks([]);
       setSelectedCell(null);
-      setEditingUser(null);
     } catch (err) {
       addToast('粘贴失败', 'error');
     }
@@ -1507,6 +1660,8 @@ const Dashboard = () => {
                                 </td>
                                 {days.map(day => {
                                   const items = getItems(d.id, day.fullDate);
+                                  const editingSession = getEditingSession(d.id, day.fullDate);
+                                  const isCellLocked = Boolean(getBlockingEditingSession(d.id, day.fullDate));
                                   return (
                                     <DroppableCell 
                                       key={`${d.id}-${day.fullDate}`}
@@ -1518,7 +1673,7 @@ const Dashboard = () => {
                                         if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
                                           setSelectedTasks([]);
                                           setSelectedCell(null);
-                                          socketRef.current?.emit('stop_editing');
+                                          stopEditingCell();
                                         }
                                       }}
                                     >
@@ -1537,27 +1692,26 @@ const Dashboard = () => {
                                               selectedTasks={selectedTasks}
                                               metadataTitle={buildTaskMetadataTitle(item)}
                                               onSelectTask={(itemId, designerId, date, append) => {
+                                                if (warnIfCellLocked(designerId, date)) return;
                                                 handleSelectTask(itemId, designerId, date, append);
                                                 setSelectedCell(null);
-                                                if (user) {
-                                                  socketRef.current?.emit('start_editing', { designerId, date, userId: user.id, username: user.username, name: user.name });
-                                                }
+                                                startEditingCell(designerId, date);
                                               }}
                                             />
                                           ))}
                                           {isAdmin && (
                                             <div 
-                                              className={`h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity cursor-pointer hover:bg-blue-50/50 ${selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? 'opacity-100 bg-blue-100 border border-blue-400' : ''}`}
+                                              className={`h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-blue-50/50'} ${selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? 'opacity-100 bg-blue-100 border border-blue-400' : ''}`}
                                               onClick={(e) => {
                                                 e.stopPropagation();
+                                                if (warnIfCellLocked(d.id, day.fullDate)) return;
                                                 setSelectedCell({ designerId: d.id, date: day.fullDate });
                                                 setSelectedTasks([]);
-                                                if (user) {
-                                                  socketRef.current?.emit('start_editing', { designerId: d.id, date: day.fullDate, userId: user.id, username: user.username, name: user.name });
-                                                }
+                                                startEditingCell(d.id, day.fullDate);
                                               }}
                                               onDoubleClick={(e) => {
                                                 e.stopPropagation();
+                                                if (warnIfCellLocked(d.id, day.fullDate)) return;
                                                 openModal(d.id, day.fullDate, true);
                                               }}
                                               onKeyDown={(e) => {
@@ -1576,10 +1730,10 @@ const Dashboard = () => {
                                               <Plus size={14} />
                                             </div>
                                           )}
-                                          {editingUser && editingUser.designerId === d.id && editingUser.date === day.fullDate && (
-                                            <div className="absolute inset-0 bg-yellow-100/80 flex items-center justify-center z-10">
-                                              <span className="text-xs font-bold text-yellow-700 bg-yellow-200/50 px-2 py-1 rounded border border-yellow-300">
-                                                {editingUser.name} 正在编辑
+                                          {editingSession && editingSession.userId !== user?.id && (
+                                            <div className="absolute inset-0 bg-red-200/85 flex items-center justify-center z-10">
+                                              <span className="text-xs font-bold text-white bg-red-600 px-2 py-1 rounded border border-red-700 shadow-sm">
+                                                {editingSession.name || editingSession.username} 正在编辑
                                               </span>
                                             </div>
                                           )}
@@ -1654,7 +1808,19 @@ const Dashboard = () => {
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <div className="flex items-center gap-1.5">
             <span className="font-bold">本月任务条目:</span>
-            <span>{sheets.filter(s => filteredDesigners.some(d => d.id === s.designerId)).reduce((sum, s) => sum + Object.values(s.days || {}).flat().length, 0)} 条</span>
+            <span>{monthlyFooterStats.designTaskCount} 条</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-bold">本月周末加班:</span>
+            <span>{formatFooterHours(monthlyFooterStats.weekendOvertimeHours)}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-bold">本月员工出差:</span>
+            <span>{formatFooterHours(monthlyFooterStats.tripHours)}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-bold">本月员工请假:</span>
+            <span>{formatFooterHours(monthlyFooterStats.leaveHours)}</span>
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -1667,7 +1833,7 @@ const Dashboard = () => {
 
       {modalOpen && modalDate && modalDesignerId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40" onClick={() => { setModalOpen(false); socketRef.current?.emit('stop_editing'); }} />
+          <div className="absolute inset-0 bg-black/40" onClick={() => { setModalOpen(false); stopEditingCell(modalDesignerId, modalDate); }} />
           <div className="relative bg-white rounded-lg shadow-2xl w-[960px] max-w-[96vw] max-h-[90vh] flex flex-col border-2 border-gray-200">
             <div className="flex items-center justify-between px-4 py-3 border-b-2 border-gray-200 bg-[#217346] text-white rounded-t-lg">
               <div>
@@ -1679,7 +1845,7 @@ const Dashboard = () => {
                 setPendingChanges([]);
                 // 关闭模态框
                 setModalOpen(false); 
-                socketRef.current?.emit('stop_editing'); 
+                stopEditingCell(modalDesignerId, modalDate); 
               }} className="p-1 hover:bg-red-600 rounded transition">
                 <X size={20} />
               </button>
@@ -1717,7 +1883,7 @@ const Dashboard = () => {
                               <button
                                 onClick={() => {
                                   setModalOpen(false);
-                                  socketRef.current?.emit('stop_editing');
+                                  stopEditingCell(modalDesignerId, modalDate);
                                   addToast('任务已取消', 'error');
                                 }}
                                 className="mt-4 p-2 text-gray-300 hover:text-red-600 transition"
@@ -1736,7 +1902,7 @@ const Dashboard = () => {
                               <button
                                 onClick={() => {
                                   setModalOpen(false);
-                                  socketRef.current?.emit('stop_editing');
+                                  stopEditingCell(modalDesignerId, modalDate);
                                   addToast('任务已取消', 'error');
                                 }}
                                 className="p-2 text-gray-300 hover:text-red-600 transition"
@@ -1802,7 +1968,7 @@ const Dashboard = () => {
                             <button
                               onClick={() => {
                                 setModalOpen(false);
-                                socketRef.current?.emit('stop_editing');
+                                stopEditingCell(modalDesignerId, modalDate);
                                 addToast('任务已取消', 'error');
                               }}
                               className="mt-4 p-2 text-gray-300 hover:text-red-600 transition"
@@ -2354,7 +2520,7 @@ const Dashboard = () => {
                         setPendingChanges([]);
                         setFocusTarget(null);
                         setModalOpen(false);
-                        socketRef.current?.emit('stop_editing');
+                        stopEditingCell(modalDesignerId, modalDate);
                         addToast('任务已保存', 'success');
                       } catch (err) {
                         addToast('保存失败', 'error');
@@ -2396,7 +2562,7 @@ const Dashboard = () => {
                         // 关闭模态框
                         setFocusTarget(null);
                         setModalOpen(false);
-                        socketRef.current?.emit('stop_editing');
+                        stopEditingCell(modalDesignerId, modalDate);
                         addToast('任务已保存', 'success');
                       } catch (err) {
                         addToast('保存失败', 'error');

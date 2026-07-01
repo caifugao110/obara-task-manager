@@ -12,27 +12,15 @@ import {
   Settings,
   Shield,
   Upload,
-  History
+  History,
+  Search
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
 
 interface SystemSettingsData {
   allowGuestView: boolean;
   allowMultiDevice: boolean;
-}
-
-interface LoginLog {
-  id: string;
-  userId: string;
-  username: string;
-  name: string;
-  role: string;
-  ip: string;
-  userAgent: string;
-  success: boolean;
-  action?: string;
-  reason?: string;
-  timestamp: string;
 }
 
 interface Toast {
@@ -77,7 +65,7 @@ const SystemSettings = () => {
   const fetchLoginLogs = useCallback(async () => {
     if (!isSuperAdmin || !token) return;
     try {
-      const res = await axios.get('/api/system/login-logs', authHeader);
+      const res = await axios.get('/api/system/login-logs?limit=20', authHeader);
       setLoginLogs(res.data);
     } catch {
       addToast('无法加载登录历史', 'error');
@@ -153,12 +141,6 @@ const SystemSettings = () => {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  };
-
-  const getActionLabel = (log: LoginLog) => {
-    if (!log.success) return log.reason || '登录失败';
-    if (log.action === 'forced_previous_logout') return '登录（踢出其他设备）';
-    return '登录成功';
   };
 
   if (loading || !settingsLoaded) {
@@ -273,17 +255,29 @@ const SystemSettings = () => {
 
           <div className="border-t border-gray-100 pt-6">
             <div className="flex items-center justify-between mb-4">
-              <h4 className="font-bold text-gray-800 flex items-center">
-                <History className="mr-2 text-gray-500" size={20} />
-                管理员登录历史
-              </h4>
-              <button
-                onClick={fetchLoginLogs}
-                className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 font-medium"
-              >
-                <RefreshCw size={14} />
-                刷新
-              </button>
+              <div>
+                <h4 className="font-bold text-gray-800 flex items-center">
+                  <History className="mr-2 text-gray-500" size={20} />
+                  最新登录信息
+                </h4>
+                <p className="text-xs text-gray-400 mt-1">显示最近 20 条所有登录用户记录</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Link
+                  to="/login-logs"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold transition"
+                >
+                  <Search size={15} />
+                  详细日志
+                </Link>
+                <button
+                  onClick={fetchLoginLogs}
+                  className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  <RefreshCw size={14} />
+                  刷新
+                </button>
+              </div>
             </div>
             <div className="overflow-x-auto rounded-xl border border-gray-100">
               <table className="w-full text-sm">
@@ -294,13 +288,14 @@ const SystemSettings = () => {
                     <th className="px-4 py-3 font-bold">姓名</th>
                     <th className="px-4 py-3 font-bold">角色</th>
                     <th className="px-4 py-3 font-bold">IP</th>
+                    <th className="px-4 py-3 font-bold">浏览器信息</th>
                     <th className="px-4 py-3 font-bold">结果</th>
                   </tr>
                 </thead>
                 <tbody>
                   {loginLogs.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-400">暂无登录记录</td>
+                      <td colSpan={7} className="px-4 py-8 text-center text-gray-400">暂无登录记录</td>
                     </tr>
                   ) : (
                     loginLogs.map(log => (
@@ -311,11 +306,14 @@ const SystemSettings = () => {
                         <td className="px-4 py-3 font-medium text-gray-800">{log.username}</td>
                         <td className="px-4 py-3 text-gray-700">{log.name}</td>
                         <td className="px-4 py-3">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded ${log.role === 'superadmin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
-                            {log.role === 'superadmin' ? '超级管理员' : '管理员'}
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded ${getRoleClassName(log.role)}`}>
+                            {getRoleLabel(log.role)}
                           </span>
                         </td>
                         <td className="px-4 py-3 text-gray-500 font-mono text-xs">{log.ip || '-'}</td>
+                        <td className="px-4 py-3 text-gray-600 max-w-[240px] truncate" title={log.userAgent || getBrowserLabel(log)}>
+                          {getBrowserLabel(log)}
+                        </td>
                         <td className="px-4 py-3">
                           <span className={`text-xs font-bold ${log.success ? 'text-green-600' : 'text-red-600'}`}>
                             {getActionLabel(log)}

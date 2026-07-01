@@ -21,6 +21,29 @@ const loginSchema = Joi.object({
   password: Joi.string().min(6).required()
 });
 
+const getBrowserInfo = (userAgent = '') => {
+  const ua = String(userAgent);
+  let browser = 'Unknown Browser';
+  let os = 'Unknown OS';
+
+  if (/Edg\//i.test(ua)) browser = 'Microsoft Edge';
+  else if (/OPR\//i.test(ua) || /Opera/i.test(ua)) browser = 'Opera';
+  else if (/Chrome\//i.test(ua) && !/Chromium/i.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+  else if (/Safari\//i.test(ua) && /Version\//i.test(ua)) browser = 'Safari';
+  else if (/MSIE|Trident/i.test(ua)) browser = 'Internet Explorer';
+
+  if (/Windows NT/i.test(ua)) os = 'Windows';
+  else if (/Android/i.test(ua)) os = 'Android';
+  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+  else if (/Mac OS X/i.test(ua)) os = 'macOS';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+
+  const device = /Mobile|Android|iPhone|iPad|iPod/i.test(ua) ? 'Mobile' : 'Desktop';
+
+  return { browser, os, device, summary: `${browser} / ${os} / ${device}` };
+};
+
 const appendLoginLog = async (data, entry) => {
   if (!data.loginLogs) data.loginLogs = [];
   data.loginLogs.push({
@@ -44,8 +67,9 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const user = data.users.find(u => u.username === username);
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
   const userAgent = req.headers['user-agent'] || '';
+  const browserInfo = getBrowserInfo(userAgent);
 
-  const logBase = { username, ip, userAgent };
+  const logBase = { username, ip, userAgent, browserInfo };
 
   if (!user) {
     return res.status(401).json({ message: '用户名或密码错误' });

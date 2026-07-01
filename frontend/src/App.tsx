@@ -7,6 +7,7 @@ import Admin from './pages/Admin';
 import Leaderboard from './pages/Leaderboard';
 import WorkHours from './pages/WorkHours';
 import SystemSettings from './pages/SystemSettings';
+import LoginLogs from './pages/LoginLogs';
 
 const ProtectedRoute = ({
   children,
@@ -56,6 +57,14 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute superAdminOnly>
             <SystemSettings />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/login-logs"
+        element={
+          <ProtectedRoute superAdminOnly>
+            <LoginLogs />
           </ProtectedRoute>
         }
       />

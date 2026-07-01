@@ -17,6 +17,17 @@ const systemSettingsSchema = Joi.object({
   allowMultiDevice: Joi.boolean().required()
 });
 
+const loginLogQuerySchema = Joi.object({
+  limit: Joi.number().integer().min(1).max(500).default(200),
+  username: Joi.string().allow('').max(60).default(''),
+  role: Joi.string().valid('all', 'superadmin', 'admin', 'user').default('all'),
+  success: Joi.string().valid('all', 'true', 'false').default('all'),
+  browser: Joi.string().allow('').max(80).default(''),
+  ip: Joi.string().allow('').max(80).default(''),
+  from: Joi.date().iso().optional(),
+  to: Joi.date().iso().optional()
+});
+
 const sheetHasData = (sheet) => {
   if (!sheet?.days || typeof sheet.days !== 'object') return false;
   return Object.values(sheet.days).some(items => Array.isArray(items) && items.length > 0);
@@ -78,11 +89,43 @@ router.put('/settings', [authMiddleware, superAdminMiddleware], asyncHandler(asy
 }));
 
 router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { error, value } = loginLogQuerySchema.validate(req.query, { stripUnknown: true, convert: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
   const data = db.readDb();
+  const fromTime = value.from ? new Date(value.from).getTime() : null;
+  const toTime = value.to ? new Date(value.to).getTime() + 24 * 60 * 60 * 1000 - 1 : null;
+  const usernameKeyword = value.username.trim().toLowerCase();
+  const browserKeyword = value.browser.trim().toLowerCase();
+  const ipKeyword = value.ip.trim().toLowerCase();
+
   const logs = (data.loginLogs || [])
-    .filter(log => log.role === 'admin' || log.role === 'superadmin')
+    .filter(log => {
+      const timestamp = new Date(log.timestamp).getTime();
+      const browserText = [
+        log.browserInfo?.summary,
+        log.browserInfo?.browser,
+        log.browserInfo?.os,
+        log.browserInfo?.device,
+        log.userAgent
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      if (value.role !== 'all' && log.role !== value.role) return false;
+      if (value.success !== 'all' && String(Boolean(log.success)) !== value.success) return false;
+      if (usernameKeyword) {
+        const userText = `${log.username || ''} ${log.name || ''}`.toLowerCase();
+        if (!userText.includes(usernameKeyword)) return false;
+      }
+      if (browserKeyword && !browserText.includes(browserKeyword)) return false;
+      if (ipKeyword && !String(log.ip || '').toLowerCase().includes(ipKeyword)) return false;
+      if (fromTime && timestamp < fromTime) return false;
+      if (toTime && timestamp > toTime) return false;
+      return true;
+    })
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .slice(0, 200);
+    .slice(0, value.limit);
   res.json(logs);
 }));
 

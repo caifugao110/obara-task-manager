@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { UserPlus, Trash2, Shield, User, ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download } from 'lucide-react';
+import { UserPlus, Trash2, Shield, User, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download } from 'lucide-react';
 import { format } from 'date-fns';
 import {
   DndContext,
@@ -29,11 +29,15 @@ interface DesignerData {
 
 const SortableDesignerRow = ({ 
   designer, 
+  selected,
+  onSelect,
   onEdit,
   onToggleHide, 
   onDelete 
 }: { 
   designer: DesignerData, 
+  selected: boolean,
+  onSelect: (id: string, selected: boolean) => void,
   onEdit: (id: string) => void,
   onToggleHide: (id: string, hidden: boolean) => void,
   onDelete: (id: string) => void 
@@ -60,6 +64,14 @@ const SortableDesignerRow = ({
       style={style} 
       className={`hover:bg-blue-50/30 transition group ${designer.hidden ? 'opacity-50' : ''}`}
     >
+      <td className="px-6 py-4 align-middle">
+        <input
+          type="checkbox"
+          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          checked={selected}
+          onChange={(e) => onSelect(designer.id, e.target.checked)}
+        />
+      </td>
       <td className="px-6 py-4 font-bold text-gray-700 align-middle">
         <div className="flex items-center gap-2">
           <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 rounded">
@@ -115,6 +127,64 @@ interface Toast {
   id: number;
 }
 
+const initialDesigners = [
+  { name: '陈青松', group: '设计一课第一组' },
+  { name: '王福跃', group: '设计二课' },
+  { name: '张明', group: '设计一课张明组' },
+  { name: '孙茂余', group: '设计一课第一组' },
+  { name: '高剑', group: '设计一课张明组' },
+  { name: '杨虹', group: '设计一课第一组' },
+  { name: '张万利', group: '设计二课' },
+  { name: '翟世学', group: '设计一课第一组' },
+  { name: '戴红琴', group: '设计一课张明组' },
+  { name: '陈爱珍', group: '设计一课第一组' },
+  { name: '陈大仪', group: '设计一课第一组' },
+  { name: '韩同进', group: '设计二课' },
+  { name: '侯桂英', group: '设计一课第一组' },
+  { name: '张啸', group: '设计一课第一组' },
+  { name: '袁林', group: '设计一课张明组' },
+  { name: '佘鲁明', group: '设计一课第一组' },
+  { name: '朱海洋', group: '设计一课第一组' },
+  { name: '郁钰', group: '设计一课第一组' },
+  { name: '丁代远', group: '设计一课第一组' },
+  { name: '周骅', group: '设计一课第一组' },
+  { name: '周椿杰', group: '设计二课' },
+  { name: '徐绍洋', group: '设计一课第一组' },
+  { name: '张艳珍', group: '设计一课第一组' },
+  { name: '林慈贤', group: '设计一课张明组' },
+  { name: '吴健', group: '设计一课张明组' },
+  { name: '朱栋栋', group: '设计一课张明组' }
+];
+
+const initialLoginUsers = [
+  { username: 'chengqs', password: 'nj.chengqs', name: '陈青松', role: 'admin' },
+  { username: 'wangfy', password: 'nj.wangfy', name: '王福跃', role: 'admin' },
+  { username: 'zhangm', password: 'nj.zhangm', name: '张明', role: 'admin' },
+  { username: 'sunmy', password: 'nj.sunmy', name: '孙茂余', role: 'user' },
+  { username: 'gaoj', password: 'nj.gaoj', name: '高剑', role: 'user' },
+  { username: 'yangh', password: 'nj.yangh', name: '杨虹', role: 'user' },
+  { username: 'zhangwl', password: 'nj.zhangwl', name: '张万利', role: 'user' },
+  { username: 'zhaisx', password: 'nj.zhaisx', name: '翟世学', role: 'user' },
+  { username: 'daihq', password: 'nj.daihq', name: '戴红琴', role: 'user' },
+  { username: 'chenaz', password: 'nj.chenaz', name: '陈爱珍', role: 'user' },
+  { username: 'chendy', password: 'nj.chendy', name: '陈大仪', role: 'admin' },
+  { username: 'hantj', password: 'nj.hantj', name: '韩同进', role: 'user' },
+  { username: 'hougy', password: 'nj.hougy', name: '侯桂英', role: 'user' },
+  { username: 'zhangx', password: 'nj.zhangx', name: '张啸', role: 'admin' },
+  { username: 'yuanl', password: 'nj.yuanl', name: '袁林', role: 'user' },
+  { username: 'shelm', password: 'nj.shelm', name: '佘鲁明', role: 'user' },
+  { username: 'zhuhy', password: 'nj.zhuhy', name: '朱海洋', role: 'user' },
+  { username: 'yuy', password: 'nj.yuy', name: '郁钰', role: 'user' },
+  { username: 'dingdy', password: 'nj.dingdy', name: '丁代远', role: 'user' },
+  { username: 'zhouh', password: 'nj.zhouh', name: '周骅', role: 'user' },
+  { username: 'zhoucj', password: 'nj.zhoucj', name: '周椿杰', role: 'user' },
+  { username: 'xusy', password: 'nj.xusy', name: '徐绍洋', role: 'user' },
+  { username: 'zhangyz', password: 'nj.zhangyz', name: '张艳珍', role: 'user' },
+  { username: 'lincx', password: 'nj.lincx', name: '林慈贤', role: 'user' },
+  { username: 'wuj', password: 'nj.wuj', name: '吴健', role: 'user' },
+  { username: 'zhudd', password: 'nj.zhudd', name: '朱栋栋', role: 'user' }
+] as const;
+
 const Admin = () => {
   const { token, logout, user: currentUser, authReady } = useAuth();
   const [users, setUsers] = useState<UserData[]>([]);
@@ -144,8 +214,16 @@ const Admin = () => {
   const [bulkImportType, setBulkImportType] = useState<'designers' | 'users' | null>(null);
   const [bulkImportText, setBulkImportText] = useState('');
   const [bulkImportSubmitting, setBulkImportSubmitting] = useState(false);
+  const [selectedDesignerIds, setSelectedDesignerIds] = useState<string[]>([]);
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [initializingDesigners, setInitializingDesigners] = useState(false);
+  const [initializingUsers, setInitializingUsers] = useState(false);
+  const [designersCollapsed, setDesignersCollapsed] = useState(false);
+  const [usersCollapsed, setUsersCollapsed] = useState(false);
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
+  const canInitializeDesigners = isSuperAdmin && designers.length === 0;
+  const canInitializeUsers = isSuperAdmin && users.filter(u => u.role !== 'superadmin').length === 0;
   const authHeader = useMemo(
     () => (token ? { headers: { Authorization: `Bearer ${token}` } } : undefined),
     [token]
@@ -190,6 +268,17 @@ const Admin = () => {
     return '普通用户';
   };
 
+  const normalizeKey = (value: string) => value.trim().toLowerCase();
+
+  const formatElapsed = (startedAt: number) => `${((performance.now() - startedAt) / 1000).toFixed(2)} 秒`;
+
+  const selectableUserIds = useMemo(
+    () => users.filter(u => u.id !== currentUser?.id && u.role !== 'superadmin').map(u => u.id),
+    [currentUser?.id, users]
+  );
+
+  const isMissingBatchRoute = (err: any) => err?.response?.status === 404;
+
   const downloadTemplate = (type: 'designers' | 'users') => {
     const csv = type === 'designers'
       ? 'name,group\n张三,设计一课\n李四,设计二课\n'
@@ -224,31 +313,47 @@ const Admin = () => {
       : rows;
 
     setBulkImportSubmitting(true);
+    const startedAt = performance.now();
     try {
       let successCount = 0;
+      let skippedCount = 0;
       if (bulkImportType === 'designers') {
+        const existingNames = new Set(designers.map(d => normalizeKey(d.name)));
         for (const row of dataRows) {
           const [name, group = ''] = row;
           if (!name) continue;
+          const key = normalizeKey(name);
+          if (!key || existingNames.has(key)) {
+            skippedCount++;
+            continue;
+          }
           await axios.post('/api/designers', { name, group }, authHeader);
+          existingNames.add(key);
           successCount++;
         }
       } else {
-        if (!isSuperAdmin) return;
+        const existingUsernames = new Set(users.map(u => normalizeKey(u.username)));
         for (const row of dataRows) {
           const [username, password, name, role] = row;
           if (!username || !password || !name) continue;
+          const key = normalizeKey(username);
+          if (!key || existingUsernames.has(key)) {
+            skippedCount++;
+            continue;
+          }
           await axios.post('/api/users', {
             username,
             password,
             name,
-            role: normalizeRole(role)
+            role: isSuperAdmin ? normalizeRole(role) : 'user'
           }, authHeader);
+          existingUsernames.add(key);
           successCount++;
         }
       }
 
-      addToast(`已导入 ${successCount} 条数据`, 'success');
+      const elapsed = formatElapsed(startedAt);
+      addToast(`已导入 ${successCount} 条，跳过 ${skippedCount} 条重复数据，耗时 ${elapsed}`, 'success');
       setBulkImportType(null);
       setBulkImportText('');
       fetchData();
@@ -287,15 +392,32 @@ const Admin = () => {
     fetchData();
   }, [authReady, token, fetchData]);
 
+  useEffect(() => {
+    if (!isSuperAdmin && newRole !== 'user') {
+      setNewRole('user');
+    }
+  }, [isSuperAdmin, newRole]);
+
+  useEffect(() => {
+    setSelectedDesignerIds(prev => prev.filter(id => designers.some(d => d.id === id)));
+  }, [designers]);
+
+  useEffect(() => {
+    setSelectedUserIds(prev => prev.filter(id => users.some(u => u.id === id)));
+  }, [users]);
+
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isSuperAdmin) return;
+    if (!isSuperAdmin && newRole !== 'user') {
+      addToast('一般管理员只能创建普通用户', 'error');
+      return;
+    }
     try {
       await axios.post('/api/users', {
         username: newUsername,
         password: newPassword,
         name: newName || newUsername,
-        role: newRole
+        role: isSuperAdmin ? newRole : 'user'
       }, authHeader);
       
       addToast('登录用户创建成功', 'success');
@@ -311,6 +433,10 @@ const Admin = () => {
 
   const handleCreateDesigner = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (designers.some(d => normalizeKey(d.name) === normalizeKey(newDesignerName))) {
+      addToast('设计人员姓名已存在', 'error');
+      return;
+    }
     try {
       await axios.post('/api/designers', {
         name: newDesignerName,
@@ -323,6 +449,38 @@ const Admin = () => {
       fetchData();
     } catch (err: any) {
       addToast(err.response?.data?.message || '添加失败', 'error');
+    }
+  };
+
+  const handleInitializeDesigners = async () => {
+    if (!authHeader || !canInitializeDesigners) return;
+    if (!window.confirm(`确定要初始化 ${initialDesigners.length} 位设计人员吗？`)) return;
+
+    setInitializingDesigners(true);
+    try {
+      await Promise.all(initialDesigners.map(designer => axios.post('/api/designers', designer, authHeader)));
+      addToast(`已初始化 ${initialDesigners.length} 位设计人员`, 'success');
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '初始化设计人员失败', 'error');
+    } finally {
+      setInitializingDesigners(false);
+    }
+  };
+
+  const handleInitializeUsers = async () => {
+    if (!authHeader || !canInitializeUsers) return;
+    if (!window.confirm(`确定要初始化 ${initialLoginUsers.length} 个登录用户吗？`)) return;
+
+    setInitializingUsers(true);
+    try {
+      await Promise.all(initialLoginUsers.map(user => axios.post('/api/users', user, authHeader)));
+      addToast(`已初始化 ${initialLoginUsers.length} 个登录用户`, 'success');
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '初始化登录用户失败', 'error');
+    } finally {
+      setInitializingUsers(false);
     }
   };
 
@@ -373,6 +531,34 @@ const Admin = () => {
     }
   };
 
+  const handleBatchDeleteUsers = async () => {
+    if (!isSuperAdmin) return;
+    const ids = selectedUserIds.filter(id => id !== currentUser?.id);
+    const selectedUsers = users.filter(u => ids.includes(u.id));
+    if (ids.length === 0) {
+      addToast('请先选择要删除的登录用户', 'error');
+      return;
+    }
+    if (selectedUsers.some(u => u.role === 'superadmin')) {
+      addToast('不能批量删除超级管理员账号', 'error');
+      return;
+    }
+    if (!window.confirm(`确定要删除选中的 ${ids.length} 个登录用户吗？`)) return;
+    try {
+      try {
+        await axios.post('/api/users/batch-delete', { ids }, authHeader);
+      } catch (err: any) {
+        if (!isMissingBatchRoute(err)) throw err;
+        await Promise.all(ids.map(id => axios.delete(`/api/users/${id}`, authHeader)));
+      }
+      addToast(`已删除 ${ids.length} 个登录用户`, 'success');
+      setSelectedUserIds([]);
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '批量删除失败', 'error');
+    }
+  };
+
   const handleResetPassword = async (id: string) => {
     if (!isSuperAdmin) return;
     setResetPasswordUserId(id);
@@ -420,6 +606,28 @@ const Admin = () => {
       fetchData();
     } catch (err: any) {
       addToast(err.response?.data?.message || '移除失败', 'error');
+    }
+  };
+
+  const handleBatchDeleteDesigners = async () => {
+    const ids = [...selectedDesignerIds];
+    if (ids.length === 0) {
+      addToast('请先选择要删除的设计人员', 'error');
+      return;
+    }
+    if (!window.confirm(`确定要从表格中移除选中的 ${ids.length} 位设计人员吗？其任务数据将保留在数据库中但不再显示。`)) return;
+    try {
+      try {
+        await axios.post('/api/designers/batch-delete', { ids }, authHeader);
+      } catch (err: any) {
+        if (!isMissingBatchRoute(err)) throw err;
+        await Promise.all(ids.map(id => axios.delete(`/api/designers/${id}`, authHeader)));
+      }
+      addToast(`已移除 ${ids.length} 位设计人员`, 'success');
+      setSelectedDesignerIds([]);
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '批量移除失败', 'error');
     }
   };
 
@@ -642,11 +850,13 @@ const Admin = () => {
                 placeholder={
                   bulkImportType === 'designers'
                     ? '可直接从外部表格复制两列：姓名、分组'
-                    : '可直接从外部表格复制四列：用户名、密码、姓名、角色(admin/user)'
+                    : isSuperAdmin
+                      ? '可直接从外部表格复制四列：用户名、密码、姓名、角色(admin/user)'
+                      : '可直接从外部表格复制三列：用户名、密码、姓名；将自动创建为普通用户'
                 }
               />
               <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700">
-                支持 CSV、TSV，或从 Excel/WPS 复制后直接粘贴。第一行可以保留模板表头。
+                支持 CSV、TSV，或从 Excel/WPS 复制后直接粘贴。第一行可以保留模板表头。重复数据会自动跳过并显示耗时。
               </div>
             </div>
             <div className="px-5 py-4 bg-white border-t border-gray-200 flex items-center justify-end gap-2">
@@ -666,7 +876,7 @@ const Admin = () => {
                 onClick={handleBulkImport}
                 disabled={bulkImportSubmitting}
               >
-                确认导入
+                {bulkImportSubmitting ? '导入中...' : '确认导入'}
               </button>
             </div>
           </div>
@@ -704,8 +914,35 @@ const Admin = () => {
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-lg font-bold text-gray-800">设计人员列表</h2>
+              <button
+                type="button"
+                onClick={() => setDesignersCollapsed(prev => !prev)}
+                className="inline-flex items-center gap-2 rounded-lg px-2 py-1 -ml-2 text-lg font-bold text-gray-800 hover:bg-gray-100 transition"
+                title={designersCollapsed ? '展开设计人员列表' : '折叠设计人员列表'}
+              >
+                {designersCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                设计人员列表
+              </button>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleInitializeDesigners}
+                  disabled={!canInitializeDesigners || initializingDesigners}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!isSuperAdmin ? '仅超级管理员可使用' : designers.length > 0 ? '设计人员为空时可初始化' : '初始化设计人员'}
+                >
+                  <UserPlus size={14} />
+                  {initializingDesigners ? '初始化中...' : '初始化设计人员'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBatchDeleteDesigners}
+                  disabled={selectedDesignerIds.length === 0}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Trash2 size={14} />
+                  批量删除
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -720,6 +957,7 @@ const Admin = () => {
                 <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{designers.length} 位设计人员</span>
               </div>
             </div>
+            {!designersCollapsed && (
             <div className="overflow-x-auto">
               <DndContext 
                 sensors={sensors}
@@ -729,6 +967,14 @@ const Admin = () => {
                 <table className="w-full text-left">
                   <thead>
                     <tr className="bg-white text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
+                      <th className="px-6 py-4 w-12">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          checked={designers.length > 0 && selectedDesignerIds.length === designers.length}
+                          onChange={(e) => setSelectedDesignerIds(e.target.checked ? designers.map(d => d.id) : [])}
+                        />
+                      </th>
                       <th className="px-6 py-4">姓名</th>
                       <th className="px-6 py-4">分组</th>
                       <th className="px-6 py-4 text-right">操作</th>
@@ -741,7 +987,7 @@ const Admin = () => {
                     <tbody className="text-sm divide-y divide-gray-50 align-middle">
                       {designers.length === 0 ? (
                         <tr>
-                          <td colSpan={3} className="px-6 py-12 text-center">
+                          <td colSpan={4} className="px-6 py-12 text-center">
                             <p className="font-bold text-gray-500">暂无设计人员</p>
                             <p className="text-sm text-gray-400 mt-1">请在右侧表单添加第一位设计人员，添加后将显示在工作台表格中</p>
                           </td>
@@ -751,6 +997,10 @@ const Admin = () => {
                           <SortableDesignerRow
                             key={d.id}
                             designer={d}
+                            selected={selectedDesignerIds.includes(d.id)}
+                            onSelect={(id, selected) => {
+                              setSelectedDesignerIds(prev => selected ? [...prev, id] : prev.filter(item => item !== id));
+                            }}
                             onEdit={handleEditDesigner}
                             onToggleHide={handleToggleHideDesigner}
                             onDelete={handleDeleteDesigner}
@@ -762,6 +1012,7 @@ const Admin = () => {
                 </table>
               </DndContext>
             </div>
+            )}
           </div>
 
           <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit">
@@ -806,15 +1057,41 @@ const Admin = () => {
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-8 border-t border-gray-200">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-lg font-bold text-gray-800">登录用户列表</h2>
+              <button
+                type="button"
+                onClick={() => setUsersCollapsed(prev => !prev)}
+                className="inline-flex items-center gap-2 rounded-lg px-2 py-1 -ml-2 text-lg font-bold text-gray-800 hover:bg-gray-100 transition"
+                title={usersCollapsed ? '展开登录用户列表' : '折叠登录用户列表'}
+              >
+                {usersCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                登录用户列表
+              </button>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleInitializeUsers}
+                  disabled={!canInitializeUsers || initializingUsers}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!isSuperAdmin ? '仅超级管理员可使用' : !canInitializeUsers ? '仅剩超级管理员账号时可初始化' : '初始化登录用户'}
+                >
+                  <UserPlus size={14} />
+                  {initializingUsers ? '初始化中...' : '初始化登录用户'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBatchDeleteUsers}
+                  disabled={!isSuperAdmin || selectedUserIds.length === 0}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Trash2 size={14} />
+                  批量删除
+                </button>
                 <button
                   type="button"
                   onClick={() => {
                     setBulkImportType('users');
                     setBulkImportText('');
                   }}
-                  disabled={!isSuperAdmin}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-purple-50 px-3 py-1.5 text-xs font-bold text-purple-600 hover:bg-purple-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Upload size={14} />
@@ -823,10 +1100,22 @@ const Admin = () => {
                 <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{users.length} 个用户</span>
               </div>
             </div>
+            {!usersCollapsed && (
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead>
                   <tr className="bg-white text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
+                    <th className="px-6 py-4 w-12">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                        checked={selectableUserIds.length > 0 && selectableUserIds.every(id => selectedUserIds.includes(id))}
+                        onChange={(e) => {
+                          setSelectedUserIds(e.target.checked ? selectableUserIds : []);
+                        }}
+                        disabled={!isSuperAdmin || selectableUserIds.length === 0}
+                      />
+                    </th>
                     <th className="px-6 py-4">姓名</th>
                     <th className="px-6 py-4">用户名</th>
                     <th className="px-6 py-4">权限</th>
@@ -836,6 +1125,17 @@ const Admin = () => {
                 <tbody className="text-sm divide-y divide-gray-50">
                   {users.map(u => (
                     <tr key={u.id} className="hover:bg-purple-50/30 transition group">
+                      <td className="px-6 py-4">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 disabled:opacity-40"
+                          checked={selectedUserIds.includes(u.id)}
+                          onChange={(e) => {
+                            setSelectedUserIds(prev => e.target.checked ? [...prev, u.id] : prev.filter(id => id !== u.id));
+                          }}
+                          disabled={!isSuperAdmin || u.id === currentUser?.id || u.role === 'superadmin'}
+                        />
+                      </td>
                       <td className="px-6 py-4 font-bold text-gray-700">{u.name}</td>
                       <td className="px-6 py-4 text-gray-500 font-medium">{u.username}</td>
                       <td className="px-6 py-4">
@@ -885,14 +1185,15 @@ const Admin = () => {
                 </tbody>
               </table>
             </div>
+            )}
           </div>
 
-          <div className={`bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit ${!isSuperAdmin ? 'opacity-50 pointer-events-none' : ''}`}>
+          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <Shield size={20} className="mr-2 text-purple-600" /> 新增登录用户
               </h2>
-              {!isSuperAdmin && <p className="text-[10px] text-red-500 mt-1">仅超级管理员可操作</p>}
+              {!isSuperAdmin && <p className="text-[10px] text-gray-500 mt-1">一般管理员仅可创建普通用户</p>}
             </div>
             <form onSubmit={handleCreateUser} className="p-6 space-y-5">
               <div>
@@ -935,7 +1236,7 @@ const Admin = () => {
                   value={newRole}
                   onChange={(e) => setNewRole(e.target.value as 'admin' | 'user')}
                 >
-                  <option value="admin">一般管理员</option>
+                  {isSuperAdmin && <option value="admin">一般管理员</option>}
                   <option value="user">普通用户</option>
                 </select>
               </div>

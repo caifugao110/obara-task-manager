@@ -380,7 +380,7 @@ const WorkHours = () => {
         ))}
       </div>
 
-      <header className="bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
+      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
@@ -442,7 +442,7 @@ const WorkHours = () => {
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
-              <div className="px-6 py-5 bg-gray-50 border-b border-gray-100">
+              <div className="sticky top-[73px] z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
                 <div className="flex items-center justify-between gap-4">
                   <h2 className="text-lg font-bold flex items-center text-gray-800">
                     <Clock className="mr-2 text-blue-600" size={22} />
@@ -539,7 +539,7 @@ const WorkHours = () => {
             </div>
 
             <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
-              <div className="px-6 py-5 bg-gray-50 border-b border-gray-100">
+              <div className="sticky top-[73px] z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
                 <div className="flex items-center justify-between gap-4">
                   <h2 className="text-lg font-bold flex items-center text-gray-800">
                     <Calendar className="mr-2 text-red-600" size={22} />

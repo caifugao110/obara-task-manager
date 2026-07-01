@@ -23,6 +23,10 @@ const userUpdateSchema = Joi.object({
   disabled: Joi.boolean()
 });
 
+const batchDeleteSchema = Joi.object({
+  ids: Joi.array().items(Joi.string().required()).min(1).required()
+});
+
 // Get all login users
 router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
@@ -47,18 +51,19 @@ router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res)
   res.json(users);
 }));
 
-// Create login user (SuperAdmin can create Admin/User, Admin cannot create anyone)
+// Create login user (SuperAdmin can create any role, Admin can create normal users)
 router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
-  if (req.user.role !== 'superadmin') {
-    return res.status(403).json({ message: '只有超级管理员可以增加登录用户' });
-  }
-
   const { error } = userCreateSchema.validate(req.body);
   if (error) {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
   const { username, password, role, name, group } = req.body;
+  const targetRole = req.user.role === 'superadmin' ? (role || 'admin') : 'user';
+  if (req.user.role !== 'superadmin' && role && role !== 'user') {
+    return res.status(403).json({ message: '一般管理员只能创建普通用户' });
+  }
+
   const data = db.readDb();
 
   if (data.users.find(u => u.username === username)) {
@@ -69,7 +74,7 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
     id: Date.now().toString(),
     username,
     password: bcrypt.hashSync(password, 10),
-    role: role || 'admin',
+    role: targetRole,
     name: name || username,
     group: group || '',
     disabled: false // 新创建的管理员默认启用
@@ -117,6 +122,36 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
 
   const { password: _, ...userResponse } = targetUser;
   res.json(userResponse);
+}));
+
+// Batch delete login users (SuperAdmin only)
+router.post('/batch-delete', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+  if (req.user.role !== 'superadmin') {
+    return res.status(403).json({ message: '只有超级管理员可以删除登录用户' });
+  }
+
+  const { error } = batchDeleteSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const idSet = new Set(req.body.ids);
+  if (idSet.has(req.user.id)) {
+    return res.status(400).json({ message: '不能删除当前登录账号' });
+  }
+
+  const data = db.readDb();
+  const blocked = data.users.find(u => idSet.has(u.id) && u.role === 'superadmin');
+  if (blocked) {
+    return res.status(400).json({ message: '不能批量删除超级管理员账号' });
+  }
+
+  const beforeCount = data.users.length;
+  data.users = data.users.filter(u => !idSet.has(u.id));
+  const deletedCount = beforeCount - data.users.length;
+
+  await db.writeDb(data);
+  res.json({ message: `已删除 ${deletedCount} 个登录用户`, deletedCount });
 }));
 
 // Delete login user (SuperAdmin only)

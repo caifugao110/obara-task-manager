@@ -55,8 +55,40 @@ app.use((err, req, res, next) => {
 // Socket.io connection
 app.set('io', io);
 
+const editingSessions = new Map();
+const editingKey = (designerId, date) => `${designerId}::${date}`;
+const publicEditingSessions = () => Array.from(editingSessions.values());
+const broadcastStoppedSessions = (sessions, sourceSocket) => {
+  sessions.forEach(session => {
+    const payload = {
+      designerId: session.designerId,
+      date: session.date,
+      userId: session.userId
+    };
+    if (sourceSocket) {
+      sourceSocket.broadcast.emit('user_stopped_editing', payload);
+      sourceSocket.emit('user_stopped_editing', payload);
+    } else {
+      io.emit('user_stopped_editing', payload);
+    }
+  });
+};
+
+const removeSessions = (predicate) => {
+  const removedSessions = [];
+  for (const [key, session] of editingSessions.entries()) {
+    if (predicate(session)) {
+      editingSessions.delete(key);
+      removedSessions.push(session);
+    }
+  }
+  return removedSessions;
+};
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
+
+  socket.emit('editing_state', publicEditingSessions());
 
   socket.on('register_user', (token) => {
     if (!token || typeof token !== 'string') return;
@@ -78,14 +110,55 @@ io.on('connection', (socket) => {
   });
 
   socket.on('start_editing', (data) => {
-    socket.broadcast.emit('user_editing', data);
+    if (!data?.designerId || !data?.date || !data?.userId) return;
+    const key = editingKey(data.designerId, data.date);
+    const existingSession = editingSessions.get(key);
+    if (
+      existingSession &&
+      existingSession.socketId !== socket.id &&
+      existingSession.userId !== data.userId
+    ) {
+      socket.emit('editing_blocked', existingSession);
+      return;
+    }
+
+    const removedOwnSessions = removeSessions(session =>
+      session.userId === data.userId &&
+      editingKey(session.designerId, session.date) !== key
+    );
+    broadcastStoppedSessions(removedOwnSessions, socket);
+
+    const session = {
+      designerId: data.designerId,
+      date: data.date,
+      userId: data.userId,
+      username: data.username || '',
+      name: data.name || data.username || '',
+      socketId: socket.id
+    };
+    editingSessions.set(key, session);
+    socket.broadcast.emit('user_editing', session);
   });
 
-  socket.on('stop_editing', () => {
-    socket.broadcast.emit('user_stopped_editing');
+  socket.on('stop_editing', (data) => {
+    let removedSessions = [];
+    if (data?.designerId && data?.date) {
+      const key = editingKey(data.designerId, data.date);
+      const session = editingSessions.get(key);
+      if (session && session.socketId === socket.id) {
+        editingSessions.delete(key);
+        removedSessions = [session];
+      }
+    } else {
+      removedSessions = removeSessions(session => session.socketId === socket.id);
+    }
+
+    broadcastStoppedSessions(removedSessions, socket);
   });
 
   socket.on('disconnect', () => {
+    const removedSessions = removeSessions(session => session.socketId === socket.id);
+    broadcastStoppedSessions(removedSessions, socket);
     console.log('User disconnected');
   });
 });

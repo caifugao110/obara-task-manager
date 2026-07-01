@@ -59,7 +59,7 @@ Authorization: Bearer <token>
 
 说明：
 
-- 登录成功和失败都会记录登录日志。
+- 登录成功和失败都会记录登录日志，日志包含 IP、原始 `User-Agent` 和解析后的浏览器信息。
 - 账号禁用时返回 `403` 和 `ACCOUNT_DISABLED`。
 - 关闭多设备登录时，新登录会使旧会话失效。
 
@@ -118,7 +118,10 @@ Authorization: Bearer <token>
 
 `POST /api/users`
 
-权限：仅 `superadmin`
+权限：`superadmin`、`admin`
+
+- `superadmin` 可创建 `superadmin`、`admin`、`user`。
+- `admin` 仅可创建 `user`。
 
 请求：
 
@@ -150,6 +153,25 @@ Authorization: Bearer <token>
   "password": "new-password",
   "role": "admin",
   "disabled": false
+}
+```
+
+### 批量删除登录用户
+
+`POST /api/users/batch-delete`
+
+权限：仅 `superadmin`
+
+规则：
+
+- 不能删除当前登录账号。
+- 不能批量删除超级管理员账号。
+
+请求：
+
+```json
+{
+  "ids": ["user-id-1", "user-id-2"]
 }
 ```
 
@@ -206,11 +228,20 @@ Authorization: Bearer <token>
 }
 ```
 
+规则：
+
+- 设计人员姓名会去除首尾空格。
+- 设计人员姓名不允许重复，重复时返回 `400`。
+
 ### 更新设计人员
 
 `PUT /api/designers/:id`
 
 权限：`admin`、`superadmin`
+
+规则：
+
+- 更新后的设计人员姓名不允许与其他设计人员重复。
 
 ### 设计人员排序
 
@@ -231,6 +262,24 @@ Authorization: Bearer <token>
 `DELETE /api/designers/:id`
 
 权限：`admin`、`superadmin`
+
+### 批量删除设计人员
+
+`POST /api/designers/batch-delete`
+
+权限：`admin`、`superadmin`
+
+说明：
+
+- 只删除设计人员列表中的人员行，不清理历史任务数据。
+
+请求：
+
+```json
+{
+  "ids": ["designer-id-1", "designer-id-2"]
+}
+```
 
 ## 任务接口
 
@@ -490,11 +539,48 @@ Authorization: Bearer <token>
 
 权限：仅 `superadmin`
 
+查询参数：
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `limit` | 否 | `200` | 返回条数，范围 1-500。系统设置页使用 `20` 显示最新记录。 |
+| `username` | 否 | 空 | 按账号或姓名模糊筛选 |
+| `role` | 否 | `all` | `all`、`superadmin`、`admin`、`user` |
+| `success` | 否 | `all` | `all`、`true`、`false` |
+| `ip` | 否 | 空 | 按 IP 模糊筛选 |
+| `browser` | 否 | 空 | 按浏览器、系统、设备或原始 `User-Agent` 模糊筛选 |
+| `from` | 否 | 空 | 开始日期，ISO 日期格式 |
+| `to` | 否 | 空 | 结束日期，ISO 日期格式，包含当天 |
+
 说明：
 
-- 返回 `admin` 和 `superadmin` 登录记录。
-- 最多返回 200 条。
+- 返回所有登录用户的登录记录。
 - 按时间倒序。
+
+响应示例：
+
+```json
+[
+  {
+    "id": "log-id",
+    "userId": "user-id",
+    "username": "user001",
+    "name": "普通用户A",
+    "role": "user",
+    "ip": "::1",
+    "userAgent": "Mozilla/5.0 ...",
+    "browserInfo": {
+      "browser": "Chrome",
+      "os": "Windows",
+      "device": "Desktop",
+      "summary": "Chrome / Windows / Desktop"
+    },
+    "success": true,
+    "action": "login",
+    "timestamp": "2026-07-01T00:00:00.000Z"
+  }
+]
+```
 
 ### 导出任务数据
 
@@ -569,16 +655,18 @@ ws://localhost:5000
 |------|------|
 | `register_user` | 注册当前用户 room，用于单设备登录踢下线 |
 | `task_updated` | 通知任务已更新 |
-| `start_editing` | 通知开始编辑 |
-| `stop_editing` | 通知停止编辑 |
+| `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、`userId`、`username`、`name` |
+| `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 |
 
 服务端事件：
 
 | 事件 | 说明 |
 |------|------|
 | `task_refreshed` | 任务数据已刷新 |
-| `user_editing` | 某用户正在编辑 |
-| `user_stopped_editing` | 某用户停止编辑 |
+| `editing_state` | 当前所有编辑中的单元格状态，连接成功后下发 |
+| `user_editing` | 某用户正在编辑指定设计人员日期单元格 |
+| `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 |
+| `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格 |
 | `session_invalidated` | 当前会话被新登录踢下线 |
 
 ## 常见错误码
