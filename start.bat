@@ -1,196 +1,196 @@
 @echo off
 chcp 65001 >nul 2>&1
-setlocal enabledelayedexpansion
+setlocal
 
 set "SCRIPT_DIR=%~dp0"
 set "BACKEND_DIR=%SCRIPT_DIR%backend"
 set "FRONTEND_DIR=%SCRIPT_DIR%frontend"
+set "LOG_DIR=%SCRIPT_DIR%logs"
 set "BACKEND_PORT=5000"
 set "FRONTEND_PORT=5173"
 
-set "COLOR_NORMAL=%~1"
-if defined COLOR_NORMAL goto skip_color_set
-set "COLOR_NORMAL="
-:skip_color_set
+if /i not "%~1"=="--hidden" (
+    if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
+    wscript.exe //nologo "%SCRIPT_DIR%start-hidden.vbs" "%~f0" "%LOG_DIR%\startup.log" "%LOG_DIR%\startup.err.log"
+    exit /b
+)
 
-call :init_colors
+call :ensure_logs
 
-echo %CYAN%═══════════════════════════════════════════════════════════════%
-echo %CYAN%  ║          OBara Task Manager 启动脚本 v2.0                  ║%
-echo %CYAN%═══════════════════════════════════════════════════════════════%
+echo ===============================================
+echo OBara Task Manager startup
+echo ===============================================
 echo.
 
 call :check_node
-if !errorlevel! neq 0 goto end
+if errorlevel 1 goto end
 
 call :check_ports
-if !errorlevel! neq 0 goto end
+if errorlevel 1 goto end
 
 call :install_deps
+if errorlevel 1 goto end
 
 call :start_backend
-if !errorlevel! neq 0 goto end
+if errorlevel 1 goto end
 
 call :start_frontend
-if !errorlevel! neq 0 goto end
+if errorlevel 1 goto end
 
 call :open_browser
 
 echo.
-echo %GREEN%═══════════════════════════════════════════════════════════════%
-echo %GREEN%  ║                    启动完成! 祝您使用愉快                   ║%
-echo %GREEN%═══════════════════════════════════════════════════════════════%
+echo ===============================================
+echo Startup complete
+echo ===============================================
+echo Frontend: http://localhost:%FRONTEND_PORT%
+echo Backend:  http://localhost:%BACKEND_PORT%
+echo Default admin: admin / admin123
+echo Logs: %LOG_DIR%
 echo.
-echo %YELLOW%  前端地址:%WHITE%  http://localhost:%FRONTEND_PORT%%%
-echo %YELLOW%  后端地址:%WHITE%  http://localhost:%BACKEND_PORT%%%
-echo.
-echo %YELLOW%  默认管理员:%WHITE% admin / admin123
-echo.
-echo %DIM%  提示: 关闭窗口可停止所有服务%NORMAL%
-echo.
-timeout /t 5 >nul
+ping -n 4 127.0.0.1 >nul
 goto :end
 
-:init_colors
-set "CYAN=\e[36m"
-set "GREEN=\e[32m"
-set "YELLOW=\e[33m"
-set "RED=\e[31m"
-set "WHITE=\e[37m"
-set "DIM=\e[90m"
-set "NORMAL=\e[0m"
-set "BOLD=\e[1m"
+:ensure_logs
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 exit /b 0
 
 :check_node
-echo [%CYAN%1/7%NORMAL%] %BOLD%检查 Node.js...%NORMAL%
+echo [1/7] Checking Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
-    echo %RED%[错误] Node.js 未安装或未配置到系统 PATH%NORMAL%
-    echo %YELLOW%  请访问 https://nodejs.org 下载安装 LTS 版本%NORMAL%
+    echo [ERROR] Node.js is not installed or not available in PATH.
+    echo Please install the Node.js LTS version from https://nodejs.org
     exit /b 1
 )
-for /f "delims=" %%v in ('node -v') do set NODE_VERSION=%%v
-echo %GREEN%[✓]%NORMAL% Node.js !NODE_VERSION! 已就绪
+for /f "delims=" %%v in ('node -v') do set "NODE_VERSION=%%v"
+echo [OK] Node.js %NODE_VERSION%
 exit /b 0
 
 :check_ports
 echo.
-echo [%CYAN%2/7%NORMAL%] %BOLD%检查端口占用...%NORMAL%
+echo [2/7] Checking ports...
 
-netstat -ano 2>nul | findstr ":%BACKEND_PORT% " >nul 2>&1
-if not errorlevel 1 (
-    echo %YELLOW%[警告] 后端端口 %BACKEND_PORT% 已被占用%NORMAL%
-    echo %YELLOW%  尝试查找并关闭占用进程...%NORMAL%
-    for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BACKEND_PORT% " ^| findstr "LISTENING"') do (
-        for /f "delims=" %%b in ('wmic process where "ProcessId=%%a" get Name 2^>nul') do (
-            echo %YELLOW%  找到进程: PID %%a: %%b%NORMAL%
-            echo %YELLOW%  正在终止进程...%NORMAL%
-            taskkill /F /PID %%a >nul 2>&1
-            if not errorlevel 1 (
-                echo %GREEN%  [✓] 进程已终止%NORMAL%
-            ) else (
-                echo %RED%  [✗] 无法终止进程，请手动关闭%NORMAL%
-            )
-        )
-    )
-    timeout /t 1 >nul
-    netstat -ano 2>nul | findstr ":%BACKEND_PORT% " >nul 2>&1
-    if not errorlevel 1 (
-        echo %RED%  后端端口 %BACKEND_PORT% 仍被占用，继续尝试启动...%NORMAL%
-    ) else (
-        echo %GREEN%[✓]%NORMAL% 后端端口 %BACKEND_PORT% 已释放
-    )
-) else (
-    echo %GREEN%[✓]%NORMAL% 后端端口 %BACKEND_PORT% 可用
+call :release_port %BACKEND_PORT% backend
+if errorlevel 1 exit /b 1
+
+call :release_port %FRONTEND_PORT% frontend
+if errorlevel 1 exit /b 1
+
+exit /b 0
+
+:release_port
+set "PORT=%~1"
+set "NAME=%~2"
+
+netstat -ano 2>nul | findstr ":%PORT% " | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 (
+    echo [OK] %NAME% port %PORT% is available.
+    exit /b 0
 )
 
-netstat -ano 2>nul | findstr ":%FRONTEND_PORT% " >nul 2>&1
-if not errorlevel 1 (
-    echo %YELLOW%[警告] 前端端口 %FRONTEND_PORT% 已被占用%NORMAL%
-    echo %YELLOW%  尝试查找并关闭占用进程...%NORMAL%
-    for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%FRONTEND_PORT% " ^| findstr "LISTENING"') do (
-        for /f "delims=" %%b in ('wmic process where "ProcessId=%%a" get Name 2^>nul') do (
-            echo %YELLOW%  找到进程: PID %%a: %%b%NORMAL%
-            echo %YELLOW%  正在终止进程...%NORMAL%
-            taskkill /F /PID %%a >nul 2>&1
-            if not errorlevel 1 (
-                echo %GREEN%  [✓] 进程已终止%NORMAL%
-            ) else (
-                echo %RED%  [✗] 无法终止进程，请手动关闭%NORMAL%
-            )
-        )
-    )
-    timeout /t 1 >nul
-    netstat -ano 2>nul | findstr ":%FRONTEND_PORT% " >nul 2>&1
-    if not errorlevel 1 (
-        echo %RED%[错误] 前端端口 %FRONTEND_PORT% 仍被占用%NORMAL%
-        echo %RED%  请关闭占用端口的程序后重试%NORMAL%
-        echo %YELLOW%  可能的解决方案:%NORMAL%
-        echo %YELLOW%    - 关闭正在运行的同名应用%NORMAL%
-        echo %YELLOW%    - 修改 frontend/vite.config.ts 中的端口%NORMAL%
-        exit /b 1
-    ) else (
-        echo %GREEN%[✓]%NORMAL% 前端端口 %FRONTEND_PORT% 已释放
-    )
-) else (
-    echo %GREEN%[✓]%NORMAL% 前端端口 %FRONTEND_PORT% 可用
+echo [WARN] %NAME% port %PORT% is already in use. Trying to stop the process...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT% " ^| findstr "LISTENING"') do (
+    echo Stopping PID %%a...
+    taskkill /F /T /PID %%a >nul 2>&1
 )
+
+ping -n 2 127.0.0.1 >nul
+netstat -ano 2>nul | findstr ":%PORT% " | findstr "LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo [ERROR] %NAME% port %PORT% is still in use.
+    exit /b 1
+)
+
+echo [OK] %NAME% port %PORT% has been released.
 exit /b 0
 
 :install_deps
 echo.
-echo [%CYAN%3/7%NORMAL%] %BOLD%安装后端依赖...%NORMAL%
+echo [3/7] Checking backend dependencies...
 cd /d "%BACKEND_DIR%"
 if exist "node_modules" (
-    echo %GREEN%[✓]%NORMAL% 后端依赖已安装
+    echo [OK] Backend dependencies are installed.
 ) else (
-    echo %YELLOW%  正在安装依赖（首次运行可能需要几分钟）...%NORMAL%
+    echo Installing backend dependencies...
     call npm install
     if errorlevel 1 (
-        echo %RED%[错误] 后端依赖安装失败%NORMAL%
+        echo [ERROR] Backend dependency installation failed.
         exit /b 1
     )
-    echo %GREEN%[✓]%NORMAL% 后端依赖安装完成
 )
 
 echo.
-echo [%CYAN%4/7%NORMAL%] %BOLD%安装前端依赖...%NORMAL%
+echo [4/7] Checking frontend dependencies...
 cd /d "%FRONTEND_DIR%"
 if exist "node_modules" (
-    echo %GREEN%[✓]%NORMAL% 前端依赖已安装
+    echo [OK] Frontend dependencies are installed.
 ) else (
-    echo %YELLOW%  正在安装依赖（首次运行可能需要几分钟）...%NORMAL%
+    echo Installing frontend dependencies...
     call npm install
     if errorlevel 1 (
-        echo %RED%[错误] 前端依赖安装失败%NORMAL%
+        echo [ERROR] Frontend dependency installation failed.
         exit /b 1
     )
-    echo %GREEN%[✓]%NORMAL% 前端依赖安装完成
 )
+
 exit /b 0
 
 :start_backend
 echo.
-echo [%CYAN%5/7%NORMAL%] %BOLD%启动后端服务...%NORMAL%
-cd /d "%BACKEND_DIR%"
-start "OBara Backend (Port %BACKEND_PORT%)" cmd /k "npm run dev"
-echo %YELLOW%  后端已启动 (端口: %BACKEND_PORT%)%NORMAL%
-timeout /t 2 >nul
+echo [5/7] Starting backend service...
+set "OBARA_BACKEND_LOG=%LOG_DIR%\backend.log"
+set "OBARA_BACKEND_ERR=%LOG_DIR%\backend.err.log"
+set "OBARA_BACKEND_PID=%LOG_DIR%\backend.pid"
+echo [%date% %time%] Starting backend on port %BACKEND_PORT%...>> "%OBARA_BACKEND_LOG%"
+wscript.exe //nologo "%SCRIPT_DIR%start-process-hidden.vbs" "%BACKEND_DIR%" "set PORT=%BACKEND_PORT%&& npm start" "%OBARA_BACKEND_LOG%" "%OBARA_BACKEND_ERR%" "%OBARA_BACKEND_PID%"
+if errorlevel 1 (
+    echo [ERROR] Backend service failed to start.
+    exit /b 1
+)
+call :wait_for_port %BACKEND_PORT% "%OBARA_BACKEND_PID%" backend
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :start_frontend
-echo [%CYAN%6/7%NORMAL%] %BOLD%启动前端服务...%NORMAL%
-cd /d "%FRONTEND_DIR%"
-start "OBara Frontend (Port %FRONTEND_PORT%)" cmd /k "npm run dev"
-echo %YELLOW%  前端已启动 (端口: %FRONTEND_PORT%)%NORMAL%
-timeout /t 3 >nul
+echo.
+echo [6/7] Starting frontend service...
+set "OBARA_FRONTEND_LOG=%LOG_DIR%\frontend.log"
+set "OBARA_FRONTEND_ERR=%LOG_DIR%\frontend.err.log"
+set "OBARA_FRONTEND_PID=%LOG_DIR%\frontend.pid"
+echo [%date% %time%] Starting frontend on port %FRONTEND_PORT%...>> "%OBARA_FRONTEND_LOG%"
+wscript.exe //nologo "%SCRIPT_DIR%start-process-hidden.vbs" "%FRONTEND_DIR%" "npm run dev" "%OBARA_FRONTEND_LOG%" "%OBARA_FRONTEND_ERR%" "%OBARA_FRONTEND_PID%"
+if errorlevel 1 (
+    echo [ERROR] Frontend service failed to start.
+    exit /b 1
+)
+call :wait_for_port %FRONTEND_PORT% "%OBARA_FRONTEND_PID%" frontend
+if errorlevel 1 exit /b 1
 exit /b 0
 
+:wait_for_port
+set "WAIT_PORT=%~1"
+set "WAIT_PID_FILE=%~2"
+set "WAIT_NAME=%~3"
+type nul > "%WAIT_PID_FILE%"
+
+for /l %%i in (1,1,20) do (
+    for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":%WAIT_PORT% " ^| findstr "LISTENING"') do (
+        > "%WAIT_PID_FILE%" echo %%p
+        echo [OK] %WAIT_NAME% is listening on port %WAIT_PORT%. PID: %%p
+        exit /b 0
+    )
+    ping -n 2 127.0.0.1 >nul
+)
+
+echo [ERROR] %WAIT_NAME% did not start listening on port %WAIT_PORT%.
+echo Check logs in %LOG_DIR%
+exit /b 1
+
 :open_browser
-echo [%CYAN%7/7%NORMAL%] %BOLD%打开浏览器...%NORMAL%
-timeout /t 2 >nul
-start http://localhost:%FRONTEND_PORT%
+echo.
+echo [7/7] Opening browser...
+start "" "http://localhost:%FRONTEND_PORT%"
 exit /b 0
 
 :end
