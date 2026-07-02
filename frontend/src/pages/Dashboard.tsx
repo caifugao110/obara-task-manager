@@ -399,14 +399,18 @@ const Dashboard = () => {
     [getEditingSession, user?.id]
   );
 
+  const canViewEditingUser = user?.role === 'superadmin' || user?.role === 'admin';
+
   const warnIfCellLocked = useCallback(
     (designerId: string, date: string) => {
       const session = getBlockingEditingSession(designerId, date);
       if (!session) return false;
-      addToast(`${session.name || session.username} 正在编辑该区域`, 'error');
+      if (canViewEditingUser) {
+        addToast(`${session.name || session.username} 正在编辑该区域`, 'error');
+      }
       return true;
     },
-    [getBlockingEditingSession]
+    [canViewEditingUser, getBlockingEditingSession]
   );
 
   const startEditingCell = useCallback(
@@ -814,7 +818,32 @@ const Dashboard = () => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 3000);
   };
-
+ 
+   // Extract spec number (仕样号) from task name
+   // Patterns: S57157, M55478, S-53969, or standalone digits like 56363
+   const extractSpecNumber = (taskName: string): string | null => {
+     // Priority 1: letter prefix + optional hyphen + 4-6 digits (e.g., S57157, M55478, S-53969)
+     const letterMatch = taskName.match(/\b[A-Za-z]-?(\d{4,6})\b/);
+     if (letterMatch) return letterMatch[1];
+     // Priority 2: standalone 4-6 digits (e.g., 56363)
+     const digitsMatch = taskName.match(/\b(\d{4,6})\b/);
+     return digitsMatch ? digitsMatch[1] : null;
+   };
+ 
+   // Fetch delivery date (纳期) for a spec number from the backend PDF parser
+  const fetchSpecDeliveryDate = async (specNumber: string): Promise<{ success: boolean; date?: string; message?: string }> => {
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.post('/api/spec/delivery-date', { specNumber }, { ...authHeader, timeout: 10000 });
+      return res.data;
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.code === 'ECONNABORTED') {
+        return { success: false, message: '获取纳期超时(超过10秒)' };
+      }
+      return { success: false, message: '无法连接到服务器' };
+    }
+  };
+ 
   const upsertSheet = useCallback((incoming: TaskSheet) => {
     setSheets(prev => {
       const next = prev.filter(s => !(s.designerId === incoming.designerId && s.month === incoming.month && s.year === incoming.year));
@@ -1095,7 +1124,9 @@ const Dashboard = () => {
       setSelectedCell(null);
       setSelectedTasks([]);
       setModalOpen(false);
-      addToast(`${data.name || data.username} 正在编辑该区域`, 'error');
+      if (canViewEditingUser) {
+        addToast(`${data.name || data.username} 正在编辑该区域`, 'error');
+      }
     });
 
     socketRef.current.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
@@ -1829,7 +1860,7 @@ const Dashboard = () => {
                                               <Plus size={14} />
                                             </div>
                                           )}
-                                          {editingSession && editingSession.userId !== user?.id && (
+                                          {canViewEditingUser && editingSession && editingSession.userId !== user?.id && (
                                             <div className="absolute inset-0 bg-red-200/85 flex items-center justify-center z-10">
                                               <span className="text-xs font-bold text-white bg-red-600 px-2 py-1 rounded border border-red-700 shadow-sm">
                                                 {editingSession.name || editingSession.username} 正在编辑

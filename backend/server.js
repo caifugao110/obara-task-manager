@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
@@ -35,6 +35,7 @@ const designerRoutes = require('./routes/designers');
 const taskRoutes = require('./routes/tasks');
 const settingsRoutes = require('./routes/settings');
 const systemRoutes = require('./routes/system');
+const specRoutes = require('./routes/spec');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -42,6 +43,7 @@ app.use('/api/designers', designerRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/system', systemRoutes);
+app.use('/api/spec', specRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
