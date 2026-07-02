@@ -54,6 +54,7 @@ npm run dev
 - 多选任务支持拖拽移动、`Ctrl+X` 剪切、`Ctrl+C` 复制、`Ctrl+V` 粘贴。
 - 多人同时使用时，同一设计人员同一天只允许一个用户编辑；其他用户会看到红色“正在编辑”提示。
 - 底部统计会显示本月任务条目、周末加班、员工出差和员工请假汇总。
+- **纳期更新功能：手动点击纳期更新时，将所有与该任务内容同一仕样号的计划任务一同更新或添加纳期（如果没有）。完成后提示已为多少个相同仕样号的计划任务添加纳期。**
 - 快捷键提示：
   - `Ctrl+C`：提示"粘贴已准备"
   - `Ctrl+X`：提示"剪切已准备"
@@ -74,6 +75,7 @@ npm run dev
 ### 任务报表
 
 - “仕样进度管理”支持按 5 位仕样号搜索。
+- **“仕样进度管理”新增“获取仕样号所有枪名列表”开关，默认关闭。开启后，输入仕样号将显示该仕样号对应任务中的所有枪名，去除后缀L或R（不区分大小写）后进行去重处理，只列出唯一的枪名。**
 - “枪名周期管理”支持按枪名搜索。
 - 两个搜索区域都有“全表搜索”开关，默认关闭；开启后搜索所有月份。
 - 搜索结果按日期从早到晚排序。
@@ -195,23 +197,23 @@ cd frontend
 
 ```text
 obara-task-manager/
-|-- start.bat
-|-- README.md
-|-- DEPLOYMENT.md
-|-- docs/
-|   `-- API.md
-|-- backend/
-|   |-- server.js
-|   |-- db.js
-|   |-- routes/
-|   `-- middleware/
-`-- frontend/
-    |-- vite.config.ts
-    `-- src/
-        |-- pages/
-        |-- context/
-        |-- services/
-        `-- types/
+	|-- start.bat
+	|-- README.md
+	|-- DEPLOYMENT.md
+	|-- docs/
+	|   `-- API.md
+	|-- backend/
+	|   |-- server.js
+	|   |-- db.js
+	|   |-- routes/
+	|   `-- middleware/
+	`-- frontend/
+	    |-- vite.config.ts
+	    `-- src/
+	        |-- pages/
+	        |-- context/
+	        |-- services/
+	        `-- types/
 ```
 
 ## 相关文档

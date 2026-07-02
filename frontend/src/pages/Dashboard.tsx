@@ -830,7 +830,8 @@ const Dashboard = () => {
      return digitsMatch ? digitsMatch[1] : null;
    };
  
-   // Fetch delivery date (纳期) for a spec number from the backend PDF parser
+  // 从后端 PDF 解析器获取仕样号的纳期
+  // Fetch delivery date (纳期) for a spec number from the backend PDF parser
   const fetchSpecDeliveryDate = async (specNumber: string): Promise<{ success: boolean; date?: string; message?: string }> => {
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
@@ -1423,6 +1424,7 @@ const Dashboard = () => {
   // 存储待保存的任务更改
   const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
 
+  // 处理任务项的字段变更，将更改存入 pendingChanges 并实时更新界面
   const handleItemChange = (designerId: string, date: string, itemId: string, field: TaskField, raw: any) => {
     setSheets(prev => {
       const next = prev.map(sheet => {
@@ -2405,10 +2407,24 @@ const Dashboard = () => {
                                       const month = parseInt(dateMatch[2], 10);
                                       const day = parseInt(dateMatch[3], 10);
                                       const dateStr = `[${month}/${day}]`;
-                                      const originalName = currentItem.taskName || '';
-                                      const newName = originalName.replace(/\s*\[(\d{1,2})\/(\d{1,2})\]$/, '') + ' ' + dateStr;
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName.trim());
-                                      addToast(`纳期已更新: ${dateStr}`, 'success');
+                                      
+                                      // Find all tasks with the same spec number across all sheets and dates
+                                      let updatedCount = 0;
+                                      sheets.forEach(sheet => {
+                                        Object.entries(sheet.days || {}).forEach(([date, items]) => {
+                                          (items || []).forEach(item => {
+                                            const itemSpecNo = extractSpecNumber(item.taskName);
+                                            if (itemSpecNo === specNo) {
+                                              const originalName = item.taskName || '';
+                                              const newName = originalName.replace(/\s*\[(\d{1,2})\/(\d{1,2})\]$/, '') + ' ' + dateStr;
+                                              handleItemChange(sheet.designerId, date, item.id, 'taskName', newName.trim());
+                                              updatedCount++;
+                                            }
+                                          });
+                                        });
+                                      });
+                                      
+                                      addToast(`纳期已更新: ${dateStr}（已为 ${updatedCount} 个相同仕样号的计划任务添加纳期）`, 'success');
                                     } else {
                                       addToast(`纳期: ${result.date}`, 'success');
                                     }

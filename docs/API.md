@@ -283,6 +283,45 @@ Authorization: Bearer <token>
 
 ## 任务接口
 
+### 获取仕样号纳期
+
+`POST /api/spec/delivery-date`
+
+权限：需要登录。
+
+请求：
+
+```json
+{
+  "specNumber": "12345"
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "date": "2026-07-30"
+}
+```
+
+或失败：
+
+```json
+{
+  "success": false,
+  "message": "获取纳期失败"
+}
+```
+
+说明：
+
+- 根据仕样号从后端 PDF 解析器获取纳期。
+- 如果获取超时（超过 10 秒），返回 `获取纳期超时(超过10秒)`。
+
+
+
 ### 获取任务数据
 
 `GET /api/tasks`
