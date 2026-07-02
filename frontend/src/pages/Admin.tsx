@@ -884,7 +884,7 @@ const Admin = () => {
       )}
 
       {/* Header */}
-      <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
+      <header className="sticky top-0 z-40 bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />

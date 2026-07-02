@@ -39,6 +39,9 @@ const SystemSettings = () => {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
+  const [importMonth, setImportMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [importConfirmed, setImportConfirmed] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -106,7 +109,7 @@ const SystemSettings = () => {
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `obara-tasks-${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
+      link.download = `obara-tasks-${format(new Date(), 'yyyy-MM-dd-HHmmss')}.xls`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -127,19 +130,48 @@ const SystemSettings = () => {
     const file = e.target.files?.[0];
     if (!file || !token) return;
 
+    setPendingImportFile(file);
+    setImportConfirmed(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const cancelImport = () => {
+    setPendingImportFile(null);
+    setImportConfirmed(false);
+  };
+
+  const confirmImport = async () => {
+    if (!pendingImportFile || !token) return;
+    if (!importMonth) {
+      addToast('请选择要覆盖导入的月份', 'error');
+      return;
+    }
+    if (!importConfirmed) {
+      addToast('请先确认导入格式与导出格式一致', 'error');
+      return;
+    }
+
     setImporting(true);
     try {
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', pendingImportFile);
+      formData.append('month', importMonth);
       const res = await axios.post('/api/system/import-xls', formData, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
       });
-      addToast(`导入成功：${res.data.importedRows} 条记录，${res.data.importedMonths.length} 个月份`, 'success');
+      const elapsedSeconds = ((res.data.elapsedMs || 0) / 1000).toFixed(1);
+      const skipped = res.data.skippedDesigners?.length
+        ? `，跳过新增设计员：${res.data.skippedDesigners.join('、')}`
+        : '';
+      addToast(`导入成功：覆盖 ${importMonth}，${res.data.importedRows} 条记录，耗时 ${elapsedSeconds}s${skipped}`, 'success');
+      cancelImport();
     } catch (err: any) {
-      addToast(err.response?.data?.message || '导入失败', 'error');
+      const skipped = err.response?.data?.skippedDesigners?.length
+        ? `；已跳过新增设计员：${err.response.data.skippedDesigners.join('、')}`
+        : '';
+      addToast(`${err.response?.data?.message || '导入失败'}${skipped}`, 'error');
     } finally {
       setImporting(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -163,7 +195,7 @@ const SystemSettings = () => {
         ))}
       </div>
 
-      <header className="bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
+      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
@@ -190,13 +222,74 @@ const SystemSettings = () => {
         )}
       </header>
 
+      {pendingImportFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center">
+                <Upload className="mr-2 text-blue-600" size={20} />
+                确认导入数据
+              </h3>
+      <p className="text-sm text-gray-500 mt-1">
+                导入文件必须使用本系统导出的 xls 表格格式；本次只会覆盖你选择的一个月份。
+              </p>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+                导入前请确认勾选的月份正确。文件中其他月份不会导入；表格里的当日合计和月总工时不会导入，系统会重新计算。
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">选择要覆盖导入的月份</label>
+                <input
+                  type="month"
+                  value={importMonth}
+                  onChange={(e) => setImportMonth(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
+                />
+              </div>
+              <label className="flex items-start gap-3 rounded-lg border border-gray-100 bg-gray-50 p-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={importConfirmed}
+                  onChange={(e) => setImportConfirmed(e.target.checked)}
+                  className="mt-1 h-4 w-4"
+                />
+                <span className="text-sm text-gray-700">
+                  我确认导入文件格式与系统导出的 xls 一致，并且只覆盖所选月份的数据。
+                </span>
+              </label>
+              <div className="text-xs text-gray-400">
+                文件：{pendingImportFile.name}
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+              <button
+                onClick={cancelImport}
+                disabled={importing}
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmImport}
+                disabled={importing || !importConfirmed || !importMonth}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {importing && <RefreshCw size={16} className="animate-spin" />}
+                覆盖导入
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 p-8 max-w-5xl mx-auto w-full space-y-8">
         <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
           <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
             <Download className="mr-2 text-green-600" size={22} />
             数据导入 / 导出
           </h3>
-          <p className="text-sm text-gray-500 mb-6">仅处理存在数据的月份。每个工作表对应一个年月（如 2026-06）。</p>
+          <p className="text-sm text-gray-500 mb-6">导入文件需与本系统导出的 xls 格式一致；每次导入只能选择一个月份进行覆盖。</p>
           <div className="flex flex-wrap gap-4">
             <button
               onClick={handleExport}
