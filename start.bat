@@ -45,7 +45,7 @@ echo Startup complete
 echo ===============================================
 echo Frontend: http://localhost:%FRONTEND_PORT%
 echo Backend:  http://localhost:%BACKEND_PORT%
-echo Default admin: admin / admin123
+echo Default admin:superadmin / admin123
 echo Logs: %LOG_DIR%
 echo.
 ping -n 4 127.0.0.1 >nul

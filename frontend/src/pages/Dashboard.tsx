@@ -2391,6 +2391,38 @@ const Dashboard = () => {
                                 />
                               </div>
                               <button
+                                onClick={async () => {
+                                  const specNo = extractSpecNumber(currentItem.taskName);
+                                  if (!specNo) {
+                                    addToast('未能从任务名称中提取仕样号', 'error');
+                                    return;
+                                  }
+                                  addToast(`正在查询仕样号 ${specNo} 的纳期...`, 'success');
+                                  const result = await fetchSpecDeliveryDate(specNo);
+                                  if (result.success && result.date) {
+                                    const dateMatch = result.date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                                    if (dateMatch) {
+                                      const month = parseInt(dateMatch[2], 10);
+                                      const day = parseInt(dateMatch[3], 10);
+                                      const dateStr = `[${month}/${day}]`;
+                                      const originalName = currentItem.taskName || '';
+                                      const newName = originalName.replace(/\s*\[(\d{1,2})\/(\d{1,2})\]$/, '') + ' ' + dateStr;
+                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName.trim());
+                                      addToast(`纳期已更新: ${dateStr}`, 'success');
+                                    } else {
+                                      addToast(`纳期: ${result.date}`, 'success');
+                                    }
+                                  } else {
+                                    addToast(result.message || '获取纳期失败', 'error');
+                                  }
+                                }}
+                                className="mt-4 px-2 py-1 text-[10px] bg-green-50 text-green-600 rounded hover:bg-green-100 transition font-bold whitespace-nowrap"
+                                title="纳期更新"
+                                disabled={!currentItem.taskName || !currentItem.taskName.trim()}
+                              >
+                                纳期更新
+                              </button>
+                              <button
                                 onClick={() => deleteItem(modalDesignerId, modalDate, currentItem.id)}
                                 className="mt-4 p-2 text-gray-300 hover:text-red-600 transition"
                                 title="删除任务"
@@ -2619,7 +2651,6 @@ const Dashboard = () => {
                 <button
                   onClick={async () => {
                     if (isAddMode) {
-                      // 在添加模式下，保存用户输入的任务
                       const guns = selectedTaskType === 'none' ? addModeGuns : [];
                       const hours = guns.length > 0
                         ? guns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0)
@@ -2632,6 +2663,24 @@ const Dashboard = () => {
                         taskName = place ? `${place}出差` : '出差';
                       } else if (selectedTaskType === 'none') {
                         taskName = addModeTaskName.trim() || '未命名';
+                      }
+                      
+                      if (selectedTaskType === 'none' && taskName && taskName !== '未命名') {
+                        const specNo = extractSpecNumber(taskName);
+                        if (specNo) {
+                          const result = await fetchSpecDeliveryDate(specNo);
+                          if (result.success && result.date) {
+                            const dateMatch = result.date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                            if (dateMatch) {
+                              const month = parseInt(dateMatch[2], 10);
+                              const day = parseInt(dateMatch[3], 10);
+                              const dateStr = `[${month}/${day}]`;
+                              taskName = taskName.replace(/\s*\[(\d{1,2})\/(\d{1,2})\]$/, '') + ' ' + dateStr;
+                            }
+                          } else {
+                            addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
+                          }
+                        }
                       }
                       
                       try {

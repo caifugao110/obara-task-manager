@@ -76,17 +76,17 @@ npm run preview
 
 ## 环境变量
 
-后端默认读取以下环境变量：
+后端默认读取以下环境变量（复制 `backend/.env.example` 为 `backend/.env` 后按需修改）：
 
 ```env
 PORT=5000
 NODE_ENV=production
-JWT_SECRET=your-super-secret-production-key-change-this
-JWT_EXPIRES_IN=7d
-RATE_LIMIT_WINDOW_MS=900000
-RATE_LIMIT_MAX=20
-DB_PATH=./db.json
+JWT_SECRET=your-secret-key-change-in-production-2026
 ```
+
+- `PORT`：后端服务端口，默认 `5000`。
+- `NODE_ENV`：设为 `production` 时，错误响应不包含堆栈信息。
+- `JWT_SECRET`：JWT 签名密钥，生产环境**必须**修改为随机字符串。
 
 生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。
 
@@ -98,7 +98,7 @@ DB_PATH=./db.json
 |------|------|
 | `users` | 登录用户，角色包括 `superadmin`、`admin`、`user` |
 | `designers` | 设计人员列表 |
-| `tasks` | 按设计人员、年月保存的任务表 |
+| `tasks` | 按设计人员(`designerId`)、年月保存的任务表 |
 | `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果 |
 | `settings.leaderboard` | 任务报表访问权限 |
 | `settings.workHours` | 工时管理访问权限 |
