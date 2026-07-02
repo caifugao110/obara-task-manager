@@ -50,6 +50,7 @@ npm run dev
 - 任务类型切换时会保留已填写的任务内容、枪名、枪名工时、出差地点/客户等临时输入。
 - 枪名存在时，该枪名工时不能为 0。
 - 管理员悬浮任务时可查看创建者、创建时间、最后修改者、最后修改时间。
+- **所有任务内容的修改（包括枪名的编辑、复制、删除）都会记录最后修改者和最后修改时间。**
 - 选中任务后，按住 `Ctrl` 可选择多个任务。
 - 多选任务支持拖拽移动、`Ctrl+X` 剪切、`Ctrl+C` 复制、`Ctrl+V` 粘贴。
 - 多人同时使用时，同一设计人员同一天只允许一个用户编辑；其他用户会看到红色“正在编辑”提示。
@@ -60,7 +61,7 @@ npm run dev
   - `Ctrl+X`：提示"剪切已准备"
   - `Ctrl+V`：提示"任务已复制"
   - 无法撤销时提示"暂无可撤销操作"
-- 支持 `Ctrl+Z` 撤销，同一用户最多保留 5 步撤销记录。
+- **支持 `Ctrl+Z` 撤销，同一用户最多保留 10 步撤销记录。主页面所有操作（包括删除单个枪名）均可撤销。**
 
 ### 离线模式
 
@@ -197,23 +198,23 @@ cd frontend
 
 ```text
 obara-task-manager/
-	|-- start.bat
-	|-- README.md
-	|-- DEPLOYMENT.md
-	|-- docs/
-	|   `-- API.md
-	|-- backend/
-	|   |-- server.js
-	|   |-- db.js
-	|   |-- routes/
-	|   `-- middleware/
-	`-- frontend/
-	    |-- vite.config.ts
-	    `-- src/
-	        |-- pages/
-	        |-- context/
-	        |-- services/
-	        `-- types/
+		|-- start.bat
+		|-- README.md
+		|-- DEPLOYMENT.md
+		|-- docs/
+		|   `-- API.md
+		|-- backend/
+		|   |-- server.js
+		|   |-- db.js
+		|   |-- routes/
+		|   `-- middleware/
+		`-- frontend/
+		    |-- vite.config.ts
+		    `-- src/
+		        |-- pages/
+		        |-- context/
+		        |-- services/
+		        `-- types/
 ```
 
 ## 相关文档

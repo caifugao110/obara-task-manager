@@ -799,9 +799,18 @@ const Dashboard = () => {
     setModalOpen(true);
   };
 
+  // 删除枪名并记录操作以便撤销
   const onDeleteGun = (item: TaskItem, designerId: string, date: string, gunIndex: number) => {
     if (warnIfCellLocked(designerId, date)) return;
     const newGuns = (item.guns || []).filter((_, i) => i !== gunIndex);
+    // 记录删除枪名的操作，以便撤销
+    addToHistory('deleteGun', {
+      designerId,
+      date,
+      itemId: item.id,
+      gunIndex,
+      originalGuns: item.guns
+    });
     handleItemChange(designerId, date, item.id, 'guns', newGuns);
     addToast('枪名已删除', 'success');
   };
@@ -894,8 +903,9 @@ const Dashboard = () => {
   }, []);
 
 
+  // 添加操作到历史记录，最多保留 10 步
   const addToHistory = (operation: string, data: any) => {
-    setHistory(prev => [...prev, { operation, data, timestamp: Date.now() }].slice(-5));
+    setHistory(prev => [...prev, { operation, data, timestamp: Date.now() }].slice(-10));
   };
 
   const performUndo = useCallback(async (operation: {operation: string, data: any, timestamp: number}) => {
@@ -984,6 +994,36 @@ const Dashboard = () => {
               targetDate: moved.sourceDate
             }, authHeader);
           }
+          fetchSheets();
+          socketRef.current?.emit('task_updated');
+          addToast('操作已撤销', 'success');
+          break;
+        
+        case 'deleteGun':
+          // 撤销删除枪名操作，恢复原始枪名数组
+          const { designerId: gunDesignerId, date: gunDate, itemId: gunItemId, originalGuns } = operation.data;
+          await axios.put('/api/tasks/item', {
+            designerId: gunDesignerId,
+            date: gunDate,
+            itemId: gunItemId,
+            field: 'guns',
+            value: originalGuns
+          }, authHeader);
+          fetchSheets();
+          socketRef.current?.emit('task_updated');
+          addToast('操作已撤销', 'success');
+          break;
+        
+        case 'fieldChange':
+          // 撤销字段变更操作，恢复原始值
+          const { designerId: fieldDesignerId, date: fieldDate, itemId: fieldItemId, field: fieldName, originalValue: fieldOriginalValue } = operation.data;
+          await axios.put('/api/tasks/item', {
+            designerId: fieldDesignerId,
+            date: fieldDate,
+            itemId: fieldItemId,
+            field: fieldName,
+            value: fieldOriginalValue
+          }, authHeader);
           fetchSheets();
           socketRef.current?.emit('task_updated');
           addToast('操作已撤销', 'success');
@@ -1424,8 +1464,15 @@ const Dashboard = () => {
   // 存储待保存的任务更改
   const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
 
-  // 处理任务项的字段变更，将更改存入 pendingChanges 并实时更新界面
+  // 处理任务项的字段变更，将更改存入 pendingChanges 并实时更新界面。
+  // 此函数会触发后端 API 调用，自动更新任务的 `updatedAt` 和 `updatedBy` 字段。
+  // 所有操作都会记录到历史中以便撤销。
   const handleItemChange = (designerId: string, date: string, itemId: string, field: TaskField, raw: any) => {
+    // 获取原始值以便撤销
+    const sheet = sheets.find(s => s.designerId === designerId);
+    const items = sheet?.days?.[date];
+    const item = items?.find(i => i.id === itemId);
+    const originalValue = item?.[field as keyof TaskItem];
     setSheets(prev => {
       const next = prev.map(sheet => {
         if (sheet.designerId !== designerId) return sheet;
@@ -1442,6 +1489,16 @@ const Dashboard = () => {
     // 存储待保存的更改
     let value = raw;
     if (field === 'hours') value = (parseFloat(raw) || 0);
+    
+    // 记录操作到历史，以便撤销
+    addToHistory('fieldChange', {
+      designerId,
+      date,
+      itemId,
+      field,
+      newValue: value,
+      originalValue
+    });
     
     setPendingChanges(prev => {
       // 移除相同字段的旧更改

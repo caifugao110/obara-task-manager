@@ -455,6 +455,7 @@ Authorization: Bearer <token>
 - `textColor`
 
 更新 `guns` 时同样校验：枪名存在时工时不能为 0。
+- **所有任务内容的修改（包括枪名的编辑、复制、删除）都会自动更新 `updatedAt` 和 `updatedBy` 字段。**
 
 ### 删除任务
 
