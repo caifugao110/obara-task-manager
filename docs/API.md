@@ -669,6 +669,8 @@ ws://localhost:5000
 
 | 事件 | 说明 |
 |------|------|
+| `connect` | Socket 连接成功（可用于检测后端是否恢复） |
+| `connect_error` | Socket 连接失败（后端端口断开或网络异常） |
 | `register_user` | 注册当前用户 room，用于单设备登录踢下线 |
 | `task_updated` | 通知任务已更新 |
 | `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、`userId`、`username`、`name` |

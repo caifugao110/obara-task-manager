@@ -353,6 +353,9 @@ const Dashboard = () => {
   const [tableHeight, setTableHeight] = useState<number>(0);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const handledJumpKeyRef = useRef<string | null>(null);
+  const hasShownDisconnectToast = useRef(false);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [offlineCacheUsed, setOfflineCacheUsed] = useState(false);
 
   // Calculate table height dynamically
   useEffect(() => {
@@ -833,6 +836,34 @@ const Dashboard = () => {
     }
   }, [currentDate, token]);
 
+  // Offline cache: save current sheets to localStorage
+  const OFFLINE_CACHE_KEY = 'obara_offline_sheets_cache';
+  const saveSheetsToLocalStorage = useCallback((data: TaskSheet[]) => {
+    try {
+      localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify({
+        sheets: data,
+        timestamp: Date.now(),
+        cachedMonth: currentDate.getMonth() + 1,
+        cachedYear: currentDate.getFullYear()
+      }));
+    } catch (e) {
+      console.warn('Failed to save offline cache:', e);
+    }
+  }, [currentDate]);
+
+  const loadSheetsFromLocalStorage = useCallback((): TaskSheet[] | null => {
+    try {
+      const cached = localStorage.getItem(OFFLINE_CACHE_KEY);
+      if (!cached) return null;
+      const parsed = JSON.parse(cached);
+      return parsed?.sheets ?? null;
+    } catch (e) {
+      console.warn('Failed to load offline cache:', e);
+      return null;
+    }
+  }, []);
+
+
   const addToHistory = (operation: string, data: any) => {
     setHistory(prev => [...prev, { operation, data, timestamp: Date.now() }].slice(-5));
   };
@@ -974,7 +1005,14 @@ const Dashboard = () => {
       await fetchSheets();
     } catch (err: any) {
       console.error('Error fetching data:', err);
-      if (err.response?.data?.code === 'GUEST_VIEW_DISABLED') {
+      if (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error') {
+        const cachedSheets = loadSheetsFromLocalStorage();
+        if (cachedSheets && cachedSheets.length > 0) {
+          setSheets(cachedSheets);
+          setOfflineCacheUsed(true);
+          setIsOnline(false);
+        }
+      } else if (err.response?.data?.code === 'GUEST_VIEW_DISABLED') {
         setAllowGuestView(false);
       } else {
         addToast('数据加载失败', 'error');
@@ -982,7 +1020,7 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
-  }, [fetchSheets, token]);
+  }, [fetchSheets, token, loadSheetsFromLocalStorage]);
 
   useEffect(() => {
     Promise.all([
@@ -1016,6 +1054,21 @@ const Dashboard = () => {
       fetchSheets();
     });
 
+    socketRef.current.on('connect', () => {
+      setIsOnline(true);
+      setOfflineCacheUsed(false);
+      hasShownDisconnectToast.current = false;
+    });
+
+    socketRef.current.on('connect_error', (err: any) => {
+      console.error('Socket connection error:', err?.message);
+      setIsOnline(false);
+      if (!hasShownDisconnectToast.current && !offlineCacheUsed) {
+        hasShownDisconnectToast.current = true;
+        saveSheetsToLocalStorage(sheets);
+        addToast('服务器连接断开，已自动保存数据', 'error');
+      }
+    });
     socketRef.current.on('editing_state', (sessions: EditingSession[]) => {
       const next: Record<string, EditingSession> = {};
       (Array.isArray(sessions) ? sessions : []).forEach(session => {
@@ -1060,6 +1113,44 @@ const Dashboard = () => {
       socketRef.current?.disconnect();
     };
   }, [fetchData, fetchSheets, systemSettingsLoaded, allowGuestView, user]);
+
+  // Online/offline event listeners
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setOfflineCacheUsed(false);
+      addToast('网络已连接', 'success');
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      addToast('网络已断开，已自动保存数据', 'error');
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Save sheets to localStorage for offline use
+  useEffect(() => {
+    if (sheets.length > 0 && isOnline) {
+      saveSheetsToLocalStorage(sheets);
+    }
+  }, [sheets, isOnline, saveSheetsToLocalStorage]);
+
+  // Load cached sheets when offline and fetchData returned no data
+  useEffect(() => {
+    if (!loading && sheets.length === 0 && (!isOnline || offlineCacheUsed)) {
+      const cachedSheets = loadSheetsFromLocalStorage();
+      if (cachedSheets && cachedSheets.length > 0) {
+        setSheets(cachedSheets);
+        setOfflineCacheUsed(true);
+      }
+    }
+  }, [loading, isOnline, sheets, loadSheetsFromLocalStorage]);
+
 
   useEffect(() => {
     const handleTaskCopy = (e: Event) => {
@@ -1590,6 +1681,14 @@ const Dashboard = () => {
         </div>
       </header>
 
+      {!isOnline && (
+        <div className="bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>当前处于离线模式，正在使用本地缓存数据，网络恢复后将自动加载最新数据，此页面禁止刷新！</span>
+        </div>
+      )}
+
+
       <DndContext 
         sensors={sensors}
         collisionDetection={collisionDetection}
@@ -1802,8 +1901,8 @@ const Dashboard = () => {
       <footer className="bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex justify-between items-center text-[11px] text-gray-500">
         <div className="flex items-center space-x-4">
           <div className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full bg-green-500"></div>
-            <span>就绪</span>
+            <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <span>{isOnline ? '就绪' : '离线'}</span>
           </div>
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <div className="flex items-center gap-1.5">
