@@ -1450,8 +1450,12 @@ const Dashboard = () => {
   const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      await axios.put('/api/tasks/item', { designerId, date, itemId, field, value }, authHeader);
+      const res = await axios.put('/api/tasks/item', { designerId, date, itemId, field, value }, authHeader);
+      if (res.data.sheet) {
+        upsertSheet(res.data.sheet);
+      }
       socketRef.current?.emit('task_updated');
+      setPendingChanges(prev => prev.filter(c => !(c.designerId === designerId && c.date === date && c.itemId === itemId && c.field === field)));
     } catch (err: any) {
       console.error('Error saving item:', err);
       addToast(err.response?.data?.message || '保存失败', 'error');
@@ -1501,11 +1505,10 @@ const Dashboard = () => {
     });
     
     setPendingChanges(prev => {
-      // 移除相同字段的旧更改
       const filtered = prev.filter(change => !(change.designerId === designerId && change.date === date && change.itemId === itemId && change.field === field));
-      // 添加新更改
       return [...filtered, { designerId, date, itemId, field, value }];
     });
+    debouncedSave(designerId, date, itemId, field, value);
   };
 
   const addItem = async (designerId: string, date: string, taskType?: 'none' | 'trip' | 'sick' | 'vacation' | 'illness') => {

@@ -457,6 +457,18 @@ Authorization: Bearer <token>
 更新 `guns` 时同样校验：枪名存在时工时不能为 0。
 - **所有任务内容的修改（包括枪名的编辑、复制、删除）都会自动更新 `updatedAt` 和 `updatedBy` 字段。**
 
+### 防抖保存机制
+
+前端对任务字段变更采用 500ms 防抖保存机制：
+
+1. 字段变更后先存入本地 `pendingChanges` 队列。
+2. 等待 500ms 后自动调用 `PUT /api/tasks/item` 保存。
+3. 保存成功后发出 `task_updated` Socket 事件通知其他客户端。
+4. 保存成功后从 `pendingChanges` 队列中移除该变更。
+5. 用户也可以通过打开任务详情模态框并点击保存按钮手动触发保存。
+
+此机制减少了频繁操作时的网络请求次数，同时保证了数据的实时同步。
+
 ### 删除任务
 
 `DELETE /api/tasks/item`
@@ -760,22 +772,34 @@ admin001,123456,管理员A,admin
 ws://localhost:5000
 ```
 
-客户端事件：
+### 编辑状态管理
+
+后端使用 `designerId::date` 作为键管理编辑会话，同一用户同时只能编辑一个单元格，切换编辑时会自动释放之前的编辑状态。多人同时使用时，同一设计人员同一天只允许一个用户编辑，其他用户会看到红色"正在编辑"提示。
+
+### 多设备登录踢下线机制
+
+`register_user` 事件用于注册用户 room，服务端通过 `session_invalidated` 事件通知其他设备下线。关闭多设备登录时，新登录会使旧会话失效。
+
+### 连接恢复自动加载
+
+Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最新数据。
+
+### 客户端事件
 
 | 事件 | 说明 |
 |------|------|
 | `connect` | Socket 连接成功（可用于检测后端是否恢复） |
 | `connect_error` | Socket 连接失败（后端端口断开或网络异常） |
 | `register_user` | 注册当前用户 room，用于单设备登录踢下线 |
-| `task_updated` | 通知任务已更新 |
+| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端 |
 | `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、`userId`、`username`、`name` |
 | `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 |
 
-服务端事件：
+### 服务端事件
 
 | 事件 | 说明 |
 |------|------|
-| `task_refreshed` | 任务数据已刷新 |
+| `task_refreshed` | 任务数据已刷新，其他客户端收到后会重新加载数据 |
 | `editing_state` | 当前所有编辑中的单元格状态，连接成功后下发 |
 | `user_editing` | 某用户正在编辑指定设计人员日期单元格 |
 | `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 |
@@ -802,4 +826,4 @@ ws://localhost:5000
 
 注意：登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
 
-最后更新：2026-07-02
+最后更新：2026-07-03
