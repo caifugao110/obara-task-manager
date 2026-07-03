@@ -87,15 +87,13 @@ const Leaderboard = () => {
     [...results].sort((a, b) => a.date.localeCompare(b.date))
   );
 
-  // Extract and deduplicate gun names (remove L/R suffix)
-  // 提取并去重枪名（去除L/R后缀，不区分大小写）
   const extractGunNames = (results: TaskSearchResult[]): string[] => {
     const gunSet = new Set<string>();
     results.forEach(result => {
       (result.guns || []).forEach(gun => {
         let gunName = String(gun.name || '').trim();
-        // Remove L or R suffix (case-insensitive)
         gunName = gunName.replace(/[LR]$/i, '').trim();
+        gunName = gunName.replace(/（[^）]*）|\([^)]*\)|[-+][\d]*[\u4e00-\u9fa5]+|[\u4e00-\u9fa5]+$/g, '').trim();
         if (gunName) {
           gunSet.add(gunName);
         }
@@ -112,9 +110,9 @@ const Leaderboard = () => {
     return match ? match[0] : null;
   };
 
-  // Search for tasks by specification number
-  const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean) => {
+  const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean, gunListModeOverride?: boolean) => {
     const targetSpec = currentSpec !== undefined ? currentSpec : specNumber;
+    const gunListMode = gunListModeOverride !== undefined ? gunListModeOverride : specGunListMode;
     if (targetSpec.length !== 5) {
       setSpecResults([]);
       setSpecGunList([]);
@@ -134,7 +132,6 @@ const Leaderboard = () => {
         (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([date, items]) => {
           items.forEach((item: any) => {
             const extractedSpec = extractSpecNumber(item.taskName);
-            // Exact match
             if (extractedSpec === targetSpec.trim()) {
               results.push({
                 designerId: sheet.designerId,
@@ -155,8 +152,7 @@ const Leaderboard = () => {
 
       const sortedResults = sortByDateAsc(results);
       setSpecResults(sortedResults);
-      // 如果开启了枪名列表模式，则提取并设置枪名列表
-      if (specGunListMode) {
+      if (gunListMode) {
         setSpecGunList(extractGunNames(sortedResults));
       } else {
         setSpecGunList([]);
@@ -561,7 +557,7 @@ const Leaderboard = () => {
                       onChange={(e) => {
                         const next = e.target.checked;
                         setSpecGunListMode(next);
-                        if (specNumber.length === 5) searchBySpecNumber(specNumber);
+                        if (specNumber.length === 5) searchBySpecNumber(specNumber, undefined, next);
                       }}
                       className="peer sr-only"
                     />
@@ -622,7 +618,7 @@ const Leaderboard = () => {
                   <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
                     <div className="mb-3">
                       <span className="text-sm font-bold text-gray-700">
-                        仅有枪名 (共 <span className="text-blue-600">{specGunList.length}</span> 个)
+                        该仕样号存在以下枪名 (共 <span className="text-blue-600">{specGunList.length}</span> 个)
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-2">
