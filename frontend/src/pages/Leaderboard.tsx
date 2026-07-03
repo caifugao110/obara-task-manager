@@ -54,6 +54,12 @@ const Leaderboard = () => {
   const [specNumber, setSpecNumber] = useState('');
   const [specResults, setSpecResults] = useState<TaskSearchResult[]>([]);
   const [specFullSearch, setSpecFullSearch] = useState(false);
+  // 新增：获取仕样号所有枪名列表模式开关
+  const [specGunListMode, setSpecGunListMode] = useState(false);
+  // 新增：存储仕样号对应的枪名列表
+  const [specGunList, setSpecGunList] = useState<string[]>([]);
+
+
   const [gunName, setGunName] = useState('');
   const [gunResults, setGunResults] = useState<GunSearchResult[]>([]);
   const [gunFullSearch, setGunFullSearch] = useState(false);
@@ -81,6 +87,23 @@ const Leaderboard = () => {
     [...results].sort((a, b) => a.date.localeCompare(b.date))
   );
 
+  // Extract and deduplicate gun names (remove L/R suffix)
+  // 提取并去重枪名（去除L/R后缀，不区分大小写）
+  const extractGunNames = (results: TaskSearchResult[]): string[] => {
+    const gunSet = new Set<string>();
+    results.forEach(result => {
+      (result.guns || []).forEach(gun => {
+        let gunName = String(gun.name || '').trim();
+        // Remove L or R suffix (case-insensitive)
+        gunName = gunName.replace(/[LR]$/i, '').trim();
+        if (gunName) {
+          gunSet.add(gunName);
+        }
+      });
+    });
+    return Array.from(gunSet).sort();
+  };
+
   // Extract specification number from task name (only 5 digit number)
   const extractSpecNumber = (taskName: string): string | null => {
     if (!taskName) return null;
@@ -94,6 +117,7 @@ const Leaderboard = () => {
     const targetSpec = currentSpec !== undefined ? currentSpec : specNumber;
     if (targetSpec.length !== 5) {
       setSpecResults([]);
+      setSpecGunList([]);
       return;
     }
 
@@ -129,12 +153,19 @@ const Leaderboard = () => {
         });
       });
 
-      setSpecResults(sortByDateAsc(results));
+      const sortedResults = sortByDateAsc(results);
+      setSpecResults(sortedResults);
+      // 如果开启了枪名列表模式，则提取并设置枪名列表
+      if (specGunListMode) {
+        setSpecGunList(extractGunNames(sortedResults));
+      } else {
+        setSpecGunList([]);
+      }
     } catch (err: any) {
       console.error('Error searching spec:', err);
       addToast('搜索失败', 'error');
     }
-  }, [specNumber, currentDate, designers, token, specFullSearch]);
+  }, [specNumber, currentDate, designers, token, specFullSearch, specGunListMode]);
 
   const searchByGunName = useCallback(async (currentGunName?: string, fullSearchOverride?: boolean) => {
     const targetGunName = (currentGunName !== undefined ? currentGunName : gunName).trim();
@@ -520,23 +551,42 @@ const Leaderboard = () => {
                 <BarChart2 className="mr-2" size={22} />
                 仕样进度管理
               </h2>
-              <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
-                <span>全表搜索</span>
-                <span className="relative inline-flex h-5 w-9 items-center">
-                  <input
-                    type="checkbox"
-                    checked={specFullSearch}
-                    onChange={(e) => {
-                      const next = e.target.checked;
-                      setSpecFullSearch(next);
-                      if (specNumber.length === 5) searchBySpecNumber(specNumber, next);
-                    }}
-                    className="peer sr-only"
-                  />
-                  <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
-                  <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4 peer-checked:bg-blue-600"></span>
-                </span>
-              </label>
+              <div className="flex items-center gap-6">
+                <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
+                  <span>获取仕样号所有枪名列表</span>
+                  <span className="relative inline-flex h-5 w-9 items-center">
+                    <input
+                      type="checkbox"
+                      checked={specGunListMode}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setSpecGunListMode(next);
+                        if (specNumber.length === 5) searchBySpecNumber(specNumber);
+                      }}
+                      className="peer sr-only"
+                    />
+                    <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
+                    <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4 peer-checked:bg-blue-600"></span>
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
+                  <span>全表搜索</span>
+                  <span className="relative inline-flex h-5 w-9 items-center">
+                    <input
+                      type="checkbox"
+                      checked={specFullSearch}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setSpecFullSearch(next);
+                        if (specNumber.length === 5) searchBySpecNumber(specNumber, next);
+                      }}
+                      className="peer sr-only"
+                    />
+                    <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
+                    <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4 peer-checked:bg-blue-600"></span>
+                  </span>
+                </label>
+              </div>
             </div>
             <p className="text-blue-100 text-sm mt-1">输入五位仕样号查看任务状态</p>
           </div>
@@ -568,6 +618,25 @@ const Leaderboard = () => {
 
             {specResults.length > 0 ? (
               <div className="space-y-4">
+                {specGunListMode && specGunList.length > 0 ? (
+                  <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+                    <div className="mb-3">
+                      <span className="text-sm font-bold text-gray-700">
+                        仅有枪名 (共 <span className="text-blue-600">{specGunList.length}</span> 个)
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {specGunList.map((gunName, index) => (
+                        <div
+                          key={`gun-${index}`}
+                          className="px-3 py-1.5 bg-white border-2 border-blue-300 rounded-lg text-sm font-bold text-blue-700 hover:bg-blue-100 transition"
+                        >
+                          {gunName}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-bold text-gray-600">
                     找到 <span className="text-blue-600">{specResults.length}</span> 个匹配任务

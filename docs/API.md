@@ -283,6 +283,45 @@ Authorization: Bearer <token>
 
 ## 任务接口
 
+### 获取仕样号纳期
+
+`POST /api/spec/delivery-date`
+
+权限：需要登录。
+
+请求：
+
+```json
+{
+  "specNumber": "12345"
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "date": "2026-07-30"
+}
+```
+
+或失败：
+
+```json
+{
+  "success": false,
+  "message": "获取纳期失败"
+}
+```
+
+说明：
+
+- 根据仕样号从后端 PDF 解析器获取纳期。
+- 如果获取超时（超过 10 秒），返回 `获取纳期超时(超过10秒)`。
+
+
+
 ### 获取任务数据
 
 `GET /api/tasks`
@@ -416,6 +455,7 @@ Authorization: Bearer <token>
 - `textColor`
 
 更新 `guns` 时同样校验：枪名存在时工时不能为 0。
+- **所有任务内容的修改（包括枪名的编辑、复制、删除）都会自动更新 `updatedAt` 和 `updatedBy` 字段。**
 
 ### 删除任务
 
