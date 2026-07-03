@@ -356,6 +356,7 @@ const Dashboard = () => {
   const hasShownDisconnectToast = useRef(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineCacheUsed, setOfflineCacheUsed] = useState(false);
+  const [versionInfo, setVersionInfo] = useState<{ currentVersion: string; hasUpdate: boolean; latestVersion: string | null } | null>(null);
 
   // Calculate table height dynamically
   useEffect(() => {
@@ -372,6 +373,13 @@ const Dashboard = () => {
     calculateHeight();
     window.addEventListener('resize', calculateHeight);
     return () => window.removeEventListener('resize', calculateHeight);
+  }, []);
+
+  // 获取版本信息
+  useEffect(() => {
+    axios.get('/api/system/version')
+      .then(res => setVersionInfo(res.data))
+      .catch(() => {});
   }, []);
 
   // Input refs for modal focus
@@ -1759,6 +1767,11 @@ const Dashboard = () => {
         </div>
 
         <div className="flex items-center space-x-4">
+          {versionInfo && (
+            <span className="text-xs opacity-80 font-mono" title={`当前版本: ${versionInfo.currentVersion}`}>
+              当前版本 {versionInfo.currentVersion}
+            </span>
+          )}
           {user ? (
             <>
               <div className="flex flex-col items-end">
@@ -1787,6 +1800,16 @@ const Dashboard = () => {
         <div className="bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>当前处于离线模式，正在使用本地缓存数据，网络恢复后将自动加载最新数据，此页面禁止刷新！</span>
+        </div>
+      )}
+
+      {versionInfo?.hasUpdate && (
+        <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-blue-700 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>
+            检测到新版本（{versionInfo.latestVersion}），当前版本为 {versionInfo.currentVersion}。
+            {isAdmin ? ' 请重启程序以更新到最新版本。' : ' 请联系管理员更新系统。'}
+          </span>
         </div>
       )}
 

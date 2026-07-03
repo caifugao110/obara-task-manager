@@ -25,6 +25,8 @@ echo.
 call :check_node
 if errorlevel 1 goto end
 
+call :git_pull
+
 call :check_ports
 if errorlevel 1 goto end
 
@@ -56,7 +58,7 @@ if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 exit /b 0
 
 :check_node
-echo [1/7] Checking Node.js...
+echo [1/8] Checking Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js is not installed or not available in PATH.
@@ -67,9 +69,60 @@ for /f "delims=" %%v in ('node -v') do set "NODE_VERSION=%%v"
 echo [OK] Node.js %NODE_VERSION%
 exit /b 0
 
+:git_pull
+echo.
+echo [2/8] Pulling latest code from Gitee...
+
+where git >nul 2>&1
+if errorlevel 1 (
+    echo [WARN] Git is not installed. Skipping code update.
+    exit /b 0
+)
+
+if not exist "%SCRIPT_DIR%.git" (
+    echo [WARN] Not a git repository. Skipping code update.
+    exit /b 0
+)
+
+cd /d "%SCRIPT_DIR%"
+
+set "HAS_STASH=0"
+git diff --quiet 2>nul
+if errorlevel 1 (
+    echo [INFO] Local changes detected, stashing before pull...
+    git stash push -m "auto-stash-before-pull" 2>nul
+    set "HAS_STASH=1"
+)
+
+echo Pulling latest code from remote...
+git pull --rebase 2>nul
+if errorlevel 1 (
+    echo [WARN] Failed to pull latest code. There may be network issues or conflicts.
+    git rebase --abort 2>nul
+    if "%HAS_STASH%"=="1" (
+        echo [INFO] Restoring local changes from stash...
+        git stash pop 2>nul
+    )
+    exit /b 0
+)
+
+echo [OK] Code updated successfully.
+
+if "%HAS_STASH%"=="1" (
+    echo [INFO] Restoring local changes from stash...
+    git stash pop 2>nul
+    if errorlevel 1 (
+        echo [WARN] Failed to restore local changes automatically. Your changes are saved in git stash. Use 'git stash pop' to restore manually.
+    ) else (
+        echo [OK] Local changes restored.
+    )
+)
+
+exit /b 0
+
 :check_ports
 echo.
-echo [2/7] Checking ports...
+echo [3/8] Checking ports...
 
 call :release_port %BACKEND_PORT% backend
 if errorlevel 1 exit /b 1
@@ -107,7 +160,7 @@ exit /b 0
 
 :install_deps
 echo.
-echo [3/7] Checking backend dependencies...
+echo [4/8] Checking backend dependencies...
 cd /d "%BACKEND_DIR%"
 if exist "node_modules" (
     echo [OK] Backend dependencies are installed.
@@ -121,7 +174,7 @@ if exist "node_modules" (
 )
 
 echo.
-echo [4/7] Checking frontend dependencies...
+echo [5/8] Checking frontend dependencies...
 cd /d "%FRONTEND_DIR%"
 if exist "node_modules" (
     echo [OK] Frontend dependencies are installed.
@@ -138,7 +191,7 @@ exit /b 0
 
 :start_backend
 echo.
-echo [5/7] Starting backend service...
+echo [6/8] Starting backend service...
 set "OBARA_BACKEND_LOG=%LOG_DIR%\backend.log"
 set "OBARA_BACKEND_ERR=%LOG_DIR%\backend.err.log"
 set "OBARA_BACKEND_PID=%LOG_DIR%\backend.pid"
@@ -154,7 +207,7 @@ exit /b 0
 
 :start_frontend
 echo.
-echo [6/7] Starting frontend service...
+echo [7/8] Starting frontend service...
 set "OBARA_FRONTEND_LOG=%LOG_DIR%\frontend.log"
 set "OBARA_FRONTEND_ERR=%LOG_DIR%\frontend.err.log"
 set "OBARA_FRONTEND_PID=%LOG_DIR%\frontend.pid"
@@ -189,7 +242,7 @@ exit /b 1
 
 :open_browser
 echo.
-echo [7/7] Opening browser...
+echo [8/8] Opening browser...
 start "" "http://localhost:%FRONTEND_PORT%"
 exit /b 0
 

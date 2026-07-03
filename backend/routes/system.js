@@ -3,6 +3,8 @@ const router = express.Router();
 const multer = require('multer');
 const XLSX = require('xlsx');
 const crypto = require('crypto');
+const path = require('path');
+const { execSync } = require('child_process');
 const db = require('../db');
 const { authMiddleware, superAdminMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
@@ -1164,6 +1166,78 @@ router.post('/import-xls', [authMiddleware, superAdminMiddleware, upload.single(
     skippedDesigners: [...skippedDesigners],
     elapsedMs: Date.now() - startedAt
   });
+}));
+
+// 项目根目录（backend/routes/ -> ../../）
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
+
+const runGit = (args, options = {}) => {
+  try {
+    return execSync(`git ${args}`, {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf-8',
+      timeout: 10000,
+      ...options
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
+router.get('/version', asyncHandler(async (req, res) => {
+  try {
+    // 获取最新提交日期
+    const commitDate = runGit('log -1 --format=%cd --date=format:%y-%m-%d');
+    if (!commitDate) {
+      return res.json({ currentVersion: '未知', hasUpdate: false, latestVersion: null });
+    }
+
+    // 获取完整日期格式用于计数
+    const fullDate = runGit('log -1 --format=%cd --date=format:%Y-%m-%d');
+    let commitCount = 0;
+    if (fullDate) {
+      const countStr = runGit(`rev-list --count --since="${fullDate} 00:00:00" --until="${fullDate} 23:59:59" HEAD`);
+      commitCount = parseInt(countStr, 10) || 0;
+    }
+
+    // 构造版本字符串
+    let currentVersion = commitDate;
+    if (commitCount > 1) {
+      currentVersion = `${commitDate}-V${commitCount}`;
+    }
+
+    // 检查远程是否有更新
+    let hasUpdate = false;
+    let latestVersion = null;
+    try {
+      const fetchResult = runGit('fetch origin');
+      if (fetchResult !== null) {
+        const diffCountStr = runGit('rev-list --count HEAD..@{u}');
+        if (diffCountStr && parseInt(diffCountStr, 10) > 0) {
+          hasUpdate = true;
+          const remoteDate = runGit('log -1 --format=%cd --date=format:%y-%m-%d @{u}');
+          if (remoteDate) {
+            const remoteFullDate = runGit('log -1 --format=%cd --date=format:%Y-%m-%d @{u}');
+            let remoteCount = 0;
+            if (remoteFullDate) {
+              const rcStr = runGit(`rev-list --count --since="${remoteFullDate} 00:00:00" --until="${remoteFullDate} 23:59:59" @{u}`);
+              remoteCount = parseInt(rcStr, 10) || 0;
+            }
+            latestVersion = remoteDate;
+            if (remoteCount > 1) {
+              latestVersion = `${remoteDate}-V${remoteCount}`;
+            }
+          }
+        }
+      }
+    } catch {
+      // 网络不可用或无远程仓库，忽略
+    }
+
+    res.json({ currentVersion, hasUpdate, latestVersion });
+  } catch {
+    res.json({ currentVersion: '未知', hasUpdate: false, latestVersion: null });
+  }
 }));
 
 module.exports = router;
