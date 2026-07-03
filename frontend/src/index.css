@@ -64,6 +64,27 @@ input[type="number"] {
   -moz-appearance: textfield;
 }
 
+/* Date input calendar picker indicator styles */
+.delivery-date-input::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+.delivery-date-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.delivery-date-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Table header sticky styles */
 .table-header-row {
   position: sticky;

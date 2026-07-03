@@ -77,10 +77,12 @@ const AppRoutes = () => {
   );
 };
 
+const basename = process.env.NODE_ENV === 'production' ? '/obara-task-manager' : '';
+
 function App() {
   return (
     <AuthProvider>
-      <Router>
+      <Router basename={basename}>
         <AppRoutes />
       </Router>
     </AuthProvider>

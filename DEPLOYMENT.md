@@ -338,4 +338,102 @@ node --check backend\routes\settings.js
 1. 检查是否有大量长时间未关闭的编辑会话
 2. 确认服务重启后内存是否恢复正常
 
-最后更新：2026-07-03
+## GitHub Pages 部署
+
+### 前置条件
+
+- GitHub 仓库地址：`https://github.com/caifugao110/obara-task-manager`
+- 已配置 GitHub Actions 工作流（`/.github/workflows/deploy.yml`）
+
+### 启用 GitHub Pages
+
+1. 登录 GitHub，进入仓库页面
+2. 点击 Settings → Pages
+3. 在 Source 部分选择 `GitHub Actions`
+4. 点击 Save 保存设置
+
+### 自动部署流程
+
+每次推送到 `main` 分支时，GitHub Actions 会自动执行以下步骤：
+
+1. **Checkout**：拉取最新代码
+2. **Setup Node.js**：安装 Node.js 20 环境
+3. **Install Dependencies**：安装前端依赖（使用 npm ci）
+4. **Build**：构建前端项目（`npm run build`）
+5. **Upload Artifact**：上传构建产物到 GitHub Pages Artifact
+6. **Deploy**：部署到 GitHub Pages
+
+### 访问地址
+
+```text
+https://caifugao110.github.io/obara-task-manager/
+```
+
+### 部署状态
+
+- 可以在仓库的 Actions 标签页查看部署进度
+- 部署成功后，GitHub Pages 设置页面会显示绿色的部署状态
+- 如果部署失败，检查 Actions 日志中的错误信息
+
+### 常见问题
+
+#### 部署失败："Deployment failed, try again later"
+
+这是 GitHub Pages 的临时性错误，通常是以下原因之一：
+
+1. **GitHub Pages 服务暂时不可用**：等待几分钟后重新推送代码触发部署
+2. **Artifact 上传失败**：检查前端构建是否成功，确保 `frontend/dist` 目录存在
+3. **权限不足**：确保工作流配置中的 `permissions` 包含 `pages: write` 和 `id-token: write`
+4. **Node.js 版本问题**：确认使用 Node.js 20 或更高版本
+
+#### 页面加载后资源路径错误
+
+确保 `frontend/vite.config.ts` 中配置了正确的 base 路径：
+
+```typescript
+base: '/obara-task-manager/'
+```
+
+如果仓库名变更，需要同步更新此配置。
+
+#### GitHub Pages 不支持后端 API
+
+GitHub Pages 仅支持静态文件托管，无法运行 Node.js 后端服务。前端部署到 GitHub Pages 后，需要：
+
+1. 后端服务单独部署（如使用 Vercel、Render、Heroku 等）
+2. 配置前端 API 代理指向后端服务地址
+
+#### SPA 客户端路由
+
+项目使用 React Router 实现单页应用（SPA）路由。GitHub Pages 默认不支持 SPA 路由，直接访问子页面会返回 404。解决方案：
+
+1. **404.html 回退机制**：构建完成后自动复制 `index.html` 为 `404.html`，当访问不存在的路径时，GitHub Pages 会返回 `404.html`，然后 React Router 在客户端处理路由
+2. **basename 配置**：React Router 和 Vite 都配置了 `basename="/obara-task-manager"`，确保资源路径和路由正确
+
+#### 开发环境与生产环境
+
+- **开发环境**：`base` 和 `basename` 为空，直接从根路径访问
+- **生产环境**：`base` 和 `basename` 为 `/obara-task-manager`，适配 GitHub Pages 子目录部署
+
+切换方式：
+
+```bat
+# 开发模式（自动使用空路径）
+cd frontend
+npm run dev
+
+# 生产构建（自动使用 /obara-task-manager 路径）
+cd frontend
+npm run build
+```
+
+### 手动触发部署
+
+如果需要手动触发部署：
+
+1. 进入仓库 Actions 标签页
+2. 选择 "Deploy to GitHub Pages" 工作流
+3. 点击 "Run workflow"
+4. 选择 `main` 分支，点击 "Run workflow"
+
+最后更新：2026-07-04

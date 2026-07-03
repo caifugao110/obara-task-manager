@@ -119,6 +119,12 @@ const validateNumberInput = (value: string): string => {
   return num.toString();
 };
 
+const formatDeliveryDate = (dateStr: string): string => {
+  if (!dateStr) return '';
+  const [, month, day] = dateStr.split('-');
+  return `${parseInt(month)}/${parseInt(day)}`;
+};
+
 const generateMonthOptions = (items: StatusItem[]) => {
   const monthSet = new Set<string>();
   
@@ -177,6 +183,14 @@ const StatusTracking = () => {
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
   const [offlineWarning, setOfflineWarning] = useState(false);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dateInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+
+  const openDatePicker = useCallback((itemId: string) => {
+    const input = dateInputRefs.current.get(itemId);
+    if (input) {
+      input.showPicker();
+    }
+  }, []);
 
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
@@ -312,29 +326,42 @@ const StatusTracking = () => {
       return;
     }
 
+    const existingItem = allItems.find(item => item.specNumber.toLowerCase() === specNumberInput.trim().toLowerCase());
+    if (existingItem) {
+      addToast(`该仕样号 "${specNumberInput.trim()}" 已存在`, 'error');
+      return;
+    }
+
     setLoading(true);
+    let specInfo: SpecInfoResponse | null = null;
+    let fetchError = false;
+    
     try {
       const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
       const res = await axios.post('/api/spec/spec-info', { specNumber: specNumberInput.trim() }, { ...authHeader, timeout: 15000 });
       
       if (!res.data.success) {
-        addToast(res.data.message || '获取仕样信息失败', 'error');
-        return;
+        fetchError = true;
+      } else {
+        specInfo = res.data;
       }
+    } catch (err: any) {
+      fetchError = true;
+    }
 
-      const specInfo: SpecInfoResponse = res.data;
-      const designDeliveryDays = specInfo.deliveryDate ? calculateDesignDeliveryDays(specInfo.deliveryDate) : 0;
-      const leader = specInfo.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : '';
+    try {
+      const designDeliveryDays = specInfo?.deliveryDate ? calculateDesignDeliveryDays(specInfo.deliveryDate) : 0;
+      const leader = specInfo?.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : '';
 
       const newItem: StatusItem = {
         id: Date.now().toString(),
         factory: 'O/NJG',
-        clientName: specInfo.clientName || specNumberInput,
-        specNumber: specInfo.specNumber || specNumberInput,
-        quantity: specInfo.quantity || '',
-        deliveryDate: specInfo.deliveryDate || '',
+        clientName: specInfo?.clientName || '',
+        specNumber: specInfo?.specNumber || specNumberInput.trim(),
+        quantity: specInfo?.quantity || '',
+        deliveryDate: specInfo?.deliveryDate || '',
         designDeliveryDays,
-        salesPerson: specInfo.salesPerson || '',
+        salesPerson: specInfo?.salesPerson || '',
         leader,
         shippedCount: 0,
         unconfirmedCount: 0,
@@ -350,25 +377,17 @@ const StatusTracking = () => {
         unconfirmedQuantity: 0
       };
 
-      const existingIndex = allItems.findIndex(item => item.specNumber === specInfo.specNumber);
-      if (existingIndex >= 0) {
-        const updated = allItems.map(item => {
-          if (item.id === allItems[existingIndex].id) {
-            return { ...item, ...newItem };
-          }
-          return item;
-        });
-        saveItems(updated);
-        syncItemsToServer(updated);
-        addToast('已更新该仕样号信息', 'success');
+      const updated = [...allItems, newItem];
+      saveItems(updated);
+      syncItemsToServer(updated);
+
+      if (fetchError) {
+        addToast(`已添加记录，但未找到仕样号信息，请手动编辑客户、数量、纳期等字段`, 'success');
       } else {
-        const updated = [...allItems, newItem];
-        saveItems(updated);
-        syncItemsToServer(updated);
         addToast('已添加新的状态跟踪记录', 'success');
       }
 
-      if (specInfo.deliveryDate) {
+      if (specInfo?.deliveryDate) {
         const month = specInfo.deliveryDate.substring(0, 7);
         if (month !== currentMonth) {
           setCurrentMonth(month);
@@ -378,11 +397,7 @@ const StatusTracking = () => {
       setShowModal(false);
       setSpecNumberInput('');
     } catch (err: any) {
-      if (axios.isAxiosError(err) && err.code === 'ECONNABORTED') {
-        addToast('获取仕样信息超时(超过15秒)', 'error');
-      } else {
-        addToast('获取仕样信息失败: ' + (err.response?.data?.message || err.message), 'error');
-      }
+      addToast('添加记录失败: ' + (err.message || '未知错误'), 'error');
     } finally {
       setLoading(false);
     }
@@ -830,27 +845,27 @@ const StatusTracking = () => {
             </div>
           )}
           <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ tableLayout: 'auto' }}>
+            <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
               <colgroup>
-                <col style={{ width: '90px' }} />
-                <col />
-                <col style={{ width: '30px' }} />
+                <col style={{ width: '80px' }} />
+                <col style={{ width: '220px' }} />
+                <col style={{ width: '45px' }} />
                 <col style={{ width: '60px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '140px' }} />
-                <col style={{ width: '150px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
-                <col style={{ width: '30px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '110px' }} />
+                <col style={{ width: '120px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
+                <col style={{ width: '45px' }} />
                 <col style={{ width: '90px' }} />
-                <col style={{ width: '90px' }} />
+                <col style={{ width: '70px' }} />
                 <col style={{ width: '60px' }} />
               </colgroup>
               <thead>
@@ -918,164 +933,185 @@ const StatusTracking = () => {
 
                     return (
                       <tr key={item.id} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-2 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <select
                             value={item.factory}
                             onChange={(e) => updateField(item.id, 'factory', e.target.value)}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
                           >
                             {factoryOptions.map(option => (
                               <option key={option} value={option}>{option}</option>
                             ))}
                           </select>
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 font-medium text-blue-700 max-w-xs truncate" title={item.clientName}>
-                          {item.clientName}
+                        <td className="px-2 py-2 border-b border-gray-200 overflow-hidden">
+                          <input
+                            type="text"
+                            value={item.clientName}
+                            onChange={(e) => updateField(item.id, 'clientName', e.target.value)}
+                            disabled={isLocked}
+                            className="w-full text-left border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-blue-700 truncate"
+                            title={item.clientName}
+                          />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.quantity}
                             onChange={(e) => updateField(item.id, 'quantity', validateNumberInput(e.target.value))}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
-                          <input
-                            type="date"
-                            value={item.deliveryDate}
-                            onChange={(e) => {
-                              updateItem(item.id, {
-                                deliveryDate: e.target.value,
-                                designDeliveryDays: calculateDesignDeliveryDays(e.target.value)
-                              });
-                            }}
+                        <td className="px-1 py-2 border-b border-gray-200 text-center relative">
+                          <button
+                            onClick={() => openDatePicker(item.id)}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
+                            className={`w-full text-center text-xs text-gray-700 rounded hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isLocked ? '' : 'cursor-pointer'}`}
+                          >
+                            {formatDeliveryDate(item.deliveryDate) || '—'}
+                            <input
+                              ref={(el) => {
+                                if (el) {
+                                  dateInputRefs.current.set(item.id, el);
+                                } else {
+                                  dateInputRefs.current.delete(item.id);
+                                }
+                              }}
+                              type="date"
+                              value={item.deliveryDate}
+                              onChange={(e) => {
+                                updateItem(item.id, {
+                                  deliveryDate: e.target.value,
+                                  designDeliveryDays: calculateDesignDeliveryDays(e.target.value)
+                                });
+                              }}
+                              disabled={isLocked}
+                              style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', inset: 0, pointerEvents: 'none' }}
+                            />
+                          </button>
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.shippedCount || ''}
                             onChange={(e) => updateField(item.id, 'shippedCount', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.unconfirmedCount || ''}
                             onChange={(e) => updateField(item.id, 'unconfirmedCount', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center bg-blue-50">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center bg-blue-50 overflow-hidden">
                           <input
                             type="text"
                             value={item.totalVarieties || ''}
                             onChange={(e) => updateField(item.id, 'totalVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center bg-blue-50">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center bg-blue-50 overflow-hidden">
                           <input
                             type="text"
                             value={item.feedbackVarieties || ''}
                             onChange={(e) => updateField(item.id, 'feedbackVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center bg-blue-50">
+                        <td className="px-2 py-2 border-b border-gray-200 text-center bg-blue-50 overflow-hidden">
                           <input
                             type="text"
                             value={item.feedbackPlan}
                             onChange={(e) => updateField(item.id, 'feedbackPlan', e.target.value)}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed truncate"
                             placeholder="反馈计划"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center bg-blue-50">
+                        <td className="px-2 py-2 border-b border-gray-200 text-center bg-blue-50 overflow-hidden">
                           <input
                             type="text"
                             value={item.drawingPlanStatus}
                             onChange={(e) => updateField(item.id, 'drawingPlanStatus', e.target.value)}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed truncate"
                             placeholder="下图计划及状态"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.confirmedQuantity || ''}
                             onChange={(e) => updateField(item.id, 'confirmedQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.confirmedVarieties || ''}
                             onChange={(e) => updateField(item.id, 'confirmedVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.drawnVarieties || ''}
                             onChange={(e) => updateField(item.id, 'drawnVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.undrawnVarieties || ''}
                             onChange={(e) => updateField(item.id, 'undrawnVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.undrawnQuantity || ''}
                             onChange={(e) => updateField(item.id, 'undrawnQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
                             type="text"
                             value={item.unconfirmedQuantity || ''}
                             onChange={(e) => updateField(item.id, 'unconfirmedQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className={`px-3 py-2 border-b border-gray-200 text-center font-bold ${item.designDeliveryDays <= 7 ? 'bg-red-100 text-red-700' : item.designDeliveryDays <= 14 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
+                        <td className={`px-1 py-2 border-b border-gray-200 text-center font-bold overflow-hidden ${item.designDeliveryDays <= 7 ? 'bg-red-100 text-red-700' : item.designDeliveryDays <= 14 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
                           <input
                             type="text"
                             value={item.designDeliveryDays || ''}
                             onChange={(e) => updateField(item.id, 'designDeliveryDays', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-12 text-center bg-transparent border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center bg-transparent border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center bg-amber-50">
+                        <td className="px-2 py-2 border-b border-gray-200 text-center bg-amber-50 overflow-hidden">
                           <select
                             value={item.salesPerson}
                             onChange={(e) => {
@@ -1085,7 +1121,7 @@ const StatusTracking = () => {
                               });
                             }}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
                           >
                             <option value="">请选择</option>
                             {allSalesPersons.map(person => (
@@ -1093,12 +1129,12 @@ const StatusTracking = () => {
                             ))}
                           </select>
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center font-medium">
+                        <td className="px-2 py-2 border-b border-gray-200 text-center font-medium overflow-hidden">
                           <select
                             value={item.leader}
                             onChange={(e) => updateField(item.id, 'leader', e.target.value)}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
                           >
                             <option value="">请选择</option>
                             {allLeaders.map(leader => (
@@ -1106,7 +1142,7 @@ const StatusTracking = () => {
                             ))}
                           </select>
                         </td>
-                        <td className="px-3 py-2 border-b border-gray-200 text-center">
+                        <td className="px-2 py-2 border-b border-gray-200 text-center">
                           <div className="flex items-center justify-center gap-1">
                             {isLocked ? (
                               <div className="flex items-center gap-1 text-gray-400">

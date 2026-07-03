@@ -327,6 +327,37 @@ obara-task-manager/
 - [API 文档](docs/API.md)
 - [Windows 部署指南](DEPLOYMENT.md)
 
+## GitHub Pages 部署
+
+项目支持通过 GitHub Actions 自动部署到 GitHub Pages。
+
+### 配置步骤
+
+1. 在 GitHub 仓库中启用 GitHub Pages：
+   - 进入仓库 Settings → Pages
+   - Source 选择 `GitHub Actions`
+
+2. 推送代码到 `main` 分支，GitHub Actions 会自动触发构建和部署。
+
+### 工作流说明
+
+- 触发条件：每次推送到 `main` 分支
+- 构建环境：Ubuntu Latest + Node.js 20
+- 构建产物：`frontend/dist` 目录
+- 部署方式：GitHub Pages Artifact 部署
+
+### 访问地址
+
+部署成功后访问：`https://caifugao110.github.io/obara-task-manager/`
+
+### 注意事项
+
+- GitHub Pages 仅部署前端静态文件，后端服务需要单独部署
+- 前端构建时使用 `/obara-task-manager/` 作为 base 路径
+- 开发环境不受影响，仍可正常运行
+- 使用 `404.html` 实现 SPA 客户端路由，直接访问子页面（如 `/login`）不会返回 404 错误
+- React Router 配置了 `basename="/obara-task-manager"` 确保路由正确
+
 ## License
 
 MIT License

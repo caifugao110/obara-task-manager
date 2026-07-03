@@ -1184,29 +1184,32 @@ const runGit = (args, options = {}) => {
   }
 };
 
-router.get('/version', asyncHandler(async (req, res) => {
+const computeLocalVersion = () => {
   try {
-    // 获取最新提交日期
     const commitDate = runGit('log -1 --format=%cd --date=format:%y-%m-%d');
     if (!commitDate) {
-      return res.json({ currentVersion: '未知', hasUpdate: false, latestVersion: null });
+      return '未知';
     }
-
-    // 获取完整日期格式用于计数
     const fullDate = runGit('log -1 --format=%cd --date=format:%Y-%m-%d');
     let commitCount = 0;
     if (fullDate) {
       const countStr = runGit(`rev-list --count --since="${fullDate} 00:00:00" --until="${fullDate} 23:59:59" HEAD`);
       commitCount = parseInt(countStr, 10) || 0;
     }
-
-    // 构造版本字符串
-    let currentVersion = commitDate;
+    let version = commitDate;
     if (commitCount > 1) {
-      currentVersion = `${commitDate}-V${commitCount}`;
+      version = `${commitDate}-V${commitCount}`;
     }
+    return version;
+  } catch {
+    return '未知';
+  }
+};
 
-    // 检查远程是否有更新
+const STARTUP_VERSION = computeLocalVersion();
+
+router.get('/version', asyncHandler(async (req, res) => {
+  try {
     let hasUpdate = false;
     let latestVersion = null;
     try {
@@ -1234,9 +1237,9 @@ router.get('/version', asyncHandler(async (req, res) => {
       // 网络不可用或无远程仓库，忽略
     }
 
-    res.json({ currentVersion, hasUpdate, latestVersion });
+    res.json({ currentVersion: STARTUP_VERSION, hasUpdate, latestVersion });
   } catch {
-    res.json({ currentVersion: '未知', hasUpdate: false, latestVersion: null });
+    res.json({ currentVersion: STARTUP_VERSION, hasUpdate: false, latestVersion: null });
   }
 }));
 
