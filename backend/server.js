@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
@@ -36,6 +36,7 @@ const taskRoutes = require('./routes/tasks');
 const settingsRoutes = require('./routes/settings');
 const systemRoutes = require('./routes/system');
 const specRoutes = require('./routes/spec');
+const statusTrackingRoutes = require('./routes/statusTracking');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -44,6 +45,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/spec', specRoutes);
+app.use('/api/status-tracking', statusTrackingRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
@@ -156,6 +158,27 @@ io.on('connection', (socket) => {
     }
 
     broadcastStoppedSessions(removedSessions, socket);
+  });
+
+  socket.on('status_tracking_start_edit', (data) => {
+    if (!data?.itemId || !data?.userId) return;
+    
+    const session = {
+      itemId: data.itemId,
+      userId: data.userId,
+      username: data.username || '',
+      socketId: socket.id
+    };
+    
+    socket.broadcast.emit('status_tracking_edit_start', session);
+    socket.emit('status_tracking_edit_start', session);
+  });
+
+  socket.on('status_tracking_stop_edit', (data) => {
+    if (!data?.itemId) return;
+    
+    socket.broadcast.emit('status_tracking_edit_stop', { itemId: data.itemId });
+    socket.emit('status_tracking_edit_stop', { itemId: data.itemId });
   });
 
   socket.on('disconnect', () => {

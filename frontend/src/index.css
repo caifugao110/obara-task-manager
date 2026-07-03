@@ -22,6 +22,11 @@
   transition: background-color 0.2s ease-in-out;
 }
 
+.writing-vertical {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
@@ -47,6 +52,16 @@ body {
     color: #213547;
     background-color: #ffffff;
   }
+}
+
+/* Remove number input spinners */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 /* Table header sticky styles */

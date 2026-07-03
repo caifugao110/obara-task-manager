@@ -100,7 +100,6 @@ Authorization: Bearer <token>
 权限：`admin`、`superadmin`
 
 响应：
-
 ```json
 [
   {
@@ -113,6 +112,17 @@ Authorization: Bearer <token>
   }
 ]
 ```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 用户唯一标识 |
+| `username` | 登录账号 |
+| `name` | 显示名称 |
+| `role` | 角色：`superadmin`、`admin`、`user` |
+| `group` | 用户分组 |
+| `disabled` | 是否禁用，禁用后无法登录 |
 
 ### 创建登录用户
 
@@ -555,6 +565,135 @@ Authorization: Bearer <token>
 
 权限：仅 `superadmin`
 
+### 获取状态追踪权限设置
+
+`GET /api/settings/status-tracking`
+
+### 更新状态追踪权限设置
+
+`PUT /api/settings/status-tracking`
+
+权限：仅 `superadmin`
+
+### 获取组长规则
+
+`GET /api/settings/leader-rules`
+
+响应示例：
+
+```json
+[
+  {
+    "leader": "陈大仪",
+    "members": ["郭涛", "王兴龙", "王会永", "李广亮"]
+  }
+]
+```
+
+### 更新组长规则
+
+`PUT /api/settings/leader-rules`
+
+权限：仅 `superadmin`
+
+请求：
+
+```json
+[
+  {
+    "leader": "组长姓名",
+    "members": ["组员1", "组员2"]
+  }
+]
+```
+
+## 状态追踪接口
+
+### 获取状态追踪记录
+
+`GET /api/status-tracking/items`
+
+响应：
+
+```json
+[
+  {
+    "id": "1234567890",
+    "field1": "value1",
+    "field2": "value2",
+    "createdAt": "2026-07-01T00:00:00.000Z",
+    "updatedAt": "2026-07-01T00:00:00.000Z"
+  }
+]
+```
+
+### 创建状态追踪记录
+
+`POST /api/status-tracking/items`
+
+权限：`admin`、`superadmin`
+
+请求：
+
+```json
+{
+  "field1": "value1",
+  "field2": "value2"
+}
+```
+
+响应：返回创建的记录，包含 `id`、`createdAt`、`updatedAt`。
+
+### 更新状态追踪记录
+
+`PUT /api/status-tracking/items/:id`
+
+权限：`admin`、`superadmin`
+
+请求：
+
+```json
+{
+  "field1": "new-value",
+  "field2": "new-value"
+}
+```
+
+### 删除状态追踪记录
+
+`DELETE /api/status-tracking/items/:id`
+
+权限：`admin`、`superadmin`
+
+### 批量更新状态追踪记录
+
+`POST /api/status-tracking/items/bulk`
+
+权限：`admin`、`superadmin`
+
+请求：
+
+```json
+[
+  {
+    "id": "1234567890",
+    "field1": "updated-value"
+  }
+]
+```
+
+说明：
+
+- 已存在的记录会更新，不存在的记录会创建。
+- 所有记录都会更新 `updatedAt` 字段。
+- 成功后通过 Socket.IO 广播 `status_tracking_bulk` 事件。
+
+### 同步状态追踪记录
+
+`POST /api/status-tracking/sync`
+
+无需认证，用于获取所有状态追踪记录。
+
 ## 系统设置接口
 
 ### 获取系统设置
@@ -742,6 +881,83 @@ Authorization: Bearer <token>
 | `未在PDF中找到纳期信息` | PDF 中未找到日期 |
 | `获取纳期超时(超过9秒)` | 解析超时 |
 
+### 获取仕样详细信息
+
+`POST /api/spec/spec-info`
+
+无需认证。
+
+从共享目录搜索指定仕样号的最新 PDF，并提取详细信息（中间商、最终客户、项目名称、数量、纳期、营业担当等）。
+
+请求：
+
+```json
+{
+  "specNumber": "12345"
+}
+```
+
+说明：
+
+- `specNumber` 必须为纯数字。
+- 系统会查找 `仕样书$\12345.PDF` 及 `12345.01.PDF` ～ `12345.99.PDF` 等版本文件，取最新版本。
+- 请求超时时间为 15 秒。
+- 需要能够访问共享目录（网络权限）。
+
+响应（成功）：
+
+```json
+{
+  "success": true,
+  "specNumber": "12345",
+  "clientName": "12345>中间商_最终客户-项目名称",
+  "middleMan": "中间商名称",
+  "finalClient": "最终客户名称",
+  "projectName": "项目名称",
+  "quantity": "100",
+  "deliveryDate": "2026-12-31",
+  "salesPerson": "营业担当姓名"
+}
+```
+
+响应（失败）：
+
+```json
+{
+  "success": false,
+  "message": "获取仕样信息失败: 错误详情"
+}
+```
+
+### 获取仕样 PDF 原始文本
+
+`POST /api/spec/spec-raw-text`
+
+无需认证。
+
+从共享目录读取仕样书 PDF 原始文本内容，用于调试或自定义解析。
+
+请求：
+
+```json
+{
+  "specNumber": "12345"
+}
+```
+
+响应（成功）：
+
+```json
+{
+  "success": true,
+  "lines": [
+    { "line": 1, "text": "计划编号 12345" },
+    { "line": 2, "text": "项目名称 XXX" }
+  ],
+  "rawText": "计划编号 12345\n项目名称 XXX\n..."
+}
+```
+
 ## 前端批量导入模板
 
 管理后台中的批量导入目前由前端解析复制粘贴的表格文本，再调用现有接口逐条创建。
@@ -805,6 +1021,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 |
 | `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格 |
 | `session_invalidated` | 当前会话被新登录踢下线 |
+| `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` |
+| `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 |
 
 ## 常见错误码
 

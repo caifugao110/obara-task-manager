@@ -96,7 +96,12 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   if (!systemSettings.allowMultiDevice && previousSession) {
     const io = req.app.get('io');
     if (io) {
-      io.to(`user:${user.id}`).emit('session_invalidated', { reason: '您的账号已在其他设备登录' });
+      io.to(`user:${user.id}`).emit('session_invalidated', {
+        reason: '您的账号已在其他设备登录',
+        timestamp: new Date().toLocaleString('zh-CN'),
+        newLoginIp: ip,
+        newLoginBrowser: browserInfo.summary
+      });
     }
     await appendLoginLog(data, {
       ...logBase,

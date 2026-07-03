@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Admin from './pages/Admin';
 import Leaderboard from './pages/Leaderboard';
 import WorkHours from './pages/WorkHours';
+import StatusTracking from './pages/StatusTracking';
 import SystemSettings from './pages/SystemSettings';
 import LoginLogs from './pages/LoginLogs';
 
@@ -70,6 +71,7 @@ const AppRoutes = () => {
       />
       <Route path="/leaderboard" element={<Leaderboard />} />
       <Route path="/work-hours" element={<WorkHours />} />
+      <Route path="/status-tracking" element={<StatusTracking />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

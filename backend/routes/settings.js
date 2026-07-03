@@ -44,5 +44,41 @@ router.put('/leaderboard', updateAccessSettings('leaderboard'));
 router.get('/work-hours', getAccessSettings('workHours'));
 router.put('/work-hours', updateAccessSettings('workHours'));
 
+router.get('/status-tracking', getAccessSettings('statusTracking'));
+router.put('/status-tracking', updateAccessSettings('statusTracking'));
+
+const defaultLeaderRules = [
+  { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },
+  { leader: '张啸', members: ['李守健', '邓明江', '贾银鑫', '熊飞'] },
+  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '刘知新', '梁科研', '吴方盛'] },
+  { leader: '陈青松', members: ['张广奇', '李劲日', '曹圩圩', '许孟涵'] }
+];
+
+const leaderRulesSchema = Joi.array().items(
+  Joi.object({
+    leader: Joi.string().required(),
+    members: Joi.array().items(Joi.string()).required()
+  })
+);
+
+router.get('/leader-rules', asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const rules = data.settings?.leaderRules || defaultLeaderRules;
+  res.json(rules);
+}));
+
+router.put('/leader-rules', [authMiddleware, superAdminMiddleware, asyncHandler(async (req, res) => {
+  const { error, value } = leaderRulesSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const data = db.readDb();
+  if (!data.settings) data.settings = {};
+  data.settings.leaderRules = value;
+  await db.writeDb(data);
+  res.json(data.settings.leaderRules);
+})]);
+
 module.exports = router;
 

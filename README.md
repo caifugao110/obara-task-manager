@@ -40,6 +40,7 @@ npm run dev
 | 登录 | `/login` | 管理员和普通用户登录 |
 | 系统设置 | `/system-settings` | 数据导入导出、登录策略、最新登录信息 |
 | 登录日志 | `/login-logs` | 登录日志明细和筛选 |
+| 状态追踪 | `/status-tracking` | 任务状态追踪与批量导入导出 |
 
 ## 当前功能
 
@@ -120,6 +121,13 @@ npm run dev
 - 一般管理员批量添加登录用户时会自动创建为普通用户。
 - 批量导入会自动跳过重复数据，并显示导入耗时。
 
+### 状态追踪
+
+- 任务状态追踪页面支持查看、创建、编辑、删除状态追踪记录。
+- 支持批量导入状态追踪数据。
+- 实时同步：数据变更通过 Socket.IO 广播通知所有客户端。
+- 超级管理员可设置状态追踪页面访问权限。
+
 ### 系统设置
 
 - 可配置未登录查看主页面和多设备同时在线。
@@ -137,8 +145,8 @@ npm run dev
 ### 超级管理员 `superadmin`
 
 - 查看和编辑所有任务。
-- 管理设计人员、一般管理员和普通用户。
-- 配置任务报表、工时管理和系统设置。
+- 管理设计人员、一般管理员和普通用户（包括禁用/启用账号）。
+- 配置任务报表、工时管理、状态追踪和系统设置。
 - 导入导出系统数据。
 - 查看所有登录用户的最新登录信息和详细登录日志。
 
@@ -147,19 +155,19 @@ npm run dev
 - 查看和编辑任务。
 - 管理设计人员。
 - 创建普通用户作为登录用户。
-- 是否可进入任务报表、工时管理，取决于对应页面的“一般管理员”开关。
+- 是否可进入任务报表、工时管理、状态追踪，取决于对应页面的“一般管理员”开关。
 
 ### 普通用户 `user`
 
 - 登录后可查看主页面。
 - 其他权限与未登录游客一致。
-- 是否可进入任务报表、工时管理，取决于对应页面的“游客/普通用户”开关。
+- 是否可进入任务报表、工时管理、状态追踪，取决于对应页面的“游客/普通用户”开关。
 
 ### 游客
 
 - 在系统设置允许未登录查看时，可以查看主页面。
 - 不能编辑任务。
-- 是否可进入任务报表、工时管理，取决于对应页面的“游客/普通用户”开关。
+- 是否可进入任务报表、工时管理、状态追踪，取决于对应页面的“游客/普通用户”开关。
 
 ## 数据存储
 
@@ -171,9 +179,12 @@ npm run dev
   "designers": [],
   "tasks": [],
   "loginLogs": [],
+  "statusTrackingItems": [],
   "settings": {
     "leaderboard": { "enabled": true, "allowAdmins": true, "allowViewers": false },
     "workHours": { "enabled": true, "allowAdmins": true, "allowViewers": false },
+    "statusTracking": { "enabled": true, "allowAdmins": true, "allowViewers": false },
+    "leaderRules": [],
     "system": { "allowGuestView": true, "allowMultiDevice": true }
   }
 }
@@ -200,6 +211,15 @@ cd frontend
 ..\node_modules\.bin\tsc.cmd --noEmit
 ```
 
+## 仕样信息搜索
+
+系统支持从共享目录读取仕样书 PDF 文件，提取纳期和详细信息：
+
+- 搜索路径：`\\192.168.160.6\仕样书$\`
+- 支持按仕样号搜索，自动查找最新版本（如 `12345.PDF`、`12345.01.PDF` 等）
+- 可提取纳期、中间商、最终客户、项目名称、数量、营业担当等信息
+- 纳期获取超时时间为 9 秒，完整信息获取超时时间为 15 秒
+
 ## 项目结构
 
 ```text
@@ -213,14 +233,47 @@ obara-task-manager/
 		|   |-- server.js
 		|   |-- db.js
 		|   |-- routes/
-		|   `-- middleware/
+		|   |   |-- tasks.js
+		|   |   |-- designers.js
+		|   |   |-- users.js
+		|   |   |-- settings.js
+		|   |   |-- system.js
+		|   |   |-- spec.js
+		|   |   |-- statusTracking.js
+		|   |   `-- auth.js
+		|   |-- middleware/
+		|   |   `-- auth.js
+		|   `-- templates/
+		|       `-- spec-pdf/
 		`-- frontend/
 		    |-- vite.config.ts
 		    `-- src/
 		        |-- pages/
+		        |   |-- Dashboard.tsx
+		        |   |-- Leaderboard.tsx
+		        |   |-- WorkHours.tsx
+		        |   |-- Admin.tsx
+		        |   |-- Login.tsx
+		        |   |-- SystemSettings.tsx
+		        |   |-- LoginLogs.tsx
+		        |   `-- StatusTracking.tsx
 		        |-- context/
+		        |   `-- AuthContext.tsx
+		        |-- hooks/
+		        |   |-- useSocket.ts
+		        |   |-- useTasks.ts
+		        |   `-- index.ts
 		        |-- services/
-		        `-- types/
+		        |   `-- api.ts
+		        |-- types/
+		        |   `-- index.ts
+		        |-- utils/
+		        |   |-- axios.ts
+		        |   |-- debounce.ts
+		        |   `-- loginLogs.ts
+		        |-- App.tsx
+		        |-- main.tsx
+		        `-- index.css
 ```
 
 ## 相关文档

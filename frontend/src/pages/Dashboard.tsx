@@ -1738,6 +1738,15 @@ const Dashboard = () => {
                 <span>工时管理</span>
               </Link>
           )}
+          {canShowAccessLink(workHoursAccess) && (
+              <Link
+                to="/status-tracking"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+              >
+                <Clock size={16} className="text-blue-200" />
+                <span>状态跟踪表</span>
+              </Link>
+          )}
           {isSuperAdmin && (
             <Link
               to="/system-settings"
