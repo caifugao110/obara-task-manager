@@ -47,6 +47,34 @@ function isValidDate(yy, mo, dd) {
   return yy >= 2000 && yy <= 2100 && mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31;
 }
 
+function isSkipDataLine(line) {
+  var s = (line || '').trim();
+  if (!s) return true;
+  if (/^[\u2713\u2610\u25a1\u2611\uf0fc\s]+$/.test(s)) return true;
+  return false;
+}
+
+function parseDateQuantityLine(line) {
+  var dateStr = null;
+  var qtyStr = null;
+  var parts = line.split('\t');
+  for (var pi = 0; pi < parts.length; pi++) {
+    var p = parts[pi].trim();
+    var dm = p.match(/^(\d{4}-\d{2}-\d{2})$/);
+    if (dm) dateStr = dm[1];
+    else if (/^\d+$/.test(p)) qtyStr = p;
+  }
+  if (!dateStr) {
+    var dqm = line.match(/(\d{4}-\d{2}-\d{2})/);
+    if (dqm) dateStr = dqm[1];
+  }
+  if (!qtyStr && parts.length >= 2) {
+    var last = parts[parts.length - 1].trim();
+    if (/^\d+$/.test(last)) qtyStr = last;
+  }
+  return {dateStr: dateStr, qtyStr: qtyStr};
+}
+
 async function extractDeliveryDateFromPdf(p) {
   try {
     var buf = fs2.readFileSync(p);
@@ -149,67 +177,37 @@ async function extractSpecInfoFromPdf(p) {
 
       if (line.includes('最终客户') && line.includes('中间商')) {
         if (lines[i + 1]) {
-          var middleManLine = lines[i + 1].trim();
-          var middleManParts = middleManLine.split(/\s{2,}/);
-          if (middleManParts.length >= 2) {
-            info.middleMan = middleManParts[1].trim();
-            if (middleManParts.length >= 4) {
-              info.finalClient = middleManParts[3].trim();
-            }
-          }
+          var planMatch = lines[i + 1].match(/(\d{5,})/);
+          if (planMatch) info.specNumber = planMatch[1];
         }
-        if (lines[i + 2]) {
-          var projectLine = lines[i + 2].trim();
-          var projectParts = projectLine.split(/\s{2,}/);
-          if (projectParts.length >= 2) {
-            info.projectName = projectParts[1].trim();
-          }
-        }
-        if (lines[i + 3]) {
-          var detailLine = lines[i + 3].trim();
-          var detailParts = detailLine.split(/\s{2,}/);
-          for (var di = 0; di < detailParts.length; di++) {
-            if (detailParts[di].includes('数量')) {
-              info.quantity = detailParts[di + 1]?.trim() || '';
-            }
-            if (detailParts[di].includes('纳期')) {
-              var dateMatch = detailParts[di + 1]?.match(/(\d{4}-\d{2}-\d{2})/);
-              if (dateMatch) {
-                info.deliveryDate = {
-                  year: parseInt(dateMatch[1].split('-')[0], 10),
-                  month: parseInt(dateMatch[1].split('-')[1], 10),
-                  day: parseInt(dateMatch[1].split('-')[2], 10)
-                };
-              }
-            }
-          }
-        }
-      }
 
-      if (line.includes('营业担当') && !info.salesPerson) {
-        var salesColumns = line.split(/\s{2,}/);
-        var salesIndex = -1;
-        for (var ci = 0; ci < salesColumns.length; ci++) {
-          if (salesColumns[ci].trim().includes('营业担当')) {
-            salesIndex = ci;
-            break;
-          }
+        var dataLines = [];
+        for (var dj = i + 2; dj < lines.length && dj < i + 10; dj++) {
+          var dataLine = lines[dj];
+          if (!dataLine) continue;
+          if (dataLine.includes('技术审核') || (dataLine.includes('营业担当') && dataLine.includes('营业审核'))) break;
+          if (isSkipDataLine(dataLine)) continue;
+          dataLines.push(dataLine);
         }
-        
-        if (salesIndex >= 0) {
-          for (var j = i + 1; j < lines.length; j++) {
-            var nextLine = lines[j];
-            if (nextLine && nextLine.trim()) {
-              var nextParts = nextLine.split(/\s{2,}/);
-              if (nextParts[salesIndex]) {
-                var nameValue = nextParts[salesIndex].trim();
-                if (nameValue && !nameValue.includes('营业') && !nameValue.includes('审核')) {
-                  info.salesPerson = nameValue;
-                  break;
-                }
-              }
-            }
+
+        if (dataLines.length >= 1) {
+          info.middleMan = dataLines[0].split('\t')[0].trim();
+        }
+        if (dataLines.length >= 2) {
+          var dq = parseDateQuantityLine(dataLines[1]);
+          if (dq.dateStr) {
+            info.deliveryDate = {
+              year: parseInt(dq.dateStr.split('-')[0], 10),
+              month: parseInt(dq.dateStr.split('-')[1], 10),
+              day: parseInt(dq.dateStr.split('-')[2], 10)
+            };
           }
+          if (dq.qtyStr) info.quantity = dq.qtyStr;
+        }
+        if (dataLines.length >= 3) {
+          var fcParts = dataLines[2].split('\t');
+          if (fcParts[0]) info.finalClient = fcParts[0].trim();
+          if (fcParts[1]) info.salesPerson = fcParts[1].trim();
         }
       }
 

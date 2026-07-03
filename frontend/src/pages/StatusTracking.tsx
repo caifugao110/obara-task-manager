@@ -151,7 +151,7 @@ const generateMonthOptions = (items: StatusItem[]) => {
 };
 
 const VerticalHeader = ({ text }: { text: string }) => (
-  <span className="inline-block writing-vertical text-xs leading-tight">{text}</span>
+  <span className="inline-block writing-vertical text-sm leading-tight">{text}</span>
 );
 
 const StatusTracking = () => {
@@ -830,53 +830,75 @@ const StatusTracking = () => {
             </div>
           )}
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm" style={{ tableLayout: 'auto' }}>
+              <colgroup>
+                <col style={{ width: '90px' }} />
+                <col />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '60px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '140px' }} />
+                <col style={{ width: '150px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '30px' }} />
+                <col style={{ width: '90px' }} />
+                <col style={{ width: '90px' }} />
+                <col style={{ width: '60px' }} />
+              </colgroup>
               <thead>
                 <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
-                  <th className="px-2 py-3 text-center border-r border-blue-500 min-w-[60px]">工厂</th>
+                  <th className="px-2 py-3 text-center border-r border-blue-500">工厂</th>
                   <th className="px-2 py-3 text-center border-r border-blue-500">客户</th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="数量" />
                   </th>
-                  <th className="px-2 py-3 text-center border-r border-blue-500 min-w-[60px]">纳期</th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-3 text-center border-r border-blue-500">纳期</th>
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="已发图" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="未确认" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 bg-green-600 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500 bg-green-600">
                     <VerticalHeader text="总种数" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 bg-green-600 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500 bg-green-600">
                     <VerticalHeader text="反馈种数" />
                   </th>
-                  <th className="px-2 py-3 text-center border-r border-blue-500 bg-green-600 min-w-[100px]">反馈计划</th>
-                  <th className="px-2 py-3 text-center border-r border-blue-500 bg-green-600 min-w-[100px]">下图计划及状态</th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-3 text-center border-r border-blue-500 bg-green-600">反馈计划</th>
+                  <th className="px-2 py-3 text-center border-r border-blue-500 bg-green-600">下图计划及状态</th>
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="确认数量" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="确认种数" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="下图种数" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="未下种数" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="未下数量" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="未确认数" />
                   </th>
-                  <th className="px-2 py-6 text-center border-r border-blue-500 min-w-[40px]">
+                  <th className="px-2 py-6 text-center border-r border-blue-500">
                     <VerticalHeader text="设计纳期" />
                   </th>
                   <th className="px-2 py-3 text-center border-r border-blue-500">营业担当</th>
                   <th className="px-2 py-3 text-center border-r border-blue-500">组长</th>
-                  <th className="px-2 py-3 text-center min-w-[60px]">操作</th>
+                  <th className="px-2 py-3 text-center">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -901,7 +923,7 @@ const StatusTracking = () => {
                             value={item.factory}
                             onChange={(e) => updateField(item.id, 'factory', e.target.value)}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
                           >
                             {factoryOptions.map(option => (
                               <option key={option} value={option}>{option}</option>
@@ -917,7 +939,7 @@ const StatusTracking = () => {
                             value={item.quantity}
                             onChange={(e) => updateField(item.id, 'quantity', validateNumberInput(e.target.value))}
                             disabled={isLocked}
-                            className="w-16 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center">
@@ -940,7 +962,7 @@ const StatusTracking = () => {
                             value={item.shippedCount || ''}
                             onChange={(e) => updateField(item.id, 'shippedCount', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center">
@@ -949,7 +971,7 @@ const StatusTracking = () => {
                             value={item.unconfirmedCount || ''}
                             onChange={(e) => updateField(item.id, 'unconfirmedCount', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center bg-blue-50">
@@ -958,7 +980,7 @@ const StatusTracking = () => {
                             value={item.totalVarieties || ''}
                             onChange={(e) => updateField(item.id, 'totalVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center bg-blue-50">
@@ -967,7 +989,7 @@ const StatusTracking = () => {
                             value={item.feedbackVarieties || ''}
                             onChange={(e) => updateField(item.id, 'feedbackVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center bg-blue-50">
@@ -996,7 +1018,7 @@ const StatusTracking = () => {
                             value={item.confirmedQuantity || ''}
                             onChange={(e) => updateField(item.id, 'confirmedQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center">
@@ -1005,7 +1027,7 @@ const StatusTracking = () => {
                             value={item.confirmedVarieties || ''}
                             onChange={(e) => updateField(item.id, 'confirmedVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center">
@@ -1014,7 +1036,7 @@ const StatusTracking = () => {
                             value={item.drawnVarieties || ''}
                             onChange={(e) => updateField(item.id, 'drawnVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center">
@@ -1023,7 +1045,7 @@ const StatusTracking = () => {
                             value={item.undrawnVarieties || ''}
                             onChange={(e) => updateField(item.id, 'undrawnVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center">
@@ -1032,7 +1054,7 @@ const StatusTracking = () => {
                             value={item.undrawnQuantity || ''}
                             onChange={(e) => updateField(item.id, 'undrawnQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center">
@@ -1041,7 +1063,7 @@ const StatusTracking = () => {
                             value={item.unconfirmedQuantity || ''}
                             onChange={(e) => updateField(item.id, 'unconfirmedQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className={`px-3 py-2 border-b border-gray-200 text-center font-bold ${item.designDeliveryDays <= 7 ? 'bg-red-100 text-red-700' : item.designDeliveryDays <= 14 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
@@ -1050,7 +1072,7 @@ const StatusTracking = () => {
                             value={item.designDeliveryDays || ''}
                             onChange={(e) => updateField(item.id, 'designDeliveryDays', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked}
-                            className="w-14 text-center bg-transparent border border-gray-300 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-12 text-center bg-transparent border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-3 py-2 border-b border-gray-200 text-center bg-amber-50">
@@ -1063,7 +1085,7 @@ const StatusTracking = () => {
                               });
                             }}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
                           >
                             <option value="">请选择</option>
                             {allSalesPersons.map(person => (
@@ -1076,7 +1098,7 @@ const StatusTracking = () => {
                             value={item.leader}
                             onChange={(e) => updateField(item.id, 'leader', e.target.value)}
                             disabled={isLocked}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed appearance-none"
                           >
                             <option value="">请选择</option>
                             {allLeaders.map(leader => (

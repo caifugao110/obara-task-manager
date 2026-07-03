@@ -613,6 +613,8 @@ Authorization: Bearer <token>
 
 `GET /api/status-tracking/items`
 
+无需认证。
+
 响应：
 
 ```json
@@ -626,6 +628,15 @@ Authorization: Bearer <token>
   }
 ]
 ```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 记录唯一标识，创建时自动生成 |
+| `createdAt` | 创建时间，ISO 格式 |
+| `updatedAt` | 更新时间，ISO 格式 |
+| 其他字段 | 自定义字段，根据业务需求添加 |
 
 ### 创建状态追踪记录
 
@@ -642,7 +653,10 @@ Authorization: Bearer <token>
 }
 ```
 
-响应：返回创建的记录，包含 `id`、`createdAt`、`updatedAt`。
+响应：返回创建的完整记录，包含 `id`、`createdAt`、`updatedAt`。
+
+说明：
+- 创建成功后通过 Socket.IO 广播 `status_tracking_updated` 事件，`action` 为 `add`
 
 ### 更新状态追踪记录
 
@@ -659,11 +673,29 @@ Authorization: Bearer <token>
 }
 ```
 
+响应：返回更新后的完整记录。
+
+说明：
+- 更新成功后通过 Socket.IO 广播 `status_tracking_updated` 事件，`action` 为 `update`
+- 记录不存在时返回 `404` 和 `记录未找到`
+
 ### 删除状态追踪记录
 
 `DELETE /api/status-tracking/items/:id`
 
 权限：`admin`、`superadmin`
+
+响应：
+
+```json
+{
+  "success": true
+}
+```
+
+说明：
+- 删除成功后通过 Socket.IO 广播 `status_tracking_updated` 事件，`action` 为 `delete`
+- 记录不存在时返回 `404` 和 `记录未找到`
 
 ### 批量更新状态追踪记录
 
@@ -678,21 +710,48 @@ Authorization: Bearer <token>
   {
     "id": "1234567890",
     "field1": "updated-value"
+  },
+  {
+    "field1": "new-record-value"
   }
 ]
 ```
 
+响应：返回所有状态追踪记录列表。
+
 说明：
 
-- 已存在的记录会更新，不存在的记录会创建。
-- 所有记录都会更新 `updatedAt` 字段。
-- 成功后通过 Socket.IO 广播 `status_tracking_bulk` 事件。
+- 请求必须是数组格式，否则返回 `400` 和 `输入必须是数组`
+- 已存在的记录（根据 `id` 匹配）会更新，不存在的记录会创建
+- 创建的新记录会自动生成 `id`、`createdAt`、`updatedAt`
+- 更新的记录会自动更新 `updatedAt` 字段
+- 成功后通过 Socket.IO 广播 `status_tracking_bulk` 事件，包含所有记录列表
 
 ### 同步状态追踪记录
 
 `POST /api/status-tracking/sync`
 
 无需认证，用于获取所有状态追踪记录。
+
+响应：返回所有状态追踪记录数组。
+
+### Socket.IO 状态追踪事件
+
+客户端事件：
+
+| 事件 | 说明 | 参数 |
+|------|------|------|
+| `status_tracking_start_edit` | 通知开始编辑状态追踪记录 | `{ itemId, userId, username }` |
+| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录 | `{ itemId }` |
+
+服务端事件：
+
+| 事件 | 说明 | 参数 |
+|------|------|------|
+| `status_tracking_edit_start` | 某用户开始编辑指定记录 | `{ itemId, userId, username, socketId }` |
+| `status_tracking_edit_stop` | 某用户停止编辑指定记录 | `{ itemId }` |
+| `status_tracking_updated` | 状态追踪记录更新 | `{ action, item, itemId }` |
+| `status_tracking_bulk` | 状态追踪批量更新 | `[所有记录列表]` |
 
 ## 系统设置接口
 
@@ -723,6 +782,48 @@ Authorization: Bearer <token>
   "allowMultiDevice": true
 }
 ```
+
+### 获取系统版本信息
+
+`GET /api/system/version`
+
+无需认证。
+
+通过 Git 提交信息自动生成版本号，检查远程仓库是否有更新。
+
+响应（成功）：
+
+```json
+{
+  "currentVersion": "26-07-03",
+  "hasUpdate": true,
+  "latestVersion": "26-07-04"
+}
+```
+
+响应（失败或无 Git）：
+
+```json
+{
+  "currentVersion": "未知",
+  "hasUpdate": false,
+  "latestVersion": null
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `currentVersion` | 当前版本号，格式 `YY-MM-DD` 或 `YY-MM-DD-VN` |
+| `hasUpdate` | 是否有远程更新 |
+| `latestVersion` | 远程最新版本号，无更新或无法访问时为 `null` |
+
+说明：
+- 需要服务器安装 Git 并配置远程仓库
+- 版本检查会自动执行 `git fetch origin` 获取远程更新
+- 如果无法访问远程仓库，`hasUpdate` 返回 `false`
+- 版本号格式：当日首次提交为 `YY-MM-DD`，当日多次提交为 `YY-MM-DD-VN`
 
 ### 获取登录历史
 
@@ -1043,5 +1144,29 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | 500 | `服务器内部错误` | 服务端错误 |
 
 注意：登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
+
+## 数据库迁移说明
+
+系统启动时会自动执行数据库迁移：
+
+1. **任务数据结构迁移**：将旧版 `hours` 对象格式迁移为新版 `days` 对象格式
+2. **日期格式规范化**：统一日期格式为 `YYYY-MM-DD`，截取前 10 位
+3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置
+
+迁移规则：
+- 迁移过程会自动保存到 `backend/db.json`
+- 迁移后会在控制台输出迁移信息
+- 多次启动不会重复迁移
+
+## 安全特性
+
+1. **JWT 认证**：使用 JWT Token 进行身份验证，过期时间为 7 天
+2. **密码加密**：使用 bcrypt 对密码进行哈希加密
+3. **登录限流**：15 分钟内最多 20 次登录尝试
+4. **请求验证**：使用 Joi 进行请求参数验证
+5. **安全头**：使用 Helmet 设置安全相关的 HTTP 头
+6. **跨域保护**：配置 CORS 限制跨域请求
+7. **账号禁用**：支持禁用账号，禁用后无法登录
+8. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
 
 最后更新：2026-07-03
