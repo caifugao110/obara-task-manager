@@ -31,6 +31,9 @@ app.use(bodyParser.json());
 // Database logic (Simple JSON storage)
 const db = require('./db');
 
+// Middleware
+const { auditLogMiddleware } = require('./middleware/auditLog');
+
 // Routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
@@ -40,6 +43,9 @@ const settingsRoutes = require('./routes/settings');
 const systemRoutes = require('./routes/system');
 const specRoutes = require('./routes/spec');
 const statusTrackingRoutes = require('./routes/statusTracking');
+const workHoursRoutes = require('./routes/workHours');
+
+app.use(auditLogMiddleware);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -49,6 +55,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/spec', specRoutes);
 app.use('/api/status-tracking', statusTrackingRoutes);
+app.use('/api/work-hours', workHoursRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {

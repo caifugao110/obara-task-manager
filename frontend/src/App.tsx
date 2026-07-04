@@ -10,7 +10,7 @@ import Leaderboard from './pages/Leaderboard';
 import WorkHours from './pages/WorkHours';
 import StatusTracking from './pages/StatusTracking';
 import SystemSettings from './pages/SystemSettings';
-import LoginLogs from './pages/LoginLogs';
+import SystemLogs from './pages/SystemLogs';
 
 const ProtectedRoute = ({
   children,
@@ -23,13 +23,16 @@ const ProtectedRoute = ({
   superAdminOnly?: boolean;
   allowGuest?: boolean;
 }) => {
-  const { isAuthenticated, user, forcePasswordChange } = useAuth();
+  const { isAuthenticated, user, forcePasswordChange, authReady } = useAuth();
+
+  if (!authReady) {
+    return null;
+  }
 
   if (!isAuthenticated) {
     if (!allowGuest) {
       return <Navigate to="/login" replace />;
     }
-    // Guests allowed — render children directly (Dashboard handles guest mode internally)
     return <>{children}</>;
   }
 
@@ -117,10 +120,10 @@ const AppRoutes = () => {
         }
       />
       <Route
-        path="/login-logs"
+        path="/system-logs"
         element={
           <ProtectedRoute superAdminOnly>
-            <LoginLogs />
+            <SystemLogs />
           </ProtectedRoute>
         }
       />

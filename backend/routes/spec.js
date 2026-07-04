@@ -3,6 +3,7 @@ const router = express.Router();
 const path = require('path');
 const fs2 = require('fs');
 const asyncHandler = require('express-async-handler');
+const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 
 let PDFParse = null;
 async function getPdfParse() {
@@ -243,7 +244,7 @@ async function extractSpecInfoFromPdf(p) {
   }
 }
 
-router.post('/delivery-date', asyncHandler(async (req, res) => {
+router.post('/delivery-date', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
 
   var n = req.body.specNumber;
 
@@ -289,7 +290,7 @@ router.post('/delivery-date', asyncHandler(async (req, res) => {
 
 }));
 
-router.post('/spec-raw-text', asyncHandler(async (req, res) => {
+router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   var n = req.body.specNumber;
   if (!n) return res.json({success: false, message: '仕样号不能为空'});
   if (!/^\d+$/.test(n)) return res.json({success: false, message: '仕样号格式不正确'});
@@ -313,7 +314,7 @@ router.post('/spec-raw-text', asyncHandler(async (req, res) => {
   }
 }));
 
-router.post('/spec-info', asyncHandler(async (req, res) => {
+router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
 
   var n = req.body.specNumber;
 

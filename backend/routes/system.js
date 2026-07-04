@@ -1354,4 +1354,51 @@ router.get('/version', asyncHandler(async (req, res) => {
   }
 }));
 
+router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { limit = 100, page = 1, username, action, method, ip, from, to } = req.query;
+  
+  const data = db.readDb();
+  let logs = data.auditLogs || [];
+  
+  const fromTime = from ? new Date(from).getTime() : null;
+  const toTime = to ? new Date(to).getTime() + 24 * 60 * 60 * 1000 - 1 : null;
+  
+  logs = logs.filter(log => {
+    const timestamp = new Date(log.timestamp).getTime();
+    if (fromTime && timestamp < fromTime) return false;
+    if (toTime && timestamp > toTime) return false;
+    if (username && !(`${log.username || ''} ${log.name || ''}`.toLowerCase().includes(username.toLowerCase()))) return false;
+    if (action && !log.action.toLowerCase().includes(action.toLowerCase())) return false;
+    if (method && log.method !== method.toUpperCase()) return false;
+    if (ip && !String(log.ip || '').includes(ip)) return false;
+    return true;
+  });
+  
+  logs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  
+  const pageSize = parseInt(limit, 10) || 100;
+  const pageNum = parseInt(page, 10) || 1;
+  const start = (pageNum - 1) * pageSize;
+  const end = start + pageSize;
+  
+  res.json({
+    logs: logs.slice(start, end),
+    total: logs.length,
+    page: pageNum,
+    pageSize
+  });
+}));
+
+router.get('/admin-login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const loginLogs = data.loginLogs || [];
+  
+  const adminLogs = loginLogs
+    .filter(log => log.role === 'superadmin' || log.role === 'admin')
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .slice(0, 10);
+  
+  res.json(adminLogs);
+}));
+
 module.exports = router;
