@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import axios from 'axios';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import ChangePassword from './pages/ChangePassword';
@@ -70,6 +71,16 @@ const ChangePasswordRoute = ({
 
 const AppRoutes = () => {
   const { isAuthenticated } = useAuth();
+  const [allowGuestView, setAllowGuestView] = useState(true);
+
+  useEffect(() => {
+    axios.get('/api/system/settings')
+      .then(res => setAllowGuestView(res.data.allowGuestView ?? true))
+      .catch(() => {});
+  }, []);
+
+  const guestAllowed = allowGuestView;
+
   return (
     <Routes>
       <Route path="/login" element={!isAuthenticated ? <Login /> : <Navigate to="/" replace />} />
@@ -116,7 +127,7 @@ const AppRoutes = () => {
       <Route 
         path="/leaderboard" 
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={guestAllowed}>
             <Leaderboard />
           </ProtectedRoute>
         } 
@@ -124,7 +135,7 @@ const AppRoutes = () => {
       <Route 
         path="/work-hours" 
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={guestAllowed}>
             <WorkHours />
           </ProtectedRoute>
         } 
@@ -132,7 +143,7 @@ const AppRoutes = () => {
       <Route 
         path="/status-tracking" 
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={guestAllowed}>
             <StatusTracking />
           </ProtectedRoute>
         } 
