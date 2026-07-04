@@ -14,16 +14,22 @@ import LoginLogs from './pages/LoginLogs';
 const ProtectedRoute = ({
   children,
   adminOnly = false,
-  superAdminOnly = false
+  superAdminOnly = false,
+  allowGuest = false
 }: {
   children: React.ReactNode;
   adminOnly?: boolean;
   superAdminOnly?: boolean;
+  allowGuest?: boolean;
 }) => {
   const { isAuthenticated, user, forcePasswordChange } = useAuth();
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+    if (!allowGuest) {
+      return <Navigate to="/login" replace />;
+    }
+    // Guests allowed — render children directly (Dashboard handles guest mode internally)
+    return <>{children}</>;
   }
 
   if (forcePasswordChange) {
@@ -78,7 +84,7 @@ const AppRoutes = () => {
       <Route 
         path="/" 
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest>
             <Dashboard />
           </ProtectedRoute>
         } 

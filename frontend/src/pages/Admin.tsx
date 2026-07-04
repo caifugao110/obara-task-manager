@@ -323,7 +323,7 @@ const Admin = () => {
             skippedCount++;
             continue;
           }
-          await axiosInstance.post('/api/designers', { name, group });
+          await axiosInstance.post('/designers', { name, group });
           existingNames.add(key);
           successCount++;
         }
@@ -337,7 +337,7 @@ const Admin = () => {
             skippedCount++;
             continue;
           }
-          await axiosInstance.post('/api/users', {
+          await axiosInstance.post('/users', {
             username,
             password,
             name,
@@ -365,7 +365,7 @@ const Admin = () => {
 
     setLoading(true);
     try {
-      const usersRes = await axiosInstance.get('/api/users');
+      const usersRes = await axiosInstance.get('/users');
       setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     } catch (err: any) {
       console.error('Error fetching users:', err);
@@ -373,7 +373,7 @@ const Admin = () => {
     }
 
     try {
-      const designersRes = await axiosInstance.get('/api/designers/manage');
+      const designersRes = await axiosInstance.get('/designers/manage');
       setDesigners(Array.isArray(designersRes.data) ? designersRes.data : []);
     } catch (err: any) {
       console.error('Error fetching designers:', err);
@@ -409,7 +409,7 @@ const Admin = () => {
       return;
     }
     try {
-      await axiosInstance.post('/api/users', {
+      await axiosInstance.post('/users', {
         username: newUsername,
         password: newPassword,
         name: newName || newUsername,
@@ -434,9 +434,9 @@ const Admin = () => {
       return;
     }
     try {
-      await axiosInstance.post('/api/designers', {
+      await axiosInstance.post('/designers', {
         name: newDesignerName,
-        group: newDesignerGroup
+        group: newDesignerGroup || ''
       });
       
       addToast('设计人员添加成功', 'success');
@@ -454,7 +454,7 @@ const Admin = () => {
 
     setInitializingDesigners(true);
     try {
-      await Promise.all(initialDesigners.map(designer => axiosInstance.post('/api/designers', designer)));
+      await Promise.all(initialDesigners.map(designer => axiosInstance.post('/designers', designer)));
       addToast(`已初始化 ${initialDesigners.length} 位设计人员`, 'success');
       fetchData();
     } catch (err: any) {
@@ -470,7 +470,7 @@ const Admin = () => {
 
     setInitializingUsers(true);
     try {
-      await Promise.all(initialLoginUsers.map(user => axiosInstance.post('/api/users', user)));
+      await Promise.all(initialLoginUsers.map(user => axiosInstance.post('/users', user)));
       addToast(`已初始化 ${initialLoginUsers.length} 个登录用户`, 'success');
       fetchData();
     } catch (err: any) {
@@ -502,7 +502,7 @@ const Admin = () => {
       setDesigners(newDesigners);
       
       try {
-        await axiosInstance.post('/api/designers/reorder', { ids: newDesigners.map(d => d.id) });
+        await axiosInstance.post('/designers/reorder', { ids: newDesigners.map(d => d.id) });
         addToast('排序已保存', 'success');
       } catch (err) {
         addToast('排序保存失败', 'error');
@@ -542,10 +542,10 @@ const Admin = () => {
     if (!window.confirm(`确定要删除选中的 ${ids.length} 个登录用户吗？`)) return;
     try {
       try {
-        await axiosInstance.post('/api/users/batch-delete', { ids });
+        await axiosInstance.post('/users/batch-delete', { ids });
       } catch (err: any) {
         if (!isMissingBatchRoute(err)) throw err;
-        await Promise.all(ids.map(id => axiosInstance.delete(`/api/users/${id}`)));
+        await Promise.all(ids.map(id => axiosInstance.delete(`/users/${id}`)));
       }
       addToast(`已删除 ${ids.length} 个登录用户`, 'success');
       setSelectedUserIds([]);
@@ -614,10 +614,10 @@ const Admin = () => {
     if (!window.confirm(`确定要从表格中移除选中的 ${ids.length} 位设计人员吗？其任务数据将保留在数据库中但不再显示。`)) return;
     try {
       try {
-        await axiosInstance.post('/api/designers/batch-delete', { ids });
+        await axiosInstance.post('/designers/batch-delete', { ids });
       } catch (err: any) {
         if (!isMissingBatchRoute(err)) throw err;
-        await Promise.all(ids.map(id => axiosInstance.delete(`/api/designers/${id}`)));
+        await Promise.all(ids.map(id => axiosInstance.delete(`/designers/${id}`)));
       }
       addToast(`已移除 ${ids.length} 位设计人员`, 'success');
       setSelectedDesignerIds([]);

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { Lock, AlertCircle, CheckCircle } from 'lucide-react';
@@ -31,7 +31,7 @@ const ChangePassword = () => {
 
     setLoading(true);
     try {
-      await axios.post('/api/auth/change-password', {
+      await axiosInstance.post('/auth/change-password', {
         oldPassword,
         newPassword
       });

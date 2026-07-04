@@ -39,6 +39,19 @@ router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res)
       migrated = true;
     }
   });
+
+  // Migrate: set forcePasswordChange=true for existing non-superadmin users created before the feature
+  if (!data.settings?._migrations?.forcePasswordChangeMigrated) {
+    data.users.forEach(u => {
+      if (u.role !== 'superadmin') {
+        u.forcePasswordChange = true;
+      }
+    });
+    if (!data.settings) data.settings = {};
+    if (!data.settings._migrations) data.settings._migrations = {};
+    data.settings._migrations.forcePasswordChangeMigrated = true;
+    migrated = true;
+  }
   
   if (migrated) {
     await db.writeDb(data);

@@ -1,5 +1,5 @@
-import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
-import axios from 'axios';
+﻿﻿﻿﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
+import { axiosInstance } from '../services/api';
 import { io, Socket } from 'socket.io-client';
 
 interface User {
@@ -96,7 +96,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const validateSession = async () => {
       try {
-        const response = await axios.get('/api/auth/validate', {
+        const response = await axiosInstance.get('/auth/validate', {
           headers: { Authorization: `Bearer ${token}` }
         });
         const forceChange = response.data.forcePasswordChange;

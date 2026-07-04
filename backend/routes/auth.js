@@ -158,6 +158,20 @@ router.get('/validate', asyncHandler(async (req, res) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const data = db.readDb();
+
+    // Migrate: set forcePasswordChange=true for existing non-superadmin users
+    if (!data.settings?._migrations?.forcePasswordChangeMigrated) {
+      data.users.forEach(u => {
+        if (u.role !== 'superadmin' && !u.forcePasswordChange) {
+          u.forcePasswordChange = true;
+        }
+      });
+      if (!data.settings) data.settings = {};
+      if (!data.settings._migrations) data.settings._migrations = {};
+      data.settings._migrations.forcePasswordChangeMigrated = true;
+      db.writeDb(data);
+    }
+
     const user = data.users.find(u => u.id === decoded.id);
 
     if (!user || user.disabled) {
