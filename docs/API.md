@@ -789,9 +789,29 @@ Authorization: Bearer <token>
 
 无需认证。
 
-通过 Git 提交信息自动生成版本号，检查远程仓库是否有更新。
+通过 Gitee API 获取远程仓库最新提交信息，检查是否有更新。
 
-响应（成功）：
+#### 版本号格式
+
+版本号采用 `YY-MM-DD-VN` 格式：
+- `YY`：年份后两位（如 26 表示 2026 年）
+- `MM`：月份（01-12）
+- `DD`：日期（01-31）
+- `VN`：当日版本号（V1、V2、V3...，当日多次提交时自动递增）
+
+#### 版本比较规则
+
+版本比较按照以下优先级依次比较：
+1. 年份（YY）
+2. 月份（MM）
+3. 日期（DD）
+4. 当日版本号（VN）
+
+只有当远程版本严格大于本地版本时，`hasUpdate` 才返回 `true`。
+
+#### 响应示例
+
+响应（有更新）：
 
 ```json
 {
@@ -801,7 +821,17 @@ Authorization: Bearer <token>
 }
 ```
 
-响应（失败或无 Git）：
+响应（无更新或本地版本更新）：
+
+```json
+{
+  "currentVersion": "26-07-04-V2",
+  "hasUpdate": false,
+  "latestVersion": null
+}
+```
+
+响应（失败或未配置 Gitee）：
 
 ```json
 {
@@ -811,18 +841,23 @@ Authorization: Bearer <token>
 }
 ```
 
-字段说明：
+#### 字段说明
 
 | 字段 | 说明 |
 |------|------|
 | `currentVersion` | 当前版本号，格式 `YY-MM-DD` 或 `YY-MM-DD-VN` |
-| `hasUpdate` | 是否有远程更新 |
+| `hasUpdate` | 是否有远程更新（远程版本 > 本地版本） |
 | `latestVersion` | 远程最新版本号，无更新或无法访问时为 `null` |
 
-说明：
-- 需要服务器安装 Git 并配置远程仓库
-- 版本检查会自动执行 `git fetch origin` 获取远程更新
-- 如果无法访问远程仓库，`hasUpdate` 返回 `false`
+#### 说明
+
+- 当前版本由 Git 提交信息生成，需要服务器安装 Git
+- 远程版本检查通过 Gitee API 获取，需要配置以下环境变量：
+  - `GITEE_TOKEN`：Gitee 个人访问令牌
+  - `GITEE_REPO_OWNER`：Gitee 仓库用户名
+  - `GITEE_REPO_NAME`：Gitee 仓库名称
+- API 调用超时时间为 5 秒，超时后自动降级为无更新状态
+- 如果未配置 Gitee 或无法访问 API，`hasUpdate` 返回 `false`
 - 版本号格式：当日首次提交为 `YY-MM-DD`，当日多次提交为 `YY-MM-DD-VN`
 
 ### 获取登录历史
@@ -1160,13 +1195,60 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 ## 安全特性
 
-1. **JWT 认证**：使用 JWT Token 进行身份验证，过期时间为 7 天
+1. **JWT 认证**：使用 JWT Token 进行身份验证，过期时间为 7 天（可通过 `JWT_EXPIRES_IN` 配置）
 2. **密码加密**：使用 bcrypt 对密码进行哈希加密
-3. **登录限流**：15 分钟内最多 20 次登录尝试
+3. **登录限流**：15 分钟内最多 20 次登录尝试（可通过 `RATE_LIMIT_WINDOW_MS` 和 `RATE_LIMIT_MAX` 配置）
 4. **请求验证**：使用 Joi 进行请求参数验证
 5. **安全头**：使用 Helmet 设置安全相关的 HTTP 头
-6. **跨域保护**：配置 CORS 限制跨域请求
+6. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置）
 7. **账号禁用**：支持禁用账号，禁用后无法登录
 8. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
 
-最后更新：2026-07-03
+## 环境变量配置
+
+后端支持以下环境变量，通过 `backend/.env` 文件配置：
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `PORT` | `5000` | 后端服务端口 |
+| `NODE_ENV` | `development` | 运行环境 |
+| `JWT_SECRET` | `obara_task_secret_key_2026` | JWT 签名密钥，生产环境必须修改 |
+| `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
+| `CORS_ORIGIN` | - | 允许的前端地址，多个用逗号分隔 |
+| `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
+| `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
+| `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
+| `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
+| `RATE_LIMIT_WINDOW_MS` | `900000` | 登录限流窗口时间（毫秒） |
+| `RATE_LIMIT_MAX` | `20` | 登录限流最大尝试次数 |
+
+### CORS 配置示例
+
+```env
+CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173,http://127.0.0.1:5173
+```
+
+### Gitee 版本检查配置
+
+```env
+GITEE_TOKEN=a09da64c1d9e9c7420a18dfd838890b0
+GITEE_REPO_OWNER=caifugao110
+GITEE_REPO_NAME=obara-task-manager
+```
+
+## 配置文件结构
+
+安全配置集中在 `backend/config/security.js`，包含：
+
+```javascript
+{
+  jwt: { secret, expiresIn },
+  cors: { origin, methods, credentials },
+  rateLimit: { windowMs, max },
+  gitee: { token, repoOwner, repoName },
+  server: { port, environment },
+  database: { path }
+}
+```
+
+最后更新：2026-07-04

@@ -1,8 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
+const securityConfig = require('./config/security');
 
-const dbPath = path.join(__dirname, 'db.json');
+const dbPath = path.resolve(__dirname, securityConfig.database.path);
 
 let isWriting = false;
 const writeQueue = [];
@@ -133,6 +134,19 @@ const readDb = () => {
       parsed.settings.system = { allowGuestView: true, allowMultiDevice: true };
     }
     if (!parsed.loginLogs) parsed.loginLogs = [];
+    
+    let migratedUsers = false;
+    parsed.users.forEach(u => {
+      if (u.forcePasswordChange === undefined) {
+        u.forcePasswordChange = false;
+        migratedUsers = true;
+      }
+    });
+    
+    if (migratedUsers) {
+      fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2));
+    }
+    
     const migratedRes = migrateTasksIfNeeded(parsed);
     const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
     if (migratedRes.migrated || normalizedRes.changed) {
@@ -163,7 +177,8 @@ const initAdmin = async () => {
       password: hashedPassword,
       role: 'superadmin',
       name: '超级管理员',
-      disabled: false // 初始超级管理员默认启用
+      disabled: false,
+      forcePasswordChange: true
     });
     await writeDb(db);
     console.log('SuperAdmin account created: superadmin / admin123');

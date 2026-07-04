@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
+import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
 import Admin from './pages/Admin';
 import Leaderboard from './pages/Leaderboard';
@@ -19,10 +20,14 @@ const ProtectedRoute = ({
   adminOnly?: boolean;
   superAdminOnly?: boolean;
 }) => {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, forcePasswordChange } = useAuth();
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (forcePasswordChange) {
+    return <Navigate to="/change-password" replace />;
   }
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
@@ -39,12 +44,45 @@ const ProtectedRoute = ({
   return <>{children}</>;
 };
 
+const ChangePasswordRoute = ({
+  children
+}: {
+  children: React.ReactNode;
+}) => {
+  const { isAuthenticated, forcePasswordChange } = useAuth();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!forcePasswordChange) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
+};
+
 const AppRoutes = () => {
   const { isAuthenticated } = useAuth();
   return (
     <Routes>
       <Route path="/login" element={!isAuthenticated ? <Login /> : <Navigate to="/" replace />} />
-      <Route path="/" element={<Dashboard />} />
+      <Route 
+        path="/change-password" 
+        element={
+          <ChangePasswordRoute>
+            <ChangePassword />
+          </ChangePasswordRoute>
+        } 
+      />
+      <Route 
+        path="/" 
+        element={
+          <ProtectedRoute>
+            <Dashboard />
+          </ProtectedRoute>
+        } 
+      />
       <Route
         path="/admin"
         element={
@@ -69,9 +107,30 @@ const AppRoutes = () => {
           </ProtectedRoute>
         }
       />
-      <Route path="/leaderboard" element={<Leaderboard />} />
-      <Route path="/work-hours" element={<WorkHours />} />
-      <Route path="/status-tracking" element={<StatusTracking />} />
+      <Route 
+        path="/leaderboard" 
+        element={
+          <ProtectedRoute>
+            <Leaderboard />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/work-hours" 
+        element={
+          <ProtectedRoute>
+            <WorkHours />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/status-tracking" 
+        element={
+          <ProtectedRoute>
+            <StatusTracking />
+          </ProtectedRoute>
+        } 
+      />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

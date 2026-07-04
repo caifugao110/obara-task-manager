@@ -7,6 +7,7 @@ const db = require('../db');
 const rateLimit = require('express-rate-limit');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
+const { authMiddleware } = require('../middleware/auth');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'obara_task_secret_key_2026';
 
@@ -135,7 +136,16 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
 
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
+  res.json({ 
+    token, 
+    user: { 
+      id: user.id, 
+      username: user.username, 
+      role: user.role, 
+      name: user.name 
+    },
+    forcePasswordChange: user.forcePasswordChange || false
+  });
 }));
 
 router.get('/validate', asyncHandler(async (req, res) => {
@@ -158,10 +168,39 @@ router.get('/validate', asyncHandler(async (req, res) => {
       return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message: '您的账号已在其他设备登录' });
     }
 
-    res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name } });
+    res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name }, forcePasswordChange: user.forcePasswordChange || false });
   } catch {
     res.status(401).json({ valid: false, message: 'Token is not valid' });
   }
+}));
+
+router.post('/change-password', authMiddleware, asyncHandler(async (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+  
+  if (!oldPassword || !newPassword) {
+    return res.status(400).json({ message: '请提供旧密码和新密码' });
+  }
+
+  const data = db.readDb();
+  const userIndex = data.users.findIndex(u => u.id === req.user.id);
+  
+  if (userIndex === -1) {
+    return res.status(404).json({ message: '用户不存在' });
+  }
+
+  const user = data.users[userIndex];
+  const isMatch = bcrypt.compareSync(oldPassword, user.password);
+  
+  if (!isMatch) {
+    return res.status(401).json({ message: '旧密码不正确' });
+  }
+
+  data.users[userIndex].password = bcrypt.hashSync(newPassword, 10);
+  data.users[userIndex].forcePasswordChange = false;
+  
+  await db.writeDb(data);
+  
+  res.json({ message: '密码修改成功' });
 }));
 
 module.exports = router;

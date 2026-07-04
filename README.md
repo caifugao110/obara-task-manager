@@ -52,7 +52,7 @@ start.bat
 ### 手动启动
 
 ```bat
-git clone https://github.com/caifugao110/obara-task-manager.git
+git clone https://gitee.com/caifugao110/obara-task-manager.git
 cd obara-task-manager
 npm run install:all
 npm run dev
@@ -266,6 +266,67 @@ cd frontend
 - 可提取纳期、中间商、最终客户、项目名称、数量、营业担当等信息
 - 纳期获取超时时间为 9 秒，完整信息获取超时时间为 15 秒
 
+## 安全配置
+
+系统使用集中的安全配置文件管理敏感信息，所有配置项均可通过环境变量设置：
+
+| 配置项 | 环境变量 | 默认值 | 说明 |
+|--------|----------|--------|------|
+| JWT 密钥 | `JWT_SECRET` | `obara_task_secret_key_2026` | 生产环境必须修改为强随机字符串 |
+| JWT 过期时间 | `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
+| 后端端口 | `PORT` | `5000` | 后端服务端口 |
+| 运行环境 | `NODE_ENV` | `development` | 开发/生产环境 |
+| CORS 允许源 | `CORS_ORIGIN` | - | 逗号分隔的允许地址列表 |
+| Gitee Token | `GITEE_TOKEN` | - | 用于版本检查的 Gitee API Token |
+| Gitee 仓库所有者 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
+| Gitee 仓库名 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
+| 数据库路径 | `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
+
+### Gitee 版本检查
+
+系统通过 Gitee API 检查远程仓库版本，前端可频繁调用而不影响性能：
+
+1. 配置 `GITEE_TOKEN`、`GITEE_REPO_OWNER`、`GITEE_REPO_NAME` 环境变量
+2. 版本检查接口 `GET /api/system/version` 通过 Gitee API 获取最新提交信息
+3. 相比传统的 `git fetch` 方式，API 调用更高效，适合前端频繁轮询
+
+#### 版本号格式
+
+版本号采用 `YY-MM-DD-VN` 格式：
+- `YY`：年份后两位（如 26 表示 2026 年）
+- `MM`：月份（01-12）
+- `DD`：日期（01-31）
+- `VN`：当日版本号（V1、V2、V3...，当日多次提交时自动递增）
+
+#### 版本比较规则
+
+版本比较按照以下优先级依次比较：
+1. 年份（YY）
+2. 月份（MM）
+3. 日期（DD）
+4. 当日版本号（VN）
+
+只有当远程版本严格大于本地版本时，才会提示更新。例如：
+- `26-07-04-V2` > `26-07-04-V1` → 提示更新
+- `26-07-04` > `26-07-03` → 提示更新
+- `26-07-03` < `26-07-04-V2` → 不提示更新（旧版本）
+
+#### 前端版本提示
+
+- 页面底部显示当前版本号（如 `当前版本 26-07-04-V2`）
+- 检测到新版本时，页面顶部显示蓝色横幅提示
+- 管理员看到："检测到新版本（XX-XX-XX），当前版本为 XX-XX-XX。请重启程序以更新到最新版本。"
+- 普通用户看到："检测到新版本（XX-XX-XX），当前版本为 XX-XX-XX。请联系管理员更新系统。"
+
+### 配置文件
+
+安全配置集中在 `backend/config/security.js`，包含：
+- JWT 配置
+- CORS 配置
+- Gitee API 配置
+- 数据库路径配置
+- 服务器配置
+
 ## 项目结构
 
 ```text
@@ -278,6 +339,8 @@ obara-task-manager/
 		|-- backend/
 		|   |-- server.js
 		|   |-- db.js
+		|   |-- config/
+		|   |   `-- security.js
 		|   |-- routes/
 		|   |   |-- tasks.js
 		|   |   |-- designers.js
@@ -329,34 +392,36 @@ obara-task-manager/
 
 ## GitHub Pages 部署
 
-项目支持通过 GitHub Actions 自动部署到 GitHub Pages。
+项目通过 GitHub Pages 展示项目文档（README.md 和 docs 目录），不包含前端应用。
 
-### 配置步骤
+### 自动部署
 
-1. 在 GitHub 仓库中启用 GitHub Pages：
-   - 进入仓库 Settings → Pages
-   - Source 选择 `GitHub Actions`
+每次推送代码到 `main` 分支时，GitHub Actions 会自动部署文档到 GitHub Pages：
 
-2. 推送代码到 `main` 分支，GitHub Actions 会自动触发构建和部署。
-
-### 工作流说明
-
-- 触发条件：每次推送到 `main` 分支
-- 构建环境：Ubuntu Latest + Node.js 20
-- 构建产物：`frontend/dist` 目录
-- 部署方式：GitHub Pages Artifact 部署
-
-### 访问地址
-
-部署成功后访问：`https://caifugao110.github.io/obara-task-manager/`
+- 触发条件：`README.md` 或 `docs/` 目录变更
+- 部署内容：README.md（作为首页）和 docs 目录下的所有文档
+- 访问地址：`https://caifugao110.github.io/obara-task-manager/`
 
 ### 注意事项
 
-- GitHub Pages 仅部署前端静态文件，后端服务需要单独部署
-- 前端构建时使用 `/obara-task-manager/` 作为 base 路径
-- 开发环境不受影响，仍可正常运行
-- 使用 `404.html` 实现 SPA 客户端路由，直接访问子页面（如 `/login`）不会返回 404 错误
-- React Router 配置了 `basename="/obara-task-manager"` 确保路由正确
+- GitHub Pages 仅展示项目文档，不包含前端应用
+- 前端应用需要在本地或服务器上运行
+- 后端服务需要单独部署
+
+### 项目访问
+
+完整的任务管理系统需要本地运行：
+
+```bat
+git clone https://gitee.com/caifugao110/obara-task-manager.git
+cd obara-task-manager
+npm run install:all
+npm run dev
+```
+
+访问地址：
+- 前端：http://localhost:5173
+- 后端：http://localhost:5000
 
 ## License
 

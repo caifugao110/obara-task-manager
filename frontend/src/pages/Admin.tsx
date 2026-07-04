@@ -157,7 +157,7 @@ const initialDesigners = [
 ];
 
 const initialLoginUsers = [
-  { username: 'chengqs', password: 'nj.chengqs', name: '陈青松', role: 'admin' },
+  { username: 'chenqs', password: 'nj.chenqs', name: '陈青松', role: 'admin' },
   { username: 'wangfy', password: 'nj.wangfy', name: '王福跃', role: 'admin' },
   { username: 'zhangm', password: 'nj.zhangm', name: '张明', role: 'admin' },
   { username: 'sunmy', password: 'nj.sunmy', name: '孙茂余', role: 'user' },

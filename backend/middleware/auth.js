@@ -1,7 +1,8 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
+const securityConfig = require('../config/security');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'obara_task_secret_key_2026';
+const JWT_SECRET = securityConfig.jwt.secret;
 
 const authMiddleware = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');

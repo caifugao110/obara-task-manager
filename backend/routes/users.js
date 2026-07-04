@@ -77,7 +77,8 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
     role: targetRole,
     name: name || username,
     group: group || '',
-    disabled: false // 新创建的管理员默认启用
+    disabled: false,
+    forcePasswordChange: true
   };
 
   data.users.push(newUser);
@@ -112,7 +113,10 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
   }
 
   if (username) targetUser.username = username;
-  if (password) targetUser.password = bcrypt.hashSync(password, 10);
+  if (password) {
+    targetUser.password = bcrypt.hashSync(password, 10);
+    targetUser.forcePasswordChange = true;
+  }
   if (role && req.user.role === 'superadmin') targetUser.role = role;
   if (name) targetUser.name = name;
   if (group !== undefined) targetUser.group = group;

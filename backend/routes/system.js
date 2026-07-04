@@ -5,8 +5,10 @@ const XLSX = require('xlsx');
 const crypto = require('crypto');
 const path = require('path');
 const { execSync } = require('child_process');
+const https = require('https');
 const db = require('../db');
 const { authMiddleware, superAdminMiddleware } = require('../middleware/auth');
+const securityConfig = require('../config/security');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 
@@ -1208,33 +1210,84 @@ const computeLocalVersion = () => {
 
 const STARTUP_VERSION = computeLocalVersion();
 
+const fetchGiteeLatestCommit = () => {
+  return new Promise((resolve) => {
+    const { token, repoOwner, repoName } = securityConfig.gitee;
+    if (!token || !repoOwner || !repoName) {
+      resolve(null);
+      return;
+    }
+
+    const options = {
+      hostname: 'gitee.com',
+      path: `/api/v5/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}/commits?sha=main&per_page=1`,
+      method: 'GET',
+      headers: {
+        'Authorization': `token ${token}`,
+        'User-Agent': 'Obara-Task-Manager'
+      },
+      timeout: 5000
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const commits = JSON.parse(data);
+          if (Array.isArray(commits) && commits.length > 0) {
+            const commit = commits[0];
+            const commitDate = new Date(commit.commit.committer.date);
+            const dateStr = commitDate.toISOString().split('T')[0].slice(2);
+            resolve({ date: dateStr.replace(/-/g, '-'), fullDate: commitDate.toISOString().split('T')[0] });
+          } else {
+            resolve(null);
+          }
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+};
+
+const compareVersions = (v1, v2) => {
+  const parseVersion = (version) => {
+    const parts = String(version || '').split('-');
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10);
+    const day = parseInt(parts[2], 10);
+    const vMatch = parts[3]?.match(/^V(\d+)$/);
+    const versionNum = vMatch ? parseInt(vMatch[1], 10) : 0;
+    return { year: isNaN(year) ? 0 : year, month: isNaN(month) ? 0 : month, day: isNaN(day) ? 0 : day, versionNum: isNaN(versionNum) ? 0 : versionNum };
+  };
+
+  const p1 = parseVersion(v1);
+  const p2 = parseVersion(v2);
+
+  if (p1.year !== p2.year) return p1.year - p2.year;
+  if (p1.month !== p2.month) return p1.month - p2.month;
+  if (p1.day !== p2.day) return p1.day - p2.day;
+  return p1.versionNum - p2.versionNum;
+};
+
 router.get('/version', asyncHandler(async (req, res) => {
   try {
     let hasUpdate = false;
     let latestVersion = null;
-    try {
-      const fetchResult = runGit('fetch origin');
-      if (fetchResult !== null) {
-        const diffCountStr = runGit('rev-list --count HEAD..@{u}');
-        if (diffCountStr && parseInt(diffCountStr, 10) > 0) {
-          hasUpdate = true;
-          const remoteDate = runGit('log -1 --format=%cd --date=format:%y-%m-%d @{u}');
-          if (remoteDate) {
-            const remoteFullDate = runGit('log -1 --format=%cd --date=format:%Y-%m-%d @{u}');
-            let remoteCount = 0;
-            if (remoteFullDate) {
-              const rcStr = runGit(`rev-list --count --since="${remoteFullDate} 00:00:00" --until="${remoteFullDate} 23:59:59" @{u}`);
-              remoteCount = parseInt(rcStr, 10) || 0;
-            }
-            latestVersion = remoteDate;
-            if (remoteCount > 1) {
-              latestVersion = `${remoteDate}-V${remoteCount}`;
-            }
-          }
-        }
+
+    const giteeCommit = await fetchGiteeLatestCommit();
+    if (giteeCommit) {
+      const remoteVersion = giteeCommit.date;
+      const comparison = compareVersions(remoteVersion, STARTUP_VERSION);
+      if (comparison > 0) {
+        hasUpdate = true;
+        latestVersion = remoteVersion;
       }
-    } catch {
-      // 网络不可用或无远程仓库，忽略
     }
 
     res.json({ currentVersion: STARTUP_VERSION, hasUpdate, latestVersion });

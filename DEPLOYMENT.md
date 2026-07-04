@@ -34,7 +34,7 @@ start.bat
 ## 手动启动
 
 ```bat
-git clone https://github.com/caifugao110/obara-task-manager.git
+git clone https://gitee.com/caifugao110/obara-task-manager.git
 cd obara-task-manager
 npm run install:all
 npm run dev
@@ -82,13 +82,61 @@ npm run preview
 PORT=5000
 NODE_ENV=production
 JWT_SECRET=your-secret-key-change-in-production-2026
+JWT_EXPIRES_IN=7d
+CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173
+GITEE_TOKEN=your-gitee-token
+GITEE_REPO_OWNER=caifugao110
+GITEE_REPO_NAME=obara-task-manager
+DB_PATH=./db.json
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX=20
 ```
 
-- `PORT`：后端服务端口，默认 `5000`。
-- `NODE_ENV`：设为 `production` 时，错误响应不包含堆栈信息。
-- `JWT_SECRET`：JWT 签名密钥，生产环境**必须**修改为随机字符串。
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `PORT` | `5000` | 后端服务端口 |
+| `NODE_ENV` | `development` | 开发/生产环境，生产环境错误响应不包含堆栈信息 |
+| `JWT_SECRET` | `obara_task_secret_key_2026` | JWT 签名密钥，生产环境**必须**修改为随机字符串 |
+| `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
+| `CORS_ORIGIN` | - | 允许的前端地址，多个用逗号分隔 |
+| `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
+| `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
+| `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
+| `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
+| `RATE_LIMIT_WINDOW_MS` | `900000` | 登录限流窗口时间（毫秒） |
+| `RATE_LIMIT_MAX` | `20` | 登录限流最大尝试次数 |
 
 生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。
+
+### CORS 配置
+
+生产环境应限制 CORS 允许的源：
+
+```env
+CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173
+```
+
+开发环境可添加局域网 IP：
+
+```env
+CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173,http://192.168.160.25:5173
+```
+
+### Gitee 版本检查
+
+配置 Gitee API 后，系统会通过 API 检查远程仓库版本：
+
+1. 在 Gitee 生成个人访问令牌：https://gitee.com/profile/personal_access_tokens
+2. 勾选 `projects` 权限
+3. 配置环境变量：
+
+```env
+GITEE_TOKEN=a09da64c1d9e9c7420a18dfd838890b0
+GITEE_REPO_OWNER=caifugao110
+GITEE_REPO_NAME=obara-task-manager
+```
+
+版本检查接口 `GET /api/system/version` 通过 Gitee API 获取最新提交信息，相比传统的 `git fetch` 方式更高效，适合前端频繁轮询。
 
 ## 数据文件
 
@@ -243,11 +291,30 @@ taskkill /PID <PID> /F
 
 ## 版本检查
 
-系统内置版本检查功能，通过 Git 提交信息自动生成版本号：
+系统内置版本检查功能，通过 Gitee API 获取远程仓库最新提交信息。
 
-- 当前版本格式：`YY-MM-DD` 或 `YY-MM-DD-VN`（当日多次提交时）
-- 检查远程仓库是否有更新
-- 显示最新版本号
+### 版本号格式
+
+版本号采用 `YY-MM-DD-VN` 格式：
+- `YY`：年份后两位（如 26 表示 2026 年）
+- `MM`：月份（01-12）
+- `DD`：日期（01-31）
+- `VN`：当日版本号（V1、V2、V3...，当日多次提交时自动递增）
+
+当日首次提交为 `YY-MM-DD`，当日多次提交为 `YY-MM-DD-VN`。
+
+### 版本比较规则
+
+版本比较按照以下优先级依次比较：
+1. 年份（YY）
+2. 月份（MM）
+3. 日期（DD）
+4. 当日版本号（VN）
+
+只有当远程版本严格大于本地版本时，才会提示更新。例如：
+- `26-07-04-V2` > `26-07-04-V1` → 提示更新
+- `26-07-04` > `26-07-03` → 提示更新
+- `26-07-03` < `26-07-04-V2` → 不提示更新（旧版本）
 
 版本检查接口：
 
@@ -255,7 +322,7 @@ taskkill /PID <PID> /F
 GET /api/system/version
 ```
 
-响应示例：
+响应示例（有更新）：
 
 ```json
 {
@@ -265,10 +332,32 @@ GET /api/system/version
 }
 ```
 
+响应示例（无更新或本地版本更新）：
+
+```json
+{
+  "currentVersion": "26-07-04-V2",
+  "hasUpdate": false,
+  "latestVersion": null
+}
+```
+
+响应示例（未配置或访问失败）：
+
+```json
+{
+  "currentVersion": "未知",
+  "hasUpdate": false,
+  "latestVersion": null
+}
+```
+
 说明：
-- 需要服务器安装 Git 并配置远程仓库
-- 版本检查会自动执行 `git fetch origin` 获取远程更新
-- 如果无法访问远程仓库，`hasUpdate` 返回 `false`，`latestVersion` 返回 `null`
+- 需要配置 Gitee API Token 和仓库信息（见上方"Gitee 版本检查"章节）
+- 通过 Gitee API 获取远程最新提交，无需在服务器安装 Git
+- 如果未配置 Gitee 或无法访问 API，`hasUpdate` 返回 `false`，`latestVersion` 返回 `null`
+- API 调用超时时间为 5 秒，超时后自动降级为无更新状态
+- 当前版本由 Git 提交信息生成，需要服务器安装 Git 并确保项目目录是 Git 仓库
 
 ## 日志查看
 
@@ -322,14 +411,14 @@ node --check backend\routes\settings.js
 2. 从备份恢复 `db.json`
 3. 重新启动后端，系统会自动补齐缺失的默认配置
 
-### Git 版本检查失败
+### 版本检查失败
 
-如果版本检查显示"未知"：
+如果版本检查显示"未知"或 `hasUpdate` 始终为 `false`：
 
-1. 确认服务器已安装 Git
-2. 确认项目目录是 Git 仓库
-3. 确认已配置远程仓库：`git remote -v`
-4. 确认网络可访问远程仓库：`git fetch origin`
+1. 确认已配置 Gitee API Token：检查 `backend/.env` 中的 `GITEE_TOKEN`、`GITEE_REPO_OWNER`、`GITEE_REPO_NAME`
+2. 确认 Token 有效且具有 `projects` 权限
+3. 确认服务器网络可访问 `gitee.com`
+4. 当前版本由 Git 提交信息生成，需要服务器安装 Git 并确保项目目录是 Git 仓库
 
 ### 内存占用过高
 
@@ -338,7 +427,9 @@ node --check backend\routes\settings.js
 1. 检查是否有大量长时间未关闭的编辑会话
 2. 确认服务重启后内存是否恢复正常
 
-## GitHub Pages 部署
+## GitHub Pages 文档部署
+
+项目通过 GitHub Pages 展示项目文档（README.md 和 docs 目录），不包含前端应用。
 
 ### 前置条件
 
@@ -354,14 +445,13 @@ node --check backend\routes\settings.js
 
 ### 自动部署流程
 
-每次推送到 `main` 分支时，GitHub Actions 会自动执行以下步骤：
+每次推送到 `main` 分支且 `README.md` 或 `docs/` 目录变更时，GitHub Actions 会自动执行以下步骤：
 
 1. **Checkout**：拉取最新代码
-2. **Setup Node.js**：安装 Node.js 20 环境
-3. **Install Dependencies**：安装前端依赖（使用 npm ci）
-4. **Build**：构建前端项目（`npm run build`）
-5. **Upload Artifact**：上传构建产物到 GitHub Pages Artifact
-6. **Deploy**：部署到 GitHub Pages
+2. **Configure Pages**：配置 GitHub Pages 环境
+3. **Create docs directory**：复制 README.md 为 index.md，复制 docs 目录
+4. **Upload Artifact**：上传文档到 GitHub Pages Artifact
+5. **Deploy**：部署到 GitHub Pages
 
 ### 访问地址
 
@@ -382,57 +472,19 @@ https://caifugao110.github.io/obara-task-manager/
 这是 GitHub Pages 的临时性错误，通常是以下原因之一：
 
 1. **GitHub Pages 服务暂时不可用**：等待几分钟后重新推送代码触发部署
-2. **Artifact 上传失败**：检查前端构建是否成功，确保 `frontend/dist` 目录存在
+2. **Artifact 上传失败**：检查 README.md 是否存在，docs 目录是否可访问
 3. **权限不足**：确保工作流配置中的 `permissions` 包含 `pages: write` 和 `id-token: write`
-4. **Node.js 版本问题**：确认使用 Node.js 20 或更高版本
 
-#### 页面加载后资源路径错误
+#### GitHub Pages 仅展示文档
 
-确保 `frontend/vite.config.ts` 中配置了正确的 base 路径：
+GitHub Pages 仅展示项目文档（README.md 和 docs 目录），不包含前端应用。完整的任务管理系统需要本地运行或服务器部署。
 
-```typescript
-base: '/obara-task-manager/'
-```
-
-如果仓库名变更，需要同步更新此配置。
-
-#### GitHub Pages 不支持后端 API
-
-GitHub Pages 仅支持静态文件托管，无法运行 Node.js 后端服务。前端部署到 GitHub Pages 后，需要：
-
-1. 后端服务单独部署（如使用 Vercel、Render、Heroku 等）
-2. 配置前端 API 代理指向后端服务地址
-
-#### SPA 客户端路由
-
-项目使用 React Router 实现单页应用（SPA）路由。GitHub Pages 默认不支持 SPA 路由，直接访问子页面会返回 404。解决方案：
-
-1. **404.html 回退机制**：构建完成后自动复制 `index.html` 为 `404.html`，当访问不存在的路径时，GitHub Pages 会返回 `404.html`，然后 React Router 在客户端处理路由
-2. **basename 配置**：React Router 和 Vite 都配置了 `basename="/obara-task-manager"`，确保资源路径和路由正确
-
-#### 开发环境与生产环境
-
-- **开发环境**：`base` 和 `basename` 为空，直接从根路径访问
-- **生产环境**：`base` 和 `basename` 为 `/obara-task-manager`，适配 GitHub Pages 子目录部署
-
-切换方式：
-
-```bat
-# 开发模式（自动使用空路径）
-cd frontend
-npm run dev
-
-# 生产构建（自动使用 /obara-task-manager 路径）
-cd frontend
-npm run build
-```
-
-### 手动触发部署
+#### 手动触发部署
 
 如果需要手动触发部署：
 
 1. 进入仓库 Actions 标签页
-2. 选择 "Deploy to GitHub Pages" 工作流
+2. 选择 "Deploy Documentation to GitHub Pages" 工作流
 3. 点击 "Run workflow"
 4. 选择 `main` 分支，点击 "Run workflow"
 

@@ -1713,21 +1713,19 @@ const Dashboard = () => {
               <ChevronRight size={18} />
             </button>
           </div>
-          {(!user || user.role === 'admin' || user.role === 'superadmin') && (
-            <div className="relative">
-              <select
-                value={selectedDesignerId}
-                onChange={(e) => setSelectedDesignerId(e.target.value)}
-                className="appearance-none bg-[#1a5c38] text-white text-sm font-medium px-3 py-1.5 pr-8 rounded border-none outline-none cursor-pointer hover:bg-[#237a47] transition"
-              >
-                <option value="all">全部人员</option>
-                {designers.map(d => (
-                  <option key={d.id} value={d.id}>{d.name}</option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-white/80" size={14} />
-            </div>
-          )}
+          <div className="relative">
+            <select
+              value={selectedDesignerId}
+              onChange={(e) => setSelectedDesignerId(e.target.value)}
+              className="appearance-none bg-[#1a5c38] text-white text-sm font-medium px-3 py-1.5 pr-8 rounded border-none outline-none cursor-pointer hover:bg-[#237a47] transition"
+            >
+              <option value="all">全部人员</option>
+              {designers.map(d => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-white/80" size={14} />
+          </div>
           {canShowAccessLink(leaderboardAccess) && (
               <Link 
                 to="/leaderboard" 

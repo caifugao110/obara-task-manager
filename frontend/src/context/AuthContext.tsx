@@ -13,8 +13,10 @@ interface AuthContextType {
   user: User | null;
   token: string | null;
   authReady: boolean;
-  login: (token: string, user: User) => void;
+  forcePasswordChange: boolean;
+  login: (token: string, user: User, forceChange?: boolean) => void;
   logout: () => void;
+  setForcePasswordChange: (value: boolean) => void;
   isAuthenticated: boolean;
 }
 
@@ -24,32 +26,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [forcePasswordChange, setForcePasswordChange] = useState(false);
   const socketRef = useRef<Socket | null>(null);
 
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
+    setForcePasswordChange(false);
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    localStorage.removeItem('forcePasswordChange');
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
     }
   }, []);
 
-  const login = (newToken: string, newUser: User) => {
+  const login = (newToken: string, newUser: User, forceChange?: boolean) => {
     setToken(newToken);
     setUser(newUser);
+    setForcePasswordChange(forceChange || false);
     localStorage.setItem('token', newToken);
     localStorage.setItem('user', JSON.stringify(newUser));
+    localStorage.setItem('forcePasswordChange', String(forceChange || false));
   };
 
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
     const savedUser = localStorage.getItem('user');
+    const savedForceChange = localStorage.getItem('forcePasswordChange');
     if (savedToken && savedUser) {
       setToken(savedToken);
       setUser(JSON.parse(savedUser));
+      setForcePasswordChange(savedForceChange === 'true');
     }
     setAuthReady(true);
   }, []);
@@ -87,9 +96,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const validateSession = async () => {
       try {
-        await axios.get('/api/auth/validate', {
+        const response = await axios.get('/api/auth/validate', {
           headers: { Authorization: `Bearer ${token}` }
         });
+        const forceChange = response.data.forcePasswordChange;
+        if (forceChange !== undefined) {
+          setForcePasswordChange(forceChange);
+          localStorage.setItem('forcePasswordChange', String(forceChange));
+        }
       } catch (err: any) {
         const code = err.response?.data?.code;
         if (code === 'SESSION_INVALIDATED' || code === 'ACCOUNT_DISABLED') {
@@ -110,7 +124,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [token, logout]);
 
   return (
-    <AuthContext.Provider value={{ user, token, authReady, login, logout, isAuthenticated: !!token }}>
+    <AuthContext.Provider value={{ user, token, authReady, forcePasswordChange, login, logout, setForcePasswordChange, isAuthenticated: !!token }}>
       {children}
     </AuthContext.Provider>
   );
