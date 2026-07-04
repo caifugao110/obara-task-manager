@@ -1260,8 +1260,8 @@ const fetchGiteeLatestCommit = () => {
 
     const getCommitCountForDate = (fullDate) => {
       return new Promise((resolve) => {
-        const since = `${fullDate}T00:00:00Z`;
-        const until = `${fullDate}T23:59:59Z`;
+        const since = `${fullDate}T00:00:00+08:00`;
+        const until = `${fullDate}T23:59:59+08:00`;
         const options = {
           hostname: 'gitee.com',
           path: `/api/v5/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}/commits?sha=main&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&per_page=100`,

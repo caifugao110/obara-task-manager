@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import axios from 'axios';
+import { axiosInstance } from '../services/api';
+import { isAxiosError } from 'axios';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { Link, useLocation } from 'react-router-dom';
@@ -377,7 +378,7 @@ const Dashboard = () => {
 
   // 获取版本信息
   useEffect(() => {
-    axios.get('/api/system/version')
+    axiosInstance.get('/system/version')
       .then(res => setVersionInfo(res.data))
       .catch(() => {});
   }, []);
@@ -512,7 +513,7 @@ const Dashboard = () => {
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date });
-        const res = await axios.post('/api/tasks/item/batch', { 
+        const res = await axiosInstance.post('/tasks/item/batch', { 
           designerId: targetData.designerId, 
           date: targetData.date, 
           items: payloads.map(payload => payload.item)
@@ -552,7 +553,7 @@ const Dashboard = () => {
 
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        await axios.post('/api/designers/reorder', { ids: nextIds }, authHeader);
+        await axiosInstance.post('/designers/reorder', { ids: nextIds }, authHeader);
         addToast('排序已保存', 'success');
       } catch (err) {
         addToast('排序保存失败', 'error');
@@ -603,7 +604,7 @@ const Dashboard = () => {
         }
 
         for (const payload of movedPayloads) {
-          await axios.post('/api/tasks/move', {
+          await axiosInstance.post('/tasks/move', {
             sourceDesignerId: payload.designerId,
             sourceDate: payload.date,
             itemId: payload.item.id,
@@ -852,10 +853,10 @@ const Dashboard = () => {
   const fetchSpecDeliveryDate = async (specNumber: string): Promise<{ success: boolean; date?: string; message?: string }> => {
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.post('/api/spec/delivery-date', { specNumber }, { ...authHeader, timeout: 10000 });
+      const res = await axiosInstance.post('/spec/delivery-date', { specNumber }, { ...authHeader, timeout: 10000 });
       return res.data;
     } catch (err) {
-      if (axios.isAxiosError(err) && err.code === 'ECONNABORTED') {
+      if (isAxiosError(err) && err.code === 'ECONNABORTED') {
         return { success: false, message: '获取纳期超时(超过10秒)' };
       }
       return { success: false, message: '无法连接到服务器' };
@@ -875,7 +876,7 @@ const Dashboard = () => {
       const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
       const month = currentDate.getMonth() + 1;
       const year = currentDate.getFullYear();
-      const res = await axios.get(`/api/tasks?month=${month}&year=${year}`, authHeader);
+      const res = await axiosInstance.get(`/tasks?month=${month}&year=${year}`, authHeader);
       setSheets(res.data);
     } catch (err: any) {
       console.error('Error fetching tasks:', err);
@@ -924,7 +925,7 @@ const Dashboard = () => {
         case 'delete':
           // Restore deleted task
           const { designerId, date, item } = operation.data;
-          const res = await axios.post('/api/tasks/item', { 
+          const res = await axiosInstance.post('/tasks/item', { 
             designerId, 
             date, 
             taskName: item.taskName || '', 
@@ -941,7 +942,7 @@ const Dashboard = () => {
         case 'add':
           // Remove added task
           const { designerId: addDesignerId, date: addDate, itemId } = operation.data;
-          await axios.delete('/api/tasks/item', { ...authHeader, data: { designerId: addDesignerId, date: addDate, itemId } });
+          await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId: addDesignerId, date: addDate, itemId } });
           fetchSheets();
           socketRef.current?.emit('task_updated');
           addToast('操作已撤销', 'success');
@@ -950,7 +951,7 @@ const Dashboard = () => {
         case 'batchAdd':
           const { items } = operation.data;
           for (const added of items || []) {
-            await axios.delete('/api/tasks/item', {
+            await axiosInstance.delete('/tasks/item', {
               ...authHeader,
               data: { designerId: added.designerId, date: added.date, itemId: added.itemId }
             });
@@ -962,7 +963,7 @@ const Dashboard = () => {
 
         case 'batchDelete':
           for (const deleted of operation.data.items || []) {
-            await axios.post('/api/tasks/item', {
+            await axiosInstance.post('/tasks/item', {
               designerId: deleted.designerId,
               date: deleted.date,
               taskName: deleted.item.taskName || '',
@@ -980,7 +981,7 @@ const Dashboard = () => {
         case 'move':
           // Reverse move operation
           const { sourceDesignerId, sourceDate, targetDesignerId, targetDate, itemId: moveItemId } = operation.data;
-          await axios.post('/api/tasks/move', {
+          await axiosInstance.post('/tasks/move', {
             sourceDesignerId: targetDesignerId,
             sourceDate: targetDate,
             itemId: moveItemId,
@@ -994,7 +995,7 @@ const Dashboard = () => {
 
         case 'batchMove':
           for (const moved of operation.data.items || []) {
-            await axios.post('/api/tasks/move', {
+            await axiosInstance.post('/tasks/move', {
               sourceDesignerId: moved.targetDesignerId,
               sourceDate: moved.targetDate,
               itemId: moved.itemId,
@@ -1010,7 +1011,7 @@ const Dashboard = () => {
         case 'deleteGun':
           // 撤销删除枪名操作，恢复原始枪名数组
           const { designerId: gunDesignerId, date: gunDate, itemId: gunItemId, originalGuns } = operation.data;
-          await axios.put('/api/tasks/item', {
+          await axiosInstance.put('/tasks/item', {
             designerId: gunDesignerId,
             date: gunDate,
             itemId: gunItemId,
@@ -1025,7 +1026,7 @@ const Dashboard = () => {
         case 'fieldChange':
           // 撤销字段变更操作，恢复原始值
           const { designerId: fieldDesignerId, date: fieldDate, itemId: fieldItemId, field: fieldName, originalValue: fieldOriginalValue } = operation.data;
-          await axios.put('/api/tasks/item', {
+          await axiosInstance.put('/tasks/item', {
             designerId: fieldDesignerId,
             date: fieldDate,
             itemId: fieldItemId,
@@ -1078,7 +1079,7 @@ const Dashboard = () => {
     setLoading(true);
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-      const designersRes = await axios.get('/api/designers', headers ? { headers } : undefined);
+      const designersRes = await axiosInstance.get('/designers', headers ? { headers } : undefined);
       setDesigners(Array.isArray(designersRes.data) ? designersRes.data : []);
       await fetchSheets();
     } catch (err: any) {
@@ -1102,9 +1103,9 @@ const Dashboard = () => {
 
   useEffect(() => {
     Promise.all([
-      axios.get('/api/system/settings'),
-      axios.get('/api/settings/leaderboard'),
-      axios.get('/api/settings/work-hours')
+      axiosInstance.get('/system/settings'),
+      axiosInstance.get('/settings/leaderboard'),
+      axiosInstance.get('/settings/work-hours')
     ])
       .then(([systemRes, leaderboardRes, workHoursRes]) => {
         const guestAllowed = systemRes.data.allowGuestView ?? true;
@@ -1255,7 +1256,7 @@ const Dashboard = () => {
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         for (const payload of payloads) {
-          await axios.delete('/api/tasks/item', { ...authHeader, data: { designerId: payload.designerId, date: payload.date, itemId: payload.item.id } });
+          await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId: payload.designerId, date: payload.date, itemId: payload.item.id } });
         }
         addToHistory('batchDelete', {
           items: payloads.map(payload => ({ designerId: payload.designerId, date: payload.date, item: payload.item }))
@@ -1282,7 +1283,7 @@ const Dashboard = () => {
       addToast('任务已复制', 'success');
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        const res = await axios.post('/api/tasks/item/batch', { 
+        const res = await axiosInstance.post('/tasks/item/batch', { 
           designerId, 
           date, 
           items: clipboardRef.current
@@ -1458,7 +1459,7 @@ const Dashboard = () => {
   const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.put('/api/tasks/item', { designerId, date, itemId, field, value }, authHeader);
+      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value }, authHeader);
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
@@ -1524,7 +1525,7 @@ const Dashboard = () => {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const leaveType = taskType === 'none' ? null : taskType === 'trip' ? 'trip' : taskType === 'sick' ? 'sick' : taskType === 'vacation' ? 'vacation' : taskType === 'illness' ? 'illness' : null;
       const taskName = taskType === 'trip' ? '出差' : '';
-      const res = await axios.post('/api/tasks/item', { 
+      const res = await axiosInstance.post('/tasks/item', { 
         designerId, 
         date, 
         taskName, 
@@ -1556,7 +1557,7 @@ const Dashboard = () => {
       const item = getItems(designerId, date).find(i => i.id === itemId);
       
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.delete('/api/tasks/item', { ...authHeader, data: { designerId, date, itemId } });
+      const res = await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId, date, itemId } });
       upsertSheet(res.data.sheet);
       socketRef.current?.emit('task_updated');
       
@@ -1637,7 +1638,7 @@ const Dashboard = () => {
     addToast('任务已复制', 'success');
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.post('/api/tasks/item/batch', { 
+      const res = await axiosInstance.post('/tasks/item/batch', { 
         designerId, 
         date, 
         items: clipboard 
@@ -2791,7 +2792,7 @@ const Dashboard = () => {
                       
                       try {
                         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-                        const res = await axios.post('/api/tasks/item', { 
+                        const res = await axiosInstance.post('/tasks/item', { 
                           designerId: modalDesignerId, 
                           date: modalDate, 
                           taskName, 
