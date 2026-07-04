@@ -1807,7 +1807,7 @@ const Dashboard = () => {
           <AlertCircle size={14} className="shrink-0" />
           <span>
             检测到新版本（{versionInfo.latestVersion}），当前版本为 {versionInfo.currentVersion}。
-            {isAdmin ? ' 请重启程序以更新到最新版本。' : ' 请联系管理员更新系统。'}
+            请联系超级管理员重启程序以更新到最新版本。
           </span>
         </div>
       )}
