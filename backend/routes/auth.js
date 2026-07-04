@@ -8,8 +8,9 @@ const rateLimit = require('express-rate-limit');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const { authMiddleware } = require('../middleware/auth');
+const securityConfig = require('../config/security');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'obara_task_secret_key_2026';
+const JWT_SECRET = securityConfig.jwt.secret;
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

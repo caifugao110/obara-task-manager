@@ -101,7 +101,7 @@ io.on('connection', (socket) => {
     if (!token || typeof token !== 'string') return;
     try {
       const jwt = require('jsonwebtoken');
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'obara_task_secret_key_2026');
+      const decoded = jwt.verify(token, securityConfig.jwt.secret);
       if (decoded?.id) {
         socket.join(`user:${decoded.id}`);
         socket.data.userId = decoded.id;
