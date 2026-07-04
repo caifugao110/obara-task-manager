@@ -28,9 +28,15 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          static_site_generator: none
 
       - name: Create docs directory
-        run: mkdir -p _site && cp README.md _site/index.md && cp -r docs _site/docs
+        run: |
+          mkdir -p _site
+          cp README.md _site/index.md
+          cp -r docs _site/docs
+          touch _site/.nojekyll
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

@@ -4,25 +4,11 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 
 ## 技术栈
 
-| 层级 | 技术 | 版本要求 |
-|------|------|----------|
-| 前端 | React | 18+ |
-| 前端 | TypeScript | - |
-| 前端 | Vite | 6+ |
-| 前端 | Tailwind CSS | 3+ |
-| 前端 | Lucide React | - |
-| 前端 | Socket.IO Client | - |
-| 前端 | DnD Kit | - |
-| 前端 | Date-fns | - |
-| 后端 | Node.js | 18+ |
-| 后端 | Express | - |
-| 后端 | Socket.IO | - |
-| 后端 | JWT | - |
-| 后端 | Bcrypt | - |
-| 后端 | Multer | - |
-| 后端 | XLSX | - |
-| 后端 | Helmet | - |
-| 数据库 | JSON 文件 | - |
+| 层级 | 技术 |
+|------|------|
+| 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-4+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-6+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) |
+| 后端 | ![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
+| 数据库 | ![JSON](https://img.shields.io/badge/JSON%20File-000000?logo=json&logoColor=white) |
 
 ## 浏览器兼容性
 

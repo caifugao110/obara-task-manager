@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import axios from 'axios';
+import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
 import { UserPlus, Trash2, Shield, User, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download } from 'lucide-react';
@@ -224,10 +224,6 @@ const Admin = () => {
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const canInitializeDesigners = isSuperAdmin && designers.length === 0;
   const canInitializeUsers = isSuperAdmin && users.filter(u => u.role !== 'superadmin').length === 0;
-  const authHeader = useMemo(
-    () => (token ? { headers: { Authorization: `Bearer ${token}` } } : undefined),
-    [token]
-  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -301,7 +297,7 @@ const Admin = () => {
   };
 
   const handleBulkImport = async () => {
-    if (!bulkImportType || !authHeader) return;
+    if (!bulkImportType) return;
     const rows = parseTableText(bulkImportText);
     if (rows.length === 0) {
       addToast('请先粘贴或选择要导入的表格内容', 'error');
@@ -327,7 +323,7 @@ const Admin = () => {
             skippedCount++;
             continue;
           }
-          await axios.post('/api/designers', { name, group }, authHeader);
+          await axiosInstance.post('/api/designers', { name, group });
           existingNames.add(key);
           successCount++;
         }
@@ -341,12 +337,12 @@ const Admin = () => {
             skippedCount++;
             continue;
           }
-          await axios.post('/api/users', {
+          await axiosInstance.post('/api/users', {
             username,
             password,
             name,
             role: isSuperAdmin ? normalizeRole(role) : 'user'
-          }, authHeader);
+          });
           existingUsernames.add(key);
           successCount++;
         }
@@ -365,11 +361,11 @@ const Admin = () => {
   };
 
   const fetchData = useCallback(async () => {
-    if (!token || !authHeader) return;
+    if (!token) return;
 
     setLoading(true);
     try {
-      const usersRes = await axios.get('/api/users', authHeader);
+      const usersRes = await axiosInstance.get('/api/users');
       setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     } catch (err: any) {
       console.error('Error fetching users:', err);
@@ -377,7 +373,7 @@ const Admin = () => {
     }
 
     try {
-      const designersRes = await axios.get('/api/designers/manage', authHeader);
+      const designersRes = await axiosInstance.get('/api/designers/manage');
       setDesigners(Array.isArray(designersRes.data) ? designersRes.data : []);
     } catch (err: any) {
       console.error('Error fetching designers:', err);
@@ -385,7 +381,7 @@ const Admin = () => {
     } finally {
       setLoading(false);
     }
-  }, [token, authHeader]);
+  }, [token]);
 
   useEffect(() => {
     if (!authReady || !token) return;
@@ -413,12 +409,12 @@ const Admin = () => {
       return;
     }
     try {
-      await axios.post('/api/users', {
+      await axiosInstance.post('/api/users', {
         username: newUsername,
         password: newPassword,
         name: newName || newUsername,
         role: isSuperAdmin ? newRole : 'user'
-      }, authHeader);
+      });
       
       addToast('登录用户创建成功', 'success');
       setNewUsername('');
@@ -438,10 +434,10 @@ const Admin = () => {
       return;
     }
     try {
-      await axios.post('/api/designers', {
+      await axiosInstance.post('/api/designers', {
         name: newDesignerName,
         group: newDesignerGroup
-      }, authHeader);
+      });
       
       addToast('设计人员添加成功', 'success');
       setNewDesignerName('');
@@ -453,12 +449,12 @@ const Admin = () => {
   };
 
   const handleInitializeDesigners = async () => {
-    if (!authHeader || !canInitializeDesigners) return;
+    if (!canInitializeDesigners) return;
     if (!window.confirm(`确定要初始化 ${initialDesigners.length} 位设计人员吗？`)) return;
 
     setInitializingDesigners(true);
     try {
-      await Promise.all(initialDesigners.map(designer => axios.post('/api/designers', designer, authHeader)));
+      await Promise.all(initialDesigners.map(designer => axiosInstance.post('/api/designers', designer)));
       addToast(`已初始化 ${initialDesigners.length} 位设计人员`, 'success');
       fetchData();
     } catch (err: any) {
@@ -469,12 +465,12 @@ const Admin = () => {
   };
 
   const handleInitializeUsers = async () => {
-    if (!authHeader || !canInitializeUsers) return;
+    if (!canInitializeUsers) return;
     if (!window.confirm(`确定要初始化 ${initialLoginUsers.length} 个登录用户吗？`)) return;
 
     setInitializingUsers(true);
     try {
-      await Promise.all(initialLoginUsers.map(user => axios.post('/api/users', user, authHeader)));
+      await Promise.all(initialLoginUsers.map(user => axiosInstance.post('/api/users', user)));
       addToast(`已初始化 ${initialLoginUsers.length} 个登录用户`, 'success');
       fetchData();
     } catch (err: any) {
@@ -488,7 +484,7 @@ const Admin = () => {
     const designer = designers.find(d => d.id === id);
     if (!designer) return;
     try {
-      await axios.put(`/api/designers/${id}`, { name: designer.name, group: designer.group, hidden }, authHeader);
+      await axiosInstance.put(`/api/designers/${id}`, { name: designer.name, group: designer.group, hidden });
       addToast(hidden ? '人员已隐藏' : '已取消隐藏', 'success');
       fetchData();
     } catch (err: any) {
@@ -506,7 +502,7 @@ const Admin = () => {
       setDesigners(newDesigners);
       
       try {
-        await axios.post('/api/designers/reorder', { ids: newDesigners.map(d => d.id) }, authHeader);
+        await axiosInstance.post('/api/designers/reorder', { ids: newDesigners.map(d => d.id) });
         addToast('排序已保存', 'success');
       } catch (err) {
         addToast('排序保存失败', 'error');
@@ -523,7 +519,7 @@ const Admin = () => {
     }
     if (!window.confirm('确定要删除该登录用户吗？')) return;
     try {
-      await axios.delete(`/api/users/${id}`, authHeader);
+      await axiosInstance.delete(`/api/users/${id}`);
       addToast('账号已删除', 'success');
       fetchData();
     } catch (err: any) {
@@ -546,10 +542,10 @@ const Admin = () => {
     if (!window.confirm(`确定要删除选中的 ${ids.length} 个登录用户吗？`)) return;
     try {
       try {
-        await axios.post('/api/users/batch-delete', { ids }, authHeader);
+        await axiosInstance.post('/api/users/batch-delete', { ids });
       } catch (err: any) {
         if (!isMissingBatchRoute(err)) throw err;
-        await Promise.all(ids.map(id => axios.delete(`/api/users/${id}`, authHeader)));
+        await Promise.all(ids.map(id => axiosInstance.delete(`/api/users/${id}`)));
       }
       addToast(`已删除 ${ids.length} 个登录用户`, 'success');
       setSelectedUserIds([]);
@@ -570,7 +566,7 @@ const Admin = () => {
     const user = users.find(u => u.id === id);
     if (!user) return;
     try {
-      await axios.put(`/api/users/${id}`, { disabled: !user.disabled }, authHeader);
+      await axiosInstance.put(`/api/users/${id}`, { disabled: !user.disabled });
       addToast(user.disabled ? '账号已启用' : '账号已禁用', 'success');
       fetchData();
     } catch (err: any) {
@@ -587,7 +583,7 @@ const Admin = () => {
     }
     setResetPasswordSubmitting(true);
     try {
-      await axios.put(`/api/users/${resetPasswordUserId}`, { password: resetPasswordValue }, authHeader);
+      await axiosInstance.put(`/api/users/${resetPasswordUserId}`, { password: resetPasswordValue });
       addToast('密码已重置', 'success');
       setResetPasswordUserId(null);
       setResetPasswordValue('');
@@ -601,7 +597,7 @@ const Admin = () => {
   const handleDeleteDesigner = async (id: string) => {
     if (!window.confirm('确定要从表格中移除该设计人员吗？其任务数据将保留在数据库中但不再显示。')) return;
     try {
-      await axios.delete(`/api/designers/${id}`, authHeader);
+      await axiosInstance.delete(`/api/designers/${id}`);
       addToast('人员已移除', 'success');
       fetchData();
     } catch (err: any) {
@@ -618,10 +614,10 @@ const Admin = () => {
     if (!window.confirm(`确定要从表格中移除选中的 ${ids.length} 位设计人员吗？其任务数据将保留在数据库中但不再显示。`)) return;
     try {
       try {
-        await axios.post('/api/designers/batch-delete', { ids }, authHeader);
+        await axiosInstance.post('/api/designers/batch-delete', { ids });
       } catch (err: any) {
         if (!isMissingBatchRoute(err)) throw err;
-        await Promise.all(ids.map(id => axios.delete(`/api/designers/${id}`, authHeader)));
+        await Promise.all(ids.map(id => axiosInstance.delete(`/api/designers/${id}`)));
       }
       addToast(`已移除 ${ids.length} 位设计人员`, 'success');
       setSelectedDesignerIds([]);
@@ -646,11 +642,11 @@ const Admin = () => {
     try {
       const designer = designers.find(d => d.id === editingDesignerId);
       if (!designer) return;
-      await axios.put(`/api/designers/${editingDesignerId}`, { 
+      await axiosInstance.put(`/api/designers/${editingDesignerId}`, { 
         name: editingDesignerName, 
         group: editingDesignerGroup, 
         hidden: designer.hidden 
-      }, authHeader);
+      });
       addToast('设计人员信息已更新', 'success');
       setEditDesignerModalOpen(false);
       fetchData();

@@ -1218,40 +1218,98 @@ const fetchGiteeLatestCommit = () => {
       return;
     }
 
-    const options = {
-      hostname: 'gitee.com',
-      path: `/api/v5/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}/commits?sha=main&per_page=1`,
-      method: 'GET',
-      headers: {
-        'Authorization': `token ${token}`,
-        'User-Agent': 'Obara-Task-Manager'
-      },
-      timeout: 5000
+    const getLatestCommit = () => {
+      return new Promise((resolve) => {
+        const options = {
+          hostname: 'gitee.com',
+          path: `/api/v5/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}/commits?sha=main&per_page=1`,
+          method: 'GET',
+          headers: {
+            'Authorization': `token ${token}`,
+            'User-Agent': 'Obara-Task-Manager'
+          },
+          timeout: 5000
+        };
+
+        const req = https.request(options, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try {
+              const commits = JSON.parse(data);
+              if (Array.isArray(commits) && commits.length > 0) {
+                const commit = commits[0];
+                const commitDate = new Date(commit.commit.committer.date);
+                const fullDate = commitDate.toISOString().split('T')[0];
+                const dateStr = fullDate.slice(2);
+                resolve({ date: dateStr, fullDate });
+              } else {
+                resolve(null);
+              }
+            } catch {
+              resolve(null);
+            }
+          });
+        });
+
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.end();
+      });
     };
 
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const commits = JSON.parse(data);
-          if (Array.isArray(commits) && commits.length > 0) {
-            const commit = commits[0];
-            const commitDate = new Date(commit.commit.committer.date);
-            const dateStr = commitDate.toISOString().split('T')[0].slice(2);
-            resolve({ date: dateStr.replace(/-/g, '-'), fullDate: commitDate.toISOString().split('T')[0] });
-          } else {
-            resolve(null);
-          }
-        } catch {
-          resolve(null);
+    const getCommitCountForDate = (fullDate) => {
+      return new Promise((resolve) => {
+        const since = `${fullDate}T00:00:00Z`;
+        const until = `${fullDate}T23:59:59Z`;
+        const options = {
+          hostname: 'gitee.com',
+          path: `/api/v5/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}/commits?sha=main&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&per_page=100`,
+          method: 'GET',
+          headers: {
+            'Authorization': `token ${token}`,
+            'User-Agent': 'Obara-Task-Manager'
+          },
+          timeout: 5000
+        };
+
+        const req = https.request(options, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try {
+              const commits = JSON.parse(data);
+              if (Array.isArray(commits)) {
+                resolve(commits.length);
+              } else {
+                resolve(1);
+              }
+            } catch {
+              resolve(1);
+            }
+          });
+        });
+
+        req.on('error', () => resolve(1));
+        req.on('timeout', () => { req.destroy(); resolve(1); });
+        req.end();
+      });
+    };
+
+    getLatestCommit().then((result) => {
+      if (!result) {
+        resolve(null);
+        return;
+      }
+
+      getCommitCountForDate(result.fullDate).then((count) => {
+        let version = result.date;
+        if (count > 1) {
+          version = `${result.date}-V${count}`;
         }
+        resolve({ date: version, fullDate: result.fullDate, commitCount: count });
       });
     });
-
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.end();
   });
 };
 

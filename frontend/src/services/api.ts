@@ -351,6 +351,8 @@ export const isSuperAdmin = (): boolean => {
 };
 
 // 导出默认对象
+export { axiosInstance };
+
 export default {
   auth: authAPI,
   users: usersAPI,
