@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { LogIn, User, Lock, AlertCircle } from 'lucide-react';
+import { LogIn, User, Lock, AlertCircle, Eye, EyeOff } from 'lucide-react';
 
 const Login = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
@@ -80,14 +81,25 @@ const Login = () => {
                     <Lock size={18} />
                   </div>
                   <input 
-                    type="password" 
-                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+                    type={showPassword ? 'text' : 'password'} 
+                    className="w-full pl-11 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="请输入您的登录密码"
                     required
                   />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 px-4 flex items-center text-gray-400 hover:text-gray-600 focus:text-[#217346] outline-none transition"
+                    onClick={() => setShowPassword((visible) => !visible)}
+                    onMouseDown={(e) => e.preventDefault()}
+                    aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                    title={showPassword ? '隐藏密码' : '显示密码'}
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
                 </div>
+                <p className="text-xs text-gray-500 ml-1">首次登录后，系统会要求您重置密码。</p>
               </div>
 
               <button 

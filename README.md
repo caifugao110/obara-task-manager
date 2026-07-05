@@ -2,6 +2,24 @@
 
 Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管理工具，支持多人协作、任务录入、报表查询、工时排行、权限控制和数据导入导出。
 
+## 文档导航
+
+| 文档 | 适用对象 | 内容 |
+|------|----------|------|
+| 本文档 | 使用者、维护者 | 功能概览、快速启动、页面说明、权限模型、数据结构和常用命令 |
+| [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
+| [Windows 部署指南](DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
+
+
+## 文档导航
+
+| 文档 | 适用对象 | 内容 |
+|------|----------|------|
+| 本文档 | 使用者、维护者 | 功能概览、快速启动、页面说明、权限模型、数据结构和常用命令 |
+| [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
+| [Windows 部署指南](DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
+
+
 ## 技术栈
 
 | 层级 | 技术 |
@@ -31,6 +49,26 @@ start.bat
 - 后端：http://localhost:5000
 
 > 首次部署请在 `backend/db.json` 中自行配置超级管理员账号和密码，密码请使用 bcrypt 哈希值存储。
+
+### 首次部署检查清单
+
+1. 安装 Node.js 18+、npm 9+ 和 Git。
+2. 执行 `npm run install:all` 安装根目录、后端和前端依赖。
+3. 复制 `backend/.env.example` 为 `backend/.env`，至少修改 `JWT_SECRET` 和 `CORS_ORIGIN`。
+4. 在 `backend/db.json` 中创建或确认超级管理员账号，密码必须是 bcrypt 哈希值。
+5. 使用 `start.bat` 或 `npm run dev` 启动，确认前端 http://localhost:5173 和后端 http://localhost:5000 可访问。
+6. 登录后进入系统设置，确认未登录查看、多设备登录、页面权限和数据导出功能符合部署要求。
+
+
+### 首次部署检查清单
+
+1. 安装 Node.js 18+、npm 9+ 和 Git。
+2. 执行 `npm run install:all` 安装根目录、后端和前端依赖。
+3. 复制 `backend/.env.example` 为 `backend/.env`，至少修改 `JWT_SECRET` 和 `CORS_ORIGIN`。
+4. 在 `backend/db.json` 中创建或确认超级管理员账号，密码必须是 bcrypt 哈希值。
+5. 使用 `start.bat` 或 `npm run dev` 启动，确认前端 http://localhost:5173 和后端 http://localhost:5000 可访问。
+6. 登录后进入系统设置，确认未登录查看、多设备登录、页面权限和数据导出功能符合部署要求。
+
 
 ### 手动启动
 
@@ -249,6 +287,32 @@ npm run dev:frontend
 npm run build
 npm run start:backend
 npm run start:frontend
+
+命令说明：
+
+| 命令 | 说明 |
+|------|------|
+| `npm run install:all` | 安装根目录、`backend` 和 `frontend` 的依赖 |
+| `npm run dev` | 同时启动开发后端和 Vite 前端 |
+| `npm run dev:backend` | 仅启动后端开发服务 |
+| `npm run dev:frontend` | 仅启动前端开发服务 |
+| `npm run build` | 构建前端生产产物 |
+| `npm run start:backend` | 使用 `node server.js` 启动后端 |
+| `npm run start:frontend` | 预览前端构建产物 |
+
+
+命令说明：
+
+| 命令 | 说明 |
+|------|------|
+| `npm run install:all` | 安装根目录、`backend` 和 `frontend` 的依赖 |
+| `npm run dev` | 同时启动开发后端和 Vite 前端 |
+| `npm run dev:backend` | 仅启动后端开发服务 |
+| `npm run dev:frontend` | 仅启动前端开发服务 |
+| `npm run build` | 构建前端生产产物 |
+| `npm run start:backend` | 使用 `node server.js` 启动后端 |
+| `npm run start:frontend` | 预览前端构建产物 |
+
 ```
 
 其他脚本：
@@ -265,6 +329,26 @@ npm run start:frontend
 ```bat
 cd frontend
 ..\node_modules\.bin\tsc.cmd --noEmit
+
+后端基础语法检查示例：
+
+```
+node --check backend\routes\system.js
+node --check backend\routes\tasks.js
+```
+
+> 目前 `npm run test` 会调用后端占位测试脚本并返回失败；提交或部署前优先执行前端类型检查、后端语法检查和关键页面手动验证。
+
+
+后端基础语法检查示例：
+
+```
+node --check backend\routes\system.js
+node --check backend\routes\tasks.js
+```
+
+> 目前 `npm run test` 会调用后端占位测试脚本并返回失败；提交或部署前优先执行前端类型检查、后端语法检查和关键页面手动验证。
+
 ```
 
 ## 键盘快捷键
@@ -292,6 +376,8 @@ cd frontend
 - 支持按仕样号搜索，自动查找最新版本（如 `12345.PDF`、`12345.01.PDF` 等）
 - 可提取纳期、中间商、最终客户、项目名称、数量、营业担当等信息
 - 纳期获取超时时间为 9 秒，完整信息获取超时时间为 15 秒
+- **注意**：仕样书共享路径 `\\192.168.160.6\仕样书$\` 在 `backend/routes/spec.js` 中写死，不可通过环境变量配置；若网络路径变更需修改 `SPEC_SHARE_PATH`。
+- **注意**：仕样书共享路径 `\\192.168.160.6\仕样书$\` 在 `backend/routes/spec.js` 中写死，不可通过环境变量配置；若网络路径变更需修改 `SPEC_SHARE_PATH`。
 
 ## 强制修改密码
 
@@ -414,6 +500,36 @@ obara-task-manager/
 
 - [API 文档](docs/API.md)
 - [Windows 部署指南](DEPLOYMENT.md)
+
+### 项目访问
+
+## 维护建议
+
+- 定期备份 `backend/db.json`，并在执行升级或批量导入前额外备份一次。
+- 生产环境必须修改 `backend/.env` 中的 `JWT_SECRET`，并限制 `CORS_ORIGIN`。
+- 公网部署时建议关闭未登录查看，并根据需要关闭多设备同时在线。
+- 大批量导入前先在测试环境验证表格格式，确认设计人员列表已提前维护完成。
+- 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
+
+### 项目访问
+
+## 维护建议
+
+- 定期备份 `backend/db.json`，并在执行升级或批量导入前额外备份一次。
+- 生产环境必须修改 `backend/.env` 中的 `JWT_SECRET`，并限制 `CORS_ORIGIN`。
+- 公网部署时建议关闭未登录查看，并根据需要关闭多设备同时在线。
+- 大批量导入前先在测试环境验证表格格式，确认设计人员列表已提前维护完成。
+- 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
+
+### 项目访问
+
+## 维护建议
+
+- 定期备份 `backend/db.json`，并在执行升级或批量导入前额外备份一次。
+- 生产环境必须修改 `backend/.env` 中的 `JWT_SECRET`，并限制 `CORS_ORIGIN`。
+- 公网部署时建议关闭未登录查看，并根据需要关闭多设备同时在线。
+- 大批量导入前先在测试环境验证表格格式，确认设计人员列表已提前维护完成。
+- 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
 
 ### 项目访问
 

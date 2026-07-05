@@ -2,17 +2,60 @@ import React, { useState } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { Lock, AlertCircle, CheckCircle } from 'lucide-react';
+import { Lock, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
 
 const ChangePassword = () => {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [visiblePasswords, setVisiblePasswords] = useState({
+    old: false,
+    new: false,
+    confirm: false
+  });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
   const { setForcePasswordChange } = useAuth();
   const navigate = useNavigate();
+
+  const togglePasswordVisibility = (field: keyof typeof visiblePasswords) => {
+    setVisiblePasswords((current) => ({
+      ...current,
+      [field]: !current[field]
+    }));
+  };
+
+  const renderPasswordInput = (
+    field: keyof typeof visiblePasswords,
+    value: string,
+    onChange: (value: string) => void,
+    placeholder: string
+  ) => (
+    <div className="relative">
+      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+        <Lock size={18} />
+      </div>
+      <input
+        type={visiblePasswords[field] ? 'text' : 'password'}
+        className="w-full pl-11 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        required
+      />
+      <button
+        type="button"
+        className="absolute inset-y-0 right-0 px-4 flex items-center text-gray-400 hover:text-gray-600 focus:text-[#217346] outline-none transition"
+        onClick={() => togglePasswordVisibility(field)}
+        onMouseDown={(e) => e.preventDefault()}
+        aria-label={visiblePasswords[field] ? '隐藏密码' : '显示密码'}
+        title={visiblePasswords[field] ? '隐藏密码' : '显示密码'}
+      >
+        {visiblePasswords[field] ? <EyeOff size={18} /> : <Eye size={18} />}
+      </button>
+    </div>
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,53 +123,17 @@ const ChangePassword = () => {
             <form onSubmit={handleSubmit} className="space-y-5">
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">当前密码</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
-                    <Lock size={18} />
-                  </div>
-                  <input 
-                    type="password" 
-                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
-                    value={oldPassword}
-                    onChange={(e) => setOldPassword(e.target.value)}
-                    placeholder="请输入当前密码"
-                    required
-                  />
-                </div>
+                {renderPasswordInput('old', oldPassword, setOldPassword, '请输入当前密码')}
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">新密码</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
-                    <Lock size={18} />
-                  </div>
-                  <input 
-                    type="password" 
-                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="请输入新密码"
-                    required
-                  />
-                </div>
+                {renderPasswordInput('new', newPassword, setNewPassword, '请输入新密码')}
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">确认新密码</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
-                    <Lock size={18} />
-                  </div>
-                  <input 
-                    type="password" 
-                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="请再次输入新密码"
-                    required
-                  />
-                </div>
+                {renderPasswordInput('confirm', confirmPassword, setConfirmPassword, '请再次输入新密码')}
               </div>
 
               <button 

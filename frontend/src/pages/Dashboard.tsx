@@ -378,6 +378,14 @@ const Dashboard = () => {
   const [batchMatches, setBatchMatches] = useState<BatchReplaceMatch[]>([]);
   const [batchMatchCount, setBatchMatchCount] = useState(0);
   const [batchSearchDone, setBatchSearchDone] = useState(false);
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const isOfflineMode = !isOnline || offlineCacheUsed;
+  const canEditTasks = isAdmin && !isOfflineMode;
+  const isOfflineModeRef = useRef(isOfflineMode);
+
+  useEffect(() => {
+    isOfflineModeRef.current = isOfflineMode;
+  }, [isOfflineMode]);
 
   // Calculate table height dynamically
   useEffect(() => {
@@ -474,6 +482,22 @@ const Dashboard = () => {
     socketRef.current?.emit('stop_editing');
   }, []);
 
+  useEffect(() => {
+    if (!isOfflineMode) return;
+    setSelectedCell(null);
+    setSelectedTasks([]);
+    setActiveTask(null);
+    setIsDragging(false);
+    setIsOverDelete(false);
+    setPendingChanges([]);
+    if (modalOpen) {
+      setModalOpen(false);
+      stopEditingCell(modalDesignerId, modalDate);
+    } else {
+      stopEditingCell();
+    }
+  }, [isOfflineMode, modalOpen, modalDesignerId, modalDate, stopEditingCell]);
+
   const collisionDetection: CollisionDetection = useCallback((args) => {
     const pointer = pointerWithin(args);
     if (pointer.length) return pointer;
@@ -483,7 +507,7 @@ const Dashboard = () => {
 
 
   const handleDragStart = (event: DragStartEvent) => {
-    if (!isAdmin) return;
+    if (!canEditTasks) return;
     const { active, active: { data } } = event;
     const data_current = data.current;
     
@@ -503,7 +527,7 @@ const Dashboard = () => {
   };
 
   const handleDragOver = (event: DragOverEvent) => {
-    if (!isAdmin) return;
+    if (!canEditTasks) return;
     const { active, over } = event;
     const activeType = active.data.current?.type;
     if (activeType !== 'task') {
@@ -521,7 +545,7 @@ const Dashboard = () => {
     const sourceData = active.data.current;
     const targetData = over?.data.current;
 
-    if (!isAdmin) return;
+    if (!canEditTasks) return;
 
     const isCtrlDrag = activeTask?.isCtrlDrag;
 
@@ -802,6 +826,10 @@ const Dashboard = () => {
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: 'none' | 'confirm' | 'design' }>>({});
 
   const openModal = (designerId: string, date: string, addMode: boolean = false) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
     if (warnIfCellLocked(designerId, date)) return;
     startEditingCell(designerId, date);
     setModalDesignerId(designerId);
@@ -820,6 +848,10 @@ const Dashboard = () => {
   };
 
   const onTaskClick = (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
     if (warnIfCellLocked(designerId, date)) return;
     startEditingCell(designerId, date);
     setModalDesignerId(designerId);
@@ -832,6 +864,10 @@ const Dashboard = () => {
 
   // 删除枪名并记录操作以便撤销
   const onDeleteGun = (item: TaskItem, designerId: string, date: string, gunIndex: number) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
     if (warnIfCellLocked(designerId, date)) return;
     const newGuns = (item.guns || []).filter((_, i) => i !== gunIndex);
     // 记录删除枪名的操作，以便撤销
@@ -847,6 +883,10 @@ const Dashboard = () => {
   };
 
   const onDeleteTask = (item: TaskItem, designerId: string, date: string) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
     if (warnIfCellLocked(designerId, date)) return;
     deleteItem(designerId, date, item.id);
   };
@@ -857,6 +897,12 @@ const Dashboard = () => {
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 3000);
+  };
+
+  const warnIfOfflineEdit = () => {
+    if (!isOfflineModeRef.current) return false;
+    addToast('当前离线，禁止编辑', 'error');
+    return true;
   };
  
    // Extract spec number (仕样号) from task name
@@ -940,6 +986,10 @@ const Dashboard = () => {
   };
 
   const performUndo = useCallback(async (operation: {operation: string, data: any, timestamp: number}) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       
@@ -1066,7 +1116,7 @@ const Dashboard = () => {
     } catch (err) {
       addToast('撤销失败', 'error');
     }
-  }, [token, upsertSheet, fetchSheets]);
+  }, [token, upsertSheet, fetchSheets, canEditTasks, isOfflineMode]);
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -1086,6 +1136,10 @@ const Dashboard = () => {
     const handleUndo = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
+        if (!canEditTasks) {
+          if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+          return;
+        }
         if (history.length > 0) {
           const lastOperation = history[history.length - 1];
           performUndo(lastOperation);
@@ -1102,7 +1156,7 @@ const Dashboard = () => {
       window.removeEventListener('keydown', handleEsc);
       window.removeEventListener('keydown', handleUndo);
     };
-  }, [batchReplaceOpen, modalOpen, history, performUndo]);
+  }, [batchReplaceOpen, modalOpen, history, performUndo, canEditTasks, isOfflineMode]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -1303,6 +1357,7 @@ const Dashboard = () => {
     const handleTaskCut = async (e: Event) => {
       const customEvent = e as CustomEvent;
       const { item, designerId, date } = customEvent.detail;
+      if (warnIfOfflineEdit()) return;
       if (!user) return;
       const payloads = getSelectedTaskPayloads({ item, designerId, date });
       if (payloads.length === 0) return;
@@ -1332,6 +1387,7 @@ const Dashboard = () => {
     const handleTaskPaste = async (e: Event) => {
       const customEvent = e as CustomEvent;
       const { designerId, date } = customEvent.detail;
+      if (warnIfOfflineEdit()) return;
       if (!user) return;
       if (!clipboardRef.current || clipboardRef.current.length === 0) {
         addToast('请先复制任务', 'error');
@@ -1368,7 +1424,7 @@ const Dashboard = () => {
       window.removeEventListener('task-cut', handleTaskCut);
       window.removeEventListener('task-paste', handleTaskPaste);
     };
-  }, [clipboard, user, token, fetchSheets, upsertSheet, sheets]);
+  }, [clipboard, user, token, fetchSheets, upsertSheet, sheets, canEditTasks, isOfflineMode]);
 
   const sheetByDesignerId = useMemo(() => {
     const map: Record<string, TaskSheet | undefined> = {};
@@ -1515,6 +1571,7 @@ const Dashboard = () => {
   const formatFooterHours = (hours: number) => `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} h`;
 
   const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
+    if (warnIfOfflineEdit()) return;
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value }, authHeader);
@@ -1557,6 +1614,7 @@ const Dashboard = () => {
   };
 
   const openBatchReplaceDialog = async () => {
+    if (warnIfOfflineEdit()) return;
     if (pendingChanges.length > 0) {
       const changes = [...pendingChanges];
       for (const change of changes) {
@@ -1574,6 +1632,7 @@ const Dashboard = () => {
   };
 
   const handleBatchSearch = async () => {
+    if (warnIfOfflineEdit()) return;
     if (!batchFindText) {
       addToast('请输入查找字符', 'error');
       return;
@@ -1594,6 +1653,7 @@ const Dashboard = () => {
   };
 
   const handleBatchReplace = async () => {
+    if (warnIfOfflineEdit()) return;
     if (!batchFindText) {
       addToast('请输入查找字符', 'error');
       return;
@@ -1621,6 +1681,7 @@ const Dashboard = () => {
   // 所有操作都会记录到历史中以便撤销。
   const handleItemChange = (designerId: string, date: string, itemId: string, field: TaskField, raw: any) => {
     // 获取原始值以便撤销
+    if (warnIfOfflineEdit()) return;
     const sheet = sheets.find(s => s.designerId === designerId);
     const items = sheet?.days?.[date];
     const item = items?.find(i => i.id === itemId);
@@ -1663,6 +1724,7 @@ const Dashboard = () => {
   };
 
   const addItem = async (designerId: string, date: string, taskType?: 'none' | 'trip' | 'sick' | 'vacation' | 'illness') => {
+    if (warnIfOfflineEdit()) return;
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const leaveType = taskType === 'none' ? null : taskType === 'trip' ? 'trip' : taskType === 'sick' ? 'sick' : taskType === 'vacation' ? 'vacation' : taskType === 'illness' ? 'illness' : null;
@@ -1694,6 +1756,7 @@ const Dashboard = () => {
   };
 
   const deleteItem = async (designerId: string, date: string, itemId: string) => {
+    if (warnIfOfflineEdit()) return;
     try {
       // Get the item data before deletion for undo
       const item = getItems(designerId, date).find(i => i.id === itemId);
@@ -1782,6 +1845,7 @@ const Dashboard = () => {
   };
 
   const handlePaste = async (designerId: string, date: string) => {
+    if (warnIfOfflineEdit()) return;
     if (!clipboard || !user) return;
     if (warnIfCellLocked(designerId, date)) return;
     addToast('任务已复制', 'success');
@@ -1806,7 +1870,6 @@ const Dashboard = () => {
     }
   };
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isSuperAdmin = user?.role === 'superadmin';
 
   const canShowAccessLink = (access: typeof defaultAccessSettings) => {
@@ -1973,7 +2036,7 @@ const Dashboard = () => {
       {!isOnline && (
         <div className="bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
-          <span>当前处于离线模式，正在使用本地缓存数据，网络恢复后将自动加载最新数据，此页面禁止刷新！</span>
+          <span>当前处于离线模式，正在使用本地缓存数据，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
         </div>
       )}
 
@@ -2042,13 +2105,13 @@ const Dashboard = () => {
                   {!collapsedGroups[group] && (
                     <SortableContext items={designersByGroup[group].map(d => `designer-${d.id}`)} strategy={verticalListSortingStrategy}>
                       {designersByGroup[group].map(d => (
-                        <SortableDesignerTbody key={d.id} designer={d} isAdmin={isAdmin}>
+                        <SortableDesignerTbody key={d.id} designer={d} isAdmin={canEditTasks}>
                           {({ attributes, listeners }) => (
                             <>
                               <tr className="align-top hover:bg-blue-50/20 group/row transition-colors">
                                 <td className="sticky left-0 z-20 bg-white border border-gray-300 px-2 py-3 font-bold text-gray-800 text-center align-middle shadow-[1px_0_0_0_#d1d5db] group-hover/row:bg-blue-50/40">
                                   <div className="flex items-center justify-center gap-1.5 h-full">
-                                    {isAdmin && (
+                                    {canEditTasks && (
                                       <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-0.5 hover:bg-blue-100 rounded">
                                         <GripVertical size={14} className="text-gray-400" />
                                       </div>
@@ -2083,13 +2146,14 @@ const Dashboard = () => {
                                               item={item}
                                               designerId={d.id}
                                               date={day.fullDate}
-                                              isAdmin={isAdmin}
+                                              isAdmin={canEditTasks}
                                               onTaskClick={onTaskClick}
                                               onDeleteGun={onDeleteGun}
                                               onDeleteTask={onDeleteTask}
                                               selectedTasks={selectedTasks}
                                               metadataTitle={buildTaskMetadataTitle(item)}
                                               onSelectTask={(itemId, designerId, date, append) => {
+                                                if (!canEditTasks) return;
                                                 if (warnIfCellLocked(designerId, date)) return;
                                                 handleSelectTask(itemId, designerId, date, append);
                                                 setSelectedCell(null);
@@ -2097,7 +2161,7 @@ const Dashboard = () => {
                                               }}
                                             />
                                           ))}
-                                          {isAdmin && (
+                                          {canEditTasks && (
                                             <div 
                                               className={`h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-blue-50/50'} ${selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? 'opacity-100 bg-blue-100 border border-blue-400' : ''}`}
                                               onClick={(e) => {
@@ -2238,7 +2302,7 @@ const Dashboard = () => {
                 <div className="font-bold text-lg">{designers.find(d => d.id === modalDesignerId)?.name}</div>
                 <div className="text-xs opacity-80">{modalDate}</div>
               </div>
-              {isAdmin && (
+              {canEditTasks && (
                 <button
                   onClick={() => { void openBatchReplaceDialog(); }}
                   className="absolute left-1/2 -translate-x-1/2 px-4 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded text-sm font-bold transition"
@@ -2529,7 +2593,7 @@ const Dashboard = () => {
                           </div>
                         </div>
 
-                        {isAdmin && !isLeave && !isTrip && (
+                        {canEditTasks && !isLeave && !isTrip && (
                         <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-50">
                           <span className="text-[10px] text-gray-400 font-bold uppercase">标记颜色:</span>
                           <div className="flex flex-wrap gap-1.5">
@@ -3001,7 +3065,7 @@ const Dashboard = () => {
                               </div>
                             </div>
                             
-                            {isAdmin && !isLeave && !isTrip && (
+                            {canEditTasks && !isLeave && !isTrip && (
                             <>
                               <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-50">
                                 <span className="text-[10px] text-gray-400 font-bold uppercase">标记颜色:</span>
@@ -3036,6 +3100,7 @@ const Dashboard = () => {
                 <span className="text-xs text-gray-500">主任务为空、工时为 0，或已填写枪名的工时为 0 时无法保存</span>
                 <button
                   onClick={async () => {
+                    if (warnIfOfflineEdit()) return;
                     if (isAddMode) {
                       const guns = selectedTaskType === 'none' ? addModeGuns : [];
                       const hours = guns.length > 0
@@ -3142,6 +3207,7 @@ const Dashboard = () => {
                     }
                   }}
                   disabled={(() => {
+                    if (!canEditTasks) return true;
                     if (isAddMode) {
                       if (selectedTaskType === 'none') {
                         const totalGunHours = addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0);
@@ -3253,7 +3319,7 @@ const Dashboard = () => {
                   </div>
                   <button
                     onClick={handleBatchSearch}
-                    disabled={batchSearchLoading || batchReplaceLoading || !batchFindText}
+                    disabled={!canEditTasks || batchSearchLoading || batchReplaceLoading || !batchFindText}
                     className="px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {batchSearchLoading ? '查找中...' : '查找'}
@@ -3296,7 +3362,7 @@ const Dashboard = () => {
               </button>
               <button
                 onClick={handleBatchReplace}
-                disabled={batchReplaceLoading || !batchFindText}
+                disabled={!canEditTasks || batchReplaceLoading || !batchFindText}
                 className="px-5 py-2 text-sm font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
               >
                 {batchReplaceLoading ? '处理中...' : '替换'}

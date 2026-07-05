@@ -17,6 +17,10 @@ Authorization: Bearer <token>
 - 大多数接口直接返回 JSON 对象或数组，不统一包裹 `success/data`。
 - 错误响应通常包含 `message`，部分接口包含 `code` 或 `details`。
 - `guestViewMiddleware` 控制游客是否可以读取主页面所需的任务和设计人员数据。
+- 请求体默认使用 `application/json`；文件导入接口使用 `multipart/form-data`。
+- 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
+- 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
+- 本文中的“管理员”指 `admin` 或 `superadmin`；“仅超级管理员”只允许 `superadmin`。
 
 ## 角色
 
@@ -27,6 +31,26 @@ Authorization: Bearer <token>
 | `user` | 普通用户 |
 
 普通用户登录后可查看主页面，其他权限与游客一致。任务报表和工时管理是否可访问由“游客/普通用户”开关控制。
+
+## 权限速查
+
+| 能力 | 游客 | user | admin | superadmin |
+|------|------|------|-------|------------|
+| 查看主页面任务和设计人员 | 取决于 `allowGuestView` | 是 | 是 | 是 |
+| 编辑任务 | 否 | 否 | 是 | 是 |
+| 管理设计人员 | 否 | 否 | 是 | 是 |
+| 管理登录用户 | 否 | 否 | 只能创建/维护普通用户 | 是 |
+| 批量删除登录用户 | 否 | 否 | 否 | 是 |
+| 页面权限设置 | 否 | 否 | 否 | 是 |
+| 系统设置登录管理、日志管理 | 否 | 否 | 否 | 是 |
+| 系统设置数据管理导出 | 否 | 否 | 取决于 `systemSettings.allowAdmins` | 是 |
+| 系统设置数据管理导入 | 否 | 否 | 否 | 是 |
+
+说明：
+
+- `settings.leaderboard`、`settings.workHours`、`settings.statusTracking` 控制对应页面是否允许 `admin`、`user` 和游客访问。
+- `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户和游客不能进入系统设置。
+- `authMiddleware` 只校验登录态；涉及写入任务、设计人员、状态追踪等接口还会继续校验角色。
 
 ## 认证接口
 
@@ -406,7 +430,7 @@ Authorization: Bearer <token>
 
 `POST /api/tasks/item`
 
-权限：需要登录。
+权限：`admin`、`superadmin`。
 
 请求：
 
@@ -435,7 +459,7 @@ Authorization: Bearer <token>
 
 `POST /api/tasks/item/batch`
 
-权限：需要登录。
+权限：`admin`、`superadmin`。
 
 请求：
 
@@ -460,7 +484,7 @@ Authorization: Bearer <token>
 
 `PUT /api/tasks/item`
 
-权限：需要登录。
+权限：`admin`、`superadmin`。
 
 请求：
 
@@ -503,7 +527,7 @@ Authorization: Bearer <token>
 
 `DELETE /api/tasks/item`
 
-权限：需要登录。
+权限：`admin`、`superadmin`。
 
 请求：
 
@@ -519,7 +543,7 @@ Authorization: Bearer <token>
 
 `POST /api/tasks/move`
 
-权限：需要登录。
+权限：`admin`、`superadmin`。
 
 请求：
 
@@ -872,7 +896,7 @@ Authorization: Bearer <token>
 
 `GET /api/status-tracking/export`
 
-权限：需要登录且有系统设置数据管理权限。
+权限：`admin`、`superadmin`。
 
 查询参数：
 
@@ -1282,6 +1306,12 @@ Authorization: Bearer <token>
 `GET /api/work-hours/export`
 
 权限：需要登录且有系统设置数据管理权限。
+
+说明：
+
+- `superadmin` 始终可导出。
+- `admin` 需要 `settings.systemSettings.enabled=true` 且 `allowAdmins=true`。
+- `user` 和游客不能导出。
 
 查询参数：
 

@@ -11,27 +11,55 @@ const routeActionDisplays = {
   'POST auth/logout': { label: '退出登录', description: '用户退出系统' },
   'POST auth/change-password': { label: '修改密码', description: '用户修改登录密码' },
 
+  'GET ': { label: '查看任务', description: '查看任务列表' },
   'GET users': { label: '查看用户', description: '查看用户列表或用户详情' },
   'POST users': { label: '创建用户', description: '新增系统用户账号' },
   'PUT users': { label: '更新用户', description: '修改用户账号信息' },
   'DELETE users': { label: '删除用户', description: '删除系统用户账号' },
 
   'GET designers': { label: '查看设计员', description: '查看设计员列表' },
+  'GET designers/manage': { label: '管理设计员', description: '查看设计员管理列表' },
+  'GET manage': { label: '管理设计员', description: '查看设计员管理列表' },
   'POST designers': { label: '添加设计员', description: '新增设计员信息' },
   'PUT designers': { label: '更新设计员', description: '修改设计员信息' },
   'DELETE designers': { label: '删除设计员', description: '删除设计员信息' },
 
   'GET tasks': { label: '查看任务', description: '查看任务列表' },
+  'POST tasks/item': { label: '添加任务', description: '新增任务记录' },
+  'POST item': { label: '添加任务', description: '新增任务记录' },
+  'POST tasks/item/batch': { label: '批量添加任务', description: '批量新增任务记录' },
+  'POST item/batch': { label: '批量添加任务', description: '批量新增任务记录' },
+  'POST tasks/batch-replace/search': { label: '查询批量替换', description: '查询任务批量替换匹配项' },
+  'POST batch-replace/search': { label: '查询批量替换', description: '查询任务批量替换匹配项' },
+  'POST tasks/batch-replace': { label: '批量替换任务', description: '批量替换任务内容或枪名' },
+  'POST batch-replace': { label: '批量替换任务', description: '批量替换任务内容或枪名' },
   'POST tasks': { label: '添加任务', description: '新增任务记录' },
+  'PUT tasks/item': { label: '更新任务', description: '修改任务内容或工时' },
+  'PUT item': { label: '更新任务', description: '修改任务内容或工时' },
   'PUT tasks': { label: '更新任务', description: '修改任务内容或工时' },
+  'DELETE tasks/item': { label: '删除任务', description: '删除任务记录' },
+  'DELETE item': { label: '删除任务', description: '删除任务记录' },
   'DELETE tasks': { label: '删除任务', description: '删除任务记录' },
 
   'GET settings': { label: '查看设置', description: '查看系统设置' },
+  'GET settings/leaderboard': { label: '查看排行榜设置', description: '查看工时排行访问设置' },
+  'PUT settings/leaderboard': { label: '更新排行榜设置', description: '修改工时排行访问设置' },
+  'PUT leaderboard': { label: '更新排行榜设置', description: '修改工时排行访问设置' },
+  'GET settings/work-hours': { label: '查看工时设置', description: '查看工时管理访问设置' },
+  'PUT settings/work-hours': { label: '更新工时设置', description: '修改工时管理访问设置' },
+  'PUT work-hours': { label: '更新工时设置', description: '修改工时管理访问设置' },
+  'GET settings/status-tracking': { label: '查看状态跟踪设置', description: '查看状态跟踪访问设置' },
+  'PUT settings/status-tracking': { label: '更新状态跟踪设置', description: '修改状态跟踪访问设置' },
+  'PUT status-tracking': { label: '更新状态跟踪设置', description: '修改状态跟踪访问设置' },
+  'GET settings/system-settings': { label: '查看系统设置权限', description: '查看系统设置页面访问权限' },
+  'PUT settings/system-settings': { label: '更新系统设置权限', description: '修改系统设置页面访问权限' },
+  'PUT system-settings': { label: '更新系统设置权限', description: '修改系统设置页面访问权限' },
   'PUT settings': { label: '更新设置', description: '修改系统设置' },
   'GET system/settings': { label: '查看系统设置', description: '查看系统级配置' },
   'PUT system/settings': { label: '更新系统设置', description: '修改系统级配置' },
   'GET system/version': { label: '查看版本', description: '查看系统版本信息' },
   'GET system/export-xls': { label: '导出任务数据', description: '导出任务表格数据' },
+  'GET export': { label: '导出任务数据', description: '导出任务表格数据' },
   'POST system/import-xls': { label: '导入任务数据', description: '导入任务表格数据' },
 
   'GET system/audit-logs': { label: '查看日志', description: '查看系统操作日志' },
@@ -42,16 +70,25 @@ const routeActionDisplays = {
   'GET audit-logs/export': { label: '导出日志', description: '导出系统操作日志' },
   'GET system/login-logs': { label: '查看登录日志', description: '查看用户登录日志' },
   'GET system/admin-login-logs': { label: '查看管理员登录记录', description: '查看管理员最近登录记录' },
+  'GET admin-login-logs': { label: '查看管理员登录记录', description: '查看管理员最近登录记录' },
 
   'GET status-tracking/items': { label: '查看状态跟踪', description: '查看状态跟踪数据' },
+  'GET items': { label: '查看状态跟踪', description: '查看状态跟踪数据' },
   'POST status-tracking/items': { label: '添加状态跟踪', description: '新增状态跟踪记录' },
+  'POST items': { label: '添加状态跟踪', description: '新增状态跟踪记录' },
+  'POST status-tracking/items/bulk': { label: '批量导入状态跟踪', description: '批量新增或更新状态跟踪记录' },
+  'POST items/bulk': { label: '批量导入状态跟踪', description: '批量新增或更新状态跟踪记录' },
   'PUT status-tracking/items': { label: '更新状态跟踪', description: '修改状态跟踪记录' },
+  'PUT items': { label: '更新状态跟踪', description: '修改状态跟踪记录' },
   'DELETE status-tracking/items': { label: '删除状态跟踪', description: '删除状态跟踪记录' },
+  'DELETE items': { label: '删除状态跟踪', description: '删除状态跟踪记录' },
   'GET status-tracking/export': { label: '导出状态跟踪表', description: '导出状态跟踪表格' },
   'POST status-tracking/import': { label: '导入状态跟踪表', description: '导入状态跟踪表格' },
 
   'GET work-hours/export': { label: '导出工时管理表', description: '导出工时统计表格' },
-  'GET spec/spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' }
+  'GET spec/spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' },
+  'POST spec/spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' },
+  'POST spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' }
 };
 
 const resourceActionDisplays = {
@@ -128,6 +165,12 @@ const getRouteActionDisplay = (method = '', routePath = '') => {
   const key = `${normalizedMethod} ${normalizedPath}`;
 
   if (routeActionDisplays[key]) return routeActionDisplays[key];
+
+  const pathParts = normalizedPath.split('/');
+  if (pathParts.length > 1) {
+    const collectionKey = `${normalizedMethod} ${pathParts.slice(0, -1).join('/')}`;
+    if (routeActionDisplays[collectionKey]) return routeActionDisplays[collectionKey];
+  }
 
   const firstPathPart = normalizedPath.split('/')[0];
   const resourceKey = `${normalizedMethod} ${firstPathPart}`;
