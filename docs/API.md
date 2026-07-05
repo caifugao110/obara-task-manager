@@ -38,8 +38,8 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "username": "superadmin",
-  "password": "admin123"
+  "username": "your-username",
+  "password": "your-password"
 }
 ```
 
@@ -53,7 +53,8 @@ Authorization: Bearer <token>
     "username": "superadmin",
     "role": "superadmin",
     "name": "超级管理员"
-  }
+  },
+  "forcePasswordChange": false
 }
 ```
 
@@ -62,6 +63,7 @@ Authorization: Bearer <token>
 - 登录成功和失败都会记录登录日志，日志包含 IP、原始 `User-Agent` 和解析后的浏览器信息。
 - 账号禁用时返回 `403` 和 `ACCOUNT_DISABLED`。
 - 关闭多设备登录时，新登录会使旧会话失效。
+- `forcePasswordChange=true` 时前端需引导用户到 `/change-password` 修改密码。
 
 ### 校验当前会话
 
@@ -77,7 +79,8 @@ Authorization: Bearer <token>
     "username": "superadmin",
     "role": "superadmin",
     "name": "超级管理员"
-  }
+  },
+  "forcePasswordChange": false
 }
 ```
 
@@ -90,6 +93,36 @@ Authorization: Bearer <token>
   "message": "您的账号已在其他设备登录"
 }
 ```
+
+### 修改密码
+
+`POST /api/auth/change-password`
+
+权限：需要登录。
+
+请求：
+
+```json
+{
+  "oldPassword": "current-password",
+  "newPassword": "new-password"
+}
+```
+
+响应（成功）：
+
+```json
+{
+  "message": "密码修改成功"
+}
+```
+
+说明：
+
+- 新密码长度至少 6 位。
+- 修改成功后会自动清除 `forcePasswordChange` 标记。
+- 旧密码不正确时返回 `401`。
+- 超级管理员重置用户密码后，该用户 `forcePasswordChange` 会被设置为 `true`，下次登录需修改密码。
 
 ## 用户接口
 
@@ -108,7 +141,8 @@ Authorization: Bearer <token>
     "name": "超级管理员",
     "role": "superadmin",
     "group": "",
-    "disabled": false
+    "disabled": false,
+    "forcePasswordChange": false
   }
 ]
 ```
@@ -123,6 +157,7 @@ Authorization: Bearer <token>
 | `role` | 角色：`superadmin`、`admin`、`user` |
 | `group` | 用户分组 |
 | `disabled` | 是否禁用，禁用后无法登录 |
+| `forcePasswordChange` | 是否需要在下次登录后修改密码 |
 
 ### 创建登录用户
 
@@ -165,6 +200,11 @@ Authorization: Bearer <token>
   "disabled": false
 }
 ```
+
+说明：
+
+- 修改 `password` 时会同时将 `forcePasswordChange` 设置为 `true`，该用户下次登录需修改密码。
+- 仅 `superadmin` 可修改 `role`。
 
 ### 批量删除登录用户
 
@@ -292,45 +332,6 @@ Authorization: Bearer <token>
 ```
 
 ## 任务接口
-
-### 获取仕样号纳期
-
-`POST /api/spec/delivery-date`
-
-权限：需要登录。
-
-请求：
-
-```json
-{
-  "specNumber": "12345"
-}
-```
-
-响应：
-
-```json
-{
-  "success": true,
-  "date": "2026-07-30"
-}
-```
-
-或失败：
-
-```json
-{
-  "success": false,
-  "message": "获取纳期失败"
-}
-```
-
-说明：
-
-- 根据仕样号从后端 PDF 解析器获取纳期。
-- 如果获取超时（超过 10 秒），返回 `获取纳期超时(超过10秒)`。
-
-
 
 ### 获取任务数据
 
@@ -521,7 +522,7 @@ Authorization: Bearer <token>
 
 ## 页面权限设置接口
 
-任务报表和工时管理各自使用独立配置：
+任务报表、工时管理、状态追踪和系统设置各自使用独立配置：
 
 ```json
 {
@@ -544,6 +545,7 @@ Authorization: Bearer <token>
 - `allowViewers=true` 时，后端保存结果会强制 `allowAdmins=true`。
 - 前端主开关关闭时会同时关闭 `allowAdmins` 和 `allowViewers`。
 - 前端主开关打开时会同时打开 `allowAdmins` 和 `allowViewers`。
+- `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问）。
 
 ### 获取任务报表权限设置
 
@@ -574,6 +576,21 @@ Authorization: Bearer <token>
 `PUT /api/settings/status-tracking`
 
 权限：仅 `superadmin`
+
+### 获取系统设置权限设置
+
+`GET /api/settings/system-settings`
+
+### 更新系统设置权限设置
+
+`PUT /api/settings/system-settings`
+
+权限：仅 `superadmin`
+
+说明：
+
+- 用于控制一般管理员是否可以访问系统设置页面的「数据管理」模块（仅可查看导出，不能导入）。
+- `allowViewers` 字段被强制为 `false`。
 
 ### 获取组长规则
 
@@ -734,6 +751,83 @@ Authorization: Bearer <token>
 无需认证，用于获取所有状态追踪记录。
 
 响应：返回所有状态追踪记录数组。
+
+### 导出状态跟踪表
+
+`GET /api/status-tracking/export`
+
+权限：需要登录且有系统设置数据管理权限。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `month` | 是 | 月份，格式 `YYYY-MM`，按纳期字段过滤 |
+
+响应：`.xls` 文件流，文件名格式为 `status-tracking-YYYY-MM.xls`。
+
+说明：
+
+- 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录。
+- 导出列包括工厂、客户、数量、纳期、已发图、未确认、总种数、反馈种数、反馈计划、下图计划及状态、确认数量、确认种数、下图种数、未下种数、未下数量、未确认数、设计纳期、营业担当、组长。
+- 纳期字段会从 `YYYY-MM-DD` 转换为 `M/D` 格式。
+
+### 检查状态跟踪表导入重复项
+
+`POST /api/status-tracking/import/check`
+
+权限：仅 `superadmin`
+
+请求类型：`multipart/form-data`
+
+字段：
+
+| 字段 | 说明 |
+|------|------|
+| `file` | `.xls` 或 `.xlsx` 文件 |
+
+响应：
+
+```json
+{
+  "duplicateSpecs": ["12345", "67890"]
+}
+```
+
+说明：
+
+- 解析文件中的仕样号列，返回与现有数据库仕样号重复的列表。
+- 用于导入前提示用户是否覆盖。
+
+### 导入状态跟踪表
+
+`POST /api/status-tracking/import`
+
+权限：仅 `superadmin`
+
+请求类型：`multipart/form-data`
+
+字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `file` | 是 | `.xls` 或 `.xlsx` 文件 |
+| `overwrite` | 否 | 是否覆盖已存在的仕样号记录，`'true'` 为覆盖 |
+
+响应：
+
+```json
+{
+  "importedRows": 10,
+  "updatedRows": 5
+}
+```
+
+说明：
+
+- 自动根据仕样号匹配现有记录，存在则更新（仅当 `overwrite=true`），不存在则创建。
+- 表头列通过模糊匹配识别（如「工厂」「客户」「数量」「纳期」「仕样号」等）。
+- 导入成功后会通过 Socket.IO 广播 `status_tracking_bulk` 事件。
 
 ### Socket.IO 状态追踪事件
 
@@ -962,13 +1056,140 @@ Authorization: Bearer <token>
 }
 ```
 
+### 获取最新管理员登录记录
+
+`GET /api/system/admin-login-logs`
+
+权限：仅 `superadmin`
+
+响应：返回最新 10 条管理员（`superadmin` 或 `admin`）的登录记录数组。
+
+说明：
+
+- 用于系统设置页面「日志管理」模块主页显示。
+- 按时间倒序排列。
+- 字段结构与 `GET /api/system/login-logs` 一致。
+
+### 获取操作日志
+
+`GET /api/system/audit-logs`
+
+权限：仅 `superadmin`
+
+查询参数：
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `limit` | 否 | `100` | 每页条数 |
+| `page` | 否 | `1` | 页码 |
+| `username` | 否 | 空 | 按用户名精确匹配 |
+| `action` | 否 | 空 | 按操作描述精确匹配 |
+| `method` | 否 | 空 | 按 HTTP 方法匹配（`GET`、`POST`、`PUT`、`DELETE`） |
+| `ip` | 否 | 空 | 按 IP 模糊匹配 |
+| `from` | 否 | 空 | 开始日期，ISO 日期格式 |
+| `to` | 否 | 空 | 结束日期，ISO 日期格式，包含当天 |
+
+响应：
+
+```json
+{
+  "logs": [
+    {
+      "id": "uuid",
+      "userId": "1",
+      "username": "superadmin",
+      "name": "超级管理员",
+      "role": "superadmin",
+      "action": "用户登录",
+      "method": "POST",
+      "path": "/api/auth/login",
+      "ip": "::1",
+      "userAgent": "Mozilla/5.0 ...",
+      "requestBody": null,
+      "responseStatus": 200,
+      "responseMessage": null,
+      "durationMs": 12,
+      "timestamp": "2026-07-05T10:00:00.000Z"
+    }
+  ],
+  "total": 100,
+  "page": 1,
+  "pageSize": 100
+}
+```
+
+说明：
+
+- 操作日志最多保留 2000 条。
+- `/api/system/login-logs` 和 `/api/system/audit-logs` 相关接口本身不会被记录。
+- GET 请求不记录响应消息，POST/PUT 请求记录请求体（最大 2000 字符）。
+
+### 获取操作日志筛选选项
+
+`GET /api/system/audit-logs/filter-options`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "usernames": ["superadmin", "admin001"],
+  "actions": ["用户登录", "更新任务", "导出任务数据"]
+}
+```
+
+说明：
+
+- 返回当前所有出现过的用户名和操作描述列表，用于前端筛选下拉框。
+- 用户名和操作列表按字母排序。
+
+### 导出操作日志
+
+`GET /api/system/audit-logs/export`
+
+权限：仅 `superadmin`
+
+查询参数：同 `GET /api/system/audit-logs`（不含 `limit` 和 `page`）。
+
+响应：`.xls` 文件流，文件名格式为 `audit-logs-YYYY-MM-DD-HHmmss.xls`。
+
+说明：
+
+- 导出列包括时间、用户、姓名、角色、操作、方法、IP、状态码、耗时、浏览器信息。
+- 没有可导出的日志时返回 `404`。
+
+## 工时管理表接口
+
+### 导出工时管理表
+
+`GET /api/work-hours/export`
+
+权限：需要登录且有系统设置数据管理权限。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `month` | 是 | 月份，格式 `YYYY-MM` |
+
+响应：`.xls` 文件流，文件名格式为 `work-hours-YYYY-MM.xls`。
+
+说明：
+
+- 按月份统计每位设计员的工时数据。
+- 导出列：设计员、总工时、工作日工时、周末加班工时、出差工时、请假工时。
+- 按总工时倒序排列。
+- 冻结首行和首列。
+- 工时为 0 的单元格显示为空。
+
 ## 仕样号搜索接口
 
 ### 获取仕样纳期
 
 `POST /api/spec/delivery-date`
 
-无需认证。
+权限：`admin`、`superadmin`。
 
 从共享目录 `\\192.168.160.6\仕样书$\` 搜索指定仕样号的最新 PDF，并尝试提取纳期信息。
 
@@ -1021,7 +1242,7 @@ Authorization: Bearer <token>
 
 `POST /api/spec/spec-info`
 
-无需认证。
+权限：`admin`、`superadmin`。
 
 从共享目录搜索指定仕样号的最新 PDF，并提取详细信息（中间商、最终客户、项目名称、数量、纳期、营业担当等）。
 
@@ -1069,7 +1290,7 @@ Authorization: Bearer <token>
 
 `POST /api/spec/spec-raw-text`
 
-无需认证。
+权限：`admin`、`superadmin`。
 
 从共享目录读取仕样书 PDF 原始文本内容，用于调试或自定义解析。
 
@@ -1186,7 +1407,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 1. **任务数据结构迁移**：将旧版 `hours` 对象格式迁移为新版 `days` 对象格式
 2. **日期格式规范化**：统一日期格式为 `YYYY-MM-DD`，截取前 10 位
-3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置
+3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`system` 等）
+4. **用户字段迁移**：自动为旧用户补齐 `disabled` 和 `forcePasswordChange` 字段
 
 迁移规则：
 - 迁移过程会自动保存到 `backend/db.json`
@@ -1203,6 +1425,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 6. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置）
 7. **账号禁用**：支持禁用账号，禁用后无法登录
 8. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
+9. **强制修改密码**：新建用户或被重置密码后，下次登录需修改密码
+10. **操作审计**：自动记录所有已登录用户的 API 请求，最多保留 2000 条
 
 ## 环境变量配置
 
@@ -1231,7 +1455,7 @@ CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173,http://127.0.0.1:517
 ### Gitee 版本检查配置
 
 ```env
-GITEE_TOKEN=a09da64c1d9e9c7420a18dfd838890b0
+GITEE_TOKEN=your-gitee-personal-access-token
 GITEE_REPO_OWNER=caifugao110
 GITEE_REPO_NAME=obara-task-manager
 ```
@@ -1251,4 +1475,4 @@ GITEE_REPO_NAME=obara-task-manager
 }
 ```
 
-最后更新：2026-07-04
+最后更新：2026-07-05

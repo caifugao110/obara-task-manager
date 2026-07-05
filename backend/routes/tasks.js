@@ -90,6 +90,22 @@ const moveItemSchema = Joi.object({
   newIndex: Joi.number().integer().min(0).optional()
 });
 
+const batchReplaceSchema = Joi.object({
+  findText: Joi.string().min(1).required(),
+  replaceText: Joi.string().allow('').default(''),
+  allTable: Joi.boolean().default(false),
+  month: Joi.number().integer().min(1).max(12).when('allTable', {
+    is: false,
+    then: Joi.required(),
+    otherwise: Joi.optional()
+  }),
+  year: Joi.number().integer().min(1900).max(9999).when('allTable', {
+    is: false,
+    then: Joi.required(),
+    otherwise: Joi.optional()
+  })
+});
+
 const getMonthYearFromDate = (dateStr) => {
   const date = normalizeDate(dateStr);
   const d = new Date(`${date}T00:00:00`);
@@ -105,6 +121,62 @@ const getOrCreateSheet = (data, designerId, month, year) => {
   }
   if (!sheet.days || typeof sheet.days !== 'object') sheet.days = {};
   return sheet;
+};
+
+const countLiteral = (value, findText) => {
+  if (typeof value !== 'string' || !value.includes(findText)) return 0;
+  return value.split(findText).length - 1;
+};
+
+const getBatchReplaceTargetSheets = (data, allTable, month, year) => {
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  return allTable ? tasks : tasks.filter(sheet => sheet.month === month && sheet.year === year);
+};
+
+const findBatchReplaceMatches = (data, findText, allTable, month, year) => {
+  const designerMap = new Map((data.designers || []).map(designer => [designer.id, designer.name]));
+  const matches = [];
+  let matchCount = 0;
+
+  getBatchReplaceTargetSheets(data, allTable, month, year).forEach(sheet => {
+    if (!sheet.days || typeof sheet.days !== 'object') return;
+
+    Object.entries(sheet.days).forEach(([date, items]) => {
+      if (!Array.isArray(items)) return;
+
+      items.forEach(item => {
+        const fields = [];
+        const taskNameCount = countLiteral(item.taskName, findText);
+        if (taskNameCount > 0) {
+          fields.push({ field: 'taskName', label: '任务名', text: item.taskName, count: taskNameCount });
+          matchCount += taskNameCount;
+        }
+
+        if (Array.isArray(item.guns)) {
+          item.guns.forEach((gun, index) => {
+            const gunNameCount = countLiteral(gun.name, findText);
+            if (gunNameCount > 0) {
+              fields.push({ field: 'gunName', label: `枪名 ${index + 1}`, text: gun.name, count: gunNameCount });
+              matchCount += gunNameCount;
+            }
+          });
+        }
+
+        if (fields.length > 0) {
+          matches.push({
+            designerId: sheet.designerId,
+            designerName: designerMap.get(sheet.designerId) || sheet.designerId,
+            date,
+            itemId: item.id,
+            taskName: item.taskName || '',
+            fields
+          });
+        }
+      });
+    });
+  });
+
+  return { matches, itemCount: matches.length, matchCount };
 };
 
 router.get('/', guestViewMiddleware, asyncHandler(async (req, res) => {
@@ -206,6 +278,100 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
 
   await db.writeDb(data);
   res.status(201).json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
+}));
+
+router.post('/batch-replace/search', authMiddleware, asyncHandler(async (req, res) => {
+  const { error, value: validated } = batchReplaceSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以编辑表格' });
+  }
+
+  const { findText, allTable, month, year } = validated;
+  const data = db.readDb();
+  const result = findBatchReplaceMatches(data, findText, allTable, month, year);
+
+  res.json({
+    ...result,
+    scope: allTable ? 'all' : 'month'
+  });
+}));
+
+router.post('/batch-replace', authMiddleware, asyncHandler(async (req, res) => {
+  const { error, value: validated } = batchReplaceSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以编辑表格' });
+  }
+
+  const { findText, replaceText, allTable, month, year } = validated;
+  const data = db.readDb();
+  const targetSheets = getBatchReplaceTargetSheets(data, allTable, month, year);
+
+  let replacementCount = 0;
+  let itemCount = 0;
+  const updatedSheetIds = new Set();
+
+  const replaceLiteral = (value) => {
+    if (typeof value !== 'string' || !value.includes(findText)) {
+      return { value, count: 0 };
+    }
+    const count = value.split(findText).length - 1;
+    return { value: value.split(findText).join(replaceText), count };
+  };
+
+  targetSheets.forEach(sheet => {
+    if (!sheet.days || typeof sheet.days !== 'object') return;
+
+    Object.values(sheet.days).forEach(items => {
+      if (!Array.isArray(items)) return;
+
+      items.forEach(item => {
+        let itemChanged = false;
+        const taskNameResult = replaceLiteral(item.taskName);
+        if (taskNameResult.count > 0) {
+          item.taskName = taskNameResult.value;
+          replacementCount += taskNameResult.count;
+          itemChanged = true;
+        }
+
+        if (Array.isArray(item.guns)) {
+          item.guns = item.guns.map(gun => {
+            const gunNameResult = replaceLiteral(gun.name);
+            if (gunNameResult.count === 0) return gun;
+            replacementCount += gunNameResult.count;
+            itemChanged = true;
+            return { ...gun, name: gunNameResult.value };
+          });
+        }
+
+        if (itemChanged) {
+          touchItem(item, req.user);
+          itemCount += 1;
+          updatedSheetIds.add(sheet.id);
+        }
+      });
+    });
+  });
+
+  if (replacementCount > 0) {
+    await db.writeDb(data);
+  }
+
+  res.json({
+    message: '批量替换完成',
+    replacementCount,
+    itemCount,
+    sheetCount: updatedSheetIds.size
+  });
 }));
 
 router.put('/item', authMiddleware, asyncHandler(async (req, res) => {

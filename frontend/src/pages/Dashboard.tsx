@@ -90,6 +90,15 @@ type EditingSession = {
   name: string;
 };
 
+type BatchReplaceMatch = {
+  designerId: string;
+  designerName: string;
+  date: string;
+  itemId: string;
+  taskName: string;
+  fields: { field: string; label: string; text: string; count: number }[];
+};
+
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 type SelectedTask = { itemId: string; designerId: string; date: string };
@@ -327,6 +336,7 @@ const Dashboard = () => {
   const [allowGuestView, setAllowGuestView] = useState(true);
   const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
+  const [statusTrackingAccess, setStatusTrackingAccess] = useState(defaultAccessSettings);
   const [systemSettingsAccess, setSystemSettingsAccess] = useState(defaultAccessSettings);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const socketRef = useRef<Socket | null>(null);
@@ -359,6 +369,15 @@ const Dashboard = () => {
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineCacheUsed, setOfflineCacheUsed] = useState(false);
   const [versionInfo, setVersionInfo] = useState<{ currentVersion: string; hasUpdate: boolean; latestVersion: string | null } | null>(null);
+  const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
+  const [batchFindText, setBatchFindText] = useState('');
+  const [batchReplaceText, setBatchReplaceText] = useState('');
+  const [batchReplaceAllTable, setBatchReplaceAllTable] = useState(false);
+  const [batchReplaceLoading, setBatchReplaceLoading] = useState(false);
+  const [batchSearchLoading, setBatchSearchLoading] = useState(false);
+  const [batchMatches, setBatchMatches] = useState<BatchReplaceMatch[]>([]);
+  const [batchMatchCount, setBatchMatchCount] = useState(0);
+  const [batchSearchDone, setBatchSearchDone] = useState(false);
 
   // Calculate table height dynamically
   useEffect(() => {
@@ -1051,7 +1070,14 @@ const Dashboard = () => {
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && modalOpen) {
+      if (e.key !== 'Escape') return;
+
+      if (batchReplaceOpen) {
+        setBatchReplaceOpen(false);
+        return;
+      }
+
+      if (modalOpen) {
         setModalOpen(false);
         stopEditingCell(modalDesignerId, modalDate);
       }
@@ -1076,7 +1102,7 @@ const Dashboard = () => {
       window.removeEventListener('keydown', handleEsc);
       window.removeEventListener('keydown', handleUndo);
     };
-  }, [modalOpen, history, performUndo]);
+  }, [batchReplaceOpen, modalOpen, history, performUndo]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -1109,13 +1135,15 @@ const Dashboard = () => {
       axiosInstance.get('/system/settings'),
       axiosInstance.get('/settings/leaderboard'),
       axiosInstance.get('/settings/work-hours'),
+      axiosInstance.get('/settings/status-tracking'),
       axiosInstance.get('/settings/system-settings')
     ])
-      .then(([systemRes, leaderboardRes, workHoursRes, systemSettingsRes]) => {
+      .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes]) => {
         const guestAllowed = systemRes.data.allowGuestView ?? true;
         setAllowGuestView(guestAllowed);
         setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
         setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
+        setStatusTrackingAccess(statusTrackingRes.data || defaultAccessSettings);
         setSystemSettingsAccess(systemSettingsRes.data || defaultAccessSettings);
         if (!guestAllowed && !user) setLoading(false);
       })
@@ -1482,6 +1510,87 @@ const Dashboard = () => {
   // 存储待保存的任务更改
   const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
 
+  const resetBatchSearchResults = () => {
+    setBatchMatches([]);
+    setBatchMatchCount(0);
+    setBatchSearchDone(false);
+  };
+
+  const getBatchReplacePayload = () => ({
+    findText: batchFindText,
+    replaceText: batchReplaceText,
+    allTable: batchReplaceAllTable,
+    month: currentDate.getMonth() + 1,
+    year: currentDate.getFullYear()
+  });
+
+  const getRequestErrorMessage = (err: any, fallback: string) => {
+    if (err.response?.data?.message) return err.response.data.message;
+    if (err.response?.status === 404) return `${fallback}：接口不存在，请重启后端服务后重试`;
+    if (err.message) return `${fallback}：${err.message}`;
+    return fallback;
+  };
+
+  const openBatchReplaceDialog = async () => {
+    if (pendingChanges.length > 0) {
+      const changes = [...pendingChanges];
+      for (const change of changes) {
+        await saveItem(change.designerId, change.date, change.itemId, change.field, change.value);
+      }
+      setPendingChanges([]);
+    }
+
+    if (modalDesignerId && modalDate) {
+      stopEditingCell(modalDesignerId, modalDate);
+    }
+    setModalOpen(false);
+    setFocusTarget(null);
+    setBatchReplaceOpen(true);
+  };
+
+  const handleBatchSearch = async () => {
+    if (!batchFindText) {
+      addToast('请输入查找字符', 'error');
+      return;
+    }
+
+    setBatchSearchLoading(true);
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` }, timeout: 60000 };
+      const res = await axiosInstance.post('/tasks/batch-replace/search', getBatchReplacePayload(), authHeader);
+      setBatchMatches(Array.isArray(res.data.matches) ? res.data.matches : []);
+      setBatchMatchCount(res.data.matchCount || 0);
+      setBatchSearchDone(true);
+    } catch (err: any) {
+      addToast(getRequestErrorMessage(err, '查找失败'), 'error');
+    } finally {
+      setBatchSearchLoading(false);
+    }
+  };
+
+  const handleBatchReplace = async () => {
+    if (!batchFindText) {
+      addToast('请输入查找字符', 'error');
+      return;
+    }
+
+    setBatchReplaceLoading(true);
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` }, timeout: 60000 };
+      const res = await axiosInstance.post('/tasks/batch-replace', getBatchReplacePayload(), authHeader);
+
+      await fetchSheets();
+      socketRef.current?.emit('task_updated');
+      setBatchReplaceOpen(false);
+      resetBatchSearchResults();
+      addToast(`批量替换完成：替换了 ${res.data.itemCount || 0} 个任务`, 'success');
+    } catch (err: any) {
+      addToast(getRequestErrorMessage(err, '批量替换失败'), 'error');
+    } finally {
+      setBatchReplaceLoading(false);
+    }
+  };
+
   // 处理任务项的字段变更，将更改存入 pendingChanges 并实时更新界面。
   // 此函数会触发后端 API 调用，自动更新任务的 `updatedAt` 和 `updatedBy` 字段。
   // 所有操作都会记录到历史中以便撤销。
@@ -1597,7 +1706,14 @@ const Dashboard = () => {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col">
         <header className="bg-[#217346] text-white px-6 py-3 flex items-center justify-between shadow-md">
-          <h1 className="text-lg font-bold">Obara 任务管理系统</h1>
+          <a
+            href="https://caifugao110.github.io/obara-task-manager/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-lg font-bold hover:underline"
+          >
+            Obara 任务管理系统
+          </a>
         </header>
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
@@ -1677,6 +1793,12 @@ const Dashboard = () => {
     return false;
   };
 
+  const canShowSystemSettingsLink = () => {
+    if (isSuperAdmin) return true;
+    if (!systemSettingsAccess.enabled) return false;
+    return user?.role === 'admin' && systemSettingsAccess.allowAdmins;
+  };
+
   const formatTaskMetaTime = (value?: string) => {
     if (!value) return '暂无记录';
     const date = new Date(value);
@@ -1711,7 +1833,14 @@ const Dashboard = () => {
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-2">
             <FileSpreadsheet size={24} />
-            <h1 className="text-lg font-bold tracking-tight">Obara 任务管理系统</h1>
+            <a
+              href="https://caifugao110.github.io/obara-task-manager/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-lg font-bold tracking-tight hover:underline"
+            >
+              Obara 任务管理系统
+            </a>
           </div>
           <div className="flex items-center bg-[#1a5c38] rounded p-0.5 ml-4">
             <button onClick={() => changeMonth(-1)} className="p-1 hover:bg-[#217346] rounded transition">
@@ -1753,7 +1882,7 @@ const Dashboard = () => {
                 <span>工时管理</span>
               </Link>
           )}
-          {canShowAccessLink(workHoursAccess) && (
+          {canShowAccessLink(statusTrackingAccess) && (
               <Link
                 to="/status-tracking"
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
@@ -1762,7 +1891,7 @@ const Dashboard = () => {
                 <span>状态跟踪表</span>
               </Link>
           )}
-          {canShowAccessLink(systemSettingsAccess) && (
+          {canShowSystemSettingsLink() && (
             <Link
               to="/system-settings"
               className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
@@ -1814,7 +1943,7 @@ const Dashboard = () => {
         <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-blue-700 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>
-            检测到新版本（{versionInfo.latestVersion}），当前版本为 {versionInfo.currentVersion}。
+            检测到新版本 {versionInfo.latestVersion}，当前版本为 {versionInfo.currentVersion}。
             请联系超级管理员重启程序以更新到最新版本。
           </span>
         </div>
@@ -2066,11 +2195,19 @@ const Dashboard = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40" onClick={() => { setModalOpen(false); stopEditingCell(modalDesignerId, modalDate); }} />
           <div className="relative bg-white rounded-lg shadow-2xl w-[960px] max-w-[96vw] max-h-[90vh] flex flex-col border-2 border-gray-200">
-            <div className="flex items-center justify-between px-4 py-3 border-b-2 border-gray-200 bg-[#217346] text-white rounded-t-lg">
+            <div className="relative flex items-center justify-between px-4 py-3 border-b-2 border-gray-200 bg-[#217346] text-white rounded-t-lg">
               <div>
                 <div className="font-bold text-lg">{designers.find(d => d.id === modalDesignerId)?.name}</div>
                 <div className="text-xs opacity-80">{modalDate}</div>
               </div>
+              {isAdmin && (
+                <button
+                  onClick={() => { void openBatchReplaceDialog(); }}
+                  className="absolute left-1/2 -translate-x-1/2 px-4 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded text-sm font-bold transition"
+                >
+                  批量操作
+                </button>
+              )}
               <button onClick={() => { 
                 // 清空待保存的更改
                 setPendingChanges([]);
@@ -3005,6 +3142,127 @@ const Dashboard = () => {
                   保存
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {batchReplaceOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/35"
+            onClick={() => {
+              if (!batchReplaceLoading) setBatchReplaceOpen(false);
+            }}
+          />
+          <div className="relative w-[540px] max-w-[94vw] bg-white rounded-lg shadow-2xl border-2 border-gray-200 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 bg-[#217346] text-white">
+              <div className="font-bold text-base">批量操作</div>
+              <button
+                onClick={() => setBatchReplaceOpen(false)}
+                disabled={batchReplaceLoading}
+                className="p-1 hover:bg-red-600 rounded transition disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1.5">查找字符</label>
+                <input
+                  className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                  value={batchFindText}
+                  onChange={(e) => {
+                    setBatchFindText(e.target.value);
+                    resetBatchSearchResults();
+                  }}
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1.5">替换为</label>
+                <input
+                  className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                  value={batchReplaceText}
+                  onChange={(e) => {
+                    setBatchReplaceText(e.target.value);
+                    resetBatchSearchResults();
+                  }}
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-lg bg-gray-50 border border-gray-200 px-3 py-2">
+                <span className="text-sm font-bold text-gray-700">全表</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBatchReplaceAllTable(prev => !prev);
+                    resetBatchSearchResults();
+                  }}
+                  className={`relative h-6 w-11 rounded-full transition ${batchReplaceAllTable ? 'bg-blue-600' : 'bg-gray-300'}`}
+                  aria-pressed={batchReplaceAllTable}
+                >
+                  <span
+                    className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${batchReplaceAllTable ? 'left-6' : 'left-1'}`}
+                  />
+                </button>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white">
+                <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50">
+                  <div className="text-sm font-bold text-gray-700">
+                    {batchSearchDone
+                      ? `找到 ${batchMatches.length} 个任务，${batchMatchCount} 处字符`
+                      : '查找结果'}
+                  </div>
+                  <button
+                    onClick={handleBatchSearch}
+                    disabled={batchSearchLoading || batchReplaceLoading || !batchFindText}
+                    className="px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {batchSearchLoading ? '查找中...' : '查找'}
+                  </button>
+                </div>
+                <div className="max-h-56 overflow-auto">
+                  {!batchSearchDone ? (
+                    <div className="px-3 py-6 text-sm text-gray-400 text-center">点击查找后显示命中的任务</div>
+                  ) : batchMatches.length === 0 ? (
+                    <div className="px-3 py-6 text-sm text-gray-400 text-center">未找到匹配任务</div>
+                  ) : (
+                    <div className="divide-y divide-gray-100">
+                      {batchMatches.map(match => (
+                        <div key={`${match.designerId}-${match.date}-${match.itemId}`} className="px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-bold text-gray-800 truncate">{match.taskName || '无任务名'}</div>
+                            <div className="shrink-0 text-[11px] text-gray-500">{match.designerName} · {match.date}</div>
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {match.fields.map((field, index) => (
+                              <span key={`${field.field}-${index}`} className="px-2 py-0.5 rounded bg-yellow-50 text-yellow-800 border border-yellow-200 text-[11px]">
+                                {field.label} {field.count} 处
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t-2 border-gray-200 bg-gray-50">
+              <button
+                onClick={() => setBatchReplaceOpen(false)}
+                disabled={batchReplaceLoading}
+                className="px-4 py-2 text-sm font-bold text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-100 transition disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleBatchReplace}
+                disabled={batchReplaceLoading || !batchFindText}
+                className="px-5 py-2 text-sm font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                {batchReplaceLoading ? '处理中...' : '替换'}
+              </button>
             </div>
           </div>
         </div>

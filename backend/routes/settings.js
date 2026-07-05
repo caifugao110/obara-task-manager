@@ -19,9 +19,17 @@ const normalizeAccessSettings = (settings = defaultAccessSettings) => {
   return normalized;
 };
 
+const normalizeAccessSettingsForKey = (key, settings = defaultAccessSettings) => {
+  const normalized = normalizeAccessSettings(settings);
+  if (key === 'systemSettings') {
+    normalized.allowViewers = false;
+  }
+  return normalized;
+};
+
 const getAccessSettings = (key) => asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const settings = normalizeAccessSettings(data.settings?.[key]);
+  const settings = normalizeAccessSettingsForKey(key, data.settings?.[key]);
   res.json(settings);
 });
 
@@ -33,7 +41,7 @@ const updateAccessSettings = (key) => [authMiddleware, superAdminMiddleware, asy
 
   const data = db.readDb();
   if (!data.settings) data.settings = {};
-  data.settings[key] = normalizeAccessSettings(value);
+  data.settings[key] = normalizeAccessSettingsForKey(key, value);
   await db.writeDb(data);
   res.json(data.settings[key]);
 })];

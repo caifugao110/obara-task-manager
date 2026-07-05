@@ -58,12 +58,13 @@ const SystemSettings = () => {
   const isSuperAdmin = user?.role === 'superadmin';
   const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
 
-  const canViewSystemSettings = isSuperAdmin || (
-    accessSettingsLoaded && accessSettings.enabled && (
-      (user?.role === 'admin' && accessSettings.allowAdmins) ||
-      (user?.role === 'user' && accessSettings.allowViewers)
-    )
-  );
+  const canViewSystemSettings = (() => {
+    if (isSuperAdmin) return true;
+    if (!accessSettingsLoaded || !accessSettings.enabled) return false;
+    if (!user) return false;
+    if (user.role === 'admin' && accessSettings.allowAdmins) return true;
+    return false;
+  })();
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
@@ -134,6 +135,15 @@ const SystemSettings = () => {
 
   const updateAccessSettings = async (next: Partial<typeof defaultAccessSettings>) => {
     const updated = { ...accessSettings, ...next };
+    if (next.enabled === false) {
+      updated.allowAdmins = false;
+      updated.allowViewers = false;
+    }
+    if (next.enabled === true) {
+      updated.allowAdmins = true;
+      updated.allowViewers = false;
+    }
+    updated.allowViewers = false;
     setAccessSettings(updated);
     if (!isSuperAdmin || !token) return;
 
@@ -480,7 +490,7 @@ const SystemSettings = () => {
                 <ClipboardList className="mr-2 text-purple-600" size={22} />
                 状态跟踪表
               </h3>
-              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，保持导出来的页面排版和原始页面一致，按照纳期月份进行工作表的导出。</p>
+              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，按照纳期月份进行工作表的导出。</p>
               <div className="flex flex-wrap gap-4 items-center">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-bold text-gray-700">选择月份：</span>
@@ -535,11 +545,10 @@ const SystemSettings = () => {
                   <Shield className="mr-2 text-purple-600" size={22} />
                   系统设置查看权限设置
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {[
                     { label: '启用系统设置', detail: 'Global Toggle', key: 'enabled' as const },
-                    { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-                    { label: '游客/普通用户', detail: 'Guest Access', key: 'allowViewers' as const }
+                    { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const }
                   ].map(item => (
                     <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                       <div>

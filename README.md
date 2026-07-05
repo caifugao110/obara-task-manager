@@ -30,10 +30,7 @@ start.bat
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
-默认超级管理员账号：
-
-- 用户名：`superadmin`
-- 密码：`admin123`
+> 首次部署请在 `backend/db.json` 中自行配置超级管理员账号和密码，密码请使用 bcrypt 哈希值存储。
 
 ### 手动启动
 
@@ -53,8 +50,9 @@ npm run dev
 | 工时管理 | `/work-hours` | 月度工时排行、请假排行、周末加班与出差明细 |
 | 管理后台 | `/admin` | 设计人员列表、登录用户列表、批量导入 |
 | 登录 | `/login` | 管理员和普通用户登录 |
-| 系统设置 | `/system-settings` | 数据导入导出、登录策略、最新登录信息 |
-| 登录日志 | `/login-logs` | 登录日志明细和筛选 |
+| 修改密码 | `/change-password` | 首次登录或被重置密码后强制修改密码 |
+| 系统设置 | `/system-settings` | 数据管理、登录管理、日志管理三大模块 |
+| 操作日志 | `/system-logs` | 所有用户的操作日志明细和筛选 |
 | 状态追踪 | `/status-tracking` | 任务状态追踪与批量导入导出 |
 
 ## 当前功能
@@ -145,15 +143,25 @@ npm run dev
 
 ### 系统设置
 
+系统设置页面分为「数据管理」「登录管理」「日志管理」三大模块。
+
+#### 数据管理
+
+- **任务管理**：导出渲染后的任务 `.xls` 表格，文件名格式为 `obara-tasks-YYYY-MM-DD-HHmmss.xls`；导入任务数据时必须使用系统导出的 `.xls` 格式，每次只能选择一个月份覆盖导入。导入只解析任务内容/工时列，`当日合计` 和 `月总工时` 不导入，由系统重新计算。导入月份天数与表格天数不一致时，多出来的日期列会被截断，缺少的日期会按空数据处理。导入表格中新增的设计员不会自动创建，会跳过并在结果中提示。任务管理导入/导出仅超级管理员可用。
+- **状态跟踪表**：按月份导出状态追踪数据为 `.xls`，文件名格式为 `status-tracking-YYYY-MM.xls`。仅超级管理员可导入，支持重复仕样号检查和覆盖导入选项。
+- **工时管理表**：按月份导出工时汇总数据为 `.xls`，文件名格式为 `work-hours-YYYY-MM.xls`。导出表格包含设计员、总工时、工作日工时、周末加班工时、出差工时、请假工时等列，按总工时倒序排列，冻结首行和首列。
+
+#### 登录管理
+
 - 可配置未登录查看主页面和多设备同时在线。
-- 可导出渲染后的任务 `.xls` 表格，文件名格式为 `obara-tasks-YYYY-MM-DD-HHmmss.xls`。
-- 导出的 `.xls` 使用每月一个工作表，首两行是表头，第三行起为任务数据；冻结窗口固定到第三行并冻结第一列。
-- 导入任务数据时必须使用系统导出的 `.xls` 表格格式，每次只能选择一个月份覆盖导入，不能一次覆盖所有月份。
-- 导入只解析任务内容/工时列，`当日合计` 和 `月总工时` 不导入，由系统重新计算。
-- 导入月份天数与表格天数不一致时，多出来的日期列会被截断，缺少的日期会按空数据处理。
-- 导入表格中新增的设计员不会自动创建，会跳过并在结果中提示。
-- 显示最新 20 条所有登录用户的登录信息，包含账号、姓名、角色、IP、浏览器信息和结果。
-- 详细登录日志页面支持按账号/姓名、角色、结果、IP、浏览器、日期和显示条数筛选。
+- 仅超级管理员可访问登录管理模块。
+
+#### 日志管理
+
+- 主页面显示最新 10 条管理员（超级管理员和一般管理员）的登录记录，包含账号、姓名、角色、IP、浏览器信息和结果。
+- 点击「详细日志」进入操作日志页面（`/system-logs`），可查看所有用户的所有操作记录，支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
+- 操作日志自动记录所有已登录用户的 API 请求，包含操作描述、方法、路径、IP、浏览器信息、状态码、耗时等，最多保留 2000 条。
+- 仅超级管理员可访问日志管理模块。
 
 ## 权限模型
 
@@ -162,8 +170,10 @@ npm run dev
 - 查看和编辑所有任务。
 - 管理设计人员、一般管理员和普通用户（包括禁用/启用账号）。
 - 配置任务报表、工时管理、状态追踪和系统设置。
-- 导入导出系统数据。
-- 查看所有登录用户的最新登录信息和详细登录日志。
+- 导入导出系统数据（任务管理、状态跟踪表、工时管理表）。
+- 查看最新管理员登录信息和详细操作日志。
+- 配置未登录查看、多设备同时在线等系统设置。
+- 强制重置任意用户密码（重置后用户下次登录需修改密码）。
 
 ### 一般管理员 `admin`
 
@@ -171,10 +181,12 @@ npm run dev
 - 管理设计人员。
 - 创建普通用户作为登录用户。
 - 是否可进入任务报表、工时管理、状态追踪，取决于对应页面的“一般管理员”开关。
+- 是否可进入系统设置数据管理模块，取决于系统设置页面的“一般管理员”开关（仅可查看导出，不能导入）。
 
 ### 普通用户 `user`
 
 - 登录后可查看主页面。
+- 首次登录或被重置密码后需修改密码。
 - 其他权限与未登录游客一致。
 - 是否可进入任务报表、工时管理、状态追踪，取决于对应页面的“游客/普通用户”开关。
 
@@ -194,16 +206,35 @@ npm run dev
   "designers": [],
   "tasks": [],
   "loginLogs": [],
+  "auditLogs": [],
   "statusTrackingItems": [],
   "settings": {
     "leaderboard": { "enabled": true, "allowAdmins": true, "allowViewers": false },
     "workHours": { "enabled": true, "allowAdmins": true, "allowViewers": false },
     "statusTracking": { "enabled": true, "allowAdmins": true, "allowViewers": false },
+    "systemSettings": { "enabled": true, "allowAdmins": true, "allowViewers": false },
     "leaderRules": [],
     "system": { "allowGuestView": true, "allowMultiDevice": true }
   }
 }
 ```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `users` | 登录用户列表，包含 `forcePasswordChange` 字段用于强制修改密码 |
+| `designers` | 设计人员列表 |
+| `tasks` | 按设计人员(`designerId`)、年月保存的任务表 |
+| `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 500 条 |
+| `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
+| `statusTrackingItems` | 状态追踪记录 |
+| `settings.leaderboard` | 任务报表访问权限 |
+| `settings.workHours` | 工时管理访问权限 |
+| `settings.statusTracking` | 状态追踪访问权限 |
+| `settings.systemSettings` | 系统设置页面访问权限（`allowViewers` 始终为 `false`） |
+| `settings.leaderRules` | 组长规则配置 |
+| `settings.system` | 系统设置，如未登录查看、多设备登录 |
 
 建议定期备份 `backend/db.json`，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
 
@@ -218,6 +249,15 @@ npm run build
 npm run start:backend
 npm run start:frontend
 ```
+
+其他脚本：
+
+| 脚本 | 说明 |
+|------|------|
+| `start.bat` | Windows 一键启动前后端并打开浏览器 |
+| `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
+| `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
+| `stop.bat` | 停止前后端进程 |
 
 前端类型检查：
 
@@ -252,147 +292,127 @@ cd frontend
 - 可提取纳期、中间商、最终客户、项目名称、数量、营业担当等信息
 - 纳期获取超时时间为 9 秒，完整信息获取超时时间为 15 秒
 
+## 强制修改密码
+
+系统支持首次登录强制修改密码机制：
+
+- 超级管理员创建的普通用户、一般管理员创建的普通用户首次登录时必须修改密码。
+- 超级管理员重置任意用户密码后，该用户下次登录需修改密码。
+- 已存在的非超级管理员账号在系统升级后会自动标记为需要修改密码。
+- 修改密码页面为 `/change-password`，未提示修改密码时访问会自动跳转回主页。
+
+## 操作日志
+
+系统自动记录所有已登录用户的 API 请求作为操作日志：
+
+- 日志包含操作描述、HTTP 方法、路径、IP、浏览器信息、状态码、耗时、请求体和响应消息。
+- GET 请求不记录响应消息（避免存储大体积任务数据），POST/PUT 请求记录请求体（最大 2000 字符）。
+- 操作日志最多保留 2000 条，超过自动清理最旧记录。
+- 仅超级管理员可在「操作日志」页面查看，支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
+- 系统设置和操作日志相关接口本身不会被记录到操作日志中。
+
 ## 安全配置
 
-系统使用集中的安全配置文件管理敏感信息，所有配置项均可通过环境变量设置：
+系统使用集中的安全配置文件管理敏感信息，所有配置项均可通过环境变量设置。安全配置集中在 `backend/config/security.js`，包含 JWT 配置、CORS 配置、Gitee API 配置、数据库路径配置和服务器配置。
 
-| 配置项 | 环境变量 | 默认值 | 说明 |
-|--------|----------|--------|------|
-| JWT 密钥 | `JWT_SECRET` | `obara_task_secret_key_2026` | 生产环境必须修改为强随机字符串 |
-| JWT 过期时间 | `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
-| 后端端口 | `PORT` | `5000` | 后端服务端口 |
-| 运行环境 | `NODE_ENV` | `development` | 开发/生产环境 |
-| CORS 允许源 | `CORS_ORIGIN` | - | 逗号分隔的允许地址列表 |
-| Gitee Token | `GITEE_TOKEN` | - | 用于版本检查的 Gitee API Token |
-| Gitee 仓库所有者 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
-| Gitee 仓库名 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
-| 数据库路径 | `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
-
-### Gitee 版本检查
-
-系统通过 Gitee API 检查远程仓库版本，前端可频繁调用而不影响性能：
-
-1. 配置 `GITEE_TOKEN`、`GITEE_REPO_OWNER`、`GITEE_REPO_NAME` 环境变量
-2. 版本检查接口 `GET /api/system/version` 通过 Gitee API 获取最新提交信息
-3. 相比传统的 `git fetch` 方式，API 调用更高效，适合前端频繁轮询
-
-#### 版本号格式
-
-版本号采用 `YY-MM-DD-VN` 格式：
-- `YY`：年份后两位（如 26 表示 2026 年）
-- `MM`：月份（01-12）
-- `DD`：日期（01-31）
-- `VN`：当日版本号（V1、V2、V3...，当日多次提交时自动递增）
-
-#### 版本比较规则
-
-版本比较按照以下优先级依次比较：
-1. 年份（YY）
-2. 月份（MM）
-3. 日期（DD）
-4. 当日版本号（VN）
-
-只有当远程版本严格大于本地版本时，才会提示更新。例如：
-- `26-07-04-V2` > `26-07-04-V1` → 提示更新
-- `26-07-04` > `26-07-03` → 提示更新
-- `26-07-03` < `26-07-04-V2` → 不提示更新（旧版本）
-
-#### 前端版本提示
-
-- 页面底部显示当前版本号（如 `当前版本 26-07-04-V2`）
-- 检测到新版本时，页面顶部显示蓝色横幅提示
-- 管理员看到："检测到新版本（XX-XX-XX），当前版本为 XX-XX-XX。请重启程序以更新到最新版本。"
-- 普通用户看到："检测到新版本（XX-XX-XX），当前版本为 XX-XX-XX。请联系管理员更新系统。"
-
-### 配置文件
-
-安全配置集中在 `backend/config/security.js`，包含：
-- JWT 配置
-- CORS 配置
-- Gitee API 配置
-- 数据库路径配置
-- 服务器配置
+详细的环境变量配置、版本检查机制和安全加固建议，请参考 [Windows 部署指南](DEPLOYMENT.md)。
 
 ## 项目结构
 
 ```text
 obara-task-manager/
-		|-- start.bat
-		|-- README.md
-		|-- DEPLOYMENT.md
-		|-- docs/
-		|   `-- API.md
-		|-- backend/
-		|   |-- server.js
-		|   |-- db.js
-		|   |-- config/
-		|   |   `-- security.js
-		|   |-- routes/
-		|   |   |-- tasks.js
-		|   |   |-- designers.js
-		|   |   |-- users.js
-		|   |   |-- settings.js
-		|   |   |-- system.js
-		|   |   |-- spec.js
-		|   |   |-- statusTracking.js
-		|   |   `-- auth.js
-		|   |-- middleware/
-		|   |   `-- auth.js
-		|   `-- templates/
-		|       `-- spec-pdf/
-		`-- frontend/
-		    |-- vite.config.ts
-		    `-- src/
-		        |-- pages/
-		        |   |-- Dashboard.tsx
-		        |   |-- Leaderboard.tsx
-		        |   |-- WorkHours.tsx
-		        |   |-- Admin.tsx
-		        |   |-- Login.tsx
-		        |   |-- SystemSettings.tsx
-		        |   |-- LoginLogs.tsx
-		        |   `-- StatusTracking.tsx
-		        |-- context/
-		        |   `-- AuthContext.tsx
-		        |-- hooks/
-		        |   |-- useSocket.ts
-		        |   |-- useTasks.ts
-		        |   `-- index.ts
-		        |-- services/
-		        |   `-- api.ts
-		        |-- types/
-		        |   `-- index.ts
-		        |-- utils/
-		        |   |-- axios.ts
-		        |   |-- debounce.ts
-		        |   `-- loginLogs.ts
-		        |-- App.tsx
-		        |-- main.tsx
-		        `-- index.css
+├── .github/workflows/
+│   └── deploy.yml
+├── backend/
+│   ├── .env.example
+│   ├── db.js
+│   ├── nodemon.json
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── server.js
+│   ├── config/
+│   │   └── security.js
+│   ├── middleware/
+│   │   ├── auditLog.js
+│   │   └── auth.js
+│   ├── routes/
+│   │   ├── auth.js
+│   │   ├── designers.js
+│   │   ├── settings.js
+│   │   ├── spec.js
+│   │   ├── statusTracking.js
+│   │   ├── system.js
+│   │   ├── tasks.js
+│   │   ├── users.js
+│   │   └── workHours.js
+│   ├── scripts/
+│   │   └── extract_pdf_text.js
+│   ├── templates/
+│   │   └── spec-pdf/
+│   └── utils/
+│       └── exportWorkbook.js
+├── docs/
+│   └── API.md
+├── frontend/
+│   ├── index.html
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── postcss.config.js
+│   ├── tailwind.config.js
+│   ├── tsconfig.json
+│   ├── tsconfig.node.json
+│   ├── vite.config.ts
+│   ├── public/
+│   │   ├── favicon-16.png
+│   │   ├── favicon-32.png
+│   │   ├── favicon-48.png
+│   │   ├── favicon-128.png
+│   │   └── favicon.ico
+│   └── src/
+│       ├── App.tsx
+│       ├── index.css
+│       ├── main.tsx
+│       ├── vite-env.d.ts
+│       ├── context/
+│       │   └── AuthContext.tsx
+│       ├── hooks/
+│       │   ├── index.ts
+│       │   ├── useSocket.ts
+│       │   └── useTasks.ts
+│       ├── pages/
+│       │   ├── Admin.tsx
+│       │   ├── ChangePassword.tsx
+│       │   ├── Dashboard.tsx
+│       │   ├── Leaderboard.tsx
+│       │   ├── Login.tsx
+│       │   ├── StatusTracking.tsx
+│       │   ├── SystemLogs.tsx
+│       │   ├── SystemSettings.tsx
+│       │   └── WorkHours.tsx
+│       ├── services/
+│       │   └── api.ts
+│       ├── types/
+│       │   └── index.ts
+│       └── utils/
+│           ├── axios.ts
+│           ├── debounce.ts
+│           └── loginLogs.ts
+├── .gitignore
+├── DEPLOYMENT.md
+├── LICENSE
+├── README.md
+├── package.json
+├── package-lock.json
+├── start.bat
+├── start-hidden.vbs
+├── start-process-hidden.vbs
+└── stop.bat
 ```
 
 ## 相关文档
 
 - [API 文档](docs/API.md)
 - [Windows 部署指南](DEPLOYMENT.md)
-
-## GitHub Pages 部署
-
-项目通过 GitHub Pages 展示项目文档（README.md 和 docs 目录），不包含前端应用。
-
-### 自动部署
-
-每次推送代码到 `main` 分支时，GitHub Actions 会自动部署文档到 GitHub Pages：
-
-- 触发条件：`README.md` 或 `docs/` 目录变更
-- 部署内容：README.md（作为首页）和 docs 目录下的所有文档
-- 访问地址：`https://caifugao110.github.io/obara-task-manager/`
-
-### 注意事项
-
-- GitHub Pages 仅展示项目文档，不包含前端应用
-- 前端应用需要在本地或服务器上运行
-- 后端服务需要单独部署
 
 ### 项目访问
 

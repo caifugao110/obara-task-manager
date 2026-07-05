@@ -132,9 +132,7 @@ const readDb = () => {
         : { enabled: true, allowAdmins: true, allowViewers: false };
     }
     if (!parsed.settings.systemSettings) {
-      parsed.settings.systemSettings = parsed.settings.workHours
-        ? { ...parsed.settings.workHours }
-        : { enabled: true, allowAdmins: true, allowViewers: false };
+      parsed.settings.systemSettings = { enabled: true, allowAdmins: true, allowViewers: false };
     }
     if (!parsed.settings.system) {
       parsed.settings.system = { allowGuestView: true, allowMultiDevice: true };

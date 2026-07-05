@@ -5,6 +5,7 @@ const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMid
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
 const multer = require('multer');
+const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -161,8 +162,7 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
     { key: 'unconfirmedQuantity', label: '未确认数' },
     { key: 'designDeliveryDays', label: '设计纳期' },
     { key: 'salesPerson', label: '营业担当' },
-    { key: 'leader', label: '组长' },
-    { key: 'specNumber', label: '仕样号' }
+    { key: 'leader', label: '组长' }
   ];
 
   const headerRow = columns.map(col => col.label);
@@ -177,36 +177,13 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
   });
 
   const worksheetData = [headerRow, ...dataRows];
-  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-  
-  const colWidths = [
-    { wpx: 80 },
-    { wpx: 220 },
-    { wpx: 45 },
-    { wpx: 60 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 110 },
-    { wpx: 130 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 45 },
-    { wpx: 80 },
-    { wpx: 80 },
-    { wpx: 80 }
-  ];
-  worksheet['!cols'] = colWidths;
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData, { sheetStubs: true });
+  worksheet['!cols'] = buildAutoColumns(worksheetData, { min: 50, max: 220 });
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, month);
 
-  const xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
+  const xml = applyExportStyles(XLSX.write(workbook, { type: 'string', bookType: 'xlml' }));
   const buffer = Buffer.from(xml, 'utf8');
   
   res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');

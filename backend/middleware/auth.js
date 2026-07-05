@@ -64,6 +64,7 @@ const hasAccessSettings = (user, settingsKey) => {
   if (user.role === 'superadmin') return true;
   const data = db.readDb();
   const settings = normalizeAccessSettings(data.settings?.[settingsKey]);
+  if (settingsKey === 'systemSettings') settings.allowViewers = false;
   if (!settings.enabled) return false;
   if (user.role === 'admin' && settings.allowAdmins) return true;
   if (user.role === 'user' && settings.allowViewers) return true;

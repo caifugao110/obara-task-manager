@@ -4,6 +4,7 @@ const db = require('../db');
 const { authMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
+const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 
 router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
   const { month } = req.query;
@@ -102,10 +103,7 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
     { key: 'workdayHours', label: '工作日工时' },
     { key: 'weekendHours', label: '周末加班工时' },
     { key: 'tripHours', label: '出差工时' },
-    { key: 'leaveHours', label: '请假工时' },
-    { key: 'sickDays', label: '事假(小时)' },
-    { key: 'vacationDays', label: '休假(小时)' },
-    { key: 'illnessDays', label: '病假(小时)' }
+    { key: 'leaveHours', label: '请假工时' }
   ];
 
   const headerRow = columns.map(col => col.label);
@@ -114,35 +112,21 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
     const leaveHours = item.sickDays + item.vacationDays + item.illnessDays;
     const rowData = { ...item, weekendHours, leaveHours };
     return columns.map(col => {
-      if (['hours', 'workdayHours', 'weekendHours', 'tripHours', 'leaveHours', 'sickDays', 'vacationDays', 'illnessDays'].includes(col.key)) {
-        return rowData[col.key].toFixed(1);
+      if (['hours', 'workdayHours', 'weekendHours', 'tripHours', 'leaveHours'].includes(col.key)) {
+        return rowData[col.key] === 0 ? '' : rowData[col.key].toFixed(1);
       }
       return rowData[col.key] || '';
     });
   });
 
   const worksheetData = [headerRow, ...dataRows];
-  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-
-  const colWidths = [
-    { wpx: 100 },
-    { wpx: 80 },
-    { wpx: 100 },
-    { wpx: 110 },
-    { wpx: 80 },
-    { wpx: 80 },
-    { wpx: 80 },
-    { wpx: 80 },
-    { wpx: 80 }
-  ];
-  worksheet['!cols'] = colWidths;
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData, { sheetStubs: true });
+  worksheet['!cols'] = buildAutoColumns(worksheetData, { min: 70, max: 160 });
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, month);
 
-  let xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
-  const freezeOptions = '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><SplitVertical>1</SplitVertical><LeftColumnRightPane>1</LeftColumnRightPane><ActivePane>0</ActivePane><Panes><Pane><Number>3</Number></Pane><Pane><Number>1</Number></Pane><Pane><Number>2</Number><ActiveRow>0</ActiveRow></Pane><Pane><Number>0</Number><ActiveRow>1</ActiveRow><ActiveCol>1</ActiveCol></Pane></Panes></WorksheetOptions>';
-  xml = xml.replace(/<\/Worksheet>/g, `${freezeOptions}</Worksheet>`);
+  const xml = applyExportStyles(XLSX.write(workbook, { type: 'string', bookType: 'xlml' }), { freezeFirstColumn: true });
   const buffer = Buffer.from(xml, 'utf8');
 
   res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
