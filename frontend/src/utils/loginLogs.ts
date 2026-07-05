@@ -80,7 +80,11 @@ export const getActionTypeLabel = (action: string) => {
     '导出状态跟踪表': { label: '导出状态跟踪表', description: '导出状态跟踪表格' },
     '导入状态跟踪表': { label: '导入状态跟踪表', description: '导入状态跟踪表格' },
     '导出工时管理表': { label: '导出工时管理表', description: '导出工时统计表格' },
-    '查询仕样信息': { label: '查询仕样信息', description: '查询产品仕样信息' }
+    '查询仕样信息': { label: '查询仕样信息', description: '查询产品仕样信息' },
+    '查看日志': { label: '查看日志', description: '查看系统操作日志列表' },
+    '筛选日志': { label: '筛选日志', description: '获取日志筛选选项' },
+    '导出日志': { label: '导出日志', description: '导出系统操作日志' },
+    '查看版本': { label: '查看版本', description: '查看系统版本信息' }
   };
-  return actionDescriptions[action] || { label: action, description: action };
+  return actionDescriptions[action] || { label: action.replace(/^GET\s+\/|^POST\s+\/|^PUT\s+\/|^DELETE\s+\/|^PATCH\s+\/|^GET\s|^POST\s|^PUT\s|^DELETE\s|^PATCH\s/g, ''), description: action };
 };

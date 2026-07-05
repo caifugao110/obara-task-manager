@@ -115,6 +115,7 @@ io.on('connect_error', (error) => {
 io.on('connection', (socket) => {
   // 此时用户已通过认证中间件验证
   const user = socket.data.user;
+  socket.join(`user:${user.id}`);
   console.log(`User connected: ${user.username} (${socket.id})`);
 
   socket.emit('editing_state', publicEditingSessions());

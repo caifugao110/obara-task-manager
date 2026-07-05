@@ -338,20 +338,21 @@ const SystemLogs = () => {
                   <th className="px-4 py-3 font-bold">方法</th>
                   <th className="px-4 py-3 font-bold">IP</th>
                   <th className="px-4 py-3 font-bold">状态码</th>
+                  <th className="px-4 py-3 font-bold">耗时</th>
                   <th className="px-4 py-3 font-bold">浏览器信息</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center">
+                    <td colSpan={9} className="px-4 py-8 text-center">
                       <RefreshCw className="inline-block animate-spin text-blue-600 mr-2" size={20} />
                       加载中...
                     </td>
                   </tr>
                 ) : logs.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
+                    <td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
                   </tr>
                 ) : (
                   logs.map(log => (

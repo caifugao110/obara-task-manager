@@ -38,15 +38,36 @@ const formatRequestBody = (method, body) => {
 const formatResponseMessage = (method, responseBody) => {
   if (responseBody == null) return null;
 
-  // GET responses can include the entire task table. Keeping them in db.json
-  // makes every future request parse the same large payload again.
   if (method === 'GET') return null;
 
-  const message = typeof responseBody === 'string'
-    ? responseBody
-    : JSON.stringify(responseBody);
+  try {
+    let message;
+    if (typeof responseBody === 'string') {
+      message = responseBody;
+    } else {
+      const seen = new WeakSet();
+      message = JSON.stringify(responseBody, (key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (Buffer.isBuffer(value)) {
+            return '[Buffer]';
+          }
+          if (seen.has(value)) {
+            return '[Circular]';
+          }
+          seen.add(value);
+        }
+        if (typeof value === 'function') {
+          return '[Function]';
+        }
+        return value;
+      });
+    }
 
-  return truncateText(message, MAX_RESPONSE_MESSAGE_LENGTH);
+    return truncateText(message, MAX_RESPONSE_MESSAGE_LENGTH);
+  } catch (err) {
+    console.error('Error formatting response message:', err);
+    return '[Error: Response body too large or contains circular references]';
+  }
 };
 
 const getActionDescription = (method, path, body) => {
@@ -65,6 +86,10 @@ const getActionDescription = (method, path, body) => {
     'system/settings': method === 'PUT' ? '更新系统设置' : '查看系统设置',
     'system/export-xls': '导出任务数据',
     'system/import-xls': '导入任务数据',
+    'system/version': '查看版本',
+    'system/audit-logs': '查看日志',
+    'system/audit-logs/filter-options': '筛选日志',
+    'system/audit-logs/export': '导出日志',
     'status-tracking/items': method === 'POST' ? '添加状态跟踪记录' : method === 'PUT' ? '更新状态跟踪记录' : method === 'DELETE' ? '删除状态跟踪记录' : '查看状态跟踪记录',
     'status-tracking/export': '导出状态跟踪表',
     'status-tracking/import': '导入状态跟踪表',

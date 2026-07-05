@@ -11,6 +11,7 @@ const { authMiddleware, superAdminMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
+const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1438,7 +1439,11 @@ router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHa
     '导出状态跟踪表': '导出状态跟踪表格',
     '导入状态跟踪表': '导入状态跟踪表格',
     '导出工时管理表': '导出工时统计表格',
-    '查询仕样信息': '查询产品仕样信息'
+    '查询仕样信息': '查询产品仕样信息',
+    '查看日志': '查看系统操作日志列表',
+    '筛选日志': '获取日志筛选选项',
+    '导出日志': '导出系统操作日志',
+    '查看版本': '查看系统版本信息'
   };
 
   const columns = ['时间', '用户', '姓名', '操作类型', '操作说明', '方法', 'IP', '状态码', '耗时(ms)', '浏览器信息'];
@@ -1468,7 +1473,7 @@ router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHa
   XLSX.utils.book_append_sheet(workbook, worksheet, '操作日志');
   let xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
   
-  xml = xml.replace(/<\/Worksheet>/g, '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>0</ActivePane><Panes><Pane><Number>2</Number><ActiveRow>1</ActiveRow></Pane><Pane><Number>0</Number><ActiveRow>1</ActiveRow><ActiveCol>0</ActiveCol></Pane></Panes></WorksheetOptions></Worksheet>');
+  xml = applyExportStyles(xml, { freezeTopRow: true, freezeFirstColumn: false });
 
   const buffer = Buffer.from(xml, 'utf8');
 

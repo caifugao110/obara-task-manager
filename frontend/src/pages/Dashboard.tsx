@@ -1156,76 +1156,91 @@ const Dashboard = () => {
     if (!allowGuestView && !user) return;
     fetchData();
 
-    socketRef.current = io('/', {
-      path: '/socket.io',
-      reconnectionAttempts: 5,
-      timeout: 10000
-    });
+    if (token) {
+      socketRef.current = io('/', {
+        path: '/socket.io',
+        reconnectionAttempts: 10,
+        reconnectionDelay: 3000,
+        reconnectionDelayMax: 10000,
+        timeout: 10000,
+        auth: { token }
+      });
 
-    socketRef.current.on('task_refreshed', () => {
-      fetchSheets();
-    });
+      socketRef.current.on('task_refreshed', () => {
+        fetchSheets();
+      });
 
-    socketRef.current.on('connect', () => {
+      socketRef.current.on('connect', () => {
+        setIsOnline(true);
+        setOfflineCacheUsed(false);
+        hasShownDisconnectToast.current = false;
+        addToast('服务器已重新连接', 'success');
+      });
+
+      socketRef.current.on('reconnect', (attempt: number) => {
+        setIsOnline(true);
+        setOfflineCacheUsed(false);
+        hasShownDisconnectToast.current = false;
+        addToast(`服务器重连成功 (第${attempt}次尝试)`, 'success');
+      });
+
+      socketRef.current.on('connect_error', (err: any) => {
+        console.error('Socket connection error:', err?.message);
+        setIsOnline(false);
+        if (!hasShownDisconnectToast.current && !offlineCacheUsed) {
+          hasShownDisconnectToast.current = true;
+          saveSheetsToLocalStorage(sheets);
+          addToast('服务器连接断开，已自动保存数据', 'error');
+        }
+      });
+      socketRef.current.on('editing_state', (sessions: EditingSession[]) => {
+        const next: Record<string, EditingSession> = {};
+        (Array.isArray(sessions) ? sessions : []).forEach(session => {
+          if (!session?.designerId || !session?.date) return;
+          next[editingSessionKey(session.designerId, session.date)] = session;
+        });
+        setEditingSessions(next);
+      });
+
+      socketRef.current.on('user_editing', (data: EditingSession) => {
+        if (!data?.designerId || !data?.date) return;
+        setEditingSessions(prev => ({
+          ...prev,
+          [editingSessionKey(data.designerId, data.date)]: data
+        }));
+      });
+
+      socketRef.current.on('editing_blocked', (data: EditingSession) => {
+        if (!data?.designerId || !data?.date) return;
+        setEditingSessions(prev => ({
+          ...prev,
+          [editingSessionKey(data.designerId, data.date)]: data
+        }));
+        setSelectedCell(null);
+        setSelectedTasks([]);
+        setModalOpen(false);
+        if (canViewEditingUser) {
+          addToast(`${data.name || data.username} 正在编辑该区域`, 'error');
+        }
+      });
+
+      socketRef.current.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
+        if (!data?.designerId || !data?.date) return;
+        setEditingSessions(prev => {
+          const key = editingSessionKey(data.designerId, data.date);
+          if (!prev[key]) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      });
+
+      return () => {
+        socketRef.current?.disconnect();
+      };
+    } else {
       setIsOnline(true);
-      setOfflineCacheUsed(false);
-      hasShownDisconnectToast.current = false;
-    });
-
-    socketRef.current.on('connect_error', (err: any) => {
-      console.error('Socket connection error:', err?.message);
-      setIsOnline(false);
-      if (!hasShownDisconnectToast.current && !offlineCacheUsed) {
-        hasShownDisconnectToast.current = true;
-        saveSheetsToLocalStorage(sheets);
-        addToast('服务器连接断开，已自动保存数据', 'error');
-      }
-    });
-    socketRef.current.on('editing_state', (sessions: EditingSession[]) => {
-      const next: Record<string, EditingSession> = {};
-      (Array.isArray(sessions) ? sessions : []).forEach(session => {
-        if (!session?.designerId || !session?.date) return;
-        next[editingSessionKey(session.designerId, session.date)] = session;
-      });
-      setEditingSessions(next);
-    });
-
-    socketRef.current.on('user_editing', (data: EditingSession) => {
-      if (!data?.designerId || !data?.date) return;
-      setEditingSessions(prev => ({
-        ...prev,
-        [editingSessionKey(data.designerId, data.date)]: data
-      }));
-    });
-
-    socketRef.current.on('editing_blocked', (data: EditingSession) => {
-      if (!data?.designerId || !data?.date) return;
-      setEditingSessions(prev => ({
-        ...prev,
-        [editingSessionKey(data.designerId, data.date)]: data
-      }));
-      setSelectedCell(null);
-      setSelectedTasks([]);
-      setModalOpen(false);
-      if (canViewEditingUser) {
-        addToast(`${data.name || data.username} 正在编辑该区域`, 'error');
-      }
-    });
-
-    socketRef.current.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
-      if (!data?.designerId || !data?.date) return;
-      setEditingSessions(prev => {
-        const key = editingSessionKey(data.designerId, data.date);
-        if (!prev[key]) return prev;
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-    });
-
-    return () => {
-      socketRef.current?.disconnect();
-    };
+    }
   }, [fetchData, fetchSheets, systemSettingsLoaded, allowGuestView, user]);
 
   // Online/offline event listeners
@@ -1233,11 +1248,21 @@ const Dashboard = () => {
     const handleOnline = () => {
       setIsOnline(true);
       setOfflineCacheUsed(false);
+      hasShownDisconnectToast.current = false;
       addToast('网络已连接', 'success');
+      setTimeout(() => {
+        if (user || allowGuestView) {
+          fetchData();
+        }
+      }, 1000);
     };
     const handleOffline = () => {
       setIsOnline(false);
-      addToast('网络已断开，已自动保存数据', 'error');
+      if (!hasShownDisconnectToast.current) {
+        hasShownDisconnectToast.current = true;
+        saveSheetsToLocalStorage(sheets);
+        addToast('网络已断开，已自动保存数据', 'error');
+      }
     };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -1245,7 +1270,7 @@ const Dashboard = () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [fetchData, sheets, user, allowGuestView]);
 
   // Save sheets to localStorage for offline use
   useEffect(() => {
@@ -1817,6 +1842,19 @@ const Dashboard = () => {
     ].join('\n');
   };
 
+  const hasRealtimeUpdates = Boolean(token);
+  const footerStatusDotClass = !hasRealtimeUpdates
+    ? 'bg-amber-500'
+    : isOnline
+      ? 'bg-green-500'
+      : 'bg-red-500';
+  const footerStatusTextClass = !hasRealtimeUpdates ? 'text-amber-600' : '';
+  const footerStatusText = !hasRealtimeUpdates
+    ? '需手动刷新获取最新状态'
+    : isOnline
+      ? '就绪'
+      : '离线';
+
   return (
     <div className="min-h-screen bg-[#f3f3f3] flex flex-col font-sans">
       <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
@@ -2162,8 +2200,8 @@ const Dashboard = () => {
       <footer className="bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex justify-between items-center text-[11px] text-gray-500">
         <div className="flex items-center space-x-4">
           <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`}></div>
-            <span>{isOnline ? '就绪' : '离线'}</span>
+            <div className={`w-2 h-2 rounded-full ${footerStatusDotClass}`}></div>
+            <span className={footerStatusTextClass}>{footerStatusText}</span>
           </div>
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <div className="flex items-center gap-1.5">

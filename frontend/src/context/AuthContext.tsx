@@ -72,12 +72,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    const socket = io('/', { path: '/socket.io', reconnection: true });
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      socket.emit('register_user', token);
+    const socket = io('/', {
+      path: '/socket.io',
+      reconnection: true,
+      auth: { token }
     });
+    socketRef.current = socket;
 
     socket.on('session_invalidated', (data: { reason?: string }) => {
       alert(data?.reason || '您的账号已在其他设备登录');

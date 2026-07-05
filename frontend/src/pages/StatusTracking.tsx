@@ -197,6 +197,36 @@ const StatusTracking = () => {
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isOffline = syncStatus === 'disconnected';
+  const isRealtimeSyncAvailable = Boolean(token);
+  const syncToneClass = !isRealtimeSyncAvailable
+    ? 'bg-amber-100 text-amber-700'
+    : syncStatus === 'connected'
+      ? 'bg-green-100 text-green-700'
+      : 'bg-red-100 text-red-700';
+  const syncDotClass = !isRealtimeSyncAvailable
+    ? 'bg-amber-500'
+    : syncStatus === 'connected'
+      ? 'bg-green-500'
+      : 'bg-red-500';
+  const syncBadgeText = !isRealtimeSyncAvailable
+    ? '需手动刷新获取最新状态'
+    : syncStatus === 'connected'
+      ? '已同步'
+      : '未同步';
+  const syncFooterIntro = !isRealtimeSyncAvailable
+    ? '未登录时需手动刷新页面获取最新状态'
+    : '数据同步至服务器';
+  const syncFooterLabel = !isRealtimeSyncAvailable ? '更新方式:' : '同步状态:';
+  const syncFooterText = !isRealtimeSyncAvailable
+    ? '手动刷新'
+    : syncStatus === 'connected'
+      ? '已连接'
+      : '未连接';
+  const syncFooterTextClass = !isRealtimeSyncAvailable
+    ? 'text-amber-600'
+    : syncStatus === 'connected'
+      ? 'text-green-600'
+      : 'text-red-600';
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
@@ -623,7 +653,21 @@ const StatusTracking = () => {
   }, []);
 
   useEffect(() => {
-    const newSocket = io();
+    if (!token) {
+      setSyncStatus('disconnected');
+      setSocket(null);
+      return;
+    }
+
+    const newSocket = io('/', {
+      path: '/socket.io',
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 3000,
+      reconnectionDelayMax: 10000,
+      timeout: 10000,
+      auth: { token }
+    });
     
     newSocket.on('connect', () => {
       console.log('Socket connected');
@@ -632,9 +676,6 @@ const StatusTracking = () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
-      }
-      if (token) {
-        newSocket.emit('register_user', token);
       }
     });
 
@@ -649,8 +690,9 @@ const StatusTracking = () => {
       }, 3000);
     });
 
-    newSocket.on('connect_error', () => {
-      console.log('Socket connect error');
+    newSocket.on('connect_error', (err) => {
+      console.log('Socket connect error:', err?.message);
+      setSyncStatus('disconnected');
     });
 
     newSocket.on('session_invalidated', (data) => {
@@ -708,7 +750,7 @@ const StatusTracking = () => {
       }
       newSocket.disconnect();
     };
-  }, []);
+  }, [token, logout]);
 
   const filteredItems = useMemo(() => {
     let result = allItems;
@@ -818,9 +860,9 @@ const StatusTracking = () => {
           </Link>
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
           <h2 className="text-xl font-bold text-blue-600">状态跟踪表</h2>
-          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${syncStatus === 'connected' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-            <span className={`w-2 h-2 rounded-full ${syncStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-            {syncStatus === 'connected' ? '已同步' : '未同步'}
+          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${syncToneClass}`}>
+            <span className={`w-2 h-2 rounded-full ${syncDotClass}`}></span>
+            {syncBadgeText}
           </div>
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
           <div className="relative">
@@ -1304,12 +1346,12 @@ const StatusTracking = () => {
 
       <footer className="bg-white border-t border-gray-200 px-6 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center text-sm text-gray-500">
-          <div>数据同步至服务器</div>
+          <div>{syncFooterIntro}</div>
           <div className="flex items-center gap-2">
-            <span className="font-medium">同步状态:</span>
-            <span className={`flex items-center ${syncStatus === 'connected' ? 'text-green-600' : 'text-red-600'}`}>
-              <span className={`w-2 h-2 rounded-full ${syncStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-              {syncStatus === 'connected' ? '已连接' : '未连接'}
+            <span className="font-medium">{syncFooterLabel}</span>
+            <span className={`flex items-center ${syncFooterTextClass}`}>
+              <span className={`w-2 h-2 rounded-full ${syncDotClass}`}></span>
+              {syncFooterText}
             </span>
           </div>
         </div>

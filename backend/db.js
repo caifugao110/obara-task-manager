@@ -8,14 +8,34 @@ const dbPath = path.resolve(__dirname, securityConfig.database.path);
 let isWriting = false;
 const writeQueue = [];
 
+const safeJsonStringify = (data) => {
+  const seen = new WeakSet();
+  return JSON.stringify(data, (key, value) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) {
+        return '[Circular Reference]';
+      }
+      seen.add(value);
+    }
+    return value;
+  }, 2);
+};
+
 const processQueue = async () => {
   if (isWriting || writeQueue.length === 0) return;
   isWriting = true;
   const { data, resolve, reject } = writeQueue.shift();
   try {
-    fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
+    const jsonString = safeJsonStringify(data);
+    if (jsonString.length > 50 * 1024 * 1024) {
+      console.error('Database file too large (>50MB), aborting write');
+      reject(new Error('Database file too large'));
+      return;
+    }
+    fs.writeFileSync(dbPath, jsonString);
     resolve();
   } catch (err) {
+    console.error('Error writing database:', err);
     reject(err);
   } finally {
     isWriting = false;
