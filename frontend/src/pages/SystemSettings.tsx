@@ -34,10 +34,13 @@ interface Toast {
 }
 
 const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true };
+const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 const SystemSettings = () => {
   const { user, token, logout } = useAuth();
   const [settings, setSettings] = useState<SystemSettingsData>(defaultSettings);
+  const [accessSettings, setAccessSettings] = useState(defaultAccessSettings);
+  const [accessSettingsLoaded, setAccessSettingsLoaded] = useState(false);
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -47,25 +50,37 @@ const SystemSettings = () => {
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
   const [importMonth, setImportMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [importConfirmed, setImportConfirmed] = useState(false);
-  const [exportType, setExportType] = useState<'tasks' | 'status-tracking' | 'work-hours'>('tasks');
   const [stExportMonth, setStExportMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [whExportMonth, setWhExportMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [toasts, setToasts] = useState<Toast[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const stImportFileRef = useRef<HTMLInputElement>(null);
-  const [stPendingImportFile, setStPendingImportFile] = useState<File | null>(null);
-  const [stImportConfirm, setStImportConfirm] = useState(false);
-  const [stOverwriteConfirm, setStOverwriteConfirm] = useState(false);
-  const [stDuplicateSpecs, setStDuplicateSpecs] = useState<string[]>([]);
 
   const isSuperAdmin = user?.role === 'superadmin';
   const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+
+  const canViewSystemSettings = isSuperAdmin || (
+    accessSettingsLoaded && accessSettings.enabled && (
+      (user?.role === 'admin' && accessSettings.allowAdmins) ||
+      (user?.role === 'user' && accessSettings.allowViewers)
+    )
+  );
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
     setToasts(prev => [...prev, { message, type, id }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
+
+  const fetchAccessSettings = useCallback(async () => {
+    try {
+      const res = await axios.get('/api/settings/system-settings');
+      setAccessSettings(res.data);
+    } catch {
+      addToast('无法加载权限设置', 'error');
+    } finally {
+      setAccessSettingsLoaded(true);
+    }
+  }, []);
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -90,12 +105,18 @@ const SystemSettings = () => {
 
   useEffect(() => {
     const init = async () => {
-      await fetchSettings();
+      await Promise.all([fetchSettings(), fetchAccessSettings()]);
       await fetchLoginLogs();
       setLoading(false);
     };
     init();
-  }, [fetchSettings, fetchLoginLogs]);
+  }, [fetchSettings, fetchAccessSettings, fetchLoginLogs]);
+
+  useEffect(() => {
+    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs')) {
+      setActiveTab('data');
+    }
+  }, [isSuperAdmin, activeTab]);
 
   const updateSettings = async (next: Partial<SystemSettingsData>) => {
     const updated = { ...settings, ...next };
@@ -108,6 +129,20 @@ const SystemSettings = () => {
     } catch {
       addToast('保存系统设置失败', 'error');
       fetchSettings();
+    }
+  };
+
+  const updateAccessSettings = async (next: Partial<typeof defaultAccessSettings>) => {
+    const updated = { ...accessSettings, ...next };
+    setAccessSettings(updated);
+    if (!isSuperAdmin || !token) return;
+
+    try {
+      await axios.put('/api/settings/system-settings', updated, authHeader);
+      addToast('权限设置已保存', 'success');
+    } catch {
+      addToast('保存权限设置失败', 'error');
+      fetchAccessSettings();
     }
   };
 
@@ -243,71 +278,21 @@ const SystemSettings = () => {
     }
   };
 
-  const handleStatusTrackingImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !token) return;
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await axios.post('/api/status-tracking/import/check', formData, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
-      });
-      if (res.data.duplicateSpecs && res.data.duplicateSpecs.length > 0) {
-        setStDuplicateSpecs(res.data.duplicateSpecs);
-        setStOverwriteConfirm(false);
-      } else {
-        setStDuplicateSpecs([]);
-      }
-      setStPendingImportFile(file);
-      setStImportConfirm(false);
-    } catch (err: any) {
-      addToast(err.response?.data?.message || '无法解析文件', 'error');
-    }
-
-    if (stImportFileRef.current) stImportFileRef.current.value = '';
-  };
-
-  const cancelStatusTrackingImport = () => {
-    setStPendingImportFile(null);
-    setStImportConfirm(false);
-    setStOverwriteConfirm(false);
-    setStDuplicateSpecs([]);
-  };
-
-  const confirmStatusTrackingImport = async () => {
-    if (!stPendingImportFile || !token) return;
-    if (!stImportConfirm) {
-      addToast('请先确认导入格式与导出格式一致', 'error');
-      return;
-    }
-    if (stDuplicateSpecs.length > 0 && !stOverwriteConfirm) {
-      addToast('请确认是否覆盖已存在的仕样号', 'error');
-      return;
-    }
-
-    setImporting(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', stPendingImportFile);
-      formData.append('overwrite', String(stOverwriteConfirm));
-      const res = await axios.post('/api/status-tracking/import', formData, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
-      });
-      addToast(`导入成功：${res.data.importedRows} 条记录，${res.data.updatedRows} 条已更新`, 'success');
-      cancelStatusTrackingImport();
-    } catch (err: any) {
-      addToast(err.response?.data?.message || '导入失败', 'error');
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  if (loading || !settingsLoaded) {
+  if (loading || !settingsLoaded || !accessSettingsLoaded) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-slate-100">
         <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
         <div className="text-gray-600 font-medium">正在加载系统设置...</div>
+      </div>
+    );
+  }
+
+  if (!canViewSystemSettings) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+        <Shield className="text-gray-400 mb-4" size={48} />
+        <div className="text-gray-600 font-medium mb-4">您没有权限访问系统设置</div>
+        <Link to="/" className="text-blue-600 hover:text-blue-800 font-bold">返回工作台</Link>
       </div>
     );
   }
@@ -359,20 +344,24 @@ const SystemSettings = () => {
             <Database size={18} />
             数据管理
           </button>
-          <button
-            onClick={() => setActiveTab('login')}
-            className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'login' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            <Shield size={18} />
-            登录管理
-          </button>
-          <button
-            onClick={() => setActiveTab('logs')}
-            className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'logs' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            <History size={18} />
-            日志管理
-          </button>
+          {isSuperAdmin && (
+            <>
+              <button
+                onClick={() => setActiveTab('login')}
+                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'login' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <Shield size={18} />
+                登录管理
+              </button>
+              <button
+                onClick={() => setActiveTab('logs')}
+                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'logs' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <History size={18} />
+                日志管理
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -437,81 +426,6 @@ const SystemSettings = () => {
         </div>
       )}
 
-      {stPendingImportFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-100">
-              <h3 className="text-lg font-bold text-gray-800 flex items-center">
-                <Upload className="mr-2 text-blue-600" size={20} />
-                确认导入状态跟踪表
-              </h3>
-              <p className="text-sm text-gray-500 mt-1">
-                导入文件必须使用本系统导出的 xls 表格格式；全表一次性导入。
-              </p>
-            </div>
-            <div className="p-5 space-y-4 max-h-[60vh] overflow-y-auto">
-              {stDuplicateSpecs.length > 0 && (
-                <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3">
-                  <div className="text-sm font-bold text-red-800 mb-2">检测到以下已存在的仕样号：</div>
-                  <div className="text-sm text-red-600 space-y-1">
-                    {stDuplicateSpecs.map((spec, index) => (
-                      <div key={index} className="flex items-center gap-2">
-                        <span className="text-xs bg-red-200 text-red-800 px-2 py-0.5 rounded">仕样号</span>
-                        <span>{spec}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <label className="flex items-start gap-3 rounded-lg border border-gray-100 bg-gray-50 p-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={stImportConfirm}
-                  onChange={(e) => setStImportConfirm(e.target.checked)}
-                  className="mt-1 h-4 w-4"
-                />
-                <span className="text-sm text-gray-700">
-                  我确认导入文件格式与系统导出的 xls 一致。
-                </span>
-              </label>
-              {stDuplicateSpecs.length > 0 && (
-                <label className="flex items-start gap-3 rounded-lg border border-amber-100 bg-amber-50 p-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={stOverwriteConfirm}
-                    onChange={(e) => setStOverwriteConfirm(e.target.checked)}
-                    className="mt-1 h-4 w-4"
-                  />
-                  <span className="text-sm text-amber-800">
-                    确认覆盖已存在的仕样号数据。
-                  </span>
-                </label>
-              )}
-              <div className="text-xs text-gray-400">
-                文件：{stPendingImportFile.name}
-              </div>
-            </div>
-            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
-              <button
-                onClick={cancelStatusTrackingImport}
-                disabled={importing}
-                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
-              >
-                取消
-              </button>
-              <button
-                onClick={confirmStatusTrackingImport}
-                disabled={importing || !stImportConfirm || (stDuplicateSpecs.length > 0 && !stOverwriteConfirm)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {importing && <RefreshCw size={16} className="animate-spin" />}
-                确认导入
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <main className="flex-1 p-8 max-w-5xl mx-auto w-full space-y-8">
         {activeTab === 'data' && (
           <>
@@ -520,31 +434,44 @@ const SystemSettings = () => {
                 <FileSpreadsheet className="mr-2 text-green-600" size={22} />
                 任务管理
               </h3>
-              <p className="text-sm text-gray-500 mb-6">导入文件需与本系统导出的 xls 格式一致；每次导入只能选择一个月份进行覆盖。</p>
+              <p className="text-sm text-gray-500 mb-6">
+                {isSuperAdmin
+                  ? '导入文件需与本系统导出的 xls 格式一致；每次导入只能选择一个月份进行覆盖。'
+                  : '任务数据的导入导出仅超级管理员可操作。'}
+              </p>
               <div className="flex flex-wrap gap-4">
-                <button
-                  onClick={handleTaskExport}
-                  disabled={exporting}
-                  className="flex items-center gap-2 px-5 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                >
-                  {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
-                  导出任务数据
-                </button>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={importing}
-                  className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                >
-                  {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
-                  导入任务数据
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xls,.xlsx"
-                  className="hidden"
-                  onChange={handleTaskImport}
-                />
+                {isSuperAdmin && (
+                  <>
+                    <button
+                      onClick={handleTaskExport}
+                      disabled={exporting}
+                      className="flex items-center gap-2 px-5 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                    >
+                      {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                      导出任务数据
+                    </button>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={importing}
+                      className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                    >
+                      {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
+                      导入任务数据
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".xls,.xlsx"
+                      className="hidden"
+                      onChange={handleTaskImport}
+                    />
+                  </>
+                )}
+                {!isSuperAdmin && (
+                  <div className="text-sm text-gray-500 bg-gray-50 rounded-xl px-4 py-3 border border-gray-100">
+                    任务数据的导入导出功能仅对超级管理员开放。
+                  </div>
+                )}
               </div>
             </div>
 
@@ -553,7 +480,7 @@ const SystemSettings = () => {
                 <ClipboardList className="mr-2 text-purple-600" size={22} />
                 状态跟踪表
               </h3>
-              <p className="text-sm text-gray-500 mb-6">导出导入状态跟踪表的数据，保持导出来的页面排版和原始页面一致，按照纳期月份进行工作表的导出。</p>
+              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，保持导出来的页面排版和原始页面一致，按照纳期月份进行工作表的导出。</p>
               <div className="flex flex-wrap gap-4 items-center">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-bold text-gray-700">选择月份：</span>
@@ -572,21 +499,6 @@ const SystemSettings = () => {
                   {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
                   导出状态跟踪表
                 </button>
-                <button
-                  onClick={() => stImportFileRef.current?.click()}
-                  disabled={importing}
-                  className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                >
-                  {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
-                  导入状态跟踪表
-                </button>
-                <input
-                  ref={stImportFileRef}
-                  type="file"
-                  accept=".xls,.xlsx"
-                  className="hidden"
-                  onChange={handleStatusTrackingImport}
-                />
               </div>
             </div>
 
@@ -595,7 +507,7 @@ const SystemSettings = () => {
                 <Clock className="mr-2 text-orange-600" size={22} />
                 工时管理表
               </h3>
-              <p className="text-sm text-gray-500 mb-6">按照月份导出来，统计每个设计员的月工时。</p>
+              <p className="text-sm text-gray-500 mb-6">按照月份导出，统计每个设计员的月工时（总工时、工作日工时、周末加班工时、出差工时、请假工时），按总工时降序排列。</p>
               <div className="flex flex-wrap gap-4 items-center">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-bold text-gray-700">选择月份：</span>
@@ -616,6 +528,39 @@ const SystemSettings = () => {
                 </button>
               </div>
             </div>
+
+            {isSuperAdmin && (
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
+                  <Shield className="mr-2 text-purple-600" size={22} />
+                  系统设置查看权限设置
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {[
+                    { label: '启用系统设置', detail: 'Global Toggle', key: 'enabled' as const },
+                    { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
+                    { label: '游客/普通用户', detail: 'Guest Access', key: 'allowViewers' as const }
+                  ].map(item => (
+                    <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
+                      <div>
+                        <div className="font-bold text-gray-700">{item.label}</div>
+                        <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">{item.detail}</div>
+                      </div>
+                      <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                        <input
+                          type="checkbox"
+                          checked={accessSettings[item.key]}
+                          onChange={(e) => updateAccessSettings({ [item.key]: e.target.checked })}
+                          disabled={!accessSettingsLoaded}
+                          className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                        />
+                        <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${accessSettings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
 

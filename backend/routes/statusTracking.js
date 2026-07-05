@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware, adminMiddleware, superAdminMiddleware } = require('../middleware/auth');
+const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
 const multer = require('multer');
@@ -127,7 +127,7 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
   res.json(data.statusTrackingItems);
 }));
 
-router.get('/export', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
   const { month } = req.query;
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
     return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });

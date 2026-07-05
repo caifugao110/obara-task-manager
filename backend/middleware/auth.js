@@ -51,6 +51,32 @@ const superAdminMiddleware = (req, res, next) => {
   }
 };
 
+const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
+
+const normalizeAccessSettings = (settings = defaultAccessSettings) => {
+  const normalized = { ...defaultAccessSettings, ...settings };
+  if (normalized.allowViewers) normalized.allowAdmins = true;
+  return normalized;
+};
+
+const hasAccessSettings = (user, settingsKey) => {
+  if (!user) return false;
+  if (user.role === 'superadmin') return true;
+  const data = db.readDb();
+  const settings = normalizeAccessSettings(data.settings?.[settingsKey]);
+  if (!settings.enabled) return false;
+  if (user.role === 'admin' && settings.allowAdmins) return true;
+  if (user.role === 'user' && settings.allowViewers) return true;
+  return false;
+};
+
+const accessSettingsMiddleware = (settingsKey) => (req, res, next) => {
+  if (hasAccessSettings(req.user, settingsKey)) {
+    return next();
+  }
+  return res.status(403).json({ message: '无权访问' });
+};
+
 const guestViewMiddleware = (req, res, next) => {
   const data = db.readDb();
   const allowGuestView = data.settings?.system?.allowGuestView ?? true;
@@ -76,4 +102,13 @@ const guestViewMiddleware = (req, res, next) => {
   }
 };
 
-module.exports = { authMiddleware, adminMiddleware, superAdminMiddleware, guestViewMiddleware };
+module.exports = {
+  authMiddleware,
+  adminMiddleware,
+  superAdminMiddleware,
+  guestViewMiddleware,
+  accessSettingsMiddleware,
+  hasAccessSettings,
+  normalizeAccessSettings,
+  defaultAccessSettings
+};

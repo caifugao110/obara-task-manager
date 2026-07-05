@@ -1354,25 +1354,27 @@ router.get('/version', asyncHandler(async (req, res) => {
   }
 }));
 
-router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const { limit = 100, page = 1, username, action, method, ip, from, to } = req.query;
-  
-  const data = db.readDb();
-  let logs = data.auditLogs || [];
-  
+const filterAuditLogs = (logs, { username, action, method, ip, from, to } = {}) => {
   const fromTime = from ? new Date(from).getTime() : null;
   const toTime = to ? new Date(to).getTime() + 24 * 60 * 60 * 1000 - 1 : null;
-  
-  logs = logs.filter(log => {
+
+  return logs.filter(log => {
     const timestamp = new Date(log.timestamp).getTime();
     if (fromTime && timestamp < fromTime) return false;
     if (toTime && timestamp > toTime) return false;
-    if (username && !(`${log.username || ''} ${log.name || ''}`.toLowerCase().includes(username.toLowerCase()))) return false;
-    if (action && !log.action.toLowerCase().includes(action.toLowerCase())) return false;
+    if (username && log.username !== username) return false;
+    if (action && log.action !== action) return false;
     if (method && log.method !== method.toUpperCase()) return false;
     if (ip && !String(log.ip || '').includes(ip)) return false;
     return true;
   });
+};
+
+router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { limit = 100, page = 1, username, action, method, ip, from, to } = req.query;
+  
+  const data = db.readDb();
+  let logs = filterAuditLogs(data.auditLogs || [], { username, action, method, ip, from, to });
   
   logs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   
@@ -1387,6 +1389,58 @@ router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(a
     page: pageNum,
     pageSize
   });
+}));
+
+router.get('/audit-logs/filter-options', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const logs = data.auditLogs || [];
+  const usernames = [...new Set(logs.map(log => log.username).filter(Boolean))].sort();
+  const actions = [...new Set(logs.map(log => log.action).filter(Boolean))].sort();
+  res.json({ usernames, actions });
+}));
+
+router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { username, action, method, ip, from, to } = req.query;
+  const data = db.readDb();
+  let logs = filterAuditLogs(data.auditLogs || [], { username, action, method, ip, from, to });
+  logs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  if (logs.length === 0) {
+    return res.status(404).json({ message: '没有可导出的日志' });
+  }
+
+  const columns = ['时间', '用户', '姓名', '角色', '操作', '方法', 'IP', '状态码', '耗时(ms)', '浏览器信息'];
+  const roleLabels = { superadmin: '超级管理员', admin: '管理员', user: '普通用户' };
+
+  const dataRows = logs.map(log => [
+    log.timestamp ? new Date(log.timestamp).toLocaleString('zh-CN', { hour12: false }) : '',
+    log.username || '',
+    log.name || '',
+    roleLabels[log.role] || log.role || '',
+    log.action || '',
+    log.method || '',
+    log.ip || '',
+    log.responseStatus ?? '',
+    log.durationMs ?? '',
+    log.userAgent || ''
+  ]);
+
+  const worksheetData = [columns, ...dataRows];
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+  worksheet['!cols'] = [
+    { wpx: 150 }, { wpx: 80 }, { wpx: 80 }, { wpx: 90 },
+    { wpx: 140 }, { wpx: 60 }, { wpx: 110 }, { wpx: 60 },
+    { wpx: 70 }, { wpx: 280 }
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '操作日志');
+  const xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
+  const buffer = Buffer.from(xml, 'utf8');
+
+  res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${formatDownloadTimestamp()}.xls"`);
+  res.send(buffer);
 }));
 
 router.get('/admin-login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {

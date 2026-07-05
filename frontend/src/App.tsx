@@ -114,7 +114,7 @@ const AppRoutes = () => {
       <Route
         path="/system-settings"
         element={
-          <ProtectedRoute superAdminOnly>
+          <ProtectedRoute>
             <SystemSettings />
           </ProtectedRoute>
         }

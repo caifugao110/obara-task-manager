@@ -4,20 +4,19 @@ import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import {
   ChevronLeft,
-  Search,
   RefreshCw,
   Filter,
   Clock,
   User,
   Shield,
-  Globe,
   FileText,
   AlertCircle,
   CheckCircle,
-  History
+  History,
+  Download
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { getRoleLabel, getRoleClassName } from '../utils/loginLogs';
+import { getRoleLabel, getRoleClassName, getBrowserLabel } from '../utils/loginLogs';
 
 interface AuditLog {
   id: string;
@@ -30,6 +29,12 @@ interface AuditLog {
   path: string;
   ip: string;
   userAgent: string;
+  browserInfo?: {
+    summary?: string;
+    browser?: string;
+    os?: string;
+    device?: string;
+  };
   requestBody: string | null;
   responseStatus: number;
   responseMessage: string | null;
@@ -43,13 +48,20 @@ interface Toast {
   id: number;
 }
 
+interface FilterOptions {
+  usernames: string[];
+  actions: string[];
+}
+
 const SystemLogs = () => {
   const { token } = useAuth();
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(50);
   const [total, setTotal] = useState(0);
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>({ usernames: [], actions: [] });
   const [filters, setFilters] = useState({
     username: '',
     action: '',
@@ -69,6 +81,16 @@ const SystemLogs = () => {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
+  const fetchFilterOptions = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await axios.get('/api/system/audit-logs/filter-options', authHeader);
+      setFilterOptions(res.data);
+    } catch {
+      // ignore
+    }
+  }, [token]);
+
   const fetchLogs = useCallback(async () => {
     if (!token) return;
     setLoading(true);
@@ -87,6 +109,10 @@ const SystemLogs = () => {
       setLoading(false);
     }
   }, [token, page, pageSize, filters]);
+
+  useEffect(() => {
+    fetchFilterOptions();
+  }, [fetchFilterOptions]);
 
   useEffect(() => {
     fetchLogs();
@@ -118,6 +144,35 @@ const SystemLogs = () => {
   const handleResetFilters = () => {
     setFilters({ username: '', action: '', method: '', ip: '', from: '', to: '' });
     setPage(1);
+  };
+
+  const handleExport = async () => {
+    if (!token) return;
+    setExporting(true);
+    try {
+      const params = new URLSearchParams(filters);
+      const res = await axios.get(`/api/system/audit-logs/export?${params}`, {
+        ...authHeader,
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `audit-logs-${format(new Date(), 'yyyyMMddHHmmss')}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      addToast('导出成功', 'success');
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        addToast('没有可导出的日志', 'error');
+      } else {
+        addToast('导出失败', 'error');
+      }
+    } finally {
+      setExporting(false);
+    }
   };
 
   const hasActiveFilters = Object.values(filters).some(v => v);
@@ -167,6 +222,14 @@ const SystemLogs = () => {
                 {hasActiveFilters && <span className="bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">!</span>}
               </button>
               <button
+                onClick={handleExport}
+                disabled={exporting}
+                className="flex items-center gap-1.5 px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white rounded-lg text-sm font-bold transition"
+              >
+                {exporting ? <RefreshCw size={15} className="animate-spin" /> : <Download size={15} />}
+                导出
+              </button>
+              <button
                 onClick={fetchLogs}
                 className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-100 transition"
               >
@@ -180,23 +243,29 @@ const SystemLogs = () => {
             <div className="mb-6 p-4 bg-gray-50 rounded-xl border border-gray-100 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">用户名</label>
-                <input
-                  type="text"
+                <select
                   value={filters.username}
                   onChange={(e) => handleFilterChange('username', e.target.value)}
-                  placeholder="搜索用户名"
                   className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
-                />
+                >
+                  <option value="">全部</option>
+                  {filterOptions.usernames.map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">操作类型</label>
-                <input
-                  type="text"
+                <select
                   value={filters.action}
                   onChange={(e) => handleFilterChange('action', e.target.value)}
-                  placeholder="搜索操作"
                   className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
-                />
+                >
+                  <option value="">全部</option>
+                  {filterOptions.actions.map(act => (
+                    <option key={act} value={act}>{act}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">HTTP方法</label>
@@ -267,24 +336,23 @@ const SystemLogs = () => {
                   <th className="px-4 py-3 font-bold">角色</th>
                   <th className="px-4 py-3 font-bold">操作</th>
                   <th className="px-4 py-3 font-bold">方法</th>
-                  <th className="px-4 py-3 font-bold">路径</th>
                   <th className="px-4 py-3 font-bold">IP</th>
                   <th className="px-4 py-3 font-bold">状态码</th>
                   <th className="px-4 py-3 font-bold">耗时</th>
-                  <th className="px-4 py-3 font-bold">详情</th>
+                  <th className="px-4 py-3 font-bold">浏览器信息</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center">
+                    <td colSpan={9} className="px-4 py-8 text-center">
                       <RefreshCw className="inline-block animate-spin text-blue-600 mr-2" size={20} />
                       加载中...
                     </td>
                   </tr>
                 ) : logs.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
+                    <td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
                   </tr>
                 ) : (
                   logs.map(log => (
@@ -320,12 +388,6 @@ const SystemLogs = () => {
                           {log.method}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600 font-mono text-xs max-w-[200px] truncate" title={log.path}>
-                        <div className="flex items-center gap-2">
-                          <Globe size={14} className="text-gray-400" />
-                          {log.path}
-                        </div>
-                      </td>
                       <td className="px-4 py-3 text-gray-500 font-mono text-xs whitespace-nowrap">
                         {log.ip || '-'}
                       </td>
@@ -337,30 +399,8 @@ const SystemLogs = () => {
                       <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
                         {log.durationMs}ms
                       </td>
-                      <td className="px-4 py-3">
-                        <details className="inline-block">
-                          <summary className="cursor-pointer text-blue-600 hover:text-blue-800 text-xs font-medium">查看详情</summary>
-                          <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-100 text-xs space-y-2">
-                            {log.requestBody && (
-                              <div>
-                                <div className="font-bold text-gray-500">请求体:</div>
-                                <pre className="whitespace-pre-wrap max-h-32 overflow-y-auto text-gray-700">{log.requestBody}</pre>
-                              </div>
-                            )}
-                            {log.responseMessage && (
-                              <div>
-                                <div className="font-bold text-gray-500">响应:</div>
-                                <pre className="whitespace-pre-wrap max-h-32 overflow-y-auto text-gray-700">{log.responseMessage}</pre>
-                              </div>
-                            )}
-                            {log.userAgent && (
-                              <div>
-                                <div className="font-bold text-gray-500">User Agent:</div>
-                                <div className="text-gray-700 break-all">{log.userAgent}</div>
-                              </div>
-                            )}
-                          </div>
-                        </details>
+                      <td className="px-4 py-3 text-gray-600 max-w-[240px] truncate" title={log.userAgent || getBrowserLabel({ userAgent: log.userAgent, browserInfo: log.browserInfo })}>
+                        {getBrowserLabel({ userAgent: log.userAgent, browserInfo: log.browserInfo })}
                       </td>
                     </tr>
                   ))

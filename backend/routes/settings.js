@@ -47,6 +47,9 @@ router.put('/work-hours', updateAccessSettings('workHours'));
 router.get('/status-tracking', getAccessSettings('statusTracking'));
 router.put('/status-tracking', updateAccessSettings('statusTracking'));
 
+router.get('/system-settings', getAccessSettings('systemSettings'));
+router.put('/system-settings', updateAccessSettings('systemSettings'));
+
 const defaultLeaderRules = [
   { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },
   { leader: '张啸', members: ['李守健', '邓明江', '贾银鑫', '熊飞'] },

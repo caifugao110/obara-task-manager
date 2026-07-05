@@ -21,6 +21,34 @@ const getClientIp = (req) => {
     '';
 };
 
+const MAX_RESPONSE_MESSAGE_LENGTH = 2000;
+const MAX_REQUEST_BODY_LENGTH = 2000;
+
+const truncateText = (text, maxLength) => {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}... [truncated ${text.length - maxLength} chars]`;
+};
+
+const formatRequestBody = (method, body) => {
+  if (!['POST', 'PUT'].includes(method)) return null;
+  if (body == null) return null;
+  return truncateText(JSON.stringify(body), MAX_REQUEST_BODY_LENGTH);
+};
+
+const formatResponseMessage = (method, responseBody) => {
+  if (responseBody == null) return null;
+
+  // GET responses can include the entire task table. Keeping them in db.json
+  // makes every future request parse the same large payload again.
+  if (method === 'GET') return null;
+
+  const message = typeof responseBody === 'string'
+    ? responseBody
+    : JSON.stringify(responseBody);
+
+  return truncateText(message, MAX_RESPONSE_MESSAGE_LENGTH);
+};
+
 const getActionDescription = (method, path, body) => {
   const pathParts = path.split('/');
   const resource = pathParts[2] || '';
@@ -94,9 +122,9 @@ const auditLogMiddleware = async (req, res, next) => {
         path,
         ip,
         userAgent,
-        requestBody: ['POST', 'PUT'].includes(method) ? JSON.stringify(req.body) : null,
+        requestBody: formatRequestBody(method, req.body),
         responseStatus: responseStatus || res.statusCode,
-        responseMessage: responseBody ? (typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody)) : null,
+        responseMessage: formatResponseMessage(method, responseBody),
         durationMs: Date.now() - startTime
       };
 

@@ -327,6 +327,7 @@ const Dashboard = () => {
   const [allowGuestView, setAllowGuestView] = useState(true);
   const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
+  const [systemSettingsAccess, setSystemSettingsAccess] = useState(defaultAccessSettings);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const [selectedDesignerId, setSelectedDesignerId] = useState<string>('all');
@@ -1107,13 +1108,15 @@ const Dashboard = () => {
     Promise.all([
       axiosInstance.get('/system/settings'),
       axiosInstance.get('/settings/leaderboard'),
-      axiosInstance.get('/settings/work-hours')
+      axiosInstance.get('/settings/work-hours'),
+      axiosInstance.get('/settings/system-settings')
     ])
-      .then(([systemRes, leaderboardRes, workHoursRes]) => {
+      .then(([systemRes, leaderboardRes, workHoursRes, systemSettingsRes]) => {
         const guestAllowed = systemRes.data.allowGuestView ?? true;
         setAllowGuestView(guestAllowed);
         setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
         setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
+        setSystemSettingsAccess(systemSettingsRes.data || defaultAccessSettings);
         if (!guestAllowed && !user) setLoading(false);
       })
       .catch(() => setAllowGuestView(true))
@@ -1759,7 +1762,7 @@ const Dashboard = () => {
                 <span>状态跟踪表</span>
               </Link>
           )}
-          {isSuperAdmin && (
+          {canShowAccessLink(systemSettingsAccess) && (
             <Link
               to="/system-settings"
               className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"

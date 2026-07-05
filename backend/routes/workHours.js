@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware, superAdminMiddleware } = require('../middleware/auth');
+const { authMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
 
-router.get('/export', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
   const { month } = req.query;
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
     return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
@@ -100,10 +100,9 @@ router.get('/export', [authMiddleware, superAdminMiddleware], asyncHandler(async
     { key: 'designerName', label: '设计员' },
     { key: 'hours', label: '总工时' },
     { key: 'workdayHours', label: '工作日工时' },
-    { key: 'designHours', label: '设计工时' },
-    { key: 'workdayDesignHours', label: '工作日设计工时' },
+    { key: 'weekendHours', label: '周末加班工时' },
     { key: 'tripHours', label: '出差工时' },
-    { key: 'workdayTripHours', label: '工作日出差工时' },
+    { key: 'leaveHours', label: '请假工时' },
     { key: 'sickDays', label: '事假(小时)' },
     { key: 'vacationDays', label: '休假(小时)' },
     { key: 'illnessDays', label: '病假(小时)' }
@@ -111,11 +110,14 @@ router.get('/export', [authMiddleware, superAdminMiddleware], asyncHandler(async
 
   const headerRow = columns.map(col => col.label);
   const dataRows = sortedData.map(item => {
+    const weekendHours = item.hours - item.workdayHours;
+    const leaveHours = item.sickDays + item.vacationDays + item.illnessDays;
+    const rowData = { ...item, weekendHours, leaveHours };
     return columns.map(col => {
-      if (['hours', 'workdayHours', 'designHours', 'workdayDesignHours', 'tripHours', 'workdayTripHours', 'sickDays', 'vacationDays', 'illnessDays'].includes(col.key)) {
-        return item[col.key].toFixed(1);
+      if (['hours', 'workdayHours', 'weekendHours', 'tripHours', 'leaveHours', 'sickDays', 'vacationDays', 'illnessDays'].includes(col.key)) {
+        return rowData[col.key].toFixed(1);
       }
-      return item[col.key] || '';
+      return rowData[col.key] || '';
     });
   });
 
@@ -126,10 +128,9 @@ router.get('/export', [authMiddleware, superAdminMiddleware], asyncHandler(async
     { wpx: 100 },
     { wpx: 80 },
     { wpx: 100 },
+    { wpx: 110 },
     { wpx: 80 },
-    { wpx: 120 },
     { wpx: 80 },
-    { wpx: 120 },
     { wpx: 80 },
     { wpx: 80 },
     { wpx: 80 }
@@ -139,7 +140,9 @@ router.get('/export', [authMiddleware, superAdminMiddleware], asyncHandler(async
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, month);
 
-  const xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
+  let xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
+  const freezeOptions = '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><SplitVertical>1</SplitVertical><LeftColumnRightPane>1</LeftColumnRightPane><ActivePane>0</ActivePane><Panes><Pane><Number>3</Number></Pane><Pane><Number>1</Number></Pane><Pane><Number>2</Number><ActiveRow>0</ActiveRow></Pane><Pane><Number>0</Number><ActiveRow>1</ActiveRow><ActiveCol>1</ActiveCol></Pane></Panes></WorksheetOptions>';
+  xml = xml.replace(/<\/Worksheet>/g, `${freezeOptions}</Worksheet>`);
   const buffer = Buffer.from(xml, 'utf8');
 
   res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');

@@ -109,6 +109,7 @@ const readDb = () => {
           leaderboard: { enabled: true, allowAdmins: true, allowViewers: false },
           workHours: { enabled: true, allowAdmins: true, allowViewers: false },
           statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
+          systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
           system: { allowGuestView: true, allowMultiDevice: true }
         }
       };
@@ -127,6 +128,11 @@ const readDb = () => {
     }
     if (!parsed.settings.statusTracking) {
       parsed.settings.statusTracking = parsed.settings.workHours
+        ? { ...parsed.settings.workHours }
+        : { enabled: true, allowAdmins: true, allowViewers: false };
+    }
+    if (!parsed.settings.systemSettings) {
+      parsed.settings.systemSettings = parsed.settings.workHours
         ? { ...parsed.settings.workHours }
         : { enabled: true, allowAdmins: true, allowViewers: false };
     }

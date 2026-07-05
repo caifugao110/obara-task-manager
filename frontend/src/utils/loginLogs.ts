@@ -5,15 +5,18 @@ export interface BrowserInfo {
   summary?: string;
 }
 
-export interface LoginLog {
+export interface LogWithBrowser {
+  userAgent?: string;
+  browserInfo?: BrowserInfo;
+}
+
+export interface LoginLog extends LogWithBrowser {
   id: string;
   userId?: string;
   username: string;
   name?: string;
   role?: string;
   ip?: string;
-  userAgent?: string;
-  browserInfo?: BrowserInfo;
   success: boolean;
   action?: string;
   reason?: string;
@@ -33,7 +36,7 @@ export const getRoleLabel = (role?: string) => {
   return '未知角色';
 };
 
-export const getBrowserLabel = (log: LoginLog) => {
+export const getBrowserLabel = (log: LogWithBrowser) => {
   if (log.browserInfo?.summary) return log.browserInfo.summary;
   if (log.browserInfo?.browser || log.browserInfo?.os || log.browserInfo?.device) {
     return [log.browserInfo.browser, log.browserInfo.os, log.browserInfo.device].filter(Boolean).join(' / ');
