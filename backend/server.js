@@ -7,6 +7,7 @@ const helmet = require('helmet');
 const path = require('path');
 
 const securityConfig = require('./config/security');
+const { socketAuthMiddleware, requireSocketAuth } = require('./middleware/socketAuth');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,8 +16,15 @@ const io = new Server(server, {
     origin: securityConfig.cors.origin,
     methods: securityConfig.cors.methods,
     credentials: securityConfig.cors.credentials
+  },
+  // 启用连接认证
+  auth: {
+    required: true
   }
 });
+
+// 应用 Socket.IO 认证中间件
+io.use(socketAuthMiddleware);
 
 app.use(helmet({
   contentSecurityPolicy: false,
@@ -99,104 +107,150 @@ const removeSessions = (predicate) => {
   return removedSessions;
 };
 
+// 错误处理：认证失败
+io.on('connect_error', (error) => {
+  console.error('Socket connection error:', error.message);
+});
+
 io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
+  // 此时用户已通过认证中间件验证
+  const user = socket.data.user;
+  console.log(`User connected: ${user.username} (${socket.id})`);
 
   socket.emit('editing_state', publicEditingSessions());
 
-  socket.on('register_user', (token) => {
-    if (!token || typeof token !== 'string') return;
-    try {
-      const jwt = require('jsonwebtoken');
-      const decoded = jwt.verify(token, securityConfig.jwt.secret);
-      if (decoded?.id) {
-        socket.join(`user:${decoded.id}`);
-        socket.data.userId = decoded.id;
-      }
-    } catch {
-      // ignore invalid token
-    }
-  });
-
+  // task_updated 事件：验证用户身份
   socket.on('task_updated', (data) => {
-    // Broadcast to everyone except sender
-    socket.broadcast.emit('task_refreshed', data);
+    try {
+      requireSocketAuth(socket);
+      // Broadcast to everyone except sender
+      socket.broadcast.emit('task_refreshed', data);
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
   });
 
+  // start_editing 事件：验证用户身份并使用服务器端用户信息
   socket.on('start_editing', (data) => {
-    if (!data?.designerId || !data?.date || !data?.userId) return;
-    const key = editingKey(data.designerId, data.date);
-    const existingSession = editingSessions.get(key);
-    if (
-      existingSession &&
-      existingSession.socketId !== socket.id &&
-      existingSession.userId !== data.userId
-    ) {
-      socket.emit('editing_blocked', existingSession);
-      return;
-    }
-
-    const removedOwnSessions = removeSessions(session =>
-      session.userId === data.userId &&
-      editingKey(session.designerId, session.date) !== key
-    );
-    broadcastStoppedSessions(removedOwnSessions, socket);
-
-    const session = {
-      designerId: data.designerId,
-      date: data.date,
-      userId: data.userId,
-      username: data.username || '',
-      name: data.name || data.username || '',
-      socketId: socket.id
-    };
-    editingSessions.set(key, session);
-    socket.broadcast.emit('user_editing', session);
-  });
-
-  socket.on('stop_editing', (data) => {
-    let removedSessions = [];
-    if (data?.designerId && data?.date) {
-      const key = editingKey(data.designerId, data.date);
-      const session = editingSessions.get(key);
-      if (session && session.socketId === socket.id) {
-        editingSessions.delete(key);
-        removedSessions = [session];
+    try {
+      const authenticatedUser = requireSocketAuth(socket);
+      
+      if (!data?.designerId || !data?.date) {
+        socket.emit('error', { message: 'Missing required fields' });
+        return;
       }
-    } else {
-      removedSessions = removeSessions(session => session.socketId === socket.id);
+
+      const key = editingKey(data.designerId, data.date);
+      const existingSession = editingSessions.get(key);
+      
+      if (
+        existingSession &&
+        existingSession.socketId !== socket.id &&
+        existingSession.userId !== authenticatedUser.id
+      ) {
+        socket.emit('editing_blocked', existingSession);
+        return;
+      }
+
+      const removedOwnSessions = removeSessions(session =>
+        session.userId === authenticatedUser.id &&
+        editingKey(session.designerId, session.date) !== key
+      );
+      broadcastStoppedSessions(removedOwnSessions, socket);
+
+      // 使用服务器端验证的用户信息，而不是客户端提供的信息
+      const session = {
+        designerId: data.designerId,
+        date: data.date,
+        userId: authenticatedUser.id,
+        username: authenticatedUser.username,
+        name: authenticatedUser.name,
+        socketId: socket.id
+      };
+      editingSessions.set(key, session);
+      socket.broadcast.emit('user_editing', session);
+    } catch (err) {
+      socket.emit('error', { message: err.message });
     }
-
-    broadcastStoppedSessions(removedSessions, socket);
   });
 
+  // stop_editing 事件：验证用户身份
+  socket.on('stop_editing', (data) => {
+    try {
+      const authenticatedUser = requireSocketAuth(socket);
+      
+      let removedSessions = [];
+      if (data?.designerId && data?.date) {
+        const key = editingKey(data.designerId, data.date);
+        const session = editingSessions.get(key);
+        if (session && session.socketId === socket.id) {
+          editingSessions.delete(key);
+          removedSessions = [session];
+        }
+      } else {
+        removedSessions = removeSessions(session => session.socketId === socket.id);
+      }
+
+      broadcastStoppedSessions(removedSessions, socket);
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
+  });
+
+  // status_tracking_start_edit 事件：验证用户身份并使用服务器端用户信息
   socket.on('status_tracking_start_edit', (data) => {
-    if (!data?.itemId || !data?.userId) return;
-    
-    const session = {
-      itemId: data.itemId,
-      userId: data.userId,
-      username: data.username || '',
-      socketId: socket.id
-    };
-    
-    socket.broadcast.emit('status_tracking_edit_start', session);
-    socket.emit('status_tracking_edit_start', session);
+    try {
+      const authenticatedUser = requireSocketAuth(socket);
+      
+      if (!data?.itemId) {
+        socket.emit('error', { message: 'Missing itemId' });
+        return;
+      }
+      
+      // 使用服务器端验证的用户信息
+      const session = {
+        itemId: data.itemId,
+        userId: authenticatedUser.id,
+        username: authenticatedUser.username,
+        socketId: socket.id
+      };
+      
+      socket.broadcast.emit('status_tracking_edit_start', session);
+      socket.emit('status_tracking_edit_start', session);
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
   });
 
+  // status_tracking_stop_edit 事件：验证用户身份
   socket.on('status_tracking_stop_edit', (data) => {
-    if (!data?.itemId) return;
-    
-    socket.broadcast.emit('status_tracking_edit_stop', { itemId: data.itemId });
-    socket.emit('status_tracking_edit_stop', { itemId: data.itemId });
+    try {
+      requireSocketAuth(socket);
+      
+      if (!data?.itemId) {
+        socket.emit('error', { message: 'Missing itemId' });
+        return;
+      }
+      
+      socket.broadcast.emit('status_tracking_edit_stop', { itemId: data.itemId });
+      socket.emit('status_tracking_edit_stop', { itemId: data.itemId });
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
   });
 
   socket.on('disconnect', () => {
     const removedSessions = removeSessions(session => session.socketId === socket.id);
     broadcastStoppedSessions(removedSessions, socket);
-    console.log('User disconnected');
+    console.log(`User disconnected: ${user.username} (${socket.id})`);
+  });
+
+  // 错误处理
+  socket.on('error', (error) => {
+    console.error(`Socket error for user ${user.username}:`, error);
   });
 });
+
 
 server.listen(securityConfig.server.port, () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
