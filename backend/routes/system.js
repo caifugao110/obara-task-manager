@@ -12,6 +12,7 @@ const securityConfig = require('../config/security');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
+const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDisplay');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1448,26 +1449,32 @@ router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHa
 
   const columns = ['时间', '用户', '姓名', '操作类型', '操作说明', '方法', 'IP', '状态码', '耗时(ms)', '浏览器信息'];
 
-  const dataRows = logs.map(log => [
-    log.timestamp ? new Date(log.timestamp).toLocaleString('zh-CN', { hour12: false }) : '',
-    log.username || '',
-    log.name || '',
-    log.action || '',
-    actionDescriptions[log.action] || log.action || '',
-    log.method || '',
-    log.ip || '',
-    log.responseStatus ?? '',
-    log.durationMs ?? '',
-    log.userAgent || ''
-  ]);
+  const dataRows = logs.map(log => {
+    const actionDisplay = getAuditActionDisplay(log);
+    const browserLabel = getBrowserLabel(log);
+
+    return [
+      log.timestamp ? new Date(log.timestamp).toLocaleString('zh-CN', { hour12: false }) : '',
+      log.username || '',
+      log.name || '',
+      actionDisplay.label,
+      actionDisplay.description,
+      log.method || '',
+      log.ip || '',
+      log.responseStatus ?? '',
+      log.durationMs ?? '',
+      browserLabel
+    ];
+  });
 
   const worksheetData = [columns, ...dataRows];
   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-  worksheet['!cols'] = [
-    { wpx: 150 }, { wpx: 80 }, { wpx: 80 }, { wpx: 100 },
-    { wpx: 200 }, { wpx: 60 }, { wpx: 110 }, { wpx: 60 },
-    { wpx: 70 }, { wpx: 280 }
-  ];
+  worksheet['!cols'] = buildAutoColumns(worksheetData, {
+    min: 64,
+    max: 360,
+    charPx: 8,
+    padding: 28
+  });
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, '操作日志');

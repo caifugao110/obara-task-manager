@@ -1,5 +1,6 @@
 const db = require('../db');
 const crypto = require('crypto');
+const { getBrowserInfo, getRouteActionDisplay } = require('../utils/auditLogDisplay');
 
 const appendAuditLog = async (data, entry) => {
   if (!data.auditLogs) data.auditLogs = [];
@@ -74,6 +75,9 @@ const getActionDescription = (method, path, body) => {
   const pathParts = path.split('/');
   const resource = pathParts[2] || '';
   const action = pathParts[3] || '';
+
+  const routeDisplay = getRouteActionDisplay(method, path);
+  if (routeDisplay) return routeDisplay.label;
 
   const descriptions = {
     'auth/login': '用户登录',
@@ -150,6 +154,7 @@ const auditLogMiddleware = async (req, res, next) => {
       const action = getActionDescription(method, path, req.body);
       const ip = getClientIp(req);
       const userAgent = req.headers['user-agent'] || '';
+      const browserInfo = getBrowserInfo(userAgent);
 
       const logEntry = {
         userId: user.id,
@@ -161,6 +166,7 @@ const auditLogMiddleware = async (req, res, next) => {
         path,
         ip,
         userAgent,
+        browserInfo,
         requestBody: formatRequestBody(method, req.body),
         responseStatus: responseStatus || res.statusCode,
         responseMessage: formatResponseMessage(method, responseBody),

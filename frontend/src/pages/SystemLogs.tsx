@@ -263,7 +263,7 @@ const SystemLogs = () => {
                 >
                   <option value="">全部</option>
                   {filterOptions.actions.map(act => (
-                    <option key={act} value={act}>{act}</option>
+                    <option key={act} value={act}>{getActionTypeLabel(act).label}</option>
                   ))}
                 </select>
               </div>
@@ -373,12 +373,12 @@ const SystemLogs = () => {
                         </div>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="text-sm font-bold text-gray-800">{getActionTypeLabel(log.action).label}</span>
+                        <span className="text-sm font-bold text-gray-800">{getActionTypeLabel(log).label}</span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600 text-sm max-w-[200px]" title={getActionTypeLabel(log.action).description}>
+                      <td className="px-4 py-3 text-gray-600 text-sm max-w-[200px]" title={getActionTypeLabel(log).description}>
                         <div className="flex items-start gap-2">
                           <Shield size={14} className="text-gray-400 mt-0.5" />
-                          <span className="truncate">{getActionTypeLabel(log.action).description}</span>
+                          <span className="truncate">{getActionTypeLabel(log).description}</span>
                         </div>
                       </td>
                       <td className="px-4 py-3">

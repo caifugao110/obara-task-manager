@@ -1,0 +1,179 @@
+const normalizeAuditPath = (routePath = '') => {
+  return String(routePath)
+    .split('?')[0]
+    .replace(/^\/api\/?/, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+};
+
+const routeActionDisplays = {
+  'POST auth/login': { label: '登录系统', description: '用户登录系统' },
+  'POST auth/logout': { label: '退出登录', description: '用户退出系统' },
+  'POST auth/change-password': { label: '修改密码', description: '用户修改登录密码' },
+
+  'GET users': { label: '查看用户', description: '查看用户列表或用户详情' },
+  'POST users': { label: '创建用户', description: '新增系统用户账号' },
+  'PUT users': { label: '更新用户', description: '修改用户账号信息' },
+  'DELETE users': { label: '删除用户', description: '删除系统用户账号' },
+
+  'GET designers': { label: '查看设计员', description: '查看设计员列表' },
+  'POST designers': { label: '添加设计员', description: '新增设计员信息' },
+  'PUT designers': { label: '更新设计员', description: '修改设计员信息' },
+  'DELETE designers': { label: '删除设计员', description: '删除设计员信息' },
+
+  'GET tasks': { label: '查看任务', description: '查看任务列表' },
+  'POST tasks': { label: '添加任务', description: '新增任务记录' },
+  'PUT tasks': { label: '更新任务', description: '修改任务内容或工时' },
+  'DELETE tasks': { label: '删除任务', description: '删除任务记录' },
+
+  'GET settings': { label: '查看设置', description: '查看系统设置' },
+  'PUT settings': { label: '更新设置', description: '修改系统设置' },
+  'GET system/settings': { label: '查看系统设置', description: '查看系统级配置' },
+  'PUT system/settings': { label: '更新系统设置', description: '修改系统级配置' },
+  'GET system/version': { label: '查看版本', description: '查看系统版本信息' },
+  'GET system/export-xls': { label: '导出任务数据', description: '导出任务表格数据' },
+  'POST system/import-xls': { label: '导入任务数据', description: '导入任务表格数据' },
+
+  'GET system/audit-logs': { label: '查看日志', description: '查看系统操作日志' },
+  'GET audit-logs': { label: '查看日志', description: '查看系统操作日志' },
+  'GET system/audit-logs/filter-options': { label: '筛选日志', description: '获取日志筛选选项' },
+  'GET audit-logs/filter-options': { label: '筛选日志', description: '获取日志筛选选项' },
+  'GET system/audit-logs/export': { label: '导出日志', description: '导出系统操作日志' },
+  'GET audit-logs/export': { label: '导出日志', description: '导出系统操作日志' },
+  'GET system/login-logs': { label: '查看登录日志', description: '查看用户登录日志' },
+  'GET system/admin-login-logs': { label: '查看管理员登录记录', description: '查看管理员最近登录记录' },
+
+  'GET status-tracking/items': { label: '查看状态跟踪', description: '查看状态跟踪数据' },
+  'POST status-tracking/items': { label: '添加状态跟踪', description: '新增状态跟踪记录' },
+  'PUT status-tracking/items': { label: '更新状态跟踪', description: '修改状态跟踪记录' },
+  'DELETE status-tracking/items': { label: '删除状态跟踪', description: '删除状态跟踪记录' },
+  'GET status-tracking/export': { label: '导出状态跟踪表', description: '导出状态跟踪表格' },
+  'POST status-tracking/import': { label: '导入状态跟踪表', description: '导入状态跟踪表格' },
+
+  'GET work-hours/export': { label: '导出工时管理表', description: '导出工时统计表格' },
+  'GET spec/spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' }
+};
+
+const resourceActionDisplays = {
+  users: routeActionDisplays,
+  designers: routeActionDisplays,
+  tasks: routeActionDisplays,
+  settings: routeActionDisplays
+};
+
+const legacyActionDescriptions = {
+  登录系统: '用户登录系统',
+  用户登录: '用户登录系统',
+  退出登录: '用户退出系统',
+  用户退出: '用户退出系统',
+  修改密码: '用户修改登录密码',
+  创建用户: '新增系统用户账号',
+  更新用户: '修改用户账号信息',
+  删除用户: '删除系统用户账号',
+  查看用户: '查看用户列表或用户详情',
+  添加设计员: '新增设计员信息',
+  更新设计员: '修改设计员信息',
+  删除设计员: '删除设计员信息',
+  查看设计员: '查看设计员列表',
+  添加任务: '新增任务记录',
+  更新任务: '修改任务内容或工时',
+  删除任务: '删除任务记录',
+  查看任务: '查看任务列表',
+  更新设置: '修改系统设置',
+  查看设置: '查看系统设置',
+  更新系统设置: '修改系统级配置',
+  查看系统设置: '查看系统级配置',
+  导出任务数据: '导出任务表格数据',
+  导入任务数据: '导入任务表格数据',
+  添加状态跟踪记录: '新增状态跟踪数据',
+  更新状态跟踪记录: '修改状态跟踪数据',
+  删除状态跟踪记录: '删除状态跟踪数据',
+  查看状态跟踪记录: '查看状态跟踪数据',
+  导出状态跟踪表: '导出状态跟踪表格',
+  导入状态跟踪表: '导入状态跟踪表格',
+  导出工时管理表: '导出工时统计表格',
+  查询仕样信息: '查询产品仕样信息',
+  查看日志: '查看系统操作日志',
+  筛选日志: '获取日志筛选选项',
+  导出日志: '导出系统操作日志',
+  查看版本: '查看系统版本信息'
+};
+
+const getBrowserInfo = (userAgent = '') => {
+  const ua = String(userAgent);
+  let browser = 'Unknown Browser';
+  let os = 'Unknown OS';
+
+  if (/Edg\//i.test(ua)) browser = 'Microsoft Edge';
+  else if (/OPR\//i.test(ua) || /Opera/i.test(ua)) browser = 'Opera';
+  else if (/Chrome\//i.test(ua) && !/Chromium/i.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+  else if (/Safari\//i.test(ua) && /Version\//i.test(ua)) browser = 'Safari';
+  else if (/MSIE|Trident/i.test(ua)) browser = 'Internet Explorer';
+
+  if (/Windows NT/i.test(ua)) os = 'Windows';
+  else if (/Android/i.test(ua)) os = 'Android';
+  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+  else if (/Mac OS X/i.test(ua)) os = 'macOS';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+
+  const device = /Mobile|Android|iPhone|iPad|iPod/i.test(ua) ? 'Mobile' : 'Desktop';
+
+  return { browser, os, device, summary: `${browser} / ${os} / ${device}` };
+};
+
+const getRouteActionDisplay = (method = '', routePath = '') => {
+  const normalizedPath = normalizeAuditPath(routePath);
+  const normalizedMethod = String(method || '').toUpperCase();
+  const key = `${normalizedMethod} ${normalizedPath}`;
+
+  if (routeActionDisplays[key]) return routeActionDisplays[key];
+
+  const firstPathPart = normalizedPath.split('/')[0];
+  const resourceKey = `${normalizedMethod} ${firstPathPart}`;
+  if (resourceActionDisplays[firstPathPart]?.[resourceKey]) {
+    return resourceActionDisplays[firstPathPart][resourceKey];
+  }
+
+  return null;
+};
+
+const getAuditActionDisplay = (log = {}) => {
+  const routeDisplay = getRouteActionDisplay(log.method, log.path);
+  if (routeDisplay) return routeDisplay;
+
+  const action = String(log.action || '').trim();
+  const actionRouteMatch = action.match(/^(GET|POST|PUT|DELETE|PATCH)\s+(.+)$/i);
+  if (actionRouteMatch) {
+    const actionRouteDisplay = getRouteActionDisplay(actionRouteMatch[1], actionRouteMatch[2]);
+    if (actionRouteDisplay) return actionRouteDisplay;
+  }
+
+  if (action) {
+    return {
+      label: action,
+      description: legacyActionDescriptions[action] || action
+    };
+  }
+
+  return {
+    label: log.method && log.path ? `${log.method} ${log.path}` : '未知操作',
+    description: '未识别的操作记录'
+  };
+};
+
+const getBrowserLabel = (log = {}) => {
+  if (log.browserInfo?.summary) return log.browserInfo.summary;
+  if (log.browserInfo?.browser || log.browserInfo?.os || log.browserInfo?.device) {
+    return [log.browserInfo.browser, log.browserInfo.os, log.browserInfo.device].filter(Boolean).join(' / ');
+  }
+  if (log.userAgent) return getBrowserInfo(log.userAgent).summary;
+  return '-';
+};
+
+module.exports = {
+  getAuditActionDisplay,
+  getBrowserInfo,
+  getBrowserLabel,
+  getRouteActionDisplay
+};
