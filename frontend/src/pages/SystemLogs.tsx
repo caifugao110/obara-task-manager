@@ -16,7 +16,7 @@ import {
   Download
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { getRoleLabel, getRoleClassName, getBrowserLabel } from '../utils/loginLogs';
+import { getActionTypeLabel, getBrowserLabel } from '../utils/loginLogs';
 
 interface AuditLog {
   id: string;
@@ -224,10 +224,10 @@ const SystemLogs = () => {
               <button
                 onClick={handleExport}
                 disabled={exporting}
-                className="flex items-center gap-1.5 px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white rounded-lg text-sm font-bold transition"
+                className="flex items-center gap-2 px-5 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
               >
-                {exporting ? <RefreshCw size={15} className="animate-spin" /> : <Download size={15} />}
-                导出
+                {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                导出日志
               </button>
               <button
                 onClick={fetchLogs}
@@ -333,26 +333,25 @@ const SystemLogs = () => {
                 <tr>
                   <th className="px-4 py-3 font-bold">时间</th>
                   <th className="px-4 py-3 font-bold">用户</th>
-                  <th className="px-4 py-3 font-bold">角色</th>
-                  <th className="px-4 py-3 font-bold">操作</th>
+                  <th className="px-4 py-3 font-bold">操作类型</th>
+                  <th className="px-4 py-3 font-bold">操作说明</th>
                   <th className="px-4 py-3 font-bold">方法</th>
                   <th className="px-4 py-3 font-bold">IP</th>
                   <th className="px-4 py-3 font-bold">状态码</th>
-                  <th className="px-4 py-3 font-bold">耗时</th>
                   <th className="px-4 py-3 font-bold">浏览器信息</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8 text-center">
+                    <td colSpan={8} className="px-4 py-8 text-center">
                       <RefreshCw className="inline-block animate-spin text-blue-600 mr-2" size={20} />
                       加载中...
                     </td>
                   </tr>
                 ) : logs.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
+                    <td colSpan={8} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
                   </tr>
                 ) : (
                   logs.map(log => (
@@ -373,14 +372,12 @@ const SystemLogs = () => {
                         </div>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${getRoleClassName(log.role)}`}>
-                          {getRoleLabel(log.role)}
-                        </span>
+                        <span className="text-sm font-bold text-gray-800">{getActionTypeLabel(log.action).label}</span>
                       </td>
-                      <td className="px-4 py-3 text-gray-700 max-w-[200px]">
-                        <div className="flex items-center gap-2">
-                          <Shield size={14} className="text-gray-400" />
-                          <span className="truncate">{log.action}</span>
+                      <td className="px-4 py-3 text-gray-600 text-sm max-w-[200px]" title={getActionTypeLabel(log.action).description}>
+                        <div className="flex items-start gap-2">
+                          <Shield size={14} className="text-gray-400 mt-0.5" />
+                          <span className="truncate">{getActionTypeLabel(log.action).description}</span>
                         </div>
                       </td>
                       <td className="px-4 py-3">

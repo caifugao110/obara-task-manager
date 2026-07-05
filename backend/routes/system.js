@@ -1409,15 +1409,46 @@ router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHa
     return res.status(404).json({ message: '没有可导出的日志' });
   }
 
-  const columns = ['时间', '用户', '姓名', '角色', '操作', '方法', 'IP', '状态码', '耗时(ms)', '浏览器信息'];
-  const roleLabels = { superadmin: '超级管理员', admin: '管理员', user: '普通用户' };
+  const actionDescriptions = {
+    '用户登录': '用户通过账号密码登录系统',
+    '用户退出': '用户主动退出登录',
+    '修改密码': '用户修改个人登录密码',
+    '创建用户': '新增系统用户账号',
+    '更新用户': '修改已有用户信息',
+    '删除用户': '删除系统用户账号',
+    '查看用户': '查看用户列表或详情',
+    '添加设计员': '新增设计员信息',
+    '更新设计员': '修改设计员信息',
+    '删除设计员': '删除设计员',
+    '查看设计员': '查看设计员列表',
+    '添加任务': '新增任务记录',
+    '更新任务': '修改任务信息',
+    '删除任务': '删除任务记录',
+    '查看任务': '查看任务列表',
+    '更新设置': '修改系统设置',
+    '查看设置': '查看系统设置',
+    '更新系统设置': '修改系统级配置',
+    '查看系统设置': '查看系统级配置',
+    '导出任务数据': '导出任务表格数据',
+    '导入任务数据': '导入任务表格数据',
+    '添加状态跟踪记录': '新增状态跟踪数据',
+    '更新状态跟踪记录': '修改状态跟踪数据',
+    '删除状态跟踪记录': '删除状态跟踪数据',
+    '查看状态跟踪记录': '查看状态跟踪数据',
+    '导出状态跟踪表': '导出状态跟踪表格',
+    '导入状态跟踪表': '导入状态跟踪表格',
+    '导出工时管理表': '导出工时统计表格',
+    '查询仕样信息': '查询产品仕样信息'
+  };
+
+  const columns = ['时间', '用户', '姓名', '操作类型', '操作说明', '方法', 'IP', '状态码', '耗时(ms)', '浏览器信息'];
 
   const dataRows = logs.map(log => [
     log.timestamp ? new Date(log.timestamp).toLocaleString('zh-CN', { hour12: false }) : '',
     log.username || '',
     log.name || '',
-    roleLabels[log.role] || log.role || '',
     log.action || '',
+    actionDescriptions[log.action] || log.action || '',
     log.method || '',
     log.ip || '',
     log.responseStatus ?? '',
@@ -1428,14 +1459,17 @@ router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHa
   const worksheetData = [columns, ...dataRows];
   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
   worksheet['!cols'] = [
-    { wpx: 150 }, { wpx: 80 }, { wpx: 80 }, { wpx: 90 },
-    { wpx: 140 }, { wpx: 60 }, { wpx: 110 }, { wpx: 60 },
+    { wpx: 150 }, { wpx: 80 }, { wpx: 80 }, { wpx: 100 },
+    { wpx: 200 }, { wpx: 60 }, { wpx: 110 }, { wpx: 60 },
     { wpx: 70 }, { wpx: 280 }
   ];
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, '操作日志');
-  const xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
+  let xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
+  
+  xml = xml.replace(/<\/Worksheet>/g, '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>0</ActivePane><Panes><Pane><Number>2</Number><ActiveRow>1</ActiveRow></Pane><Pane><Number>0</Number><ActiveRow>1</ActiveRow><ActiveCol>0</ActiveCol></Pane></Panes></WorksheetOptions></Worksheet>');
+
   const buffer = Buffer.from(xml, 'utf8');
 
   res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');

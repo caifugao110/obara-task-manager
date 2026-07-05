@@ -128,16 +128,34 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
   res.json(data.statusTrackingItems);
 }));
 
-router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
-  const { month } = req.query;
-  if (!month || !/^\d{4}-\d{2}$/.test(month)) {
-    return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
-  }
-
+router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+  const { month, factory, searchTerm, fullTableSearch } = req.query;
+  
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
   
-  const filteredItems = items.filter(item => item.deliveryDate?.startsWith(month));
+  let filteredItems = items;
+  
+  if (fullTableSearch !== 'true') {
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
+    }
+    filteredItems = filteredItems.filter(item => item.deliveryDate?.startsWith(month));
+  }
+  
+  if (factory) {
+    filteredItems = filteredItems.filter(item => item.factory === factory);
+  }
+  
+  if (searchTerm && searchTerm.trim()) {
+    const term = searchTerm.toLowerCase().trim();
+    filteredItems = filteredItems.filter(item => 
+      item.clientName.toLowerCase().includes(term) ||
+      item.specNumber.toLowerCase().includes(term) ||
+      item.salesPerson.toLowerCase().includes(term) ||
+      item.leader.toLowerCase().includes(term)
+    );
+  }
   
   if (filteredItems.length === 0) {
     return res.status(404).json({ message: '没有可导出的数据' });
@@ -181,13 +199,14 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
   worksheet['!cols'] = buildAutoColumns(worksheetData, { min: 50, max: 220 });
 
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, month);
+  XLSX.utils.book_append_sheet(workbook, worksheet, '状态跟踪表');
 
   const xml = applyExportStyles(XLSX.write(workbook, { type: 'string', bookType: 'xlml' }));
   const buffer = Buffer.from(xml, 'utf8');
   
+  const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 14);
   res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="status-tracking-${month}.xls"`);
+  res.setHeader('Content-Disposition', `attachment; filename="status-tracking-${timestamp}.xls"`);
   res.send(buffer);
 }));
 

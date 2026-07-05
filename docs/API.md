@@ -124,6 +124,25 @@ Authorization: Bearer <token>
 - 旧密码不正确时返回 `401`。
 - 超级管理员重置用户密码后，该用户 `forcePasswordChange` 会被设置为 `true`，下次登录需修改密码。
 
+### 登出
+
+`POST /api/auth/logout`
+
+权限：需要登录。
+
+响应（成功）：
+
+```json
+{
+  "message": "退出成功"
+}
+```
+
+说明：
+
+- 登出后会清除用户的 `sessionToken`，使当前会话失效。
+- 如果启用了单设备登录，其他设备不受影响。
+
 ## 用户接口
 
 ### 获取登录用户列表
@@ -519,6 +538,103 @@ Authorization: Bearer <token>
 
 - `newIndex` 可选。
 - 移动后会更新最后修改者和最后修改时间。
+
+### 批量替换搜索
+
+`POST /api/tasks/batch-replace/search`
+
+权限：`admin`、`superadmin`。
+
+用于在执行批量替换前搜索匹配项，预览替换范围。
+
+请求：
+
+```json
+{
+  "findText": "旧文本",
+  "replaceText": "新文本",
+  "allTable": false,
+  "month": 7,
+  "year": 2026
+}
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `findText` | 是 | 要查找的文本 |
+| `replaceText` | 否 | 替换后的文本，默认为空字符串 |
+| `allTable` | 否 | 是否搜索全表，默认为 `false` |
+| `month` | 否 | 月份（`allTable=false` 时必填） |
+| `year` | 否 | 年份（`allTable=false` 时必填） |
+
+响应：
+
+```json
+{
+  "matches": [
+    {
+      "designerId": "designer-1",
+      "designerName": "张三",
+      "date": "2026-07-01",
+      "itemId": "task-1",
+      "taskName": "设计计划 12345",
+      "fields": [
+        { "field": "taskName", "label": "任务名", "text": "设计计划 12345", "count": 1 }
+      ]
+    }
+  ],
+  "itemCount": 1,
+  "matchCount": 1,
+  "scope": "month"
+}
+```
+
+说明：
+
+- 搜索范围包括任务名和枪名。
+- 返回匹配的任务条目列表及每个条目中的匹配字段详情。
+- `itemCount` 表示匹配的任务条目数，`matchCount` 表示总匹配次数。
+
+### 批量替换执行
+
+`POST /api/tasks/batch-replace`
+
+权限：`admin`、`superadmin`。
+
+执行批量替换操作，将指定文本替换为新文本。
+
+请求：
+
+```json
+{
+  "findText": "旧文本",
+  "replaceText": "新文本",
+  "allTable": false,
+  "month": 7,
+  "year": 2026
+}
+```
+
+参数同批量替换搜索。
+
+响应：
+
+```json
+{
+  "message": "批量替换完成",
+  "replacementCount": 5,
+  "itemCount": 3,
+  "sheetCount": 2
+}
+```
+
+说明：
+
+- 替换范围包括任务名和枪名。
+- `replacementCount` 表示实际替换的次数。
+- `itemCount` 表示被修改的任务条目数。
+- `sheetCount` 表示被修改的工作表数。
+- 批量替换会更新被修改条目的 `updatedAt` 和 `updatedBy` 字段。
 
 ## 页面权限设置接口
 

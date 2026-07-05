@@ -76,6 +76,12 @@ const getActionDescription = (method, path, body) => {
   return descriptions[key] || descriptions[resource] || `${method} ${path}`;
 };
 
+const appendAuditLogDirect = async (entry) => {
+  const data = db.readDb();
+  await appendAuditLog(data, entry);
+  await db.writeDb(data);
+};
+
 const auditLogMiddleware = async (req, res, next) => {
   const startTime = Date.now();
   const originalSend = res.send;
@@ -98,7 +104,15 @@ const auditLogMiddleware = async (req, res, next) => {
 
   res.on('finish', async () => {
     try {
-      const user = req.user;
+      let user = req.user;
+
+      if (!user && req.path === '/api/auth/login' && responseStatus === 200 && responseBody) {
+        const body = typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
+        if (body.user) {
+          user = body.user;
+        }
+      }
+
       if (!user) return;
 
       const path = req.path;
@@ -139,4 +153,4 @@ const auditLogMiddleware = async (req, res, next) => {
   next();
 };
 
-module.exports = { auditLogMiddleware };
+module.exports = { auditLogMiddleware, appendAuditLogDirect };

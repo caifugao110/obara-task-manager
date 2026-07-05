@@ -218,4 +218,16 @@ router.post('/change-password', authMiddleware, asyncHandler(async (req, res) =>
   res.json({ message: '密码修改成功' });
 }));
 
+router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const userIndex = data.users.findIndex(u => u.id === req.user.id);
+  
+  if (userIndex !== -1) {
+    data.users[userIndex].sessionToken = null;
+    await db.writeDb(data);
+  }
+  
+  res.json({ message: '退出成功' });
+}));
+
 module.exports = router;

@@ -21,7 +21,8 @@ import {
   Lock,
   Unlock,
   Clock,
-  AlertTriangle
+  AlertTriangle,
+  Download
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -182,6 +183,7 @@ const StatusTracking = () => {
   const [factoryFilter, setFactoryFilter] = useState<string>('');
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
   const [offlineWarning, setOfflineWarning] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dateInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
 
@@ -556,6 +558,50 @@ const StatusTracking = () => {
     socket.emit('status_tracking_stop_edit', { itemId });
   }, [socket]);
 
+  const handleExport = useCallback(async () => {
+    if (!token) return;
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (!fullTableSearch) {
+        params.append('month', currentMonth);
+      }
+      if (factoryFilter) {
+        params.append('factory', factoryFilter);
+      }
+      if (searchTerm.trim()) {
+        params.append('searchTerm', searchTerm.trim());
+      }
+      if (fullTableSearch) {
+        params.append('fullTableSearch', 'true');
+      }
+      
+      const res = await axios.get(`/api/status-tracking/export?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 14);
+      link.download = `status-tracking-${timestamp}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      addToast('导出成功', 'success');
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        addToast('没有可导出的数据', 'error');
+      } else {
+        addToast('导出失败', 'error');
+      }
+    } finally {
+      setExporting(false);
+    }
+  }, [token, currentMonth, factoryFilter, searchTerm, fullTableSearch]);
+
   useEffect(() => {
     fetchSettings();
     fetchLeaderRules();
@@ -810,6 +856,16 @@ const StatusTracking = () => {
         </div>
 
         <div className="flex items-center space-x-4">
+          {isAdmin && (
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-lg transition"
+            >
+              {exporting ? <RefreshCw size={16} className="animate-spin" /> : <Download size={16} />}
+              导出显示结果
+            </button>
+          )}
           <div className="relative">
             <select
               value={factoryFilter}
