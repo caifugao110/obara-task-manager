@@ -10,6 +10,7 @@ const routeActionDisplays = {
   'POST auth/login': { label: '登录系统', description: '用户登录系统' },
   'POST auth/logout': { label: '退出登录', description: '用户退出系统' },
   'POST auth/change-password': { label: '修改密码', description: '用户修改登录密码' },
+  'POST change-password': { label: '修改密码', description: '用户修改登录密码' },
 
   'GET ': { label: '查看任务', description: '查看任务列表' },
   'GET users': { label: '查看用户', description: '查看用户列表或用户详情' },
@@ -104,6 +105,8 @@ const legacyActionDescriptions = {
   退出登录: '用户退出系统',
   用户退出: '用户退出系统',
   修改密码: '用户修改登录密码',
+  'change-password': '用户修改登录密码',
+  'auth/change-password': '用户修改登录密码',
   创建用户: '新增系统用户账号',
   更新用户: '修改用户账号信息',
   删除用户: '删除系统用户账号',

@@ -58,6 +58,15 @@ interface TaskSheet {
   days: Record<string, TaskItem[]>;
 }
 
+interface SpecInfoResponse {
+  success: boolean;
+  message?: string;
+  specNumber?: string;
+  clientName?: string;
+  deliveryDate?: string | null;
+  isModification?: boolean;
+}
+
 interface Designer {
   id: string;
   name: string;
@@ -824,6 +833,24 @@ const Dashboard = () => {
   const [addModeColor, setAddModeColor] = useState<string>('#dcfce7');
   const [addModeTaskType, setAddModeTaskType] = useState<'none' | 'confirm' | 'design'>('none');
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: 'none' | 'confirm' | 'design' }>>({});
+  const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addModeSpecLookupSeqRef = useRef(0);
+
+  const clearAddModeSpecLookup = () => {
+    addModeSpecLookupSeqRef.current += 1;
+    if (addModeSpecLookupTimeoutRef.current) {
+      clearTimeout(addModeSpecLookupTimeoutRef.current);
+      addModeSpecLookupTimeoutRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (addModeSpecLookupTimeoutRef.current) {
+        clearTimeout(addModeSpecLookupTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const openModal = (designerId: string, date: string, addMode: boolean = false) => {
     if (!canEditTasks) {
@@ -843,6 +870,7 @@ const Dashboard = () => {
     setAddModeGuns([]);
     setAddModeColor('#dcfce7');
     setAddModeTaskType('none');
+    clearAddModeSpecLookup();
     setTaskTypeDrafts({});
     setModalOpen(true);
   };
@@ -907,7 +935,7 @@ const Dashboard = () => {
  
    // Extract spec number (仕样号) from task name
    // Patterns: S57157, M55478, S-53969, or standalone digits like 56363
-   const extractSpecNumber = (taskName: string): string | null => {
+  const extractSpecNumber = (taskName: string): string | null => {
      // Priority 1: letter prefix + optional hyphen + 4-6 digits (e.g., S57157, M55478, S-53969)
      const letterMatch = taskName.match(/\b[A-Za-z]-?(\d{4,6})\b/);
      if (letterMatch) return letterMatch[1];
@@ -915,6 +943,21 @@ const Dashboard = () => {
      const digitsMatch = taskName.match(/\b(\d{4,6})\b/);
      return digitsMatch ? digitsMatch[1] : null;
    };
+
+  const isPureFiveDigitSpecNumber = (value: string) => /^\d{5}$/.test(value.trim());
+
+  const fetchSpecInfo = async (specNumber: string): Promise<SpecInfoResponse> => {
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axiosInstance.post('/spec/spec-info', { specNumber }, { ...authHeader, timeout: 15000 });
+      return res.data;
+    } catch (err) {
+      if (isAxiosError(err) && err.code === 'ECONNABORTED') {
+        return { success: false, message: '获取仕样信息超时(超过15秒)' };
+      }
+      return { success: false, message: '无法连接到服务器' };
+    }
+  };
  
   // 从后端 PDF 解析器获取仕样号的纳期
   // Fetch delivery date (纳期) for a spec number from the backend PDF parser
@@ -929,6 +972,98 @@ const Dashboard = () => {
       }
       return { success: false, message: '无法连接到服务器' };
     }
+  };
+
+  const splitDesignTaskName = (taskName: string) => {
+    const trimmed = taskName.trim();
+    const deadlineMatch = trimmed.match(/\s*(\[\d{1,2}\/\d{1,2}\])$/);
+    const withoutDeadline = deadlineMatch && typeof deadlineMatch.index === 'number'
+      ? trimmed.slice(0, deadlineMatch.index).trim()
+      : trimmed;
+    const typeMatch = withoutDeadline.match(/\s+(确认图|设计)$/);
+    const baseName = typeMatch && typeof typeMatch.index === 'number'
+      ? withoutDeadline.slice(0, typeMatch.index).trim()
+      : withoutDeadline;
+    const typeSuffix = typeMatch ? ` ${typeMatch[1]}` : '';
+    return { baseName, typeSuffix };
+  };
+
+  const getDeliveryDateSuffix = (deliveryDate?: string | null) => {
+    if (!deliveryDate) return null;
+    const dateMatch = deliveryDate.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (!dateMatch) return null;
+    const month = parseInt(dateMatch[2], 10);
+    const day = parseInt(dateMatch[3], 10);
+    return `[${month}/${day}]`;
+  };
+
+  const getDesignPlanClientName = (specInfo: SpecInfoResponse, fallbackSpecNumber: string) => {
+    const clientName = specInfo.clientName?.trim();
+    if (!clientName) return '';
+    if (!specInfo.isModification || clientName.startsWith('M')) return clientName;
+
+    const specNumber = specInfo.specNumber || fallbackSpecNumber;
+    if (clientName.startsWith(`${specNumber}>`)) {
+      return `M${clientName}`;
+    }
+    return `M${specNumber}>${clientName}`;
+  };
+
+  const buildSyncedSpecTaskName = (originalTaskName: string, specInfo: SpecInfoResponse, specNumber: string, deliverySuffix: string) => {
+    const { baseName, typeSuffix } = splitDesignTaskName(originalTaskName);
+    const clientName = getDesignPlanClientName(specInfo, specNumber) || baseName;
+    return `${clientName}${typeSuffix} ${deliverySuffix}`.trim();
+  };
+
+  const resolvePureSpecTaskName = async (taskName: string): Promise<string> => {
+    const { baseName, typeSuffix } = splitDesignTaskName(taskName);
+    if (!isPureFiveDigitSpecNumber(baseName)) return taskName;
+
+    let nextTaskName = `${baseName}${typeSuffix}`.trim();
+    let specInfo: SpecInfoResponse | null = null;
+
+    const infoResult = await fetchSpecInfo(baseName);
+    if (infoResult.success) {
+      specInfo = infoResult;
+      const clientName = getDesignPlanClientName(infoResult, baseName);
+      if (clientName) {
+        nextTaskName = `${clientName}${typeSuffix}`;
+      } else {
+        addToast(`未找到仕样号 ${baseName} 的客户信息`, 'error');
+      }
+    } else {
+      addToast(infoResult.message || `未找到仕样号 ${baseName} 的客户信息`, 'error');
+    }
+
+    const deliveryDate = specInfo?.deliveryDate || (await fetchSpecDeliveryDate(baseName)).date;
+    const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
+    if (deliverySuffix) {
+      return `${nextTaskName.replace(/\s*\[\d{1,2}\/\d{1,2}\]$/, '').trim()} ${deliverySuffix}`;
+    }
+
+    addToast(`未找到仕样号 ${baseName} 的纳期信息`, 'error');
+    return nextTaskName;
+  };
+
+  const scheduleAddModeSpecAutoFill = (value: string) => {
+    clearAddModeSpecLookup();
+
+    const specNumber = value.trim();
+    if (!isPureFiveDigitSpecNumber(specNumber)) return;
+
+    const lookupSeq = addModeSpecLookupSeqRef.current;
+    addModeSpecLookupTimeoutRef.current = setTimeout(async () => {
+      const specInfo = await fetchSpecInfo(specNumber);
+      if (lookupSeq !== addModeSpecLookupSeqRef.current) return;
+
+      if (specInfo.success && specInfo.clientName?.trim()) {
+        const clientName = getDesignPlanClientName(specInfo, specNumber);
+        setAddModeTaskName(current => current.trim() === specNumber ? clientName : current);
+        return;
+      }
+
+      addToast(specInfo.message || `未找到仕样号 ${specNumber} 的客户信息`, 'error');
+    }, 500);
   };
  
   const upsertSheet = useCallback((incoming: TaskSheet) => {
@@ -1509,6 +1644,21 @@ const Dashboard = () => {
     });
   };
 
+  const getHoursInputValue = (value: number | string | null | undefined) => {
+    if (value === null || value === undefined || value === '') return '';
+    const numericValue = typeof value === 'number' ? value : parseFloat(String(value));
+    if (isNaN(numericValue) || numericValue === 0) return '';
+    return value;
+  };
+
+  const getGunHoursTotalInputValue = (guns?: GunItem[]) => {
+    const total = (guns || []).reduce((sum, gun) => {
+      const hours = typeof gun.hours === 'number' ? gun.hours : parseFloat(String(gun.hours));
+      return sum + (isNaN(hours) ? 0 : hours);
+    }, 0);
+    return total > 0 ? total : '';
+  };
+
   const isMeaningfulTask = (item: TaskItem) => {
     if (item.leaveType) return true;
     const taskName = (item.taskName || '').trim();
@@ -1573,8 +1723,11 @@ const Dashboard = () => {
   const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
     if (warnIfOfflineEdit()) return;
     try {
+      const nextValue = field === 'taskName' && typeof value === 'string'
+        ? await resolvePureSpecTaskName(value)
+        : value;
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value }, authHeader);
+      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value: nextValue }, authHeader);
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
@@ -2345,8 +2498,8 @@ const Dashboard = () => {
                                   step="0.5"
                                   min="0"
                                   className="w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none focus:bg-white"
-                                  defaultValue="0"
-                                  placeholder="工时"
+                                  value={addModeHours}
+                                  placeholder=""
                                   onChange={(e) => setAddModeHours(e.target.value)}
                                 />
                               </div>
@@ -2401,8 +2554,8 @@ const Dashboard = () => {
                                   step="0.5"
                                   min="0"
                                   className="w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none focus:bg-white"
-                                  defaultValue="0"
-                                  placeholder="工时"
+                                  value={addModeHours}
+                                  placeholder=""
                                   onChange={(e) => setAddModeHours(e.target.value)}
                                 />
                               </div>
@@ -2453,8 +2606,12 @@ const Dashboard = () => {
                                 ref={el => inputRefs.current['task-new'] = el}
                                 className="flex-1 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                                 value={addModeTaskName}
-                                onChange={(e) => setAddModeTaskName(e.target.value)}
-                                placeholder="输入主任务名称..."
+                                onChange={(e) => {
+                                  const nextValue = e.target.value;
+                                  setAddModeTaskName(nextValue);
+                                  scheduleAddModeSpecAutoFill(nextValue);
+                                }}
+                                placeholder="输入完整任务名称或者五位数仕样号自动对应"
                                 autoFocus
                               />
                               <div className="flex items-center gap-2">
@@ -2465,8 +2622,8 @@ const Dashboard = () => {
                                     step="0.5"
                                     min="0"
                                     className={`w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                                    value={addModeGuns.length > 0 ? addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0) : addModeHours}
-                                    placeholder="工时"
+                                    value={addModeGuns.length > 0 ? getGunHoursTotalInputValue(addModeGuns) : addModeHours}
+                                    placeholder=""
                                     onChange={(e) => setAddModeHours(e.target.value)}
                                     disabled={addModeGuns.length > 0}
                                   />
@@ -2523,7 +2680,7 @@ const Dashboard = () => {
                                 min="0"
                                 className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 value={gun.hours || ''}
-                                placeholder="工时"
+                                placeholder=""
                                 onChange={(e) => {
                                   setAddModeGuns(prev => {
                                     const next = [...prev];
@@ -2556,7 +2713,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                setAddModeGuns([]);
                                 setSelectedTaskType('trip');
                               }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'trip' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
@@ -2565,7 +2721,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                setAddModeGuns([]);
                                 setSelectedTaskType('sick');
                               }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'sick' ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
@@ -2574,7 +2729,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                setAddModeGuns([]);
                                 setSelectedTaskType('vacation');
                               }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'vacation' ? 'bg-blue-100 text-blue-700 border border-blue-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
@@ -2583,7 +2737,6 @@ const Dashboard = () => {
                             </button>
                             <button
                               onClick={() => {
-                                setAddModeGuns([]);
                                 setSelectedTaskType('illness');
                               }}
                               className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'illness' ? 'bg-pink-100 text-pink-700 border border-pink-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
@@ -2674,9 +2827,9 @@ const Dashboard = () => {
                                       step="0.5"
                                       min="0"
                                       className="w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none focus:bg-white"
-                                      value={typeof currentItem.hours === 'number' ? currentItem.hours : (parseFloat(currentItem.hours as string) || 0)}
+                                      value={getHoursInputValue(currentItem.hours)}
                                       onChange={(e) => handleItemChange(modalDesignerId, modalDate, currentItem.id, 'hours', e.target.value)}
-                                      placeholder="工时"
+                                      placeholder=""
                                     />
                                   </div>
                                   <button
@@ -2729,9 +2882,9 @@ const Dashboard = () => {
                                       step="0.5"
                                       min="0"
                                       className="w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none focus:bg-white"
-                                      value={typeof currentItem.hours === 'number' ? currentItem.hours : (parseFloat(currentItem.hours as string) || 0)}
+                                      value={getHoursInputValue(currentItem.hours)}
                                       onChange={(e) => handleItemChange(modalDesignerId, modalDate, currentItem.id, 'hours', e.target.value)}
-                                      placeholder="工时"
+                                      placeholder=""
                                     />
                                   </div>
                                 </div>
@@ -2807,7 +2960,7 @@ const Dashboard = () => {
                                     }));
                                     handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
                                   }}
-                                  placeholder="请输入主任务名称，不能为空..."
+                                  placeholder="输入完整任务名称或者五位数仕样号自动对应"
                                 />
                                 <div className="flex items-center gap-2">
                                   <div className="w-20">
@@ -2817,10 +2970,10 @@ const Dashboard = () => {
                                       step="0.5"
                                       min="0"
                                       className={`w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${hasGuns ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                                      value={hasGuns ? (currentItem.guns || []).reduce((sum, g) => sum + (typeof g.hours === 'number' ? g.hours : (parseFloat(g.hours as string) || 0)), 0) : currentItem.hours}
+                                      value={hasGuns ? getGunHoursTotalInputValue(currentItem.guns) : getHoursInputValue(currentItem.hours)}
                                       onChange={(e) => !hasGuns && handleItemChange(modalDesignerId, modalDate, currentItem.id, 'hours', e.target.value)}
                                       disabled={hasGuns}
-                                      placeholder="工时"
+                                      placeholder=""
                                     />
                                   </div>
                                   <button
@@ -2830,45 +2983,58 @@ const Dashboard = () => {
                                         addToast('未能从任务名称中提取仕样号', 'error');
                                         return;
                                       }
-                                      addToast(`正在查询仕样号 ${specNo} 的纳期...`, 'success');
-                                      const result = await fetchSpecDeliveryDate(specNo);
-                                      if (result.success && result.date) {
-                                        const dateMatch = result.date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-                                        if (dateMatch) {
-                                          const month = parseInt(dateMatch[2], 10);
-                                          const day = parseInt(dateMatch[3], 10);
-                                          const dateStr = `[${month}/${day}]`;
-                                          
-                                          // Find all tasks with the same spec number across all sheets and dates
-                                          let updatedCount = 0;
-                                          sheets.forEach(sheet => {
-                                            Object.entries(sheet.days || {}).forEach(([date, items]) => {
-                                              (items || []).forEach(item => {
-                                                const itemSpecNo = extractSpecNumber(item.taskName);
-                                                if (itemSpecNo === specNo) {
-                                                  const originalName = item.taskName || '';
-                                                  const baseName = originalName.replace(/\s*\[\d{1,2}\/\d{1,2}\]\s*/g, ' ').trim();
-                                                  const newName = `${baseName} ${dateStr}`;
-                                                  handleItemChange(sheet.designerId, date, item.id, 'taskName', newName.trim());
-                                                  updatedCount++;
-                                                }
-                                              });
-                                            });
-                                          });
-                                          
-                                          addToast(`纳期已更新: ${dateStr}（已为 ${updatedCount} 个相同仕样号的计划任务添加纳期）`, 'success');
-                                        } else {
-                                          addToast(`纳期: ${result.date}`, 'success');
-                                        }
-                                      } else {
-                                        addToast(result.message || '获取纳期失败', 'error');
+
+                                      addToast(`正在同步仕样号 ${specNo} 的客户名和纳期...`, 'success');
+                                      const specInfo = await fetchSpecInfo(specNo);
+                                      if (!specInfo.success) {
+                                        addToast(specInfo.message || '获取仕样信息失败', 'error');
+                                        return;
                                       }
+
+                                      const clientName = getDesignPlanClientName(specInfo, specNo);
+                                      if (!clientName) {
+                                        addToast(`未找到仕样号 ${specNo} 的客户信息`, 'error');
+                                        return;
+                                      }
+
+                                      let deliveryDate = specInfo.deliveryDate;
+                                      if (!deliveryDate) {
+                                        const deliveryResult = await fetchSpecDeliveryDate(specNo);
+                                        if (deliveryResult.success && deliveryResult.date) {
+                                          deliveryDate = deliveryResult.date;
+                                        } else {
+                                          addToast(deliveryResult.message || '获取纳期失败', 'error');
+                                          return;
+                                        }
+                                      }
+
+                                      const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
+                                      if (!deliverySuffix) {
+                                        addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
+                                        return;
+                                      }
+
+                                      let updatedCount = 0;
+                                      sheets.forEach(sheet => {
+                                        Object.entries(sheet.days || {}).forEach(([date, items]) => {
+                                          (items || []).forEach(item => {
+                                            const itemSpecNo = extractSpecNumber(item.taskName);
+                                            if (itemSpecNo === specNo) {
+                                              const newName = buildSyncedSpecTaskName(item.taskName || '', specInfo, specNo, deliverySuffix);
+                                              handleItemChange(sheet.designerId, date, item.id, 'taskName', newName);
+                                              updatedCount++;
+                                            }
+                                          });
+                                        });
+                                      });
+
+                                      addToast(`相同仕样号同步完成: ${deliverySuffix}（已更新 ${updatedCount} 个任务）`, 'success');
                                     }}
                                     className="px-2 py-1 text-[10px] bg-green-50 text-green-600 rounded hover:bg-green-100 transition font-bold whitespace-nowrap"
-                                    title="纳期更新"
+                                    title="相同仕样号同步更新"
                                     disabled={!currentItem.taskName || !currentItem.taskName.trim()}
                                   >
-                                    纳期更新
+                                    相同仕样号同步更新
                                   </button>
                                   <button
                                     onClick={() => deleteItem(modalDesignerId, modalDate, currentItem.id)}
@@ -2925,7 +3091,7 @@ const Dashboard = () => {
                                     min="0"
                                     className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                     value={gun.hours || ''}
-                                    placeholder="工时"
+                                    placeholder=""
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
                                       newGuns[gIdx] = { ...newGuns[gIdx], hours: e.target.value };
@@ -3108,12 +3274,31 @@ const Dashboard = () => {
                         : parseFloat(addModeHours) || 0;
                       const leaveType = selectedTaskType === 'none' ? null : selectedTaskType;
                       let taskName = '';
+                      let fetchedSpecInfo: SpecInfoResponse | null = null;
                       
                       if (selectedTaskType === 'trip') {
                         const place = addModeTripPlace.trim();
                         taskName = place ? `${place}出差` : '出差';
                       } else if (selectedTaskType === 'none') {
-                        taskName = addModeTaskName.trim() || '未命名';
+                        const trimmedTaskName = addModeTaskName.trim();
+                        const pureSpecNumber = isPureFiveDigitSpecNumber(trimmedTaskName) ? trimmedTaskName : null;
+                        taskName = trimmedTaskName || '未命名';
+
+                        if (pureSpecNumber) {
+                          const specInfo = await fetchSpecInfo(pureSpecNumber);
+                          if (specInfo.success) {
+                            fetchedSpecInfo = specInfo;
+                            const clientName = getDesignPlanClientName(specInfo, pureSpecNumber);
+                            if (clientName) {
+                              taskName = clientName;
+                            } else {
+                              addToast(`未找到仕样号 ${pureSpecNumber} 的客户信息`, 'error');
+                            }
+                          } else {
+                            addToast(specInfo.message || `未找到仕样号 ${pureSpecNumber} 的客户信息`, 'error');
+                          }
+                        }
+
                         if (addModeTaskType === 'confirm') {
                           taskName += ' 确认图';
                         } else if (addModeTaskType === 'design') {
@@ -3124,7 +3309,9 @@ const Dashboard = () => {
                       if (selectedTaskType === 'none' && taskName && taskName !== '未命名') {
                         const specNo = extractSpecNumber(taskName);
                         if (specNo) {
-                          const result = await fetchSpecDeliveryDate(specNo);
+                          const result = fetchedSpecInfo?.specNumber === specNo && fetchedSpecInfo.deliveryDate
+                            ? { success: true, date: fetchedSpecInfo.deliveryDate }
+                            : await fetchSpecDeliveryDate(specNo);
                           if (result.success && result.date) {
                             const dateMatch = result.date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
                             if (dateMatch) {

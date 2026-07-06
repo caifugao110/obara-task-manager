@@ -158,10 +158,13 @@ async function extractSpecInfoFromPdf(p) {
       projectName: '',
       quantity: '',
       deliveryDate: null,
-      salesPerson: ''
+      salesPerson: '',
+      isModification: false
     };
 
     var lines = t.split('\n').map(l => l.trim()).filter(l => l);
+    var headerText = lines.slice(0, 3).join('');
+    info.isModification = headerText.includes('客户仕样书') && headerText.includes('修改');
 
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
@@ -382,7 +385,9 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
           deliveryDate: deliveryDateStr,
 
-          salesPerson: info.salesPerson
+          salesPerson: info.salesPerson,
+
+          isModification: info.isModification
 
         };
 
