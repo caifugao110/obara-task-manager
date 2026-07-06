@@ -436,6 +436,14 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
           clientName = `${n}>${info.middleMan}`;
 
+        } else if (info.finalClient && info.projectName) {
+
+          clientName = `${n}>${info.finalClient}-${info.projectName}`;
+
+        } else if (info.finalClient) {
+
+          clientName = `${n}>${info.finalClient}`;
+
         }
 
         var deliveryDateStr = null;
