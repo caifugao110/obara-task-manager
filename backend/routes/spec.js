@@ -51,7 +51,7 @@ function isValidDate(yy, mo, dd) {
 function isSkipDataLine(line) {
   var s = (line || '').trim();
   if (!s) return true;
-  if (/^[\u2713\u2610\u25a1\u2611\uf0fc\s]+$/.test(s)) return true;
+  if (/^[\u2713\u2610\u25a1\u2611\uf0fc\u2705\u270b\s]+$/.test(s)) return true;
   return false;
 }
 
@@ -204,33 +204,89 @@ async function extractSpecInfoFromPdf(p) {
           dataLines.push(dataLine);
         }
 
-        if (dataLines.length >= 1) {
-          info.middleMan = dataLines[0].split('\t')[0].trim();
-        }
-        if (dataLines.length >= 2) {
-          var dq = parseDateQuantityLine(dataLines[1]);
-          if (dq.dateStr) {
-            info.deliveryDate = {
-              year: parseInt(dq.dateStr.split('-')[0], 10),
-              month: parseInt(dq.dateStr.split('-')[1], 10),
-              day: parseInt(dq.dateStr.split('-')[2], 10)
-            };
+        var dateQtyLineIndex = -1;
+        for (var k = 0; k < dataLines.length; k++) {
+          var dq = parseDateQuantityLine(dataLines[k]);
+          if (dq.dateStr || dq.qtyStr) {
+            dateQtyLineIndex = k;
+            if (dq.dateStr) {
+              info.deliveryDate = {
+                year: parseInt(dq.dateStr.split('-')[0], 10),
+                month: parseInt(dq.dateStr.split('-')[1], 10),
+                day: parseInt(dq.dateStr.split('-')[2], 10)
+              };
+            }
+            if (dq.qtyStr) info.quantity = dq.qtyStr;
+            break;
           }
-          if (dq.qtyStr) info.quantity = dq.qtyStr;
         }
-        if (dataLines.length >= 3) {
-          var fcParts = dataLines[2].split('\t');
-          if (fcParts[0]) {
-            var fcCandidate = fcParts[0].trim();
-            if (fcCandidate !== salesPersonFromPrevLine) {
-              info.finalClient = fcCandidate;
+
+        if (dateQtyLineIndex >= 1) {
+          var prevLine = dataLines[dateQtyLineIndex - 1].trim();
+          var dateQtyLine = dataLines[dateQtyLineIndex].trim();
+          
+          if (!prevLine.includes('')) {
+            if (/^\d{11}/.test(dateQtyLine)) {
+              if (dateQtyLineIndex >= 2) {
+                var twoLinesAbove = dataLines[dateQtyLineIndex - 2].trim();
+                if (!/^[\u4e00-\u9fa5]{2,4}$/.test(twoLinesAbove) && !twoLinesAbove.includes('')) {
+                  info.middleMan = twoLinesAbove;
+                }
+              }
+            } else {
+              info.middleMan = prevLine;
             }
           }
-          if (fcParts[1]) {
-            info.salesPerson = fcParts[1].trim();
-          } else if (salesPersonFromPrevLine) {
-            info.salesPerson = salesPersonFromPrevLine;
+        }
+
+        var finalClientCandidates = [];
+        var salesPersonCandidates = [];
+        
+        if (dateQtyLineIndex >= 0) {
+          for (var k = dateQtyLineIndex + 1; k < dataLines.length; k++) {
+            var line = dataLines[k].trim();
+            
+            if (line.includes('总图号') || line.includes('总审核') || line.includes('总品号') || 
+                line.includes('总工时') || line.includes('总设计类型') || line.includes('控制2设计') || line.includes('控制1设计')) {
+              continue;
+            }
+            
+            if (line.includes('设计') || line.includes('项目')) {
+              if (!info.projectName) {
+                info.projectName = line;
+              }
+              continue;
+            }
+            
+            var parts = line.split(/\s{2,}|\t/).filter(p => p.trim());
+            for (var p = 0; p < parts.length; p++) {
+              var part = parts[p].trim();
+              if (part && !part.includes('')) {
+                if (/^[\u4e00-\u9fa5]{2,4}$/.test(part) && !part.includes('技术') && !part.includes('审核')) {
+                  salesPersonCandidates.push({ text: part, position: k });
+                } else {
+                  finalClientCandidates.push({ text: part, position: k });
+                }
+              }
+            }
           }
+        }
+
+        if (finalClientCandidates.length > 0) {
+          info.finalClient = finalClientCandidates[0].text;
+        }
+        
+        if (salesPersonCandidates.length > 0) {
+          info.salesPerson = salesPersonCandidates[salesPersonCandidates.length - 1].text;
+        }
+        
+        if (!info.finalClient && salesPersonCandidates.length >= 2) {
+          info.finalClient = salesPersonCandidates[0].text;
+          info.salesPerson = salesPersonCandidates[salesPersonCandidates.length - 1].text;
+        }
+        
+        if (info.salesPerson) {
+          info.salesPerson = info.salesPerson.replace(/^[A-Za-z]+\s*/, '').trim();
         }
       }
 
