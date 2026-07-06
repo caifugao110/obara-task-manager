@@ -88,6 +88,7 @@ Authorization: Bearer <token>
 - 账号禁用时返回 `403` 和 `ACCOUNT_DISABLED`。
 - 关闭多设备登录时，新登录会使旧会话失效。
 - `forcePasswordChange=true` 时前端需引导用户到 `/change-password` 修改密码。
+- 登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
 
 ### 校验当前会话
 
@@ -202,6 +203,8 @@ Authorization: Bearer <token>
 | `disabled` | 是否禁用，禁用后无法登录 |
 | `forcePasswordChange` | 是否需要在下次登录后修改密码 |
 
+说明：首次访问时会自动迁移用户数据，添加缺失的 `disabled` 和 `forcePasswordChange` 字段。
+
 ### 创建登录用户
 
 `POST /api/users`
@@ -224,6 +227,8 @@ Authorization: Bearer <token>
 
 `role` 可选值：`superadmin`、`admin`、`user`。
 
+响应：返回创建的用户对象（不含密码），`forcePasswordChange` 默认为 `true`。
+
 ### 更新登录用户
 
 `PUT /api/users/:id`
@@ -231,7 +236,7 @@ Authorization: Bearer <token>
 权限：
 
 - `superadmin` 可更新任意用户。
-- 普通管理员只能更新自己允许的字段。
+- `admin` 只能更新自己。
 
 请求示例：
 
@@ -240,7 +245,8 @@ Authorization: Bearer <token>
   "name": "新名称",
   "password": "new-password",
   "role": "admin",
-  "disabled": false
+  "disabled": false,
+  "group": "设计一组"
 }
 ```
 
@@ -248,6 +254,7 @@ Authorization: Bearer <token>
 
 - 修改 `password` 时会同时将 `forcePasswordChange` 设置为 `true`，该用户下次登录需修改密码。
 - 仅 `superadmin` 可修改 `role`。
+- `admin` 只能更新自己的信息。
 
 ### 批量删除登录用户
 
@@ -268,11 +275,32 @@ Authorization: Bearer <token>
 }
 ```
 
+响应：
+
+```json
+{
+  "message": "已删除 2 个登录用户",
+  "deletedCount": 2
+}
+```
+
 ### 删除登录用户
 
 `DELETE /api/users/:id`
 
 权限：仅 `superadmin`
+
+规则：
+
+- 不能删除当前登录账号。
+
+响应：
+
+```json
+{
+  "message": "用户已删除"
+}
+```
 
 ## 设计人员接口
 
@@ -305,6 +333,8 @@ Authorization: Bearer <token>
 
 权限：`admin`、`superadmin`
 
+响应格式同 `GET /api/designers`。
+
 ### 创建设计人员
 
 `POST /api/designers`
@@ -324,7 +354,7 @@ Authorization: Bearer <token>
 规则：
 
 - 设计人员姓名会去除首尾空格。
-- 设计人员姓名不允许重复，重复时返回 `400`。
+- 设计人员姓名不允许重复，重复时返回 `400` 和 `设计人员姓名已存在`。
 
 ### 更新设计人员
 
@@ -350,6 +380,14 @@ Authorization: Bearer <token>
 }
 ```
 
+响应：
+
+```json
+{
+  "message": "排序已更新"
+}
+```
+
 ### 删除设计人员
 
 `DELETE /api/designers/:id`
@@ -371,6 +409,15 @@ Authorization: Bearer <token>
 ```json
 {
   "ids": ["designer-id-1", "designer-id-2"]
+}
+```
+
+响应：
+
+```json
+{
+  "message": "已删除 2 位设计人员",
+  "deletedCount": 2
 }
 ```
 
@@ -455,6 +502,20 @@ Authorization: Bearer <token>
 - 枪名存在时，该枪名工时必须大于 0。
 - 后端会写入创建者和最后修改者信息。
 
+响应：
+
+```json
+{
+  "sheetId": "sheet-designier-1-2026-7",
+  "designerId": "designer-1",
+  "month": 7,
+  "year": 2026,
+  "date": "2026-07-01",
+  "item": { ... },
+  "sheet": { ... }
+}
+```
+
 ### 批量创建任务
 
 `POST /api/tasks/item/batch`
@@ -477,6 +538,20 @@ Authorization: Bearer <token>
       "hours": 4
     }
   ]
+}
+```
+
+响应：
+
+```json
+{
+  "sheetId": "sheet-designier-1-2026-7",
+  "designerId": "designer-1",
+  "month": 7,
+  "year": 2026,
+  "date": "2026-07-01",
+  "items": [...],
+  "sheet": { ... }
 }
 ```
 
@@ -511,6 +586,20 @@ Authorization: Bearer <token>
 更新 `guns` 时同样校验：枪名存在时工时不能为 0。
 - **所有任务内容的修改（包括枪名的编辑、复制、删除）都会自动更新 `updatedAt` 和 `updatedBy` 字段。**
 
+响应：
+
+```json
+{
+  "sheetId": "sheet-designier-1-2026-7",
+  "designerId": "designer-1",
+  "month": 7,
+  "year": 2026,
+  "date": "2026-07-01",
+  "item": { ... },
+  "sheet": { ... }
+}
+```
+
 ### 防抖保存机制
 
 前端对任务字段变更采用 500ms 防抖保存机制：
@@ -539,6 +628,20 @@ Authorization: Bearer <token>
 }
 ```
 
+响应：
+
+```json
+{
+  "message": "任务条目已删除",
+  "sheetId": "sheet-designier-1-2026-7",
+  "designerId": "designer-1",
+  "month": 7,
+  "year": 2026,
+  "date": "2026-07-01",
+  "sheet": { ... }
+}
+```
+
 ### 移动任务
 
 `POST /api/tasks/move`
@@ -562,6 +665,16 @@ Authorization: Bearer <token>
 
 - `newIndex` 可选。
 - 移动后会更新最后修改者和最后修改时间。
+
+响应：
+
+```json
+{
+  "message": "任务已移动",
+  "sourceSheet": { ... },
+  "targetSheet": { ... }
+}
+```
 
 ### 批量替换搜索
 
@@ -747,6 +860,17 @@ Authorization: Bearer <token>
 ]
 ```
 
+默认规则：
+
+```json
+[
+  { "leader": "陈大仪", "members": ["郭涛", "王兴龙", "王会永", "李广亮"] },
+  { "leader": "张啸", "members": ["李守健", "邓明江", "贾银鑫", "熊飞"] },
+  { "leader": "张明", "members": ["吴露鹭", "茅舒", "沈雨帆", "张晟隽", "刘知新", "梁科研", "吴方盛"] },
+  { "leader": "陈青松", "members": ["张广奇", "李劲日", "曹圩圩", "许孟涵"] }
+]
+```
+
 ### 更新组长规则
 
 `PUT /api/settings/leader-rules`
@@ -903,12 +1027,15 @@ Authorization: Bearer <token>
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `month` | 是 | 月份，格式 `YYYY-MM`，按纳期字段过滤 |
+| `factory` | 否 | 按工厂筛选 |
+| `searchTerm` | 否 | 搜索关键词，匹配客户名、仕样号、营业担当、组长 |
+| `fullTableSearch` | 否 | 是否全表搜索，`true` 时忽略 `month` 参数 |
 
-响应：`.xls` 文件流，文件名格式为 `status-tracking-YYYY-MM.xls`。
+响应：`.xls` 文件流，文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`。
 
 说明：
 
-- 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录。
+- 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录（`fullTableSearch=true` 时除外）。
 - 导出列包括工厂、客户、数量、纳期、已发图、未确认、总种数、反馈种数、反馈计划、下图计划及状态、确认数量、确认种数、下图种数、未下种数、未下数量、未确认数、设计纳期、营业担当、组长。
 - 纳期字段会从 `YYYY-MM-DD` 转换为 `M/D` 格式。
 
@@ -1296,7 +1423,7 @@ Authorization: Bearer <token>
 
 说明：
 
-- 导出列包括时间、用户、姓名、角色、操作、方法、IP、状态码、耗时、浏览器信息。
+- 导出列包括时间、用户、姓名、操作类型、操作说明、方法、IP、状态码、耗时(ms)、浏览器信息。
 - 没有可导出的日志时返回 `404`。
 
 ## 工时管理表接口
@@ -1542,7 +1669,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | 400 | `输入格式不正确` | 参数校验失败 |
 | 401 | `No token, authorization denied` / `Token is not valid` | 未认证或 Token 无效 |
 | 403 | `管理员资源，访问被拒绝。` / `只有管理员可以编辑表格` | 权限不足 |
-| 404 | `用户不存在` / `任务条目不存在` 等 | 资源不存在 |
+| 404 | `用户不存在` / `任务条目不存在` / `记录未找到` 等 | 资源不存在 |
 | 500 | `服务器内部错误` | 服务端错误 |
 
 注意：登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
@@ -1555,6 +1682,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 2. **日期格式规范化**：统一日期格式为 `YYYY-MM-DD`，截取前 10 位
 3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`system` 等）
 4. **用户字段迁移**：自动为旧用户补齐 `disabled` 和 `forcePasswordChange` 字段
+5. **强制修改密码迁移**：首次访问用户列表或校验会话时，自动将非超级管理员用户的 `forcePasswordChange` 标记为 `true`
 
 迁移规则：
 - 迁移过程会自动保存到 `backend/db.json`
@@ -1621,4 +1749,4 @@ GITEE_REPO_NAME=obara-task-manager
 }
 ```
 
-最后更新：2026-07-05
+最后更新：2026-07-06

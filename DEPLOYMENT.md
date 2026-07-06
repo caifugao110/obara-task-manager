@@ -1,4 +1,4 @@
-﻿# Windows 部署指南
+# Windows 部署指南
 
 本文档说明 Obara 任务管理系统在 Windows 环境下的启动、部署、备份和排障方式。
 
@@ -89,6 +89,91 @@ npm run preview
 ```
 
 长期运行时，建议使用 Windows 服务、任务计划程序或 PM2 等进程管理工具。
+
+### PM2 进程管理
+
+安装 PM2：
+
+```bat
+npm install -g pm2
+```
+
+创建 PM2 配置文件 `ecosystem.config.js`：
+
+```javascript
+module.exports = {
+  apps: [
+    {
+      name: 'obara-backend',
+      script: './backend/server.js',
+      cwd: './backend',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1G',
+      env: {
+        NODE_ENV: 'production',
+        PORT: 5000
+      },
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      error_file: './logs/backend-error.log',
+      out_file: './logs/backend-out.log',
+      pid_file: './logs/backend.pid'
+    }
+  ]
+};
+```
+
+启动命令：
+
+```bat
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+PM2 常用命令：
+
+| 命令 | 说明 |
+|------|------|
+| `pm2 start ecosystem.config.js` | 启动应用 |
+| `pm2 stop obara-backend` | 停止应用 |
+| `pm2 restart obara-backend` | 重启应用 |
+| `pm2 logs` | 查看日志 |
+| `pm2 status` | 查看状态 |
+| `pm2 save` | 保存当前进程列表 |
+| `pm2 startup` | 设置开机自启动 |
+| `pm2 unstartup` | 取消开机自启动 |
+
+### Windows 服务配置
+
+使用 NSSM（Non-Sucking Service Manager）将后端注册为 Windows 服务：
+
+1. 下载 NSSM：https://nssm.cc/download
+2. 将 `nssm.exe` 放入系统 PATH 目录
+
+注册服务：
+
+```bat
+nssm install ObaraTaskManager
+```
+
+配置参数：
+- **Application path**: `C:\Program Files\nodejs\node.exe`
+- **Startup directory**: `D:\mygit\obara-task-manager\backend`
+- **Arguments**: `server.js`
+- **Service name**: `ObaraTaskManager`
+
+服务命令：
+
+```bat
+nssm start ObaraTaskManager
+nssm stop ObaraTaskManager
+nssm restart ObaraTaskManager
+nssm remove ObaraTaskManager
+```
+
+> 注意：运行服务的 Windows 用户需要有访问 `backend/db.json` 和网络共享目录的权限。
 
 ### 上线前检查清单
 

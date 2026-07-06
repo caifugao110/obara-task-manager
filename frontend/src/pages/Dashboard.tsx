@@ -831,8 +831,8 @@ const Dashboard = () => {
   const [addModeHours, setAddModeHours] = useState<string>('');
   const [addModeGuns, setAddModeGuns] = useState<GunItem[]>([]);
   const [addModeColor, setAddModeColor] = useState<string>('#dcfce7');
-  const [addModeTaskType, setAddModeTaskType] = useState<'none' | 'confirm' | 'design'>('none');
-  const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: 'none' | 'confirm' | 'design' }>>({});
+  const [addModeTaskType, setAddModeTaskType] = useState<'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange'>('none');
+  const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' }>>({});
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const addModeSpecLookupSeqRef = useRef(0);
 
@@ -2491,7 +2491,7 @@ const Dashboard = () => {
                             </div>
                             <div className="flex items-center gap-2">
                               <div className="w-24">
-                                <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">请假工时</label>
+                                <label className="text-sm font-bold text-gray-500 uppercase">请假工时</label>
                                 <input
                                   ref={el => inputRefs.current['hours-new'] = el}
                                   type="number"
@@ -2536,7 +2536,7 @@ const Dashboard = () => {
                             </div>
                             <div className="flex items-center gap-2">
                               <div className="flex-1">
-                                <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">地点/客户</label>
+                                <label className="text-sm font-bold text-gray-500 uppercase">地点/客户</label>
                                 <input
                                   ref={el => inputRefs.current['task-new'] = el}
                                   className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
@@ -2547,7 +2547,7 @@ const Dashboard = () => {
                                 />
                               </div>
                               <div className="w-24">
-                                <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">工时</label>
+                                <label className="text-sm font-bold text-gray-500 uppercase">工时</label>
                                 <input
                                   ref={el => inputRefs.current['hours-new'] = el}
                                   type="number"
@@ -2562,7 +2562,7 @@ const Dashboard = () => {
                             </div>
                           </div>
                         ) : (
-                          <div className="flex flex-col gap-2">
+                          <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
                             <div className="flex items-center gap-2">
                               <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
                               <label className="flex items-center gap-2 cursor-pointer">
@@ -2595,52 +2595,73 @@ const Dashboard = () => {
                                 />
                                 <span className="text-sm font-medium text-purple-600">设计</span>
                               </label>
-                              <div className="flex-1"></div>
-                              <div className="flex items-center gap-2">
-                                <label className="text-sm font-bold text-gray-500 uppercase w-20 text-center">总工时</label>
-                                <div className="w-12"></div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <input
-                                ref={el => inputRefs.current['task-new'] = el}
-                                className="flex-1 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                                value={addModeTaskName}
-                                onChange={(e) => {
-                                  const nextValue = e.target.value;
-                                  setAddModeTaskName(nextValue);
-                                  scheduleAddModeSpecAutoFill(nextValue);
-                                }}
-                                placeholder="输入完整任务名称或者五位数仕样号自动对应"
-                                autoFocus
-                              />
-                              <div className="flex items-center gap-2">
-                                <div className="w-20">
-                                  <input
-                                    ref={el => inputRefs.current['hours-new'] = el}
-                                    type="number"
-                                    step="0.5"
-                                    min="0"
-                                    className={`w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                                    value={addModeGuns.length > 0 ? getGunHoursTotalInputValue(addModeGuns) : addModeHours}
-                                    placeholder=""
-                                    onChange={(e) => setAddModeHours(e.target.value)}
-                                    disabled={addModeGuns.length > 0}
-                                  />
-                                </div>
-                                <button
-                                  onClick={() => {
-                                    setModalOpen(false);
-                                    stopEditingCell(modalDesignerId, modalDate);
-                                    addToast('任务已取消', 'error');
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={addModeTaskType === 'confirmModify'}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setAddModeTaskType('confirmModify');
+                                    } else if (addModeTaskType === 'confirmModify') {
+                                      setAddModeTaskType('none');
+                                    }
                                   }}
-                                  className="p-2 text-gray-300 hover:text-red-600 transition"
-                                  title="删除任务"
-                                >
-                                  <Trash2 size={20} />
-                                </button>
-                              </div>
+                                  className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
+                                />
+                                <span className="text-sm font-medium text-pink-600">确认图修改</span>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={addModeTaskType === 'designChange'}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setAddModeTaskType('designChange');
+                                    } else if (addModeTaskType === 'designChange') {
+                                      setAddModeTaskType('none');
+                                    }
+                                  }}
+                                  className="w-4 h-4 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500"
+                                />
+                                <span className="text-sm font-medium text-yellow-600">设计变更</span>
+                              </label>
                             </div>
+                            <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
+                            <div></div>
+                            <input
+                              ref={el => inputRefs.current['task-new'] = el}
+                              className="h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                              value={addModeTaskName}
+                              onChange={(e) => {
+                                const nextValue = e.target.value;
+                                setAddModeTaskName(nextValue);
+                                scheduleAddModeSpecAutoFill(nextValue);
+                              }}
+                              placeholder="输入完整任务名称或者五位数仕样号自动对应"
+                              autoFocus
+                            />
+                            <input
+                              ref={el => inputRefs.current['hours-new'] = el}
+                              type="number"
+                              step="0.5"
+                              min="0"
+                              className={`h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
+                              value={addModeGuns.length > 0 ? getGunHoursTotalInputValue(addModeGuns) : addModeHours}
+                              placeholder=""
+                              onChange={(e) => setAddModeHours(e.target.value)}
+                              disabled={addModeGuns.length > 0}
+                            />
+                            <button
+                              onClick={() => {
+                                setModalOpen(false);
+                                stopEditingCell(modalDesignerId, modalDate);
+                                addToast('任务已取消', 'error');
+                              }}
+                              className="p-2 text-gray-300 hover:text-red-600 transition"
+                              title="删除任务"
+                            >
+                              <Trash2 size={20} />
+                            </button>
                           </div>
                         )}
 
@@ -2680,7 +2701,7 @@ const Dashboard = () => {
                                 min="0"
                                 className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 value={gun.hours || ''}
-                                placeholder=""
+                                placeholder="工时"
                                 onChange={(e) => {
                                   setAddModeGuns(prev => {
                                     const next = [...prev];
@@ -2820,7 +2841,7 @@ const Dashboard = () => {
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <div className="w-24">
-                                    <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">请假工时</label>
+                                    <label className="text-sm font-bold text-gray-500 uppercase">请假工时</label>
                                     <input
                                       ref={el => inputRefs.current[`hours-${currentItem.id}`] = el}
                                       type="number"
@@ -2857,7 +2878,7 @@ const Dashboard = () => {
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <div className="flex-1">
-                                    <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">地点/客户</label>
+                                    <label className="text-sm font-bold text-gray-500 uppercase">地点/客户</label>
                                     <input
                                       ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
                                       className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
@@ -2875,7 +2896,7 @@ const Dashboard = () => {
                                     />
                                   </div>
                                   <div className="w-24">
-                                    <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">工时</label>
+                                    <label className="text-sm font-bold text-gray-500 uppercase">工时</label>
                                     <input
                                       ref={el => inputRefs.current[`hours-${currentItem.id}`] = el}
                                       type="number"
@@ -2890,15 +2911,15 @@ const Dashboard = () => {
                                 </div>
                               </div>
                             ) : (
-                            <div className="flex flex-col gap-2">
+                            <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
                               <div className="flex items-center gap-2">
                                 <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
                                 <label className="flex items-center gap-2 cursor-pointer">
                                   <input
                                     type="checkbox"
-                                    checked={currentItem.taskName.includes('确认图')}
+                                    checked={currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('确认图修改')}
                                     onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
                                       const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                       const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                       let newName = baseName + deadline;
@@ -2918,9 +2939,9 @@ const Dashboard = () => {
                                 <label className="flex items-center gap-2 cursor-pointer">
                                   <input
                                     type="checkbox"
-                                    checked={currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图')}
+                                    checked={currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('设计变更')}
                                     onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
                                       const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                       const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                       let newName = baseName + deadline;
@@ -2937,113 +2958,150 @@ const Dashboard = () => {
                                   />
                                   <span className="text-sm font-medium text-purple-600">设计</span>
                                 </label>
-                                <div className="flex-1"></div>
-                                <div className="flex items-center gap-2">
-                                  <label className="text-sm font-bold text-gray-500 uppercase w-20 text-center">总工时</label>
-                                  <div className="w-24"></div>
-                                </div>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={currentItem.taskName.includes('确认图修改')}
+                                    onChange={(e) => {
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
+                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
+                                      let newName = baseName + deadline;
+                                      if (e.target.checked) {
+                                        newName = `${baseName} 确认图修改${deadline}`;
+                                      }
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'confirmModify' : 'none' }
+                                      }));
+                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                    }}
+                                    className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
+                                  />
+                                  <span className="text-sm font-medium text-pink-600">确认图修改</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={currentItem.taskName.includes('设计变更')}
+                                    onChange={(e) => {
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
+                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
+                                      let newName = baseName + deadline;
+                                      if (e.target.checked) {
+                                        newName = `${baseName} 设计变更${deadline}`;
+                                      }
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'designChange' : 'none' }
+                                      }));
+                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                    }}
+                                    className="w-4 h-4 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500"
+                                  />
+                                  <span className="text-sm font-medium text-yellow-600">设计变更</span>
+                                </label>
                               </div>
+                              <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
+                              <div className="flex items-center gap-2"></div>
+                              <input
+                                ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
+                                className="h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                                value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '')}
+                                onChange={(e) => {
+                                  const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更))?\s*(\[\d+\/\d+\])?$/);
+                                  const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
+                                  const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
+                                  const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
+                                  const newName = e.target.value + typeSuffix + deadline;
+                                  setTaskTypeDrafts(prev => ({
+                                    ...prev,
+                                    [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: e.target.value, designGuns: currentItem.guns || [] }
+                                  }));
+                                  handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                }}
+                                placeholder="输入完整任务名称或者五位数仕样号自动对应"
+                              />
+                              <input
+                                ref={el => inputRefs.current[`hours-${currentItem.id}`] = el}
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                className={`h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${hasGuns ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
+                                value={hasGuns ? getGunHoursTotalInputValue(currentItem.guns) : getHoursInputValue(currentItem.hours)}
+                                onChange={(e) => !hasGuns && handleItemChange(modalDesignerId, modalDate, currentItem.id, 'hours', e.target.value)}
+                                disabled={hasGuns}
+                                placeholder=""
+                              />
                               <div className="flex items-center gap-2">
-                                <input
-                                  ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
-                                  className="flex-1 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                                  value={currentItem.taskName.replace(/\s+(确认图|设计)?\s*(\[\d+\/\d+\])?$/, '')}
-                                  onChange={(e) => {
-                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计))?\s*(\[\d+\/\d+\])?$/);
-                                    const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
-                                    const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
-                                    const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                    const newName = e.target.value + typeSuffix + deadline;
-                                    setTaskTypeDrafts(prev => ({
-                                      ...prev,
-                                      [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: e.target.value, designGuns: currentItem.guns || [] }
-                                    }));
-                                    handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                  }}
-                                  placeholder="输入完整任务名称或者五位数仕样号自动对应"
-                                />
-                                <div className="flex items-center gap-2">
-                                  <div className="w-20">
-                                    <input
-                                      ref={el => inputRefs.current[`hours-${currentItem.id}`] = el}
-                                      type="number"
-                                      step="0.5"
-                                      min="0"
-                                      className={`w-full h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${hasGuns ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                                      value={hasGuns ? getGunHoursTotalInputValue(currentItem.guns) : getHoursInputValue(currentItem.hours)}
-                                      onChange={(e) => !hasGuns && handleItemChange(modalDesignerId, modalDate, currentItem.id, 'hours', e.target.value)}
-                                      disabled={hasGuns}
-                                      placeholder=""
-                                    />
-                                  </div>
-                                  <button
-                                    onClick={async () => {
-                                      const specNo = extractSpecNumber(currentItem.taskName);
-                                      if (!specNo) {
-                                        addToast('未能从任务名称中提取仕样号', 'error');
+                                <button
+                                  onClick={async () => {
+                                    const specNo = extractSpecNumber(currentItem.taskName);
+                                    if (!specNo) {
+                                      addToast('未能从任务名称中提取仕样号', 'error');
+                                      return;
+                                    }
+
+                                    addToast(`正在同步仕样号 ${specNo} 的客户名和纳期...`, 'success');
+                                    const specInfo = await fetchSpecInfo(specNo);
+                                    if (!specInfo.success) {
+                                      addToast(specInfo.message || '获取仕样信息失败', 'error');
+                                      return;
+                                    }
+
+                                    const clientName = getDesignPlanClientName(specInfo, specNo);
+                                    if (!clientName) {
+                                      addToast(`未找到仕样号 ${specNo} 的客户信息`, 'error');
+                                      return;
+                                    }
+
+                                    let deliveryDate = specInfo.deliveryDate;
+                                    if (!deliveryDate) {
+                                      const deliveryResult = await fetchSpecDeliveryDate(specNo);
+                                      if (deliveryResult.success && deliveryResult.date) {
+                                        deliveryDate = deliveryResult.date;
+                                      } else {
+                                        addToast(deliveryResult.message || '获取纳期失败', 'error');
                                         return;
                                       }
+                                    }
 
-                                      addToast(`正在同步仕样号 ${specNo} 的客户名和纳期...`, 'success');
-                                      const specInfo = await fetchSpecInfo(specNo);
-                                      if (!specInfo.success) {
-                                        addToast(specInfo.message || '获取仕样信息失败', 'error');
-                                        return;
-                                      }
+                                    const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
+                                    if (!deliverySuffix) {
+                                      addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
+                                      return;
+                                    }
 
-                                      const clientName = getDesignPlanClientName(specInfo, specNo);
-                                      if (!clientName) {
-                                        addToast(`未找到仕样号 ${specNo} 的客户信息`, 'error');
-                                        return;
-                                      }
-
-                                      let deliveryDate = specInfo.deliveryDate;
-                                      if (!deliveryDate) {
-                                        const deliveryResult = await fetchSpecDeliveryDate(specNo);
-                                        if (deliveryResult.success && deliveryResult.date) {
-                                          deliveryDate = deliveryResult.date;
-                                        } else {
-                                          addToast(deliveryResult.message || '获取纳期失败', 'error');
-                                          return;
-                                        }
-                                      }
-
-                                      const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
-                                      if (!deliverySuffix) {
-                                        addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
-                                        return;
-                                      }
-
-                                      let updatedCount = 0;
-                                      sheets.forEach(sheet => {
-                                        Object.entries(sheet.days || {}).forEach(([date, items]) => {
-                                          (items || []).forEach(item => {
-                                            const itemSpecNo = extractSpecNumber(item.taskName);
-                                            if (itemSpecNo === specNo) {
-                                              const newName = buildSyncedSpecTaskName(item.taskName || '', specInfo, specNo, deliverySuffix);
-                                              handleItemChange(sheet.designerId, date, item.id, 'taskName', newName);
-                                              updatedCount++;
-                                            }
-                                          });
+                                    let updatedCount = 0;
+                                    sheets.forEach(sheet => {
+                                      Object.entries(sheet.days || {}).forEach(([date, items]) => {
+                                        (items || []).forEach(item => {
+                                          const itemSpecNo = extractSpecNumber(item.taskName);
+                                          if (itemSpecNo === specNo) {
+                                            const newName = buildSyncedSpecTaskName(item.taskName || '', specInfo, specNo, deliverySuffix);
+                                            handleItemChange(sheet.designerId, date, item.id, 'taskName', newName);
+                                            updatedCount++;
+                                          }
                                         });
                                       });
+                                    });
 
-                                      addToast(`相同仕样号同步完成: ${deliverySuffix}（已更新 ${updatedCount} 个任务）`, 'success');
-                                    }}
-                                    className="px-2 py-1 text-[10px] bg-green-50 text-green-600 rounded hover:bg-green-100 transition font-bold whitespace-nowrap"
-                                    title="相同仕样号同步更新"
-                                    disabled={!currentItem.taskName || !currentItem.taskName.trim()}
-                                  >
-                                    相同仕样号同步更新
-                                  </button>
-                                  <button
-                                    onClick={() => deleteItem(modalDesignerId, modalDate, currentItem.id)}
-                                    className="p-2 text-gray-300 hover:text-red-600 transition"
-                                    title="删除任务"
-                                  >
-                                    <Trash2 size={20} />
-                                  </button>
-                                </div>
+                                    addToast(`相同仕样号同步完成: ${deliverySuffix}（已更新 ${updatedCount} 个任务）`, 'success');
+                                  }}
+                                  className="px-2 py-1 text-[10px] bg-green-50 text-green-600 rounded hover:bg-green-100 transition font-bold whitespace-nowrap"
+                                  title="相同仕样号同步更新"
+                                  disabled={!currentItem.taskName || !currentItem.taskName.trim()}
+                                >
+                                  相同仕样号同步更新
+                                </button>
+                                <button
+                                  onClick={() => deleteItem(modalDesignerId, modalDate, currentItem.id)}
+                                  className="p-2 text-gray-300 hover:text-red-600 transition"
+                                  title="删除任务"
+                                >
+                                  <Trash2 size={20} />
+                                </button>
                               </div>
                             </div>
                             )}
@@ -3091,7 +3149,7 @@ const Dashboard = () => {
                                     min="0"
                                     className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                     value={gun.hours || ''}
-                                    placeholder=""
+                                    placeholder="工时"
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
                                       newGuns[gIdx] = { ...newGuns[gIdx], hours: e.target.value };
@@ -3303,6 +3361,10 @@ const Dashboard = () => {
                           taskName += ' 确认图';
                         } else if (addModeTaskType === 'design') {
                           taskName += ' 设计';
+                        } else if (addModeTaskType === 'confirmModify') {
+                          taskName += ' 确认图修改';
+                        } else if (addModeTaskType === 'designChange') {
+                          taskName += ' 设计变更';
                         }
                       }
                       
