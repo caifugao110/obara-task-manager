@@ -186,6 +186,7 @@ async function extractSpecInfoFromPdf(p) {
         }
 
         var dataLines = [];
+        var salesPersonFromPrevLine = '';
         for (var dj = i + 2; dj < lines.length && dj < i + 15; dj++) {
           var dataLine = lines[dj];
           if (!dataLine) continue;
@@ -193,7 +194,7 @@ async function extractSpecInfoFromPdf(p) {
             if (dj > i + 2) {
               var prevLine = lines[dj - 1];
               if (prevLine && !prevLine.includes('技术审核') && !prevLine.includes('营业审核') && !prevLine.includes('营业担当')) {
-                info.salesPerson = prevLine.trim();
+                salesPersonFromPrevLine = prevLine.trim();
               }
             }
             break;
@@ -221,11 +222,15 @@ async function extractSpecInfoFromPdf(p) {
           var fcParts = dataLines[2].split('\t');
           if (fcParts[0]) {
             var fcCandidate = fcParts[0].trim();
-            if (fcCandidate.includes('公司') || fcCandidate.includes('厂') || fcCandidate.includes('集团') || fcCandidate.includes('有限公司') || fcCandidate.includes('股份')) {
+            if (fcCandidate !== salesPersonFromPrevLine) {
               info.finalClient = fcCandidate;
             }
           }
-          if (!info.salesPerson && fcParts[1]) info.salesPerson = fcParts[1].trim();
+          if (fcParts[1]) {
+            info.salesPerson = fcParts[1].trim();
+          } else if (salesPersonFromPrevLine) {
+            info.salesPerson = salesPersonFromPrevLine;
+          }
         }
       }
 
