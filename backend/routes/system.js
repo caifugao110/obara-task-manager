@@ -1397,8 +1397,18 @@ router.get('/audit-logs/filter-options', [authMiddleware, superAdminMiddleware],
   const data = db.readDb();
   const logs = data.auditLogs || [];
   const usernames = [...new Set(logs.map(log => log.username).filter(Boolean))].sort();
-  const actions = [...new Set(logs.map(log => log.action).filter(Boolean))].sort();
-  res.json({ usernames, actions });
+  
+  const actionLabels = logs
+    .filter(log => log.action)
+    .map(log => {
+      const display = getAuditActionDisplay(log);
+      return { value: log.action, label: display.label };
+    });
+  
+  const uniqueActions = [...new Map(actionLabels.map(a => [a.value, a])).values()]
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  
+  res.json({ usernames, actions: uniqueActions });
 }));
 
 router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {

@@ -48,9 +48,14 @@ interface Toast {
   id: number;
 }
 
+interface FilterOption {
+  value: string;
+  label: string;
+}
+
 interface FilterOptions {
   usernames: string[];
-  actions: string[];
+  actions: FilterOption[];
 }
 
 const SystemLogs = () => {
@@ -263,7 +268,7 @@ const SystemLogs = () => {
                 >
                   <option value="">全部</option>
                   {filterOptions.actions.map(act => (
-                    <option key={act} value={act}>{getActionTypeLabel(act).label}</option>
+                    <option key={act.value} value={act.value}>{act.label}</option>
                   ))}
                 </select>
               </div>

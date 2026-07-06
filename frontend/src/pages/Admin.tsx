@@ -484,7 +484,7 @@ const Admin = () => {
     const designer = designers.find(d => d.id === id);
     if (!designer) return;
     try {
-      await axiosInstance.put(`/api/designers/${id}`, { name: designer.name, group: designer.group, hidden });
+      await axiosInstance.put(`/designers/${id}`, { name: designer.name, group: designer.group, hidden });
       addToast(hidden ? '人员已隐藏' : '已取消隐藏', 'success');
       fetchData();
     } catch (err: any) {
@@ -519,7 +519,7 @@ const Admin = () => {
     }
     if (!window.confirm('确定要删除该登录用户吗？')) return;
     try {
-      await axiosInstance.delete(`/api/users/${id}`);
+      await axiosInstance.delete(`/users/${id}`);
       addToast('账号已删除', 'success');
       fetchData();
     } catch (err: any) {
@@ -566,7 +566,7 @@ const Admin = () => {
     const user = users.find(u => u.id === id);
     if (!user) return;
     try {
-      await axiosInstance.put(`/api/users/${id}`, { disabled: !user.disabled });
+      await axiosInstance.put(`/users/${id}`, { disabled: !user.disabled });
       addToast(user.disabled ? '账号已启用' : '账号已禁用', 'success');
       fetchData();
     } catch (err: any) {
@@ -583,7 +583,7 @@ const Admin = () => {
     }
     setResetPasswordSubmitting(true);
     try {
-      await axiosInstance.put(`/api/users/${resetPasswordUserId}`, { password: resetPasswordValue });
+      await axiosInstance.put(`/users/${resetPasswordUserId}`, { password: resetPasswordValue });
       addToast('密码已重置', 'success');
       setResetPasswordUserId(null);
       setResetPasswordValue('');
@@ -597,7 +597,7 @@ const Admin = () => {
   const handleDeleteDesigner = async (id: string) => {
     if (!window.confirm('确定要从表格中移除该设计人员吗？其任务数据将保留在数据库中但不再显示。')) return;
     try {
-      await axiosInstance.delete(`/api/designers/${id}`);
+      await axiosInstance.delete(`/designers/${id}`);
       addToast('人员已移除', 'success');
       fetchData();
     } catch (err: any) {
@@ -642,7 +642,7 @@ const Admin = () => {
     try {
       const designer = designers.find(d => d.id === editingDesignerId);
       if (!designer) return;
-      await axiosInstance.put(`/api/designers/${editingDesignerId}`, { 
+      await axiosInstance.put(`/designers/${editingDesignerId}`, { 
         name: editingDesignerName, 
         group: editingDesignerGroup, 
         hidden: designer.hidden 

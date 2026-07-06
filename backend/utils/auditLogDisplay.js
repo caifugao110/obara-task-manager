@@ -89,7 +89,11 @@ const routeActionDisplays = {
   'GET work-hours/export': { label: '导出工时管理表', description: '导出工时统计表格' },
   'GET spec/spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' },
   'POST spec/spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' },
-  'POST spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' }
+  'POST spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' },
+  'POST designers/reorder': { label: '重新排序设计员', description: '重新排序设计员列表' },
+  'POST reorder': { label: '重新排序', description: '重新排序列表项' },
+  'POST tasks/move': { label: '移动任务', description: '移动任务到其他位置' },
+  'POST move': { label: '移动任务', description: '移动任务到其他位置' }
 };
 
 const resourceActionDisplays = {
@@ -115,20 +119,35 @@ const legacyActionDescriptions = {
   更新设计员: '修改设计员信息',
   删除设计员: '删除设计员信息',
   查看设计员: '查看设计员列表',
+  管理设计员: '查看设计员管理列表',
+  重新排序设计员: '重新排序设计员列表',
   添加任务: '新增任务记录',
   更新任务: '修改任务内容或工时',
   删除任务: '删除任务记录',
   查看任务: '查看任务列表',
+  批量添加任务: '批量新增任务记录',
+  查询批量替换: '查询任务批量替换匹配项',
+  批量替换任务: '批量替换任务内容或枪名',
+  移动任务: '移动任务到其他位置',
   更新设置: '修改系统设置',
   查看设置: '查看系统设置',
+  查看排行榜设置: '查看工时排行访问设置',
+  更新排行榜设置: '修改工时排行访问设置',
+  查看工时设置: '查看工时管理访问设置',
+  更新工时设置: '修改工时管理访问设置',
+  查看状态跟踪设置: '查看状态跟踪访问设置',
+  更新状态跟踪设置: '修改状态跟踪访问设置',
+  查看系统设置权限: '查看系统设置页面访问权限',
+  更新系统设置权限: '修改系统设置页面访问权限',
   更新系统设置: '修改系统级配置',
   查看系统设置: '查看系统级配置',
   导出任务数据: '导出任务表格数据',
   导入任务数据: '导入任务表格数据',
-  添加状态跟踪记录: '新增状态跟踪数据',
-  更新状态跟踪记录: '修改状态跟踪数据',
-  删除状态跟踪记录: '删除状态跟踪数据',
-  查看状态跟踪记录: '查看状态跟踪数据',
+  添加状态跟踪: '新增状态跟踪记录',
+  更新状态跟踪: '修改状态跟踪记录',
+  删除状态跟踪: '删除状态跟踪记录',
+  查看状态跟踪: '查看状态跟踪数据',
+  批量导入状态跟踪: '批量新增或更新状态跟踪记录',
   导出状态跟踪表: '导出状态跟踪表格',
   导入状态跟踪表: '导入状态跟踪表格',
   导出工时管理表: '导出工时统计表格',
@@ -136,30 +155,52 @@ const legacyActionDescriptions = {
   查看日志: '查看系统操作日志',
   筛选日志: '获取日志筛选选项',
   导出日志: '导出系统操作日志',
-  查看版本: '查看系统版本信息'
+  查看登录日志: '查看用户登录日志',
+  查看管理员登录记录: '查看管理员最近登录记录',
+  查看版本: '查看系统版本信息',
+  reorder: '重新排序',
+  move: '移动任务'
 };
 
 const getBrowserInfo = (userAgent = '') => {
   const ua = String(userAgent);
   let browser = 'Unknown Browser';
+  let browserVersion = '';
   let os = 'Unknown OS';
+  let osVersion = '';
 
-  if (/Edg\//i.test(ua)) browser = 'Microsoft Edge';
-  else if (/OPR\//i.test(ua) || /Opera/i.test(ua)) browser = 'Opera';
-  else if (/Chrome\//i.test(ua) && !/Chromium/i.test(ua)) browser = 'Chrome';
-  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
-  else if (/Safari\//i.test(ua) && /Version\//i.test(ua)) browser = 'Safari';
-  else if (/MSIE|Trident/i.test(ua)) browser = 'Internet Explorer';
+  const matchEdge = ua.match(/Edg\/(\d+)/i);
+  const matchOpera = ua.match(/OPR\/(\d+)/i) || ua.match(/Opera\/(\d+)/i);
+  const matchChrome = ua.match(/Chrome\/(\d+)/i);
+  const matchFirefox = ua.match(/Firefox\/(\d+)/i);
+  const matchSafari = ua.match(/Version\/(\d+)/i);
+  const matchIE = ua.match(/MSIE (\d+)/i) || ua.match(/Trident\/.*rv:(\d+)/i);
 
-  if (/Windows NT/i.test(ua)) os = 'Windows';
-  else if (/Android/i.test(ua)) os = 'Android';
-  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
-  else if (/Mac OS X/i.test(ua)) os = 'macOS';
-  else if (/Linux/i.test(ua)) os = 'Linux';
+  if (matchEdge) { browser = 'Microsoft Edge'; browserVersion = matchEdge[1]; }
+  else if (matchOpera) { browser = 'Opera'; browserVersion = matchOpera[1]; }
+  else if (matchChrome && !/Chromium/i.test(ua)) { browser = 'Chrome'; browserVersion = matchChrome[1]; }
+  else if (matchFirefox) { browser = 'Firefox'; browserVersion = matchFirefox[1]; }
+  else if (matchSafari && /Safari\//i.test(ua)) { browser = 'Safari'; browserVersion = matchSafari[1]; }
+  else if (matchIE) { browser = 'Internet Explorer'; browserVersion = matchIE[1]; }
+
+  if (/Windows NT 10\.0/i.test(ua)) { os = 'Windows 10'; osVersion = '10'; }
+  else if (/Windows NT 11\.0/i.test(ua)) { os = 'Windows 11'; osVersion = '11'; }
+  else if (/Windows NT 6\.3/i.test(ua)) { os = 'Windows 8.1'; osVersion = '8.1'; }
+  else if (/Windows NT 6\.2/i.test(ua)) { os = 'Windows 8'; osVersion = '8'; }
+  else if (/Windows NT 6\.1/i.test(ua)) { os = 'Windows 7'; osVersion = '7'; }
+  else if (/Windows NT/i.test(ua)) { os = 'Windows'; }
+  else if (/Android (\d+\.\d+)/i.test(ua)) { os = 'Android'; osVersion = ua.match(/Android (\d+\.\d+)/i)[1]; }
+  else if (/iPhone OS (\d+_\d+)/i.test(ua)) { os = 'iOS'; osVersion = ua.match(/iPhone OS (\d+_\d+)/i)[1].replace('_', '.'); }
+  else if (/iPad.*OS (\d+_\d+)/i.test(ua)) { os = 'iPadOS'; osVersion = ua.match(/iPad.*OS (\d+_\d+)/i)[1].replace('_', '.'); }
+  else if (/Mac OS X (\d+_\d+)/i.test(ua)) { os = 'macOS'; osVersion = ua.match(/Mac OS X (\d+_\d+)/i)[1].replace('_', '.'); }
+  else if (/Linux/i.test(ua)) { os = 'Linux'; }
 
   const device = /Mobile|Android|iPhone|iPad|iPod/i.test(ua) ? 'Mobile' : 'Desktop';
 
-  return { browser, os, device, summary: `${browser} / ${os} / ${device}` };
+  const browserFull = browserVersion ? `${browser} ${browserVersion}` : browser;
+  const osFull = osVersion ? `${os} ${osVersion}` : os;
+
+  return { browser, browserVersion, os, osVersion, device, summary: `${browserFull} / ${osFull} / ${device}` };
 };
 
 const getRouteActionDisplay = (method = '', routePath = '') => {
