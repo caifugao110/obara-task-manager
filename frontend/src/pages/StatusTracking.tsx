@@ -20,10 +20,10 @@ import {
   ChevronDown,
   Lock,
   Unlock,
-  Clock,
   AlertTriangle,
   Download,
-  RotateCcw
+  RotateCcw,
+  Calendar
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -32,6 +32,8 @@ interface StatusItem {
   factory: string;
   clientName: string;
   specNumber: string;
+  productionPlanMonth?: string;
+  productionPlanMonths?: string[];
   quantity: string;
   deliveryDate: string;
   designDeliveryDays: number;
@@ -127,14 +129,41 @@ const formatDeliveryDate = (dateStr: string): string => {
   return `${parseInt(month)}/${parseInt(day)}`;
 };
 
+const formatMonthLabel = (monthStr: string): string => {
+  if (!monthStr) return '';
+  const [year, monthNum] = monthStr.split('-');
+  return `${year}年${parseInt(monthNum)}月`;
+};
+
+const getCurrentMonthValue = (): string => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const getItemPlanMonth = (item: StatusItem): string => {
+  return getItemPlanMonths(item)[0] || '';
+};
+
+const getItemPlanMonths = (item: StatusItem): string[] => {
+  const months = Array.isArray(item.productionPlanMonths)
+    ? item.productionPlanMonths.filter(Boolean)
+    : [];
+  if (months.length > 0) {
+    return Array.from(new Set(months)).sort();
+  }
+  const fallbackMonth = item.productionPlanMonth || item.deliveryDate?.substring(0, 7) || '';
+  return fallbackMonth ? [fallbackMonth] : [];
+};
+
+const formatPlanMonthsLabel = (item: StatusItem): string => {
+  return getItemPlanMonths(item).join(', ') || '未设置';
+};
+
 const generateMonthOptions = (items: StatusItem[]) => {
   const monthSet = new Set<string>();
   
   items.forEach(item => {
-    if (item.deliveryDate) {
-      const month = item.deliveryDate.substring(0, 7);
-      monthSet.add(month);
-    }
+    getItemPlanMonths(item).forEach(month => monthSet.add(month));
   });
   
   const now = new Date();
@@ -146,15 +175,41 @@ const generateMonthOptions = (items: StatusItem[]) => {
   }
   
   const options = Array.from(monthSet).map(month => {
-    const [year, monthNum] = month.split('-');
     return {
       value: month,
-      label: `${year}年${parseInt(monthNum)}月`
+      label: formatMonthLabel(month)
     };
   });
   
   options.sort((a, b) => b.value.localeCompare(a.value));
   
+  return options;
+};
+
+const generateDeliveryMonthOptions = (items: StatusItem[]) => {
+  const monthSet = new Set<string>();
+
+  items.forEach(item => {
+    if (item.deliveryDate) {
+      monthSet.add(item.deliveryDate.substring(0, 7));
+    }
+  });
+
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const date = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const year = date.getFullYear();
+    const month = date.getMonth() + 1;
+    monthSet.add(`${year}-${String(month).padStart(2, '0')}`);
+  }
+
+  const options = Array.from(monthSet).map(month => ({
+    value: month,
+    label: formatMonthLabel(month)
+  }));
+
+  options.sort((a, b) => b.value.localeCompare(a.value));
+
   return options;
 };
 
@@ -171,16 +226,16 @@ const StatusTracking = () => {
   const [loading, setLoading] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showModal, setShowModal] = useState(false);
+  const [planMonthEditorItemId, setPlanMonthEditorItemId] = useState<string | null>(null);
   const [specNumberInput, setSpecNumberInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [leaderRules, setLeaderRules] = useState<LeaderRule[]>(defaultLeaderRules);
   const [showLeaderRulesModal, setShowLeaderRulesModal] = useState(false);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [syncStatus, setSyncStatus] = useState<'connected' | 'disconnected'>('disconnected');
-  const [currentMonth, setCurrentMonth] = useState(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  });
+  const [monthFilterMode, setMonthFilterMode] = useState<'production' | 'delivery'>('production');
+  const [currentMonth, setCurrentMonth] = useState(getCurrentMonthValue);
+  const [deliveryMonth, setDeliveryMonth] = useState(getCurrentMonthValue);
   const [factoryFilter, setFactoryFilter] = useState<string>('');
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
   const [offlineWarning, setOfflineWarning] = useState(false);
@@ -375,9 +430,14 @@ const StatusTracking = () => {
       return;
     }
 
-    const existingItem = allItems.find(item => item.specNumber.toLowerCase() === specNumberInput.trim().toLowerCase());
+    const operationMonth = getCurrentMonthValue();
+    const normalizedSpecNumber = specNumberInput.trim().toLowerCase();
+    const existingItem = allItems.find(item => (
+      item.specNumber.toLowerCase() === normalizedSpecNumber &&
+      getItemPlanMonths(item).includes(operationMonth)
+    ));
     if (existingItem) {
-      addToast(`该仕样号 "${specNumberInput.trim()}" 已存在`, 'error');
+      addToast(`该仕样号 "${specNumberInput.trim()}" 已存在于${formatMonthLabel(operationMonth)}生产计划`, 'error');
       return;
     }
 
@@ -407,6 +467,8 @@ const StatusTracking = () => {
         factory: 'O/NJG',
         clientName: specInfo?.clientName || '',
         specNumber: specInfo?.specNumber || specNumberInput.trim(),
+        productionPlanMonth: operationMonth,
+        productionPlanMonths: [operationMonth],
         quantity: specInfo?.quantity || '',
         deliveryDate: specInfo?.deliveryDate || '',
         designDeliveryDays,
@@ -436,11 +498,8 @@ const StatusTracking = () => {
         addToast('已添加新的状态跟踪记录', 'success');
       }
 
-      if (specInfo?.deliveryDate) {
-        const month = specInfo.deliveryDate.substring(0, 7);
-        if (month !== currentMonth) {
-          setCurrentMonth(month);
-        }
+      if (operationMonth !== currentMonth) {
+        setCurrentMonth(operationMonth);
       }
 
       setShowModal(false);
@@ -450,7 +509,7 @@ const StatusTracking = () => {
     } finally {
       setLoading(false);
     }
-  }, [specNumberInput, allItems, token, saveItems, syncItemsToServer, leaderRules]);
+  }, [specNumberInput, allItems, token, saveItems, syncItemsToServer, leaderRules, currentMonth]);
 
   const updateField = useCallback((id: string, field: keyof StatusItem, value: any) => {
     if (!isAdmin) {
@@ -461,6 +520,21 @@ const StatusTracking = () => {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
+    if (field === 'productionPlanMonth' || field === 'productionPlanMonths') {
+      const targetItem = allItems.find(item => item.id === id);
+      const targetMonths = Array.isArray(value) ? value : [value];
+      const duplicateItem = targetItem
+        ? allItems.find(item => (
+          item.id !== id &&
+          item.specNumber.toLowerCase() === targetItem.specNumber.toLowerCase() &&
+          getItemPlanMonths(item).some(month => targetMonths.includes(month))
+        ))
+        : null;
+      if (duplicateItem) {
+        addToast('该仕样号已存在于选择的生产计划月份', 'error');
+        return;
+      }
+    }
     const updated = allItems.map(item => {
       if (item.id === id) {
         return { ...item, [field]: value };
@@ -470,6 +544,23 @@ const StatusTracking = () => {
     saveItems(updated);
     syncItemsToServer(updated);
   }, [allItems, saveItems, syncItemsToServer, isOffline, isAdmin]);
+
+  const toggleProductionPlanMonth = useCallback((id: string, month: string) => {
+    const targetItem = allItems.find(item => item.id === id);
+    if (!targetItem) return;
+
+    const currentMonths = getItemPlanMonths(targetItem);
+    const nextMonths = currentMonths.includes(month)
+      ? currentMonths.filter(itemMonth => itemMonth !== month)
+      : [...currentMonths, month].sort();
+
+    if (nextMonths.length === 0) {
+      addToast('至少保留一个生产计划月份', 'error');
+      return;
+    }
+
+    updateField(id, 'productionPlanMonths', nextMonths);
+  }, [allItems, updateField]);
 
   const updateItem = useCallback((id: string, updates: Partial<StatusItem>) => {
     if (!isAdmin) {
@@ -607,7 +698,11 @@ const StatusTracking = () => {
     try {
       const params = new URLSearchParams();
       if (!fullTableSearch) {
-        params.append('month', currentMonth);
+        if (monthFilterMode === 'production') {
+          params.append('month', currentMonth);
+        } else {
+          params.append('deliveryMonth', deliveryMonth);
+        }
       }
       if (factoryFilter) {
         params.append('factory', factoryFilter);
@@ -643,7 +738,7 @@ const StatusTracking = () => {
     } finally {
       setExporting(false);
     }
-  }, [token, currentMonth, factoryFilter, searchTerm, fullTableSearch]);
+  }, [token, monthFilterMode, currentMonth, deliveryMonth, factoryFilter, searchTerm, fullTableSearch]);
 
   useEffect(() => {
     fetchSettings();
@@ -653,7 +748,7 @@ const StatusTracking = () => {
 
   useEffect(() => {
     loadItems();
-  }, [currentMonth]);
+  }, [currentMonth, deliveryMonth]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -767,8 +862,14 @@ const StatusTracking = () => {
 
   const filteredItems = useMemo(() => {
     let result = allItems;
-    if (!fullTableSearch) {
-      result = result.filter(item => !item.deliveryDate || item.deliveryDate?.startsWith(currentMonth));
+    if (!fullTableSearch && monthFilterMode === 'production') {
+      result = result.filter(item => {
+        const planMonths = getItemPlanMonths(item);
+        return planMonths.length === 0 || planMonths.includes(currentMonth);
+      });
+    }
+    if (!fullTableSearch && monthFilterMode === 'delivery') {
+      result = result.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
     }
     if (factoryFilter) {
       result = result.filter(item => item.factory === factoryFilter);
@@ -783,7 +884,7 @@ const StatusTracking = () => {
       );
     }
     return result;
-  }, [allItems, searchTerm, factoryFilter, currentMonth, fullTableSearch]);
+  }, [allItems, searchTerm, factoryFilter, monthFilterMode, currentMonth, deliveryMonth, fullTableSearch]);
 
   const addLeaderRule = () => {
     setLeaderRules([...leaderRules, { leader: '', members: [''] }]);
@@ -935,15 +1036,56 @@ const StatusTracking = () => {
             <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
           </div>
 
+          <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setMonthFilterMode('production')}
+              className={`px-3 py-2 text-sm font-medium transition ${
+                monthFilterMode === 'production'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              生产计划
+            </button>
+            <button
+              type="button"
+              onClick={() => setMonthFilterMode('delivery')}
+              className={`px-3 py-2 text-sm font-medium border-l border-gray-300 transition ${
+                monthFilterMode === 'delivery'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              纳期
+            </button>
+          </div>
+
           <div className="flex items-center space-x-1">
-            <span className="text-sm text-gray-600 font-medium">纳期</span>
             <div className="relative">
               <select
                 value={currentMonth}
                 onChange={(e) => setCurrentMonth(e.target.value)}
-                className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                disabled={monthFilterMode !== 'production'}
+                className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
               >
                 {generateMonthOptions(allItems).map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-1">
+            <div className="relative">
+              <select
+                value={deliveryMonth}
+                onChange={(e) => setDeliveryMonth(e.target.value)}
+                disabled={monthFilterMode !== 'delivery'}
+                className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                {generateDeliveryMonthOptions(allItems).map(option => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
@@ -988,7 +1130,7 @@ const StatusTracking = () => {
             <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
               <colgroup>
                 <col style={{ width: '80px' }} />
-                <col style={{ width: '220px' }} />
+                <col style={{ width: '274px' }} />
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '60px' }} />
                 <col style={{ width: '45px' }} />
@@ -1006,7 +1148,7 @@ const StatusTracking = () => {
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '80px' }} />
                 <col style={{ width: '80px' }} />
-                <col style={{ width: '60px' }} />
+                <col style={{ width: '96px' }} />
               </colgroup>
               <thead>
                 <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
@@ -1304,6 +1446,14 @@ const StatusTracking = () => {
                                   <RefreshCw size={16} />
                                 </button>
                                 <button
+                                  onClick={() => setPlanMonthEditorItemId(item.id)}
+                                  className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition"
+                                  title={`生产计划月份: ${formatPlanMonthsLabel(item)}`}
+                                  aria-label="修改生产计划月份"
+                                >
+                                  <Calendar size={16} />
+                                </button>
+                                <button
                                   onClick={() => deleteItem(item.id)}
                                   className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition"
                                   title="删除"
@@ -1422,6 +1572,61 @@ const StatusTracking = () => {
           </div>
         </div>
       )}
+
+      {planMonthEditorItemId && isAdmin && (() => {
+        const editingItem = allItems.find(item => item.id === planMonthEditorItemId);
+        if (!editingItem) return null;
+        const selectedMonths = getItemPlanMonths(editingItem);
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="text-lg font-bold text-gray-800">生产计划月份</h3>
+                <button
+                  onClick={() => setPlanMonthEditorItemId(null)}
+                  className="p-1 text-gray-400 hover:text-gray-600 transition"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="mb-4 text-sm text-gray-500 truncate" title={editingItem.clientName}>
+                {editingItem.clientName || '未填写客户'}
+              </div>
+              <div className="grid grid-cols-3 gap-2 max-h-72 overflow-auto">
+                {generateMonthOptions(allItems).map(option => {
+                  const checked = selectedMonths.includes(option.value);
+                  return (
+                    <label
+                      key={option.value}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition ${
+                        checked
+                          ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                          : 'border-gray-200 hover:border-gray-300 text-gray-600'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleProductionPlanMonth(editingItem.id, option.value)}
+                        className="w-4 h-4 text-emerald-600 border-gray-300 rounded focus:ring-emerald-500"
+                      />
+                      <span>{option.value}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="flex justify-end mt-6">
+                <button
+                  onClick={() => setPlanMonthEditorItemId(null)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition"
+                >
+                  完成
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {showLeaderRulesModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

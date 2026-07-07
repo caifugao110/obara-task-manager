@@ -333,7 +333,6 @@ const SystemLogs = () => {
                 <tr>
                   <th className="px-4 py-3 font-bold">时间</th>
                   <th className="px-4 py-3 font-bold">用户</th>
-                  <th className="px-4 py-3 font-bold">操作类型</th>
                   <th className="px-4 py-3 font-bold">操作说明</th>
                   <th className="px-4 py-3 font-bold">方法</th>
                   <th className="px-4 py-3 font-bold">IP</th>
@@ -345,14 +344,14 @@ const SystemLogs = () => {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8 text-center">
+                    <td colSpan={8} className="px-4 py-8 text-center">
                       <RefreshCw className="inline-block animate-spin text-blue-600 mr-2" size={20} />
                       加载中...
                     </td>
                   </tr>
                 ) : logs.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
+                    <td colSpan={8} className="px-4 py-8 text-center text-gray-400">暂无操作记录</td>
                   </tr>
                 ) : (
                   logs.map(log => (
@@ -371,9 +370,6 @@ const SystemLogs = () => {
                             <div className="text-xs text-gray-500">{log.name}</div>
                           </div>
                         </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-sm font-bold text-gray-800">{getActionTypeLabel(log).label}</span>
                       </td>
                       <td className="px-4 py-3 text-gray-600 text-sm max-w-[200px]" title={getActionTypeLabel(log).description}>
                         <div className="flex items-start gap-2">

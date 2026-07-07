@@ -15,13 +15,19 @@ const buildAutoColumns = (rows, options = {}) => {
   const max = options.max || 260;
   const charPx = options.charPx || 8;
   const padding = options.padding || 22;
+  const columnOptions = options.columns || {};
   const columnCount = rows.reduce((maxCount, row) => Math.max(maxCount, row.length), 0);
 
   return Array.from({ length: columnCount }, (_, columnIndex) => {
+    const overrides = columnOptions[columnIndex] || {};
+    const columnMin = overrides.min || min;
+    const columnMax = overrides.max || max;
+    const columnCharPx = overrides.charPx || charPx;
+    const columnPadding = overrides.padding || padding;
     const maxLength = rows.reduce((length, row) => {
       return Math.max(length, getDisplayLength(row[columnIndex]));
     }, 0);
-    return { wpx: clamp(maxLength * charPx + padding, min, max) };
+    return { wpx: clamp(maxLength * columnCharPx + columnPadding, columnMin, columnMax) };
   });
 };
 

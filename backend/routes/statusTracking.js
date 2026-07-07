@@ -9,6 +9,34 @@ const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
+function getCurrentMonthValue() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getItemPlanMonth(item) {
+  return getItemPlanMonths(item)[0] || '';
+}
+
+function getItemPlanMonths(item) {
+  const months = Array.isArray(item.productionPlanMonths)
+    ? item.productionPlanMonths.filter(Boolean)
+    : [];
+  if (months.length > 0) {
+    return Array.from(new Set(months)).sort();
+  }
+  const fallbackMonth = item.productionPlanMonth || (item.deliveryDate ? item.deliveryDate.substring(0, 7) : '');
+  return fallbackMonth ? [fallbackMonth] : [];
+}
+
+function makeSpecMonthKey(specNumber, productionPlanMonth) {
+  return `${String(specNumber || '').trim().toLowerCase()}__${String(productionPlanMonth || '').trim()}`;
+}
+
+function makeSpecMonthKeys(item) {
+  return getItemPlanMonths(item).map(month => makeSpecMonthKey(item.specNumber, month));
+}
+
 router.get('/items', asyncHandler(async (req, res) => {
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
@@ -22,6 +50,8 @@ router.post('/items', [authMiddleware, adminMiddleware], asyncHandler(async (req
   const newItem = {
     id: Date.now().toString(),
     ...req.body,
+    productionPlanMonth: req.body.productionPlanMonth || getCurrentMonthValue(),
+    productionPlanMonths: req.body.productionPlanMonths || [req.body.productionPlanMonth || getCurrentMonthValue()],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -49,6 +79,8 @@ router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (
   data.statusTrackingItems[index] = {
     ...data.statusTrackingItems[index],
     ...req.body,
+    productionPlanMonth: req.body.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
+    productionPlanMonths: req.body.productionPlanMonths || getItemPlanMonths(data.statusTrackingItems[index]),
     updatedAt: new Date().toISOString()
   };
   
@@ -106,12 +138,16 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
         data.statusTrackingItems[index] = {
           ...data.statusTrackingItems[index],
           ...item,
+          productionPlanMonth: item.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
+          productionPlanMonths: item.productionPlanMonths || getItemPlanMonths(item),
           updatedAt: new Date().toISOString()
         };
       }
     } else {
       data.statusTrackingItems.push({
         ...item,
+        productionPlanMonth: item.productionPlanMonth || getItemPlanMonth(item) || getCurrentMonthValue(),
+        productionPlanMonths: item.productionPlanMonths || getItemPlanMonths(item),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       });
@@ -129,7 +165,7 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
 }));
 
 router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
-  const { month, factory, searchTerm, fullTableSearch } = req.query;
+  const { month, deliveryMonth, factory, searchTerm, fullTableSearch } = req.query;
   
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
@@ -137,10 +173,19 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
   let filteredItems = items;
   
   if (fullTableSearch !== 'true') {
-    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+    if (month) {
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
+      }
+      filteredItems = filteredItems.filter(item => getItemPlanMonths(item).includes(month));
+    } else if (deliveryMonth) {
+      if (!/^\d{4}-\d{2}$/.test(deliveryMonth)) {
+        return res.status(400).json({ message: '请选择纳期月份（格式：YYYY-MM）' });
+      }
+      filteredItems = filteredItems.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
+    } else {
       return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
     }
-    filteredItems = filteredItems.filter(item => item.deliveryDate?.startsWith(month));
   }
   
   if (factory) {
@@ -164,6 +209,7 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
   const columns = [
     { key: 'factory', label: '工厂' },
     { key: 'clientName', label: '客户' },
+    { key: 'productionPlanMonth', label: '生产计划' },
     { key: 'quantity', label: '数量' },
     { key: 'deliveryDate', label: '纳期' },
     { key: 'shippedCount', label: '已发图' },
@@ -190,13 +236,22 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
         const [, m, d] = item.deliveryDate.split('-');
         return `${parseInt(m)}/${parseInt(d)}`;
       }
+      if (col.key === 'productionPlanMonth') {
+        return getItemPlanMonths(item).join(', ');
+      }
       return item[col.key] || '';
     });
   });
 
   const worksheetData = [headerRow, ...dataRows];
   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData, { sheetStubs: true });
-  worksheet['!cols'] = buildAutoColumns(worksheetData, { min: 50, max: 220 });
+  worksheet['!cols'] = buildAutoColumns(worksheetData, {
+    min: 50,
+    max: 220,
+    columns: {
+      1: { min: 180, max: 620, charPx: 7.5, padding: 30 }
+    }
+  });
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, '状态跟踪表');
@@ -224,7 +279,7 @@ router.post('/import/check', [authMiddleware, superAdminMiddleware, upload.singl
 
   const data = db.readDb();
   const existingItems = data.statusTrackingItems || [];
-  const existingSpecNumbers = new Set(existingItems.map(item => item.specNumber?.toLowerCase() || ''));
+  const existingSpecMonths = new Set(existingItems.flatMap(item => makeSpecMonthKeys(item)));
   
   const duplicateSpecs = [];
   
@@ -235,14 +290,25 @@ router.post('/import/check', [authMiddleware, superAdminMiddleware, upload.singl
     
     const headerRow = rawRows[0];
     const specColIndex = headerRow.findIndex(cell => String(cell).includes('仕样号'));
+    const productionPlanColIndex = headerRow.findIndex(cell => String(cell).includes('生产计划'));
     if (specColIndex < 0) return;
     
     for (let i = 1; i < rawRows.length; i++) {
       const row = rawRows[i];
       const specNumber = String(row[specColIndex] || '').trim();
-      if (specNumber && existingSpecNumbers.has(specNumber.toLowerCase())) {
-        if (!duplicateSpecs.includes(specNumber)) {
-          duplicateSpecs.push(specNumber);
+      const productionPlanMonth = productionPlanColIndex >= 0
+        ? String(row[productionPlanColIndex] || '').trim()
+        : '';
+      const productionPlanMonths = productionPlanMonth
+        .split(',')
+        .map(month => month.trim())
+        .filter(Boolean);
+      for (const month of productionPlanMonths) {
+        if (specNumber && existingSpecMonths.has(makeSpecMonthKey(specNumber, month))) {
+          const duplicateKey = `${specNumber}(${month})`;
+          if (!duplicateSpecs.includes(duplicateKey)) {
+            duplicateSpecs.push(duplicateKey);
+          }
         }
       }
     }
@@ -267,7 +333,10 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
 
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
-  const existingSpecNumbers = new Map(data.statusTrackingItems.map(item => [item.specNumber?.toLowerCase() || '', item]));
+  const existingSpecMonths = new Map();
+  data.statusTrackingItems.forEach(item => {
+    makeSpecMonthKeys(item).forEach(key => existingSpecMonths.set(key, item));
+  });
   
   let importedRows = 0;
   let updatedRows = 0;
@@ -284,6 +353,7 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
       const label = String(cell).trim();
       if (label.includes('工厂')) columnMap.factory = index;
       else if (label.includes('客户')) columnMap.clientName = index;
+      else if (label.includes('生产计划')) columnMap.productionPlanMonth = index;
       else if (label.includes('数量')) columnMap.quantity = index;
       else if (label.includes('纳期')) columnMap.deliveryDate = index;
       else if (label.includes('已发图')) columnMap.shippedCount = index;
@@ -308,14 +378,23 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
       const specNumber = String(row[columnMap.specNumber] || '').trim();
       if (!specNumber) continue;
 
-      const existingItem = existingSpecNumbers.get(specNumber.toLowerCase());
+      const deliveryDate = String(row[columnMap.deliveryDate] || '').trim();
+      const productionPlanMonths = (String(row[columnMap.productionPlanMonth] || '').trim() || deliveryDate.substring(0, 7))
+        .split(',')
+        .map(month => month.trim())
+        .filter(Boolean);
+      const existingItem = productionPlanMonths
+        .map(month => existingSpecMonths.get(makeSpecMonthKey(specNumber, month)))
+        .find(Boolean);
       
       const newItem = {
         id: existingItem?.id || Date.now().toString() + Math.random().toString(36).slice(2, 9),
         factory: String(row[columnMap.factory] || '').trim(),
         clientName: String(row[columnMap.clientName] || '').trim(),
+        productionPlanMonth: productionPlanMonths[0] || '',
+        productionPlanMonths,
         quantity: String(row[columnMap.quantity] || '').trim(),
-        deliveryDate: String(row[columnMap.deliveryDate] || '').trim(),
+        deliveryDate,
         shippedCount: parseInt(String(row[columnMap.shippedCount] || ''), 10) || 0,
         unconfirmedCount: parseInt(String(row[columnMap.unconfirmedCount] || ''), 10) || 0,
         totalVarieties: parseInt(String(row[columnMap.totalVarieties] || ''), 10) || 0,
