@@ -166,6 +166,7 @@ io.on('connection', (socket) => {
         userId: authenticatedUser.id,
         username: authenticatedUser.username,
         name: authenticatedUser.name,
+        mode: data.mode === 'colorMark' ? 'colorMark' : 'edit',
         socketId: socket.id
       };
       editingSessions.set(key, session);

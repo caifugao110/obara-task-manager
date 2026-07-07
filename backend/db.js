@@ -130,7 +130,7 @@ const readDb = () => {
           workHours: { enabled: true, allowAdmins: true, allowViewers: false },
           statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
           systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
-          system: { allowGuestView: true, allowMultiDevice: true }
+          system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false }
         }
       };
       fs.writeFileSync(dbPath, JSON.stringify(initialDb, null, 2));
@@ -155,8 +155,14 @@ const readDb = () => {
       parsed.settings.systemSettings = { enabled: true, allowAdmins: true, allowViewers: false };
     }
     if (!parsed.settings.system) {
-      parsed.settings.system = { allowGuestView: true, allowMultiDevice: true };
+      parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false };
     }
+    const allowOwnDesignPlanColor = Boolean(
+      parsed.settings.system.allowUserDesignPlanColorMark ||
+      parsed.settings.system.allowUserEditOwnTaskColor
+    );
+    parsed.settings.system.allowUserDesignPlanColorMark = allowOwnDesignPlanColor;
+    parsed.settings.system.allowUserEditOwnTaskColor = allowOwnDesignPlanColor;
     if (!parsed.loginLogs) parsed.loginLogs = [];
     
     let migratedUsers = false;

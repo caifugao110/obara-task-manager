@@ -16,7 +16,7 @@ const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDis
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const defaultSystemSettings = { allowGuestView: true, allowMultiDevice: true };
+const defaultSystemSettings = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false };
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
 const formatDownloadTimestamp = () => {
@@ -35,8 +35,23 @@ const formatDownloadTimestamp = () => {
 
 const systemSettingsSchema = Joi.object({
   allowGuestView: Joi.boolean().required(),
-  allowMultiDevice: Joi.boolean().required()
+  allowMultiDevice: Joi.boolean().required(),
+  allowUserDesignPlanColorMark: Joi.boolean().optional(),
+  allowUserEditOwnTaskColor: Joi.boolean().optional()
 });
+
+const normalizeSystemSettings = (settings = {}) => {
+  const merged = { ...defaultSystemSettings, ...settings };
+  const allowOwnDesignPlanColor = Boolean(
+    merged.allowUserDesignPlanColorMark ||
+    merged.allowUserEditOwnTaskColor
+  );
+  return {
+    ...merged,
+    allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
+    allowUserEditOwnTaskColor: allowOwnDesignPlanColor
+  };
+};
 
 const loginLogQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(500).default(200),
@@ -949,7 +964,7 @@ const parseRenderedExportSheet = ({ worksheet, rawRows, targetMonth, designerByN
 
 router.get('/settings', asyncHandler(async (req, res) => {
   const data = db.readDb();
-  res.json(data.settings?.system || defaultSystemSettings);
+  res.json(normalizeSystemSettings(data.settings?.system));
 }));
 
 router.put('/settings', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
@@ -960,9 +975,9 @@ router.put('/settings', [authMiddleware, superAdminMiddleware], asyncHandler(asy
 
   const data = db.readDb();
   if (!data.settings) data.settings = {};
-  data.settings.system = value;
+  data.settings.system = normalizeSystemSettings(value);
   await db.writeDb(data);
-  res.json(value);
+  res.json(data.settings.system);
 }));
 
 router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {

@@ -25,6 +25,8 @@ import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginL
 interface SystemSettingsData {
   allowGuestView: boolean;
   allowMultiDevice: boolean;
+  allowUserDesignPlanColorMark: boolean;
+  allowUserEditOwnTaskColor?: boolean;
 }
 
 interface Toast {
@@ -33,7 +35,7 @@ interface Toast {
   id: number;
 }
 
-const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true };
+const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false };
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 const SystemSettings = () => {
@@ -86,7 +88,13 @@ const SystemSettings = () => {
   const fetchSettings = useCallback(async () => {
     try {
       const res = await axios.get('/api/system/settings');
-      setSettings(res.data);
+      const allowOwnDesignPlanColor = res.data.allowUserDesignPlanColorMark ?? res.data.allowUserEditOwnTaskColor ?? false;
+      setSettings({
+        ...defaultSettings,
+        ...res.data,
+        allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
+        allowUserEditOwnTaskColor: allowOwnDesignPlanColor
+      });
     } catch {
       addToast('无法加载系统设置', 'error');
     } finally {
@@ -121,6 +129,9 @@ const SystemSettings = () => {
 
   const updateSettings = async (next: Partial<SystemSettingsData>) => {
     const updated = { ...settings, ...next };
+    if (next.allowUserDesignPlanColorMark !== undefined) {
+      updated.allowUserEditOwnTaskColor = next.allowUserDesignPlanColorMark;
+    }
     setSettings(updated);
     if (!isSuperAdmin) return;
 
@@ -582,7 +593,8 @@ const SystemSettings = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
                 { label: '允许未登录用户查看主页面', detail: 'Guest View', key: 'allowGuestView' as const },
-                { label: '允许多设备同时在线', detail: 'Multi Device', key: 'allowMultiDevice' as const }
+                { label: '允许多设备同时在线', detail: 'Multi Device', key: 'allowMultiDevice' as const },
+                { label: '允许登录用户修改本人设计计划标记颜色', detail: 'Own Design Plan Color', key: 'allowUserDesignPlanColorMark' as const }
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                   <div>

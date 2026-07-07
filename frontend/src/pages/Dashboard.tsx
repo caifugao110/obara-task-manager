@@ -42,6 +42,8 @@ interface TaskItem {
   taskName: string;
   hours: number | string;
   color?: string;
+  colorBeforeUserMark?: string;
+  colorMarkedBy?: { id: string; username: string; name: string };
   guns?: GunItem[];
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
   createdAt?: string;
@@ -97,6 +99,7 @@ type EditingSession = {
   userId: string;
   username: string;
   name: string;
+  mode?: 'edit' | 'colorMark';
 };
 
 type BatchReplaceMatch = {
@@ -116,9 +119,15 @@ const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__
 
 const editingSessionKey = (designerId: string, date: string) => `${designerId}__${date}`;
 
-const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGun, onDeleteTask, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
+const normalizeTaskColor = (value?: string) => String(value || '').trim().toLowerCase();
+const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
+const hasStoredUserMarkColor = (item: TaskItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
+
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskClick, onDeleteGun, onDeleteTask, onMarkColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
+  const canRestoreColor = canMarkColor && isWhiteTaskColor(item.color) && item.colorMarkedBy && hasStoredUserMarkColor(item);
+  const showMarkWhite = canMarkColor && !isWhiteTaskColor(item.color);
 
   const {
     attributes,
@@ -214,8 +223,36 @@ const SortableTask = ({ item, designerId, date, isAdmin, onTaskClick, onDeleteGu
         }
       }}
       tabIndex={isAdmin ? 0 : -1}
-      className={`grid grid-cols-[12rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
+      className={`relative group/task grid grid-cols-[12rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
     >
+      {(showMarkWhite || canRestoreColor) && (
+        <div className="absolute right-0.5 top-0.5 z-20 flex gap-1 opacity-0 group-hover/task:opacity-100 transition-opacity">
+          {showMarkWhite && (
+            <button
+              type="button"
+              className="h-5 w-5 rounded border border-gray-300 bg-white shadow-sm hover:ring-2 hover:ring-blue-400"
+              title="标记为白色"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMarkColor(item, designerId, date, 'white');
+              }}
+            />
+          )}
+          {canRestoreColor && (
+            <button
+              type="button"
+              className="h-5 w-5 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-2 hover:ring-blue-400"
+              title="恢复标记前颜色"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMarkColor(item, designerId, date, 'restore');
+              }}
+            >
+              <RefreshCw size={12} />
+            </button>
+          )}
+        </div>
+      )}
       {/* Main Task Row */}
       <div
         className={`px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
@@ -343,6 +380,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [systemSettingsLoaded, setSystemSettingsLoaded] = useState(false);
   const [allowGuestView, setAllowGuestView] = useState(true);
+  const [allowUserDesignPlanColorMark, setAllowUserDesignPlanColorMark] = useState(false);
   const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
   const [statusTrackingAccess, setStatusTrackingAccess] = useState(defaultAccessSettings);
@@ -451,12 +489,12 @@ const Dashboard = () => {
     (designerId: string, date: string) => {
       const session = getBlockingEditingSession(designerId, date);
       if (!session) return false;
-      if (canViewEditingUser) {
-        addToast(`${session.name || session.username} 正在编辑该区域`, 'error');
+      if (canViewEditingUser || (user && session.mode === 'colorMark')) {
+        addToast(`${session.name || session.username} ${session.mode === 'colorMark' ? '正在标记任务颜色' : '正在编辑该区域'}`, 'error');
       }
       return true;
     },
-    [canViewEditingUser, getBlockingEditingSession]
+    [canViewEditingUser, getBlockingEditingSession, user]
   );
 
   const startEditingCell = useCallback(
@@ -1087,6 +1125,39 @@ const Dashboard = () => {
     }
   }, [currentDate, token]);
 
+  const handleUserDesignPlanColorMark = useCallback(async (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => {
+    if (!user || !token) return;
+    if (warnIfOfflineEdit()) return;
+    if (warnIfCellLocked(designerId, date)) return;
+
+    socketRef.current?.emit('start_editing', {
+      designerId,
+      date,
+      userId: user.id,
+      username: user.username,
+      name: user.name,
+      mode: 'colorMark'
+    });
+
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const value = action === 'white' ? '#ffffff' : '__restore__';
+      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId: item.id, field: 'color', value }, authHeader);
+      if (res.data.sheet) {
+        upsertSheet(res.data.sheet);
+      }
+      socketRef.current?.emit('task_updated');
+      addToast(action === 'white' ? '已标记为白色' : '已恢复标记前颜色', 'success');
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '标记颜色失败', 'error');
+      fetchSheets();
+    } finally {
+      setTimeout(() => {
+        socketRef.current?.emit('stop_editing', { designerId, date });
+      }, 800);
+    }
+  }, [fetchSheets, token, upsertSheet, user, warnIfCellLocked]);
+
   // Offline cache: save current sheets to localStorage
   const OFFLINE_CACHE_KEY = 'obara_offline_sheets_cache';
   const saveSheetsToLocalStorage = useCallback((data: TaskSheet[]) => {
@@ -1330,6 +1401,7 @@ const Dashboard = () => {
       .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes]) => {
         const guestAllowed = systemRes.data.allowGuestView ?? true;
         setAllowGuestView(guestAllowed);
+        setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? false);
         setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
         setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
         setStatusTrackingAccess(statusTrackingRes.data || defaultAccessSettings);
@@ -1408,8 +1480,8 @@ const Dashboard = () => {
         setSelectedCell(null);
         setSelectedTasks([]);
         setModalOpen(false);
-        if (canViewEditingUser) {
-          addToast(`${data.name || data.username} 正在编辑该区域`, 'error');
+        if (canViewEditingUser || (user && data.mode === 'colorMark')) {
+          addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? '正在标记任务颜色' : '正在编辑该区域'}`, 'error');
         }
       });
 
@@ -2293,27 +2365,40 @@ const Dashboard = () => {
                                     >
                                       <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
                                         <div className="flex flex-col min-h-[40px]">
-                                          {items.map(item => (
-                                            <SortableTask
-                                              key={item.id}
-                                              item={item}
-                                              designerId={d.id}
-                                              date={day.fullDate}
-                                              isAdmin={canEditTasks}
-                                              onTaskClick={onTaskClick}
-                                              onDeleteGun={onDeleteGun}
-                                              onDeleteTask={onDeleteTask}
-                                              selectedTasks={selectedTasks}
-                                              metadataTitle={buildTaskMetadataTitle(item)}
-                                              onSelectTask={(itemId, designerId, date, append) => {
-                                                if (!canEditTasks) return;
-                                                if (warnIfCellLocked(designerId, date)) return;
-                                                handleSelectTask(itemId, designerId, date, append);
-                                                setSelectedCell(null);
-                                                startEditingCell(designerId, date);
-                                              }}
-                                            />
-                                          ))}
+                                          {items.map(item => {
+                                            const canMarkColor = Boolean(
+                                              allowUserDesignPlanColorMark &&
+                                              user?.role === 'user' &&
+                                              token &&
+                                              !isOfflineMode &&
+                                              !item.leaveType &&
+                                              String(d.name || '').trim() === String(user.name || '').trim()
+                                            );
+
+                                            return (
+                                              <SortableTask
+                                                key={item.id}
+                                                item={item}
+                                                designerId={d.id}
+                                                date={day.fullDate}
+                                                isAdmin={canEditTasks}
+                                                canMarkColor={canMarkColor}
+                                                onTaskClick={onTaskClick}
+                                                onDeleteGun={onDeleteGun}
+                                                onDeleteTask={onDeleteTask}
+                                                onMarkColor={handleUserDesignPlanColorMark}
+                                                selectedTasks={selectedTasks}
+                                                metadataTitle={buildTaskMetadataTitle(item)}
+                                                onSelectTask={(itemId, designerId, date, append) => {
+                                                  if (!canEditTasks) return;
+                                                  if (warnIfCellLocked(designerId, date)) return;
+                                                  handleSelectTask(itemId, designerId, date, append);
+                                                  setSelectedCell(null);
+                                                  startEditingCell(designerId, date);
+                                                }}
+                                              />
+                                            );
+                                          })}
                                           {canEditTasks && (
                                             <div 
                                               className={`h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-blue-50/50'} ${selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? 'opacity-100 bg-blue-100 border border-blue-400' : ''}`}
@@ -2345,10 +2430,10 @@ const Dashboard = () => {
                                               <Plus size={14} />
                                             </div>
                                           )}
-                                          {canViewEditingUser && editingSession && editingSession.userId !== user?.id && (
+                                          {user && editingSession && editingSession.userId !== user?.id && (canViewEditingUser || editingSession.mode === 'colorMark') && (
                                             <div className="absolute inset-0 bg-red-200/85 flex items-center justify-center z-10">
                                               <span className="text-xs font-bold text-white bg-red-600 px-2 py-1 rounded border border-red-700 shadow-sm">
-                                                {editingSession.name || editingSession.username} 正在编辑
+                                                {editingSession.name || editingSession.username} {editingSession.mode === 'colorMark' ? '正在标记任务颜色' : '正在编辑'}
                                               </span>
                                             </div>
                                           )}

@@ -10,6 +10,15 @@ const normalizeDate = (dateStr) => {
   return dateStr.length >= 10 ? dateStr.slice(0, 10) : dateStr;
 };
 
+const normalizeName = (value) => String(value || '').trim();
+
+const normalizeColorValue = (value) => String(value || '').trim().toLowerCase();
+
+const isWhiteColor = (value) => {
+  const normalized = normalizeColorValue(value);
+  return normalized === '#ffffff' || normalized === '#fff' || normalized === 'white';
+};
+
 const gunSchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().allow('').default(''),
@@ -48,6 +57,17 @@ const withCreateMeta = (item, user) => {
 const touchItem = (item, user) => {
   item.updatedAt = new Date().toISOString();
   item.updatedBy = getUserMeta(user);
+};
+
+const canUserMarkDesignPlanColor = (data, user, designerId, item) => {
+  if (user?.role !== 'user') return false;
+  if (!data.settings?.system?.allowUserDesignPlanColorMark && !data.settings?.system?.allowUserEditOwnTaskColor) return false;
+  if (item?.leaveType) return false;
+
+  const designer = (data.designers || []).find(d => d.id === designerId);
+  if (!designer) return false;
+
+  return normalizeName(designer.name) !== '' && normalizeName(designer.name) === normalizeName(user.name);
 };
 
 const createItemSchema = Joi.object({
@@ -387,14 +407,44 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   const sheet = getOrCreateSheet(data, designerId, month, year);
 
   const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
-  if (!isAdmin) {
-    return res.status(403).json({ message: '只有管理员可以编辑表格' });
-  }
 
   const items = Array.isArray(sheet.days[date]) ? sheet.days[date] : [];
   const idx = items.findIndex(i => i.id === itemId);
   if (idx === -1) {
     return res.status(404).json({ message: '任务条目不存在' });
+  }
+
+  const canUserMarkColor = !isAdmin && field === 'color' && canUserMarkDesignPlanColor(data, req.user, designerId, items[idx]);
+  if (!isAdmin && !canUserMarkColor) {
+    return res.status(403).json({ message: 'Only admins can edit tasks' });
+  }
+
+  if (canUserMarkColor) {
+    const isRestore = normalizeColorValue(value) === '__restore__';
+    if (!isRestore && !isWhiteColor(value)) {
+      return res.status(403).json({ message: 'Only white mark or restore is allowed' });
+    }
+
+    if (isRestore) {
+      if (
+        isWhiteColor(items[idx].color) &&
+        items[idx].colorMarkedBy?.id === req.user.id &&
+        Object.prototype.hasOwnProperty.call(items[idx], 'colorBeforeUserMark')
+      ) {
+        items[idx].color = items[idx].colorBeforeUserMark || '';
+        delete items[idx].colorBeforeUserMark;
+        delete items[idx].colorMarkedBy;
+      }
+    } else if (!isWhiteColor(items[idx].color) || items[idx].colorMarkedBy?.id !== req.user.id) {
+      items[idx].colorBeforeUserMark = items[idx].color || '';
+      items[idx].colorMarkedBy = getUserMeta(req.user);
+      items[idx].color = '#ffffff';
+    }
+
+    touchItem(items[idx], req.user);
+    sheet.days[date] = items;
+    await db.writeDb(data);
+    return res.json({ sheetId: sheet.id, designerId, month, year, date, item: items[idx], sheet });
   }
 
   if (field === 'guns') {
@@ -408,6 +458,8 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     items[idx].hours = typeof value === 'number' ? value : (parseFloat(value) || 0);
   } else if (field === 'color') {
     items[idx].color = value;
+    delete items[idx].colorBeforeUserMark;
+    delete items[idx].colorMarkedBy;
   } else if (field === 'guns') {
     items[idx].guns = value;
   } else if (field === 'leaveType') {
