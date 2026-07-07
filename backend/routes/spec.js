@@ -17,9 +17,33 @@ async function getPdfParse() {
 var SPEC_SHARE_PATH = '//192.168.160.6/仕样书$/';
 var SPEC_SHARE_PATH_BS = '\\\\192.168.160.6\\仕样书$\\';
 
+function isPathSafe(specNumber) {
+  if (!specNumber || typeof specNumber !== 'string') return false;
+  if (specNumber.includes('..')) return false;
+  if (specNumber.includes('/')) return false;
+  if (specNumber.includes('\\')) return false;
+  if (specNumber.includes(':')) return false;
+  if (!/^\d+$/.test(specNumber)) return false;
+  return true;
+}
+
 function makePath(specNumber, suffix) {
-  var fp = SPEC_SHARE_PATH + specNumber + suffix;
-  var bp = SPEC_SHARE_PATH_BS + specNumber + suffix;
+  if (!isPathSafe(specNumber)) return null;
+  
+  var fp = path.normalize(SPEC_SHARE_PATH + specNumber + suffix);
+  var bp = path.normalize(SPEC_SHARE_PATH_BS + specNumber + suffix);
+  
+  var fpDir = path.dirname(fp);
+  var bpDir = path.dirname(bp);
+  var allowedDirs = [
+    path.normalize(SPEC_SHARE_PATH).replace(/\/$/, ''),
+    path.normalize(SPEC_SHARE_PATH_BS).replace(/\\$/, '')
+  ];
+  
+  if (!allowedDirs.includes(fpDir) && !allowedDirs.includes(bpDir)) {
+    return null;
+  }
+  
   if (fs2.existsSync(fp)) return fp;
   if (fs2.existsSync(bp)) return bp;
   return null;
@@ -35,11 +59,10 @@ function findLatestSpecPdf(n) {
   var base = makePath(n, '.PDF');
   if (base) { latest = base; bestVer = 0; }
 
-  for (var i = 1; i <= 99; i++) {
+  for (var i = 1; i <= 9; i++) {
     var v = (i < 10 ? '0' : '') + i;
     var fp = makePath(n, '.' + v + '.PDF');
     if (fp) { latest = fp; bestVer = i; }
-    else break;
   }
   return latest;
 }

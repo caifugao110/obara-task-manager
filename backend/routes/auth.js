@@ -18,6 +18,17 @@ const loginLimiter = rateLimit({
   message: { message: '登录尝试过于频繁，请15分钟后再试' }
 });
 
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { message: '密码修改尝试过于频繁，请15分钟后再试' }
+});
+
+const changePasswordSchema = Joi.object({
+  oldPassword: Joi.string().required(),
+  newPassword: Joi.string().min(6).required()
+});
+
 const loginSchema = Joi.object({
   username: Joi.string().alphanum().min(3).max(30).required(),
   password: Joi.string().min(6).required()
@@ -189,12 +200,13 @@ router.get('/validate', asyncHandler(async (req, res) => {
   }
 }));
 
-router.post('/change-password', authMiddleware, asyncHandler(async (req, res) => {
-  const { oldPassword, newPassword } = req.body;
-  
-  if (!oldPassword || !newPassword) {
-    return res.status(400).json({ message: '请提供旧密码和新密码' });
+router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHandler(async (req, res) => {
+  const { error } = changePasswordSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
+
+  const { oldPassword, newPassword } = req.body;
 
   const data = db.readDb();
   const userIndex = data.users.findIndex(u => u.id === req.user.id);
@@ -210,12 +222,23 @@ router.post('/change-password', authMiddleware, asyncHandler(async (req, res) =>
     return res.status(401).json({ message: '旧密码不正确' });
   }
 
+  const newSessionId = crypto.randomUUID();
   data.users[userIndex].password = bcrypt.hashSync(newPassword, 10);
   data.users[userIndex].forcePasswordChange = false;
+  data.users[userIndex].sessionToken = newSessionId;
   
   await db.writeDb(data);
+
+  const payload = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    name: user.name,
+    sessionId: newSessionId
+  };
+  const newToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
   
-  res.json({ message: '密码修改成功' });
+  res.json({ message: '密码修改成功', token: newToken });
 }));
 
 router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {

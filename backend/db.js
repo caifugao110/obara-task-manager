@@ -205,10 +205,11 @@ const initAdmin = async () => {
   const db = readDb();
   const superAdminExists = db.users.find(u => u.username === 'superadmin');
   if (!superAdminExists) {
-    const hashedPassword = bcrypt.hashSync('admin123', 10);
+    const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
+    const hashedPassword = bcrypt.hashSync(defaultPassword, 10);
     db.users.push({
       id: Date.now().toString(),
-      username: 'superadmin',
+      username: process.env.DEFAULT_ADMIN_USERNAME || 'superadmin',
       password: hashedPassword,
       role: 'superadmin',
       name: '超级管理员',
@@ -216,7 +217,8 @@ const initAdmin = async () => {
       forcePasswordChange: true
     });
     await writeDb(db);
-    console.log('SuperAdmin account created: superadmin / admin123');
+    console.log(`SuperAdmin account created: ${process.env.DEFAULT_ADMIN_USERNAME || 'superadmin'} / ${defaultPassword}`);
+    console.log('[SECURITY] Default admin password is set. Please change it immediately after logging in.');
   }
 };
 

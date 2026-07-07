@@ -392,7 +392,8 @@ obara-task-manager/
 │   │   └── security.js
 │   ├── middleware/
 │   │   ├── auditLog.js
-│   │   └── auth.js
+│   │   ├── auth.js
+│   │   └── socketAuth.js
 │   ├── routes/
 │   │   ├── auth.js
 │   │   ├── designers.js
@@ -403,12 +404,12 @@ obara-task-manager/
 │   │   ├── tasks.js
 │   │   ├── users.js
 │   │   └── workHours.js
-│   ├── scripts/
-│   │   └── extract_pdf_text.js
 │   ├── templates/
 │   │   └── spec-pdf/
 │   └── utils/
-│       └── exportWorkbook.js
+│       ├── auditLogDisplay.js
+│       ├── exportWorkbook.js
+│       └── workday.js
 ├── docs/
 │   └── API.md
 ├── frontend/

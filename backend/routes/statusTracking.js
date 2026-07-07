@@ -5,7 +5,32 @@ const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMid
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
 const multer = require('multer');
+const Joi = require('joi');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
+
+const statusTrackingItemSchema = Joi.object({
+  factory: Joi.string().allow(''),
+  clientName: Joi.string().allow(''),
+  specNumber: Joi.string().allow(''),
+  productionPlanMonth: Joi.string().pattern(/^\d{4}-\d{2}$/).allow(''),
+  productionPlanMonths: Joi.array().items(Joi.string().pattern(/^\d{4}-\d{2}$/)).allow(null),
+  quantity: Joi.string().allow(''),
+  deliveryDate: Joi.string().allow(''),
+  shippedCount: Joi.number().integer().min(0).allow(null),
+  unconfirmedCount: Joi.number().integer().min(0).allow(null),
+  totalVarieties: Joi.number().integer().min(0).allow(null),
+  feedbackVarieties: Joi.number().integer().min(0).allow(null),
+  feedbackPlan: Joi.string().allow(''),
+  drawingPlanStatus: Joi.string().allow(''),
+  confirmedQuantity: Joi.number().integer().min(0).allow(null),
+  confirmedVarieties: Joi.number().integer().min(0).allow(null),
+  drawnVarieties: Joi.number().integer().min(0).allow(null),
+  undrawnVarieties: Joi.number().integer().min(0).allow(null),
+  undrawnQuantity: Joi.number().integer().min(0).allow(null),
+  designDeliveryDays: Joi.number().integer().min(0).allow(null),
+  salesPerson: Joi.string().allow(''),
+  leader: Joi.string().allow('')
+});
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -47,11 +72,16 @@ router.post('/items', [authMiddleware, adminMiddleware], asyncHandler(async (req
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
   
+  const { error, value } = statusTrackingItemSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '数据验证失败', details: error.details.map(d => d.message) });
+  }
+  
   const newItem = {
     id: Date.now().toString(),
-    ...req.body,
-    productionPlanMonth: req.body.productionPlanMonth || getCurrentMonthValue(),
-    productionPlanMonths: req.body.productionPlanMonths || [req.body.productionPlanMonth || getCurrentMonthValue()],
+    ...value,
+    productionPlanMonth: value.productionPlanMonth || getCurrentMonthValue(),
+    productionPlanMonths: value.productionPlanMonths || [value.productionPlanMonth || getCurrentMonthValue()],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -76,11 +106,16 @@ router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (
     return res.status(404).json({ message: '记录未找到' });
   }
   
+  const { error, value } = statusTrackingItemSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '数据验证失败', details: error.details.map(d => d.message) });
+  }
+  
   data.statusTrackingItems[index] = {
     ...data.statusTrackingItems[index],
-    ...req.body,
-    productionPlanMonth: req.body.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
-    productionPlanMonths: req.body.productionPlanMonths || getItemPlanMonths(data.statusTrackingItems[index]),
+    ...value,
+    productionPlanMonth: value.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
+    productionPlanMonths: value.productionPlanMonths || getItemPlanMonths(data.statusTrackingItems[index]),
     updatedAt: new Date().toISOString()
   };
   
@@ -132,22 +167,27 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
   const existingIds = new Set(data.statusTrackingItems.map(item => item.id));
   
   for (const item of items) {
+    const { error, value } = statusTrackingItemSchema.validate(item);
+    if (error) {
+      return res.status(400).json({ message: '数据验证失败', details: error.details.map(d => d.message) });
+    }
+    
     if (existingIds.has(item.id)) {
       const index = data.statusTrackingItems.findIndex(i => i.id === item.id);
       if (index !== -1) {
         data.statusTrackingItems[index] = {
           ...data.statusTrackingItems[index],
-          ...item,
-          productionPlanMonth: item.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
-          productionPlanMonths: item.productionPlanMonths || getItemPlanMonths(item),
+          ...value,
+          productionPlanMonth: value.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
+          productionPlanMonths: value.productionPlanMonths || getItemPlanMonths(value),
           updatedAt: new Date().toISOString()
         };
       }
     } else {
       data.statusTrackingItems.push({
-        ...item,
-        productionPlanMonth: item.productionPlanMonth || getItemPlanMonth(item) || getCurrentMonthValue(),
-        productionPlanMonths: item.productionPlanMonths || getItemPlanMonths(item),
+        ...value,
+        productionPlanMonth: value.productionPlanMonth || getItemPlanMonth(value) || getCurrentMonthValue(),
+        productionPlanMonths: value.productionPlanMonths || getItemPlanMonths(value),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       });

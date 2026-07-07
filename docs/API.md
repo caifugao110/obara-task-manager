@@ -266,6 +266,7 @@ Authorization: Bearer <token>
 
 规则：
 
+- 需要登录且角色为超级管理员。
 - 不能删除当前登录账号。
 - 不能批量删除超级管理员账号。
 
@@ -294,6 +295,7 @@ Authorization: Bearer <token>
 
 规则：
 
+- 需要登录且角色为超级管理员。
 - 不能删除当前登录账号。
 
 响应：
@@ -479,7 +481,7 @@ Authorization: Bearer <token>
 
 `POST /api/tasks/item`
 
-权限：`admin`、`superadmin`。
+权限：`admin`、`superadmin`。需要登录且角色为管理员或超级管理员。
 
 请求：
 
@@ -561,7 +563,7 @@ Authorization: Bearer <token>
 
 `PUT /api/tasks/item`
 
-权限：`admin`、`superadmin`。
+权限：`admin`、`superadmin`。普通用户在满足条件时可修改本人同名设计员的设计计划任务颜色标记（仅白色标记或恢复）。
 
 请求：
 
@@ -587,6 +589,7 @@ Authorization: Bearer <token>
 
 更新 `guns` 时同样校验：枪名存在时工时不能为 0。
 - **所有任务内容的修改（包括枪名的编辑、复制、删除）都会自动更新 `updatedAt` 和 `updatedBy` 字段。**
+- 普通用户修改颜色标记时，系统会保存原始颜色到 `colorBeforeUserMark`，并记录标记人信息到 `colorMarkedBy`。
 
 响应：
 
@@ -1089,16 +1092,19 @@ Authorization: Bearer <token>
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| `month` | 是 | 月份，格式 `YYYY-MM`，按纳期字段过滤 |
+| `month` | 否 | 月份，格式 `YYYY-MM`，按生产计划月份字段过滤（与 `deliveryMonth` 二选一） |
+| `deliveryMonth` | 否 | 纳期月份，格式 `YYYY-MM`，按纳期字段过滤（与 `month` 二选一） |
 | `factory` | 否 | 按工厂筛选 |
 | `searchTerm` | 否 | 搜索关键词，匹配客户名、仕样号、营业担当、组长 |
-| `fullTableSearch` | 否 | 是否全表搜索，`true` 时忽略 `month` 参数 |
+| `fullTableSearch` | 否 | 是否全表搜索，`true` 时忽略 `month` 和 `deliveryMonth` 参数 |
 
 响应：`.xls` 文件流，文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`。
 
 说明：
 
-- 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录（`fullTableSearch=true` 时除外）。
+- 未开启全表搜索时，`month` 和 `deliveryMonth` 必须二选一。
+- `month` 按生产计划月份字段过滤。
+- `deliveryMonth` 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录。
 - 导出列包括工厂、客户、数量、纳期、已发图、未确认、总种数、反馈种数、反馈计划、下图计划及状态、确认数量、确认种数、下图种数、未下种数、未下数量、未确认数、设计纳期、营业担当、组长。
 - 纳期字段会从 `YYYY-MM-DD` 转换为 `M/D` 格式。
 

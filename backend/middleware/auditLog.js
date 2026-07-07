@@ -30,10 +30,23 @@ const truncateText = (text, maxLength) => {
   return `${text.slice(0, maxLength)}... [truncated ${text.length - maxLength} chars]`;
 };
 
+const sanitizeBody = (body) => {
+  if (!body || typeof body !== 'object') return body;
+  const sanitized = { ...body };
+  if ('password' in sanitized) sanitized.password = '[REDACTED]';
+  if ('oldPassword' in sanitized) sanitized.oldPassword = '[REDACTED]';
+  if ('newPassword' in sanitized) sanitized.newPassword = '[REDACTED]';
+  if (Array.isArray(sanitized)) {
+    return sanitized.map(item => sanitizeBody(item));
+  }
+  return sanitized;
+};
+
 const formatRequestBody = (method, body) => {
   if (!['POST', 'PUT'].includes(method)) return null;
   if (body == null) return null;
-  return truncateText(JSON.stringify(body), MAX_REQUEST_BODY_LENGTH);
+  const sanitized = sanitizeBody(body);
+  return truncateText(JSON.stringify(sanitized), MAX_REQUEST_BODY_LENGTH);
 };
 
 const formatResponseMessage = (method, responseBody) => {

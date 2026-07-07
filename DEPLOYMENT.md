@@ -244,7 +244,7 @@ RATE_LIMIT_MAX=20
 |----------|--------|------|
 | `PORT` | `5000` | 后端服务端口 |
 | `NODE_ENV` | `development` | 开发/生产环境，生产环境错误响应不包含堆栈信息 |
-| `JWT_SECRET` | `obara_task_secret_key_2026` | JWT 签名密钥，生产环境**必须**修改为随机字符串 |
+| `JWT_SECRET` | `your-secret-key-change-in-production-2026` | JWT 签名密钥，生产环境**必须**修改为随机字符串 |
 | `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
 | `CORS_ORIGIN` | - | 允许的前端地址，多个用逗号分隔 |
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
@@ -253,6 +253,8 @@ RATE_LIMIT_MAX=20
 | `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 登录限流窗口时间（毫秒） |
 | `RATE_LIMIT_MAX` | `20` | 登录限流最大尝试次数 |
+| `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
+| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
 
 生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。
 

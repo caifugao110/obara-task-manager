@@ -7,7 +7,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const https = require('https');
 const db = require('../db');
-const { authMiddleware, superAdminMiddleware } = require('../middleware/auth');
+const { authMiddleware, superAdminMiddleware, guestViewMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
@@ -964,7 +964,7 @@ const parseRenderedExportSheet = ({ worksheet, rawRows, targetMonth, designerByN
   return { sheetMap, importedRows };
 };
 
-router.get('/settings', asyncHandler(async (req, res) => {
+router.get('/settings', guestViewMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   res.json(normalizeSystemSettings(data.settings?.system));
 }));

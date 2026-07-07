@@ -8,9 +8,15 @@ const parseOriginList = () => {
   return originEnv.split(',').map(o => o.trim()).filter(Boolean);
 };
 
+if (!process.env.JWT_SECRET) {
+  console.error('[SECURITY ERROR] JWT_SECRET is not set in environment variables.');
+  console.error('Please set JWT_SECRET in your .env file before starting the server.');
+  process.exit(1);
+}
+
 const securityConfig = {
   jwt: {
-    secret: process.env.JWT_SECRET || 'obara_task_secret_key_2026',
+    secret: process.env.JWT_SECRET,
     expiresIn: process.env.JWT_EXPIRES_IN || '7d'
   },
   cors: {
