@@ -45,6 +45,8 @@ Authorization: Bearer <token>
 | 系统设置登录管理、日志管理 | 否 | 否 | 否 | 是 |
 | 系统设置数据管理导出 | 否 | 否 | 取决于 `systemSettings.allowAdmins` | 是 |
 | 系统设置数据管理导入 | 否 | 否 | 否 | 是 |
+| 查看和修改组长规则 | 否 | 否 | 是 | 是 |
+| 重置组长规则为默认 | 否 | 否 | 否 | 是 |
 
 说明：
 
@@ -875,7 +877,7 @@ Authorization: Bearer <token>
 
 `PUT /api/settings/leader-rules`
 
-权限：仅 `superadmin`
+权限：`admin`、`superadmin`
 
 请求：
 
@@ -887,6 +889,16 @@ Authorization: Bearer <token>
   }
 ]
 ```
+
+### 重置组长规则
+
+`POST /api/settings/leader-rules/reset`
+
+权限：仅 `superadmin`
+
+说明：将组长规则重置为系统默认值。
+
+响应：返回默认组长规则数组，结构同 `GET /api/settings/leader-rules`。
 
 ## 状态追踪接口
 
@@ -1372,6 +1384,14 @@ Authorization: Bearer <token>
       "path": "/api/auth/login",
       "ip": "::1",
       "userAgent": "Mozilla/5.0 ...",
+      "browserInfo": {
+        "browser": "Chrome",
+        "browserVersion": "120",
+        "os": "Windows 10",
+        "osVersion": "10",
+        "device": "Desktop",
+        "summary": "Chrome 120 / Windows 10 / Desktop"
+      },
       "requestBody": null,
       "responseStatus": 200,
       "responseMessage": null,
@@ -1390,6 +1410,7 @@ Authorization: Bearer <token>
 - 操作日志最多保留 2000 条。
 - `/api/system/login-logs` 和 `/api/system/audit-logs` 相关接口本身不会被记录。
 - GET 请求不记录响应消息，POST/PUT 请求记录请求体（最大 2000 字符）。
+- `browserInfo` 包含浏览器名称和版本号、操作系统和版本号、设备类型，`summary` 为拼接后的简要描述。
 
 ### 获取操作日志筛选选项
 
@@ -1402,14 +1423,20 @@ Authorization: Bearer <token>
 ```json
 {
   "usernames": ["superadmin", "admin001"],
-  "actions": ["用户登录", "更新任务", "导出任务数据"]
+  "actions": [
+    { "value": "用户登录", "label": "用户登录" },
+    { "value": "更新任务", "label": "更新任务" },
+    { "value": "导出任务数据", "label": "导出任务数据" }
+  ]
 }
 ```
 
 说明：
 
 - 返回当前所有出现过的用户名和操作描述列表，用于前端筛选下拉框。
-- 用户名和操作列表按字母排序。
+- 用户名按字母排序。
+- 操作列表为 `{ value, label }` 格式，按 label 的中文拼音排序。
+- `value` 和 `label` 均为中文操作类型名称。
 
 ### 导出操作日志
 
@@ -1749,4 +1776,4 @@ GITEE_REPO_NAME=obara-task-manager
 }
 ```
 
-最后更新：2026-07-06
+最后更新：2026-07-07

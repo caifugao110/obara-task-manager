@@ -22,7 +22,8 @@ import {
   Unlock,
   Clock,
   AlertTriangle,
-  Download
+  Download,
+  RotateCcw
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -305,7 +306,7 @@ const StatusTracking = () => {
   }, []);
 
   const saveLeaderRules = async () => {
-    if (!isSuperAdmin) return;
+    if (!isAdmin) return;
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       await axios.put('/api/settings/leader-rules', leaderRules, authHeader);
@@ -314,6 +315,18 @@ const StatusTracking = () => {
     } catch (err) {
       console.error('Error saving leader rules:', err);
       addToast('保存组长规则失败', 'error');
+    }
+  };
+
+  const resetLeaderRules = async () => {
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.post('/api/settings/leader-rules/reset', {}, authHeader);
+      setLeaderRules(defaultLeaderRules);
+      addToast('组长规则已重置为默认', 'success');
+    } catch (err) {
+      console.error('Error resetting leader rules:', err);
+      addToast('重置组长规则失败', 'error');
     }
   };
 
@@ -938,10 +951,10 @@ const StatusTracking = () => {
             </div>
           </div>
 
-          {isSuperAdmin && (
+          {isAdmin && (
             <button
               onClick={() => setShowLeaderRulesModal(true)}
-              className="flex items-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg transition"
+              className="flex items-center space-x-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg transition"
             >
               <Users size={18} />
               <span>组长规则</span>
@@ -1414,7 +1427,18 @@ const StatusTracking = () => {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-4xl mx-4 max-h-[85vh] overflow-auto">
             <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-bold text-gray-800">组长规则配置</h3>
+              <div className="flex items-center gap-3">
+                <h3 className="text-xl font-bold text-gray-800">组长规则配置</h3>
+                <button
+                  onClick={resetLeaderRules}
+                  disabled={!isSuperAdmin}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  title={isSuperAdmin ? '重置为默认规则' : '仅超级管理员可重置'}
+                >
+                  <RotateCcw size={12} />
+                  重置为默认规则
+                </button>
+              </div>
               <button
                 onClick={() => setShowLeaderRulesModal(false)}
                 className="p-1 text-gray-400 hover:text-gray-600 transition"

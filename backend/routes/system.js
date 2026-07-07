@@ -1365,7 +1365,10 @@ const filterAuditLogs = (logs, { username, action, method, ip, from, to } = {}) 
     if (fromTime && timestamp < fromTime) return false;
     if (toTime && timestamp > toTime) return false;
     if (username && log.username !== username) return false;
-    if (action && log.action !== action) return false;
+    if (action) {
+      const logDisplay = getAuditActionDisplay(log);
+      if (logDisplay.label !== action) return false;
+    }
     if (method && log.method !== method.toUpperCase()) return false;
     if (ip && !String(log.ip || '').includes(ip)) return false;
     return true;
@@ -1402,11 +1405,10 @@ router.get('/audit-logs/filter-options', [authMiddleware, superAdminMiddleware],
     .filter(log => log.action)
     .map(log => {
       const display = getAuditActionDisplay(log);
-      return { value: log.action, label: display.label };
+      return display.label;
     });
   
-  const uniqueActions = [...new Map(actionLabels.map(a => [a.value, a])).values()]
-    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  const uniqueActions = [...new Set(actionLabels)].sort((a, b) => a.localeCompare(b, 'zh-CN'));
   
   res.json({ usernames, actions: uniqueActions });
 }));

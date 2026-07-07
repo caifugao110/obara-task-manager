@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware, superAdminMiddleware } = require('../middleware/auth');
+const { authMiddleware, superAdminMiddleware, adminMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 
@@ -78,7 +78,7 @@ router.get('/leader-rules', asyncHandler(async (req, res) => {
   res.json(rules);
 }));
 
-router.put('/leader-rules', [authMiddleware, superAdminMiddleware, asyncHandler(async (req, res) => {
+router.put('/leader-rules', [authMiddleware, adminMiddleware, asyncHandler(async (req, res) => {
   const { error, value } = leaderRulesSchema.validate(req.body);
   if (error) {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
@@ -90,6 +90,14 @@ router.put('/leader-rules', [authMiddleware, superAdminMiddleware, asyncHandler(
   await db.writeDb(data);
   res.json(data.settings.leaderRules);
 })]);
+
+router.post('/leader-rules/reset', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  if (!data.settings) data.settings = {};
+  data.settings.leaderRules = defaultLeaderRules;
+  await db.writeDb(data);
+  res.json(defaultLeaderRules);
+}));
 
 module.exports = router;
 

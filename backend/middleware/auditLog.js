@@ -148,7 +148,9 @@ const auditLogMiddleware = async (req, res, next) => {
     try {
       let user = req.user;
 
-      if (!user && req.path === '/api/auth/login' && responseStatus === 200 && responseBody) {
+      const fullPath = req.originalUrl ? req.originalUrl.split('?')[0] : req.path;
+
+      if (!user && fullPath === '/api/auth/login' && responseStatus === 200 && responseBody) {
         const body = typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
         if (body.user) {
           user = body.user;
@@ -157,7 +159,7 @@ const auditLogMiddleware = async (req, res, next) => {
 
       if (!user) return;
 
-      const path = req.path;
+      const path = fullPath;
       const method = req.method;
 
       if (['OPTIONS', 'HEAD'].includes(method)) return;

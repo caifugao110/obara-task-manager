@@ -198,9 +198,28 @@ const routeActionDescriptions: Record<string, { label: string; description: stri
   'POST spec/spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' },
   'POST spec-info': { label: '查询仕样信息', description: '查询产品仕样信息' },
   'POST designers/reorder': { label: '重新排序设计员', description: '重新排序设计员列表' },
-  'POST reorder': { label: '重新排序', description: '重新排序列表项' },
+  'POST reorder': { label: '重新排序设计员', description: '重新排序设计员列表' },
   'POST tasks/move': { label: '移动任务', description: '移动任务到其他位置' },
-  'POST move': { label: '移动任务', description: '移动任务到其他位置' }
+  'POST move': { label: '移动任务', description: '移动任务到其他位置' },
+  'POST spec/delivery-date': { label: '查询交期', description: '查询产品交期信息' },
+  'POST delivery-date': { label: '查询交期', description: '查询产品交期信息' },
+  'POST spec/spec-raw-text': { label: '查询仕样原文', description: '查询产品仕样原始文本' },
+  'POST spec-raw-text': { label: '查询仕样原文', description: '查询产品仕样原始文本' },
+  'POST designers/batch-delete': { label: '批量删除设计员', description: '批量删除设计员信息' },
+  'POST users/batch-delete': { label: '批量删除用户', description: '批量删除用户账号' },
+  'POST batch-delete': { label: '批量删除', description: '批量删除记录' },
+  'POST status-tracking/sync': { label: '同步状态跟踪', description: '同步状态跟踪数据' },
+  'POST sync': { label: '同步数据', description: '同步数据到服务器' },
+  'POST status-tracking/import/check': { label: '检查导入文件', description: '检查状态跟踪导入文件' },
+  'POST import/check': { label: '检查导入文件', description: '检查导入文件格式' },
+  'POST import': { label: '导入数据', description: '导入数据表格' },
+  'GET auth/validate': { label: '验证登录', description: '验证用户登录状态' },
+  'GET validate': { label: '验证登录', description: '验证用户登录状态' },
+  'GET settings/leader-rules': { label: '查看组长规则', description: '查看组长分配规则配置' },
+  'GET leader-rules': { label: '查看组长规则', description: '查看组长分配规则配置' },
+  'PUT settings/leader-rules': { label: '更新组长规则', description: '修改组长分配规则配置' },
+  'PUT leader-rules': { label: '更新组长规则', description: '修改组长分配规则配置' },
+  'POST ': { label: '添加记录', description: '新增数据记录' }
 };
 
 const getRouteActionLabel = (method?: string, path?: string) => {
@@ -214,6 +233,11 @@ const getRouteActionLabel = (method?: string, path?: string) => {
     const collectionKey = `${normalizedMethod} ${pathParts.slice(0, -1).join('/')}`;
     const collection = routeActionDescriptions[collectionKey];
     if (collection) return collection;
+  }
+
+  // Handle DELETE with numeric ID (e.g., /1782891992539)
+  if (normalizedMethod === 'DELETE' && /^\d+$/.test(normalizedPath)) {
+    return { label: '删除记录', description: '删除数据记录' };
   }
 
   const firstPathPart = normalizedPath.split('/')[0];
@@ -285,8 +309,22 @@ export const getActionTypeLabel = (actionOrLog: string | ActionLog) => {
     '查看登录日志': { label: '查看登录日志', description: '查看用户登录日志' },
     '查看管理员登录记录': { label: '查看管理员登录记录', description: '查看管理员最近登录记录' },
     '查看版本': { label: '查看版本', description: '查看系统版本信息' },
-    'reorder': { label: '重新排序', description: '重新排序列表项' },
-    'move': { label: '移动任务', description: '移动任务到其他位置' }
+    'reorder': { label: '重新排序设计员', description: '重新排序设计员列表' },
+    'move': { label: '移动任务', description: '移动任务到其他位置' },
+    '查询交期': { label: '查询交期', description: '查询产品交期信息' },
+    '查询仕样原文': { label: '查询仕样原文', description: '查询产品仕样原始文本' },
+    '批量删除': { label: '批量删除', description: '批量删除记录' },
+    '批量删除设计员': { label: '批量删除设计员', description: '批量删除设计员信息' },
+    '批量删除用户': { label: '批量删除用户', description: '批量删除用户账号' },
+    '同步数据': { label: '同步数据', description: '同步数据到服务器' },
+    '同步状态跟踪': { label: '同步状态跟踪', description: '同步状态跟踪数据' },
+    '检查导入文件': { label: '检查导入文件', description: '检查导入文件格式' },
+    '导入数据': { label: '导入数据', description: '导入数据表格' },
+    '验证登录': { label: '验证登录', description: '验证用户登录状态' },
+    '查看组长规则': { label: '查看组长规则', description: '查看组长分配规则配置' },
+    '更新组长规则': { label: '更新组长规则', description: '修改组长分配规则配置' },
+    '添加记录': { label: '添加记录', description: '新增数据记录' },
+    '删除记录': { label: '删除记录', description: '删除数据记录' }
   };
   return actionDescriptions[action] || { label: action.replace(/^GET\s+\/|^POST\s+\/|^PUT\s+\/|^DELETE\s+\/|^PATCH\s+\/|^GET\s|^POST\s|^PUT\s|^DELETE\s|^PATCH\s/g, ''), description: action };
 };
