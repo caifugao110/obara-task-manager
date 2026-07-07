@@ -17,7 +17,9 @@ if (!process.env.JWT_SECRET) {
 const securityConfig = {
   jwt: {
     secret: process.env.JWT_SECRET,
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d'
+    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    issuer: process.env.JWT_ISSUER || 'obara-task-manager',
+    audience: process.env.JWT_AUDIENCE || 'obara-task-manager-api'
   },
   cors: {
     origin: parseOriginList(),

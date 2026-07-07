@@ -14,6 +14,7 @@ const asyncHandler = require('express-async-handler');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDisplay');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
+const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1054,6 +1055,11 @@ router.post('/import-xls', [authMiddleware, superAdminMiddleware, upload.single(
     return res.status(400).json({ message: '请上传 xls/xlsx 文件' });
   }
 
+  const fileTypeValidation = validateFileType(req.file.originalname, req.file.mimetype);
+  if (!fileTypeValidation.valid) {
+    return res.status(400).json({ message: fileTypeValidation.error });
+  }
+
   const targetMonth = normalizeMonthValue(req.body.month);
   if (!targetMonth) {
     return res.status(400).json({ message: '请选择要导入覆盖的月份（格式：YYYY-MM）' });
@@ -1063,8 +1069,27 @@ router.post('/import-xls', [authMiddleware, superAdminMiddleware, upload.single(
   try {
     workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellStyles: true });
   } catch {
-    workbook = null;
+    return res.status(400).json({ message: '无法解析文件，请检查格式' });
   }
+
+  if (!workbook) {
+    return res.status(400).json({ message: '无法解析文件，请检查格式' });
+  }
+
+  const structureValidation = validateWorkbookStructure(workbook);
+  if (!structureValidation.valid) {
+    return res.status(400).json({ message: structureValidation.error });
+  }
+
+  const securityScan = scanForMaliciousContent(workbook);
+  if (!securityScan.safe) {
+    return res.status(400).json({ 
+      message: securityScan.message,
+      details: securityScan.details
+    });
+  }
+
+  sanitizeWorkbook(workbook);
 
   const data = db.readDb();
   if (!data.tasks) data.tasks = [];

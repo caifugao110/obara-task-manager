@@ -7,6 +7,7 @@ const XLSX = require('xlsx');
 const multer = require('multer');
 const Joi = require('joi');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
+const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
 
 const statusTrackingItemSchema = Joi.object({
   factory: Joi.string().allow(''),
@@ -62,7 +63,7 @@ function makeSpecMonthKeys(item) {
   return getItemPlanMonths(item).map(month => makeSpecMonthKey(item.specNumber, month));
 }
 
-router.get('/items', asyncHandler(async (req, res) => {
+router.get('/items', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
   res.json(items);
@@ -149,7 +150,7 @@ router.delete('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(asyn
   res.json({ success: true });
 }));
 
-router.post('/sync', asyncHandler(async (req, res) => {
+router.post('/sync', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
   res.json(items);
@@ -310,12 +311,36 @@ router.post('/import/check', [authMiddleware, superAdminMiddleware, upload.singl
     return res.status(400).json({ message: '请上传文件' });
   }
 
+  const fileTypeValidation = validateFileType(req.file.originalname, req.file.mimetype);
+  if (!fileTypeValidation.valid) {
+    return res.status(400).json({ message: fileTypeValidation.error });
+  }
+
   let workbook;
   try {
     workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
   } catch {
     return res.status(400).json({ message: '无法解析文件，请检查格式' });
   }
+
+  if (!workbook) {
+    return res.status(400).json({ message: '无法解析文件，请检查格式' });
+  }
+
+  const structureValidation = validateWorkbookStructure(workbook);
+  if (!structureValidation.valid) {
+    return res.status(400).json({ message: structureValidation.error });
+  }
+
+  const securityScan = scanForMaliciousContent(workbook);
+  if (!securityScan.safe) {
+    return res.status(400).json({ 
+      message: securityScan.message,
+      details: securityScan.details
+    });
+  }
+
+  sanitizeWorkbook(workbook);
 
   const data = db.readDb();
   const existingItems = data.statusTrackingItems || [];
@@ -362,6 +387,11 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
     return res.status(400).json({ message: '请上传文件' });
   }
 
+  const fileTypeValidation = validateFileType(req.file.originalname, req.file.mimetype);
+  if (!fileTypeValidation.valid) {
+    return res.status(400).json({ message: fileTypeValidation.error });
+  }
+
   const overwrite = req.body.overwrite === 'true';
 
   let workbook;
@@ -370,6 +400,25 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
   } catch {
     return res.status(400).json({ message: '无法解析文件，请检查格式' });
   }
+
+  if (!workbook) {
+    return res.status(400).json({ message: '无法解析文件，请检查格式' });
+  }
+
+  const structureValidation = validateWorkbookStructure(workbook);
+  if (!structureValidation.valid) {
+    return res.status(400).json({ message: structureValidation.error });
+  }
+
+  const securityScan = scanForMaliciousContent(workbook);
+  if (!securityScan.safe) {
+    return res.status(400).json({ 
+      message: securityScan.message,
+      details: securityScan.details
+    });
+  }
+
+  sanitizeWorkbook(workbook);
 
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];

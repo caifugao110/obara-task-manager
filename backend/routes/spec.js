@@ -19,28 +19,47 @@ var SPEC_SHARE_PATH_BS = '\\\\192.168.160.6\\仕样书$\\';
 
 function isPathSafe(specNumber) {
   if (!specNumber || typeof specNumber !== 'string') return false;
-  if (specNumber.includes('..')) return false;
-  if (specNumber.includes('/')) return false;
-  if (specNumber.includes('\\')) return false;
-  if (specNumber.includes(':')) return false;
-  if (!/^\d+$/.test(specNumber)) return false;
+  
+  const normalized = specNumber.normalize('NFC');
+  
+  if (/\.{2}/.test(normalized)) return false;
+  
+  if (/[\\\/:]/.test(normalized)) return false;
+  
+  const encodedPathPatterns = [
+    /%2e%2e/i,
+    /%2e\./i,
+    /\.%2e/i,
+    /\uFF0E\uFF0E/,
+    /\uFEFF\u002e/,
+    /\u200E\u002e/,
+    /\u200F\u002e/
+  ];
+  for (const pattern of encodedPathPatterns) {
+    if (pattern.test(normalized)) return false;
+  }
+  
+  if (!/^\d+$/.test(normalized)) return false;
+  
   return true;
 }
 
 function makePath(specNumber, suffix) {
   if (!isPathSafe(specNumber)) return null;
   
-  var fp = path.normalize(SPEC_SHARE_PATH + specNumber + suffix);
-  var bp = path.normalize(SPEC_SHARE_PATH_BS + specNumber + suffix);
+  if (specNumber.length > 20) return null;
   
-  var fpDir = path.dirname(fp);
-  var bpDir = path.dirname(bp);
-  var allowedDirs = [
-    path.normalize(SPEC_SHARE_PATH).replace(/\/$/, ''),
-    path.normalize(SPEC_SHARE_PATH_BS).replace(/\\$/, '')
-  ];
+  var basePath1 = path.normalize(SPEC_SHARE_PATH);
+  var basePath2 = path.normalize(SPEC_SHARE_PATH_BS);
   
-  if (!allowedDirs.includes(fpDir) && !allowedDirs.includes(bpDir)) {
+  var fp = path.normalize(basePath1 + specNumber + suffix);
+  var bp = path.normalize(basePath2 + specNumber + suffix);
+  
+  if (!fp.startsWith(basePath1) && !fp.startsWith(basePath1.replace(/\/$/, ''))) {
+    return null;
+  }
+  
+  if (!bp.startsWith(basePath2) && !bp.startsWith(basePath2.replace(/\\$/, ''))) {
     return null;
   }
   

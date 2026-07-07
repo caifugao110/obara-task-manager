@@ -3,20 +3,25 @@ const db = require('../db');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
+const JWT_ISSUER = securityConfig.jwt.issuer;
+const JWT_AUDIENCE = securityConfig.jwt.audience;
 
 /**
  * Socket.IO 认证中间件
  * 验证 Socket 连接中的 JWT 令牌并将用户信息附加到 socket.data
  */
 const socketAuthMiddleware = (socket, next) => {
-  const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
+  const token = socket.handshake.auth.token || socket.handshake.headers?.authorization?.replace('Bearer ', '');
   
   if (!token) {
     return next(new Error('Authentication error: No token provided'));
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, {
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE
+    });
     const data = db.readDb();
     const user = data.users.find(u => u.id === decoded.id);
 
@@ -28,7 +33,11 @@ const socketAuthMiddleware = (socket, next) => {
       return next(new Error('Authentication error: Account disabled'));
     }
 
-    // 将用户信息附加到 socket.data
+    const systemSettings = data.settings?.system || { allowMultiDevice: true };
+    if (!systemSettings.allowMultiDevice && user.sessionToken && decoded.sessionId !== user.sessionToken) {
+      return next(new Error('Authentication error: Session invalidated'));
+    }
+
     socket.data.user = {
       id: user.id,
       username: user.username,

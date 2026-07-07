@@ -38,14 +38,14 @@ start.bat
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
-> 首次部署请在 `backend/db.json` 中自行配置超级管理员账号和密码，密码请使用 bcrypt 哈希值存储。
+> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。
 
 ### 首次部署检查清单
 
 1. 安装 Node.js 18+、npm 9+ 和 Git。
 2. 执行 `npm run install:all` 安装根目录、后端和前端依赖。
-3. 复制 `backend/.env.example` 为 `backend/.env`，至少修改 `JWT_SECRET` 和 `CORS_ORIGIN`。
-4. 在 `backend/db.json` 中创建或确认超级管理员账号，密码必须是 bcrypt 哈希值。
+3. 复制 `backend/.env.example` 为 `backend/.env`，必须修改 `JWT_SECRET`（缺失将导致服务无法启动），并配置 `CORS_ORIGIN`。
+4. 可选：配置 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 设置默认管理员账号（首次启动时自动创建）。
 5. 使用 `start.bat` 或 `npm run dev` 启动，确认前端 http://localhost:5173 和后端 http://localhost:5000 可访问。
 6. 登录后进入系统设置，确认未登录查看、多设备登录、页面权限和数据导出功能符合部署要求。
 
@@ -372,6 +372,14 @@ node --check backend\routes\tasks.js
 ## 安全配置
 
 系统使用集中的安全配置文件管理敏感信息，所有配置项均可通过环境变量设置。安全配置集中在 `backend/config/security.js`，包含 JWT 配置、CORS 配置、Gitee API 配置、数据库路径配置和服务器配置。
+
+### 安全增强特性
+
+- **JWT_SECRET 强制校验**：服务启动时强制校验 `JWT_SECRET` 配置，缺失则直接终止启动并输出错误提示。
+- **请求体敏感信息脱敏**：操作日志记录时自动对 `password`、`oldPassword`、`newPassword` 字段进行脱敏处理（显示为 `[REDACTED]`）。
+- **路径遍历攻击防护**：仕样书 PDF 路径参数进行严格校验，禁止 `..`、`/`、`\`、`:` 等特殊字符，同时检测 URL 编码（如 `%2e%2e`）和 Unicode 编码（如全角句号 `．．`）等绕过手段，确保只能访问允许的共享目录。
+- **密码修改安全**：修改密码接口添加限流（15 分钟内最多 5 次尝试）和参数校验，修改成功后返回新的 JWT Token 并更新 sessionId，使旧 Token 失效。
+- **Socket.IO 认证**：WebSocket 连接建立时强制验证 JWT Token，支持从 `socket.handshake.auth.token` 或 `Authorization` 请求头获取令牌，验证失败则拒绝连接。同时支持单设备登录限制，当 `allowMultiDevice=false` 时，已登录用户在其他设备登录会使旧连接失效。
 
 详细的环境变量配置、版本检查机制和安全加固建议，请参考 [Windows 部署指南](DEPLOYMENT.md)。
 

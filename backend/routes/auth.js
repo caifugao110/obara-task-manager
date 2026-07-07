@@ -11,6 +11,8 @@ const { authMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
+const JWT_ISSUER = securityConfig.jwt.issuer;
+const JWT_AUDIENCE = securityConfig.jwt.audience;
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -146,7 +148,11 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     sessionId
   };
 
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign(payload, JWT_SECRET, { 
+    expiresIn: securityConfig.jwt.expiresIn,
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE
+  });
 
   res.json({ 
     token, 
@@ -167,7 +173,10 @@ router.get('/validate', asyncHandler(async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, {
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE
+    });
     const data = db.readDb();
 
     // Migrate: set forcePasswordChange=true for existing non-superadmin users
@@ -236,7 +245,11 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
     name: user.name,
     sessionId: newSessionId
   };
-  const newToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  const newToken = jwt.sign(payload, JWT_SECRET, { 
+    expiresIn: securityConfig.jwt.expiresIn,
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE
+  });
   
   res.json({ message: '密码修改成功', token: newToken });
 }));

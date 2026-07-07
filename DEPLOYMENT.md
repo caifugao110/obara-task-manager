@@ -34,7 +34,7 @@ start.bat
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
-> 首次部署请在 `backend/db.json` 中自行配置超级管理员账号和密码，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
+> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。也可在 `backend/db.json` 中手动配置，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
 
 ## 部署方式选择
 
@@ -177,9 +177,9 @@ nssm remove ObaraTaskManager
 
 ### 上线前检查清单
 
-1. `backend/.env` 已存在，并已修改 `JWT_SECRET`。
+1. `backend/.env` 已存在，`JWT_SECRET` 必须配置（缺失将导致服务无法启动）。
 2. `CORS_ORIGIN` 只包含实际允许访问的前端地址。
-3. `backend/db.json` 已配置超级管理员，且密码为 bcrypt 哈希值。
+3. `backend/db.json` 已配置超级管理员，或已通过环境变量配置默认管理员账号（首次启动自动创建）。
 4. `backend/db.json` 已完成一次离线备份。
 5. `npm run build` 能成功完成前端构建。
 6. 后端启动后 `http://localhost:5000/api/system/version` 能返回 JSON。
@@ -584,13 +584,15 @@ node --check backend\routes\settings.js
 ## 安全建议
 
 1. **修改默认密码**：首次部署后立即修改 `superadmin` 密码
-2. **更换 JWT_SECRET**：在 `backend/.env` 中设置强随机密钥
+2. **更换 JWT_SECRET**：在 `backend/.env` 中设置强随机密钥，服务启动时会强制校验该配置，缺失将导致启动失败
 3. **限制文件权限**：确保 `backend/db.json` 仅允许必要用户读写
 4. **关闭未登录查看**：公网部署时关闭 `allowGuestView`
 5. **启用单设备登录**：如需限制账号共享，关闭 `allowMultiDevice`
 6. **定期备份**：定期备份 `backend/db.json` 和导出 `.xls` 文件
 7. **关注操作日志**：定期查看「操作日志」页面，关注异常 IP 或失败请求
 8. **强制密码修改**：通过重置密码功能强制用户修改初始密码
+9. **路径安全校验**：仕样书 PDF 路径参数会进行多层严格校验，禁止路径遍历攻击，支持检测 URL 编码和 Unicode 编码绕过，无需额外配置
+10. **Socket.IO 安全**：WebSocket 连接强制验证 JWT Token，支持单设备登录限制，当 `allowMultiDevice=false` 时旧连接会被强制断开
 
 ## 性能优化建议
 

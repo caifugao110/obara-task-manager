@@ -3,6 +3,8 @@ const db = require('../db');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
+const JWT_ISSUER = securityConfig.jwt.issuer;
+const JWT_AUDIENCE = securityConfig.jwt.audience;
 
 const authMiddleware = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -11,7 +13,10 @@ const authMiddleware = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, {
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE
+    });
     const data = db.readDb();
     const user = data.users.find(u => u.id === decoded.id);
 
@@ -91,7 +96,10 @@ const guestViewMiddleware = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, {
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE
+    });
     const user = data.users.find(u => u.id === decoded.id);
     if (!user || user.disabled) {
       return res.status(401).json({ message: '请先登录后查看', code: 'GUEST_VIEW_DISABLED' });

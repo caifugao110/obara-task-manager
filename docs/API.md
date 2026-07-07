@@ -140,7 +140,8 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "message": "密码修改成功"
+  "message": "密码修改成功",
+  "token": "new-jwt-token"
 }
 ```
 
@@ -148,7 +149,10 @@ Authorization: Bearer <token>
 
 - 新密码长度至少 6 位。
 - 修改成功后会自动清除 `forcePasswordChange` 标记。
+- 修改成功后返回新的 JWT Token，前端应使用新 Token 更新本地存储。
+- 修改密码后会更新 sessionId，使旧 Token 失效（防止会话固定攻击）。
 - 旧密码不正确时返回 `401`。
+- 接口受速率限制（15 分钟内最多 5 次尝试），超限返回 `密码修改尝试过于频繁，请15分钟后再试`。
 - 超级管理员重置用户密码后，该用户 `forcePasswordChange` 会被设置为 `true`，下次登录需修改密码。
 
 ### 登出
@@ -1626,6 +1630,13 @@ Authorization: Bearer <token>
 - 系统会查找 `仕样书$\12345.PDF` 及 `12345.01.PDF` ～ `12345.99.PDF` 等版本文件，取最新版本。
 - 请求超时时间为 15 秒。
 - 需要能够访问共享目录（网络权限）。
+- 路径安全校验：`specNumber` 参数会进行多层严格校验，防止路径遍历攻击：
+  - 禁止包含 `..`、`/`、`\`、`:` 等特殊字符
+  - 检测 URL 编码绕过（如 `%2e%2e`、`%2e.`、`.%2e`）
+  - 检测 Unicode 编码绕过（如全角句号 `．．`、零宽字符等）
+  - 强制限制为纯数字，且长度不超过 20 位
+  - 路径拼接后检查前缀，确保在允许的共享目录范围内
+  校验失败返回 `400` 错误。
 
 响应（成功）：
 
@@ -1710,6 +1721,36 @@ admin001,123456,管理员A,admin
 ```text
 ws://localhost:5000
 ```
+
+### 认证机制
+
+WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
+
+1. **通过 `socket.handshake.auth.token`**：
+   ```javascript
+   io.connect('http://localhost:5000', {
+     auth: {
+       token: 'your-jwt-token'
+     }
+   });
+   ```
+
+2. **通过 `Authorization` 请求头**：
+   ```javascript
+   io.connect('http://localhost:5000', {
+     extraHeaders: {
+       Authorization: 'Bearer your-jwt-token'
+     }
+   });
+   ```
+
+认证失败时服务端会拒绝连接并返回错误：
+- `Authentication error: No token provided`：未提供令牌
+- `Authentication error: User not found`：用户不存在
+- `Authentication error: Account disabled`：账号已禁用
+- `Authentication error: Session invalidated`：会话已失效（单设备登录限制）
+
+连接成功后，用户信息会附加到 `socket.data.user`，包含 `id`、`username`、`name`、`role` 字段。
 
 ### 编辑状态管理
 
