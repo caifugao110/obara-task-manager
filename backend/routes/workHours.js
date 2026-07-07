@@ -7,7 +7,7 @@ const XLSX = require('xlsx');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 
-router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
+router.get('/export', [authMiddleware, accessSettingsMiddleware('workHours')], asyncHandler(async (req, res) => {
   const { month } = req.query;
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
     return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });

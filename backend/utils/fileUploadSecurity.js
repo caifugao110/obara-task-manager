@@ -1,4 +1,5 @@
 const path = require('path');
+const XLSX = require('xlsx');
 
 const ALLOWED_EXTENSIONS = ['.xls', '.xlsx'];
 const ALLOWED_CONTENT_TYPES = [

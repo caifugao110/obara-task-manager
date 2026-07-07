@@ -34,7 +34,7 @@ start.bat
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
-> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。也可在 `backend/db.json` 中手动配置，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
+> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。默认密码为 `admin123`，**生产环境必须立即修改**。也可在 `backend/db.json` 中手动配置，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
 
 ## 部署方式选择
 
@@ -256,7 +256,7 @@ RATE_LIMIT_MAX=20
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
 
-生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。
+生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。系统已增强 JWT 失效机制，登出或修改密码后旧令牌将立即失效。
 
 ### CORS 配置
 

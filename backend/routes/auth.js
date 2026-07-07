@@ -199,8 +199,10 @@ router.get('/validate', asyncHandler(async (req, res) => {
     }
 
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
-    if (!systemSettings.allowMultiDevice && user.sessionToken && decoded.sessionId !== user.sessionToken) {
-      return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message: '您的账号已在其他设备登录' });
+    // Enhanced session check: always validate sessionId against user.sessionToken
+    if (user.sessionToken && decoded.sessionId !== user.sessionToken) {
+      const message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
+      return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message });
     }
 
     res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name }, forcePasswordChange: user.forcePasswordChange || false });
@@ -259,7 +261,8 @@ router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
   const userIndex = data.users.findIndex(u => u.id === req.user.id);
   
   if (userIndex !== -1) {
-    data.users[userIndex].sessionToken = null;
+    // Generate a new UUID on logout to invalidate all existing tokens for this user
+    data.users[userIndex].sessionToken = crypto.randomUUID();
     await db.writeDb(data);
   }
   

@@ -1528,13 +1528,14 @@ Authorization: Bearer <token>
 
 `GET /api/work-hours/export`
 
-权限：需要登录且有系统设置数据管理权限。
+权限：需要登录。取决于 `settings.workHours` 的权限配置。
 
 说明：
 
 - `superadmin` 始终可导出。
-- `admin` 需要 `settings.systemSettings.enabled=true` 且 `allowAdmins=true`。
-- `user` 和游客不能导出。
+- `admin` 需要 `settings.workHours.enabled=true` 且 `allowAdmins=true`。
+- `user` 需要 `settings.workHours.enabled=true` 且 `allowViewers=true`。
+- 游客不能导出。
 
 查询参数：
 

@@ -34,7 +34,8 @@ const socketAuthMiddleware = (socket, next) => {
     }
 
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
-    if (!systemSettings.allowMultiDevice && user.sessionToken && decoded.sessionId !== user.sessionToken) {
+    // Enhanced session check: always validate sessionId against user.sessionToken
+    if (user.sessionToken && decoded.sessionId !== user.sessionToken) {
       return next(new Error('Authentication error: Session invalidated'));
     }
 

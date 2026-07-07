@@ -29,8 +29,11 @@ const authMiddleware = (req, res, next) => {
     }
 
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
-    if (!systemSettings.allowMultiDevice && user.sessionToken && decoded.sessionId !== user.sessionToken) {
-      return res.status(401).json({ message: '您的账号已在其他设备登录', code: 'SESSION_INVALIDATED' });
+    // Enhanced session check: always validate sessionId against user.sessionToken
+    // If they don't match, the token is considered stale (e.g., after logout or password change)
+    if (user.sessionToken && decoded.sessionId !== user.sessionToken) {
+      const message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
+      return res.status(401).json({ message, code: 'SESSION_INVALIDATED' });
     }
 
     req.user = decoded;
