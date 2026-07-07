@@ -302,8 +302,9 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workHours` | 工时管理访问权限 |
 | `settings.statusTracking` | 状态追踪访问权限 |
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
+| `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
-| `settings.system` | 系统设置，如未登录查看、多设备登录 |
+| `settings.system` | 系统设置，如未登录查看、多设备登录、允许登录用户修改本人设计计划标记颜色；颜色标记开关缺失时默认开启 |
 
 首次启动或旧版本升级时，`backend/db.js` 会自动补齐缺失的默认配置并执行数据库迁移（任务结构、日期格式、用户字段等）。
 
@@ -356,6 +357,7 @@ copy backend\db.json backups\db-daily-20260705.json
 
 - `.xls` 导出只包含任务数据，适合任务表恢复；文件名包含日期和时间戳，例如 `obara-tasks-2026-07-02-093000.xls`。
 - 导出的表格是渲染后的任务表，每月一个工作表，包含冻结窗口、边框、任务颜色、任务/枪名单独行和自动合计。
+- 导出的任务表表头周末底色、工时管理页面和工时管理表导出的“工作日工时/周末加班工时”均按 `settings.workdayOverrides` 计算。
 - 登录用户、设计人员、登录日志和权限设置仍建议通过 `backend/db.json` 文件级备份保存。
 
 恢复方式：

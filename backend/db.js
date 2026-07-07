@@ -130,7 +130,8 @@ const readDb = () => {
           workHours: { enabled: true, allowAdmins: true, allowViewers: false },
           statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
           systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
-          system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false }
+          workdayOverrides: {},
+          system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true }
         }
       };
       fs.writeFileSync(dbPath, JSON.stringify(initialDb, null, 2));
@@ -154,13 +155,17 @@ const readDb = () => {
     if (!parsed.settings.systemSettings) {
       parsed.settings.systemSettings = { enabled: true, allowAdmins: true, allowViewers: false };
     }
-    if (!parsed.settings.system) {
-      parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false };
+    if (!parsed.settings.workdayOverrides || typeof parsed.settings.workdayOverrides !== 'object' || Array.isArray(parsed.settings.workdayOverrides)) {
+      parsed.settings.workdayOverrides = {};
     }
-    const allowOwnDesignPlanColor = Boolean(
-      parsed.settings.system.allowUserDesignPlanColorMark ||
-      parsed.settings.system.allowUserEditOwnTaskColor
-    );
+    if (!parsed.settings.system) {
+      parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
+    }
+    const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserDesignPlanColorMark');
+    const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserEditOwnTaskColor');
+    const allowOwnDesignPlanColor = hasDesignPlanColorMark || hasEditOwnTaskColor
+      ? Boolean(parsed.settings.system.allowUserDesignPlanColorMark || parsed.settings.system.allowUserEditOwnTaskColor)
+      : true;
     parsed.settings.system.allowUserDesignPlanColorMark = allowOwnDesignPlanColor;
     parsed.settings.system.allowUserEditOwnTaskColor = allowOwnDesignPlanColor;
     if (!parsed.loginLogs) parsed.loginLogs = [];

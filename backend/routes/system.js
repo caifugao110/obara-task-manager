@@ -13,10 +13,11 @@ const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDisplay');
+const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const defaultSystemSettings = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false };
+const defaultSystemSettings = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
 const formatDownloadTimestamp = () => {
@@ -42,10 +43,11 @@ const systemSettingsSchema = Joi.object({
 
 const normalizeSystemSettings = (settings = {}) => {
   const merged = { ...defaultSystemSettings, ...settings };
-  const allowOwnDesignPlanColor = Boolean(
-    merged.allowUserDesignPlanColorMark ||
-    merged.allowUserEditOwnTaskColor
-  );
+  const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(settings, 'allowUserDesignPlanColorMark');
+  const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(settings, 'allowUserEditOwnTaskColor');
+  const allowOwnDesignPlanColor = hasDesignPlanColorMark || hasEditOwnTaskColor
+    ? Boolean(settings.allowUserDesignPlanColorMark || settings.allowUserEditOwnTaskColor)
+    : true;
   return {
     ...merged,
     allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
@@ -168,7 +170,7 @@ const renderTaskLines = (items) => {
   return lines;
 };
 
-const buildMonthHtmlTable = (monthSheets, designers, year, month, monthKey) => {
+const buildMonthHtmlTable = (monthSheets, designers, year, month, monthKey, workdayOverrides = {}) => {
   const daysCount = getDaysInMonth(year, month);
   const columnsCount = 1 + daysCount * 2 + 1;
   const sheetsByDesigner = new Map(monthSheets.map(sheet => [sheet.designerId, sheet]));
@@ -189,14 +191,14 @@ const buildMonthHtmlTable = (monthSheets, designers, year, month, monthKey) => {
   html.push('<tr>');
   html.push('<th class="designer-header" rowspan="2">设计员</th>');
   for (let day = 1; day <= daysCount; day += 1) {
-    const isWeekend = [0, 6].includes(new Date(year, month - 1, day).getDay());
+    const isWeekend = getEffectiveIsWeekend(formatDate(year, month, day), workdayOverrides);
     html.push(`<th class="day-header${isWeekend ? ' weekend' : ''}" colspan="2"><div class="day-name">${getDayName(year, month, day)}</div><div>${day}</div></th>`);
   }
   html.push('<th class="month-total-header" rowspan="2">月总工时</th>');
   html.push('</tr>');
   html.push('<tr>');
   for (let day = 1; day <= daysCount; day += 1) {
-    const isWeekend = [0, 6].includes(new Date(year, month - 1, day).getDay());
+    const isWeekend = getEffectiveIsWeekend(formatDate(year, month, day), workdayOverrides);
     html.push(`<th class="sub-header task-col${isWeekend ? ' weekend-sub' : ''}">任务内容</th>`);
     html.push(`<th class="sub-header hour-col${isWeekend ? ' weekend-sub' : ''}">工时</th>`);
   }
@@ -258,7 +260,7 @@ const buildMonthHtmlTable = (monthSheets, designers, year, month, monthKey) => {
   return html.join('');
 };
 
-const buildExcelHtml = (monthGroups, designers) => {
+const buildExcelHtml = (monthGroups, designers, workdayOverrides = {}) => {
   const sheetNames = [...monthGroups.keys()].sort();
   const worksheetsXml = sheetNames.map(name => `
     <x:ExcelWorksheet>
@@ -294,7 +296,7 @@ const buildExcelHtml = (monthGroups, designers) => {
   `).join('');
   const sheetsHtml = sheetNames.map((name, index) => {
     const [year, month] = name.split('-').map(Number);
-    const tableHtml = buildMonthHtmlTable(monthGroups.get(name), designers, year, month, name);
+    const tableHtml = buildMonthHtmlTable(monthGroups.get(name), designers, year, month, name, workdayOverrides);
     return `
       <section class="worksheet">
         ${tableHtml}
@@ -414,7 +416,7 @@ const buildExcelHtml = (monthGroups, designers) => {
 
 const cellKey = (row, col) => `${row}:${col}`;
 
-const buildMonthWorkbookData = (monthSheets, designers, year, month) => {
+const buildMonthWorkbookData = (monthSheets, designers, year, month, workdayOverrides = {}) => {
   const daysCount = getDaysInMonth(year, month);
   const columnsCount = 1 + daysCount * 2 + 1;
   const sheetsByDesigner = new Map(monthSheets.map(sheet => [sheet.designerId, sheet]));
@@ -444,7 +446,7 @@ const buildMonthWorkbookData = (monthSheets, designers, year, month) => {
   styleMap.set(cellKey(1, 0), 's100');
 
   for (let day = 1; day <= daysCount; day += 1) {
-    const isWeekend = [0, 6].includes(new Date(year, month - 1, day).getDay());
+    const isWeekend = getEffectiveIsWeekend(formatDate(year, month, day), workdayOverrides);
     const dayStyle = isWeekend ? 's104' : 's100';
     const subStyle = isWeekend ? 's105' : 's100';
     const startCol = 1 + (day - 1) * 2;
@@ -601,14 +603,14 @@ const patchXlmlCellStyles = (xml, sheetStyleMaps) => {
   });
 };
 
-const buildExcelXml = (monthGroups, designers) => {
+const buildExcelXml = (monthGroups, designers, workdayOverrides = {}) => {
   const workbook = XLSX.utils.book_new();
   const sheetStyleMaps = new Map();
   const allStyleIds = new Set();
 
   [...monthGroups.keys()].sort().forEach(key => {
     const [year, month] = key.split('-').map(Number);
-    const { rows, merges, styleMap } = buildMonthWorkbookData(monthGroups.get(key), designers, year, month);
+    const { rows, merges, styleMap } = buildMonthWorkbookData(monthGroups.get(key), designers, year, month, workdayOverrides);
     const worksheet = XLSX.utils.aoa_to_sheet(rows);
     worksheet['!merges'] = merges;
     worksheet['!cols'] = [
@@ -1038,7 +1040,7 @@ router.get('/export-xls', [authMiddleware, superAdminMiddleware], asyncHandler(a
     monthGroups.get(key).push(sheet);
   });
 
-  const xml = buildExcelXml(monthGroups, designers);
+  const xml = buildExcelXml(monthGroups, designers, normalizeWorkdayOverrides(data.settings?.workdayOverrides));
   const buffer = Buffer.from(xml, 'utf8');
   const filename = `obara-tasks-${formatDownloadTimestamp()}.xls`;
   res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');

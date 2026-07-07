@@ -847,6 +847,57 @@ Authorization: Bearer <token>
 - 用于控制一般管理员是否可以访问系统设置页面的「数据管理」模块（仅可查看导出，不能导入）。
 - `allowViewers` 字段被强制为 `false`。
 
+### 获取工作日覆盖规则
+
+`GET /api/settings/workday-overrides`
+
+无需认证。
+
+响应：
+
+```json
+{
+  "2026-07-04": "workday",
+  "2026-07-06": "weekend"
+}
+```
+
+说明：
+
+- 键为日期，格式 `YYYY-MM-DD`。
+- 值为 `workday` 时，将自然周六/周日按普通工作日统计。
+- 值为 `weekend` 时，将自然工作日按周末加班日统计。
+- 未出现在响应中的日期按自然周六/周日判断。
+
+### 更新工作日覆盖规则
+
+`PUT /api/settings/workday-overrides`
+
+权限：`admin`、`superadmin`
+
+请求：
+
+```json
+{
+  "date": "2026-07-04",
+  "type": "workday"
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `date` | 是 | 日期，格式 `YYYY-MM-DD` |
+| `type` | 是 | `workday`、`weekend` 或 `null`；传 `null` 表示清除该日期覆盖规则 |
+
+响应：返回更新后的完整工作日覆盖规则对象。
+
+说明：
+
+- 主页面日期表头中的管理员复选框使用该接口保存。
+- 工作日工时、周末加班工时、主页面底部周末加班统计、工时管理排行和工时管理表导出均使用该规则。
+
 ### 获取组长规则
 
 `GET /api/settings/leader-rules`
@@ -1137,9 +1188,16 @@ Authorization: Bearer <token>
 ```json
 {
   "allowGuestView": true,
-  "allowMultiDevice": true
+  "allowMultiDevice": true,
+  "allowUserDesignPlanColorMark": true,
+  "allowUserEditOwnTaskColor": true
 }
 ```
+
+说明：
+
+- `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
+- 缺失这两个字段时，系统默认允许登录用户修改本人设计计划标记颜色。
 
 ### 更新系统设置
 
@@ -1152,7 +1210,8 @@ Authorization: Bearer <token>
 ```json
 {
   "allowGuestView": false,
-  "allowMultiDevice": true
+  "allowMultiDevice": true,
+  "allowUserDesignPlanColorMark": true
 }
 ```
 
@@ -1479,6 +1538,7 @@ Authorization: Bearer <token>
 
 - 按月份统计每位设计员的工时数据。
 - 导出列：设计员、总工时、工作日工时、周末加班工时、出差工时、请假工时。
+- 工作日工时和周末加班工时按 `settings.workdayOverrides` 覆盖后的有效工作日/周末计算。
 - 按总工时倒序排列。
 - 冻结首行和首列。
 - 工时为 0 的单元格显示为空。
@@ -1707,7 +1767,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 1. **任务数据结构迁移**：将旧版 `hours` 对象格式迁移为新版 `days` 对象格式
 2. **日期格式规范化**：统一日期格式为 `YYYY-MM-DD`，截取前 10 位
-3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`system` 等）
+3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`workdayOverrides`、`system` 等）
 4. **用户字段迁移**：自动为旧用户补齐 `disabled` 和 `forcePasswordChange` 字段
 5. **强制修改密码迁移**：首次访问用户列表或校验会话时，自动将非超级管理员用户的 `forcePasswordChange` 标记为 `true`
 

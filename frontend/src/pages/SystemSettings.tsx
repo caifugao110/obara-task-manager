@@ -35,7 +35,7 @@ interface Toast {
   id: number;
 }
 
-const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: false, allowUserEditOwnTaskColor: false };
+const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 const SystemSettings = () => {
@@ -88,7 +88,7 @@ const SystemSettings = () => {
   const fetchSettings = useCallback(async () => {
     try {
       const res = await axios.get('/api/system/settings');
-      const allowOwnDesignPlanColor = res.data.allowUserDesignPlanColorMark ?? res.data.allowUserEditOwnTaskColor ?? false;
+      const allowOwnDesignPlanColor = res.data.allowUserDesignPlanColorMark ?? res.data.allowUserEditOwnTaskColor ?? true;
       setSettings({
         ...defaultSettings,
         ...res.data,

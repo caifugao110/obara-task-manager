@@ -7,6 +7,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
+import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
 import {
     DndContext,
     rectIntersection,
@@ -380,11 +381,13 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [systemSettingsLoaded, setSystemSettingsLoaded] = useState(false);
   const [allowGuestView, setAllowGuestView] = useState(true);
-  const [allowUserDesignPlanColorMark, setAllowUserDesignPlanColorMark] = useState(false);
+  const [allowUserDesignPlanColorMark, setAllowUserDesignPlanColorMark] = useState(true);
   const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
   const [statusTrackingAccess, setStatusTrackingAccess] = useState(defaultAccessSettings);
   const [systemSettingsAccess, setSystemSettingsAccess] = useState(defaultAccessSettings);
+  const [workdayOverrides, setWorkdayOverrides] = useState<WorkdayOverrides>({});
+  const [updatingWorkdayOverrideDate, setUpdatingWorkdayOverrideDate] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const [selectedDesignerId, setSelectedDesignerId] = useState<string>('all');
@@ -735,13 +738,38 @@ const Dashboard = () => {
 
   const days = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => {
     const date = addDays(firstDayOfMonth, i);
+    const fullDate = format(date, 'yyyy-MM-dd');
+    const naturalIsWeekend = isWeekend(date);
     return {
-      fullDate: format(date, 'yyyy-MM-dd'),
+      fullDate,
       dayNum: i + 1,
-      isWeekend: isWeekend(date),
+      naturalIsWeekend,
+      isWeekend: getEffectiveIsWeekend(fullDate, naturalIsWeekend, workdayOverrides),
       dayName: format(date, 'EEE')
     };
-  }), [daysInMonth, firstDayOfMonth]);
+  }), [daysInMonth, firstDayOfMonth, workdayOverrides]);
+
+  const handleWorkdayOverrideChange = async (date: string, naturalIsWeekend: boolean, checked: boolean) => {
+    if (!isAdmin || !token) return;
+
+    const type: WorkdayOverrideType | null = checked
+      ? (naturalIsWeekend ? 'workday' : 'weekend')
+      : null;
+
+    setUpdatingWorkdayOverrideDate(date);
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axiosInstance.put('/settings/workday-overrides', { date, type }, authHeader);
+      setWorkdayOverrides(normalizeWorkdayOverrides(res.data));
+      socketRef.current?.emit('task_updated');
+      addToast('工作日设置已保存', 'success');
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '保存工作日设置失败', 'error');
+      fetchWorkdayOverrides();
+    } finally {
+      setUpdatingWorkdayOverrideDate(null);
+    }
+  };
 
   const filteredDesigners = useMemo(() => {
     const base = designers.filter(d => !d.hidden || selectedDesignerId === d.id);
@@ -1364,13 +1392,23 @@ const Dashboard = () => {
     };
   }, [batchReplaceOpen, modalOpen, history, performUndo, canEditTasks, isOfflineMode]);
 
+  const fetchWorkdayOverrides = useCallback(async () => {
+    try {
+      const res = await axiosInstance.get('/settings/workday-overrides');
+      setWorkdayOverrides(normalizeWorkdayOverrides(res.data));
+    } catch (err) {
+      console.error('Error fetching workday overrides:', err);
+      addToast('无法加载工作日设置', 'error');
+    }
+  }, []);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
       const designersRes = await axiosInstance.get('/designers', headers ? { headers } : undefined);
       setDesigners(Array.isArray(designersRes.data) ? designersRes.data : []);
-      await fetchSheets();
+      await Promise.all([fetchSheets(), fetchWorkdayOverrides()]);
     } catch (err: any) {
       console.error('Error fetching data:', err);
       if (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error') {
@@ -1388,7 +1426,7 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
-  }, [fetchSheets, token, loadSheetsFromLocalStorage]);
+  }, [fetchSheets, fetchWorkdayOverrides, token, loadSheetsFromLocalStorage]);
 
   useEffect(() => {
     Promise.all([
@@ -1401,7 +1439,7 @@ const Dashboard = () => {
       .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes]) => {
         const guestAllowed = systemRes.data.allowGuestView ?? true;
         setAllowGuestView(guestAllowed);
-        setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? false);
+        setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? true);
         setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
         setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
         setStatusTrackingAccess(statusTrackingRes.data || defaultAccessSettings);
@@ -1429,6 +1467,7 @@ const Dashboard = () => {
 
       socketRef.current.on('task_refreshed', () => {
         fetchSheets();
+        fetchWorkdayOverrides();
       });
 
       socketRef.current.on('connect', () => {
@@ -1502,7 +1541,7 @@ const Dashboard = () => {
     } else {
       setIsOnline(true);
     }
-  }, [fetchData, fetchSheets, systemSettingsLoaded, allowGuestView, user]);
+  }, [fetchData, fetchSheets, fetchWorkdayOverrides, systemSettingsLoaded, allowGuestView, user]);
 
   // Online/offline event listeners
   useEffect(() => {
@@ -1767,7 +1806,7 @@ const Dashboard = () => {
         if (!visibleDesignerIds.has(sheet.designerId)) return stats;
 
         (Object.entries(sheet.days || {}) as [string, TaskItem[]][]).forEach(([date, items]) => {
-          const isWeekendDate = isWeekend(new Date(`${date}T00:00:00`));
+          const isWeekendDate = getEffectiveIsWeekend(date, isWeekend(new Date(`${date}T00:00:00`)), workdayOverrides);
           (Array.isArray(items) ? items : []).filter(isMeaningfulTask).forEach(item => {
             const hours = getTaskHours(item);
             if (item.leaveType === 'sick' || item.leaveType === 'vacation' || item.leaveType === 'illness') {
@@ -1788,7 +1827,7 @@ const Dashboard = () => {
       },
       { designTaskCount: 0, weekendOvertimeHours: 0, tripHours: 0, leaveHours: 0 }
     );
-  }, [filteredDesigners, sheets]);
+  }, [filteredDesigners, sheets, workdayOverrides]);
 
   const formatFooterHours = (hours: number) => `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} h`;
 
@@ -2289,12 +2328,24 @@ const Dashboard = () => {
             <div style={{ height: `${tableHeight}px` }} className="overflow-auto">
               <table className="border-collapse text-[12px] w-full">
               <thead className="text-xs">
-                <tr className="bg-[#f8f9fa] text-gray-600 h-10 table-header-row">
+                <tr className="bg-[#f8f9fa] text-gray-600 h-16 table-header-row">
                   <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 w-48 font-bold text-center shadow-[1px_0_0_0_#d1d5db] z-40">设计员</th>
                   {days.map(d => (
-                    <th key={d.fullDate} colSpan={2} className={`sticky top-0 border border-gray-300 min-w-[240px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
+                    <th key={d.fullDate} colSpan={2} className={`group/date sticky top-0 border border-gray-300 min-w-[240px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
                       <div className="text-[10px] opacity-60">{d.dayName}</div>
                       <div>{d.dayNum}</div>
+                      {isAdmin && (
+                        <label className="mt-1 hidden items-center justify-center gap-1 text-[10px] font-semibold text-gray-600 leading-none cursor-pointer select-none group-hover/date:flex group-focus-within/date:flex">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(workdayOverrides[d.fullDate])}
+                            disabled={updatingWorkdayOverrideDate === d.fullDate}
+                            onChange={(e) => handleWorkdayOverrideChange(d.fullDate, d.naturalIsWeekend, e.target.checked)}
+                            className="h-3 w-3 cursor-pointer disabled:cursor-not-allowed"
+                          />
+                          <span>{getWorkdayOverrideLabel(d.naturalIsWeekend)}</span>
+                        </label>
+                      )}
                     </th>
                   ))}
                   <th className="sticky right-0 bg-[#f8f9fa] border border-gray-300 w-24 font-bold text-center shadow-[-1px_0_0_0_#d1d5db] z-40">月总工时</th>
@@ -2303,8 +2354,8 @@ const Dashboard = () => {
                   <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 shadow-[1px_0_0_0_#d1d5db] z-30"></th>
                   {days.map(d => (
                     <React.Fragment key={`sub-${d.fullDate}`}>
-                      <th className={`sticky top-10 border border-gray-300 w-48 z-30 ${d.isWeekend ? 'bg-[#fff2cc]/50' : ''}`}>任务内容</th>
-                      <th className={`sticky top-10 border border-gray-300 w-12 z-30 ${d.isWeekend ? 'bg-[#fff2cc]/50' : ''}`}>工时</th>
+                      <th className={`sticky top-16 border border-gray-300 w-48 z-30 ${d.isWeekend ? 'bg-[#fff2cc]/50' : ''}`}>任务内容</th>
+                      <th className={`sticky top-16 border border-gray-300 w-12 z-30 ${d.isWeekend ? 'bg-[#fff2cc]/50' : ''}`}>工时</th>
                     </React.Fragment>
                   ))}
                   <th className="sticky right-0 bg-[#f8f9fa] border border-gray-300 shadow-[-1px_0_0_0_#d1d5db] z-30"></th>

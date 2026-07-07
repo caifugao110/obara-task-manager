@@ -4,6 +4,12 @@ const db = require('../db');
 const { authMiddleware, superAdminMiddleware, adminMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
+const {
+  OVERRIDE_WORKDAY,
+  OVERRIDE_WEEKEND,
+  isNaturalWeekend,
+  normalizeWorkdayOverrides
+} = require('../utils/workday');
 
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
@@ -11,6 +17,11 @@ const accessSettingsSchema = Joi.object({
   enabled: Joi.boolean().required(),
   allowAdmins: Joi.boolean().required(),
   allowViewers: Joi.boolean().required()
+});
+
+const workdayOverrideSchema = Joi.object({
+  date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
+  type: Joi.string().valid(OVERRIDE_WORKDAY, OVERRIDE_WEEKEND, null).allow(null).required()
 });
 
 const normalizeAccessSettings = (settings = defaultAccessSettings) => {
@@ -57,6 +68,33 @@ router.put('/status-tracking', updateAccessSettings('statusTracking'));
 
 router.get('/system-settings', getAccessSettings('systemSettings'));
 router.put('/system-settings', updateAccessSettings('systemSettings'));
+
+router.get('/workday-overrides', asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  res.json(normalizeWorkdayOverrides(data.settings?.workdayOverrides));
+}));
+
+router.put('/workday-overrides', [authMiddleware, adminMiddleware, asyncHandler(async (req, res) => {
+  const { error, value } = workdayOverrideSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const data = db.readDb();
+  if (!data.settings) data.settings = {};
+  const overrides = normalizeWorkdayOverrides(data.settings.workdayOverrides);
+  const naturalType = isNaturalWeekend(value.date) ? OVERRIDE_WEEKEND : OVERRIDE_WORKDAY;
+
+  if (!value.type || value.type === naturalType) {
+    delete overrides[value.date];
+  } else {
+    overrides[value.date] = value.type;
+  }
+
+  data.settings.workdayOverrides = overrides;
+  await db.writeDb(data);
+  res.json(overrides);
+})]);
 
 const defaultLeaderRules = [
   { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },

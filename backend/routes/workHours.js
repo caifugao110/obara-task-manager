@@ -5,6 +5,7 @@ const { authMiddleware, superAdminMiddleware, accessSettingsMiddleware } = requi
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
+const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 
 router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
   const { month } = req.query;
@@ -19,6 +20,7 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
   const data = db.readDb();
   const designers = data.designers || [];
   const tasks = data.tasks || [];
+  const workdayOverrides = normalizeWorkdayOverrides(data.settings?.workdayOverrides);
 
   const monthTasks = tasks.filter(t => t.year === year && t.month === m);
 
@@ -44,11 +46,6 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
     });
   });
 
-  const isWeekend = (dateStr) => {
-    const d = new Date(`${dateStr}T00:00:00`);
-    return [0, 6].includes(d.getDay());
-  };
-
   monthTasks.forEach(sheet => {
     const designerData = hoursMap.get(sheet.designerId);
     if (!designerData) return;
@@ -56,7 +53,7 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('systemSettings'
     Object.entries(sheet.days || {}).forEach(([date, items]) => {
       items.forEach(item => {
         const itemHours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
-        const isWeekendDate = isWeekend(date);
+        const isWeekendDate = getEffectiveIsWeekend(date, workdayOverrides);
         const gunsHours = (item.guns || []).reduce((sum, gun) => {
           return sum + (typeof gun.hours === 'number' ? gun.hours : (parseFloat(gun.hours) || 0));
         }, 0);

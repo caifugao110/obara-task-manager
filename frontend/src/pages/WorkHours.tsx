@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
 import { format, isWeekend } from 'date-fns';
@@ -16,6 +16,7 @@ import {
   Users
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { getEffectiveIsWeekend, normalizeWorkdayOverrides, WorkdayOverrides } from '../utils/workdayOverrides';
 
 interface DesignerData {
   id: string;
@@ -69,6 +70,7 @@ const WorkHours = () => {
   const [dataLoading, setDataLoading] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settings, setSettings] = useState(defaultSettings);
+  const workdayOverridesRef = useRef<WorkdayOverrides>({});
   const [showAllHours, setShowAllHours] = useState(false);
   const [showAllLeave, setShowAllLeave] = useState(false);
   const [excludeWeekendOvertime, setExcludeWeekendOvertime] = useState(false);
@@ -103,6 +105,19 @@ const WorkHours = () => {
       addToast('无法加载工时管理权限设置', 'error');
     } finally {
       setSettingsLoaded(true);
+    }
+  }, []);
+
+  const fetchWorkdayOverrides = useCallback(async (showError = true): Promise<WorkdayOverrides> => {
+    try {
+      const res = await axios.get('/api/settings/workday-overrides');
+      const normalized = normalizeWorkdayOverrides(res.data);
+      workdayOverridesRef.current = normalized;
+      return normalized;
+    } catch (err) {
+      console.error('Error fetching workday overrides:', err);
+      if (showError) addToast('无法加载工作日设置', 'error');
+      return workdayOverridesRef.current;
     }
   }, []);
 
@@ -149,6 +164,7 @@ const WorkHours = () => {
     if (designers.length === 0) return;
     setDataLoading(true);
     try {
+      const activeWorkdayOverrides = await fetchWorkdayOverrides(false);
       const month = currentDate.getMonth() + 1;
       const year = currentDate.getFullYear();
       const res = await axios.get(`/api/tasks?month=${month}&year=${year}`, authHeader);
@@ -180,7 +196,7 @@ const WorkHours = () => {
         (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([date, items]) => {
           items.forEach((item: any) => {
             const itemHours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
-            const isWeekendDate = isWeekend(new Date(`${date}T00:00:00`));
+            const isWeekendDate = getEffectiveIsWeekend(date, isWeekend(new Date(`${date}T00:00:00`)), activeWorkdayOverrides);
             if (item.leaveType === 'sick') {
               designerData.sickDays += itemHours;
               designerData.leaveDetails.push({ date, type: 'sick', typeLabel: '事假', hours: itemHours });
@@ -234,12 +250,13 @@ const WorkHours = () => {
     } finally {
       setDataLoading(false);
     }
-  }, [authHeader, currentDate, designers]);
+  }, [authHeader, currentDate, designers, fetchWorkdayOverrides]);
 
   useEffect(() => {
     fetchSettings();
+    fetchWorkdayOverrides();
     fetchDesigners();
-  }, [fetchDesigners, fetchSettings]);
+  }, [fetchDesigners, fetchSettings, fetchWorkdayOverrides]);
 
   useEffect(() => {
     if (!loading && canViewWorkHours) fetchWorkHoursData();
