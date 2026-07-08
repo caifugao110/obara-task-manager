@@ -40,7 +40,8 @@ const securityConfig = {
     environment: process.env.NODE_ENV || 'development'
   },
   database: {
-    path: process.env.DB_PATH || './db.json'
+    path: process.env.DB_PATH || './db.json',
+    sqlitePath: process.env.SQLITE_PATH || './database.sqlite'
   }
 };
 

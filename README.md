@@ -16,7 +16,7 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 |------|------|
 | 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-4+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-6+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) |
 | 后端 | ![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
-| 数据库 | ![JSON](https://img.shields.io/badge/JSON%20File-000000?logo=json&logoColor=white) |
+| 数据库 | ![SQLite](https://img.shields.io/badge/SQLite-07405E?logo=sqlite&logoColor=white) |
 
 ## 浏览器兼容性
 
@@ -486,3 +486,28 @@ obara-task-manager/
 ## License
 
 MIT License
+
+## 数据库迁移到 SQLite
+
+本项目已将数据库从 JSON 文件存储迁移到 SQLite。SQLite 数据库文件默认存储在 `backend/database.sqlite`。
+
+### 迁移旧数据
+
+如果您是从旧版本（使用 JSON 文件作为数据库）升级，可以使用提供的迁移脚本将现有数据迁移到 SQLite：
+
+1.  确保您已安装 Node.js 和 pnpm。
+2.  进入 `backend` 目录：`cd backend`
+3.  安装依赖：`pnpm install`
+4.  运行迁移脚本：`node migrate-to-sqlite.js`
+
+迁移脚本会读取 `backend/db.json`（如果存在）并将其中的用户、设计师、任务和设置数据导入到 SQLite 数据库中。迁移完成后，`db.json` 文件将不再使用。
+
+### 数据库配置
+
+您可以通过修改 `backend/.env` 文件来配置 SQLite 数据库的路径：
+
+```
+SQLITE_PATH=./path/to/your/database.sqlite
+```
+
+如果未设置 `SQLITE_PATH`，则默认使用 `./database.sqlite`。

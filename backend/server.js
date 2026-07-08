@@ -254,7 +254,7 @@ io.on('connection', (socket) => {
 });
 
 
-server.listen(securityConfig.server.port, () => {
+server.listen(securityConfig.server.port, async () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
-  db.initAdmin();
+  await db.initAdmin();
 });

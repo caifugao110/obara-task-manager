@@ -1,213 +1,153 @@
-const fs = require('fs');
+const { Sequelize, DataTypes } = require('sequelize');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const securityConfig = require('./config/security');
 
-const dbPath = path.resolve(__dirname, securityConfig.database.path);
+// 使用 Sequelize 连接 SQLite 数据库
+const dbPath = path.resolve(__dirname, securityConfig.database.sqlitePath || './database.sqlite');
+const sequelize = new Sequelize({
+  dialect: 'sqlite',
+  storage: dbPath,
+  logging: false
+});
 
-let isWriting = false;
-const writeQueue = [];
+// 定义用户模型
+const User = sequelize.define('User', {
+  id: { type: DataTypes.STRING, primaryKey: true },
+  username: { type: DataTypes.STRING, unique: true, allowNull: false },
+  password: { type: DataTypes.STRING, allowNull: false },
+  role: { type: DataTypes.STRING, defaultValue: 'user' },
+  name: { type: DataTypes.STRING },
+  group: { type: DataTypes.STRING, defaultValue: '' },
+  disabled: { type: DataTypes.BOOLEAN, defaultValue: false },
+  forcePasswordChange: { type: DataTypes.BOOLEAN, defaultValue: false }
+});
 
-const safeJsonStringify = (data) => {
-  const seen = new WeakSet();
-  return JSON.stringify(data, (key, value) => {
-    if (typeof value === 'object' && value !== null) {
-      if (seen.has(value)) {
-        return '[Circular Reference]';
-      }
-      seen.add(value);
-    }
-    return value;
-  }, 2);
-};
+// 定义设计师模型
+const Designer = sequelize.define('Designer', {
+  id: { type: DataTypes.STRING, primaryKey: true },
+  name: { type: DataTypes.STRING, allowNull: false },
+  group: { type: DataTypes.STRING },
+  role: { type: DataTypes.STRING }
+});
 
-const processQueue = async () => {
-  if (isWriting || writeQueue.length === 0) return;
-  isWriting = true;
-  const { data, resolve, reject } = writeQueue.shift();
-  try {
-    const jsonString = safeJsonStringify(data);
-    if (jsonString.length > 50 * 1024 * 1024) {
-      console.error('Database file too large (>50MB), aborting write');
-      reject(new Error('Database file too large'));
-      return;
-    }
-    fs.writeFileSync(dbPath, jsonString);
-    resolve();
-  } catch (err) {
-    console.error('Error writing database:', err);
-    reject(err);
-  } finally {
-    isWriting = false;
-    processQueue();
+// 定义任务表模型 (对应之前的 sheet)
+const TaskSheet = sequelize.define('TaskSheet', {
+  id: { type: DataTypes.STRING, primaryKey: true },
+  userId: { type: DataTypes.STRING, allowNull: false },
+  year: { type: DataTypes.INTEGER, allowNull: false },
+  month: { type: DataTypes.INTEGER, allowNull: false },
+  days: { type: DataTypes.JSON, defaultValue: {} } // 存储每日任务明细
+});
+
+// 定义登录日志模型
+const LoginLog = sequelize.define('LoginLog', {
+  id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  userId: { type: DataTypes.STRING },
+  username: { type: DataTypes.STRING },
+  ip: { type: DataTypes.STRING },
+  userAgent: { type: DataTypes.STRING },
+  timestamp: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+});
+
+// 定义设置模型
+const Setting = sequelize.define('Setting', {
+  key: { type: DataTypes.STRING, primaryKey: true },
+  value: { type: DataTypes.JSON }
+});
+
+// 初始化数据库
+const initDb = async () => {
+  await sequelize.sync();
+  
+  // 初始化默认设置
+  const defaultSettings = {
+    leaderboard: { enabled: true, allowAdmins: true, allowViewers: false },
+    workHours: { enabled: true, allowAdmins: true, allowViewers: false },
+    statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
+    systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
+    workdayOverrides: {},
+    system: { 
+      allowGuestView: true, 
+      allowMultiDevice: true, 
+      allowUserDesignPlanColorMark: true, 
+      allowUserEditOwnTaskColor: true 
+    },
+    _migrations: { forcePasswordChangeMigrated: true }
+  };
+
+  for (const [key, value] of Object.entries(defaultSettings)) {
+    const [setting, created] = await Setting.findOrCreate({
+      where: { key },
+      defaults: { value }
+    });
   }
 };
 
-const migrateTasksIfNeeded = (db) => {
-  const tasks = Array.isArray(db.tasks) ? db.tasks : [];
-  const hasOld = tasks.some(t => t && typeof t === 'object' && t.hours && !t.days);
-  if (!hasOld) return { migrated: false, db };
-
-  const sheetMap = new Map();
-
-  for (const t of tasks) {
-    if (!t || typeof t !== 'object') continue;
-
-    if (t.days && typeof t.days === 'object') {
-      const key = `${t.userId}::${t.year}::${t.month}`;
-      const normalized = {
-        id: t.id || `sheet-${t.userId}-${t.year}-${t.month}`,
-        userId: t.userId,
-        month: t.month,
-        year: t.year,
-        days: t.days && typeof t.days === 'object' ? t.days : {}
-      };
-      sheetMap.set(key, normalized);
-      continue;
-    }
-
-    if (!t.userId || !t.month || !t.year || !t.hours || typeof t.hours !== 'object') continue;
-
-    const key = `${t.userId}::${t.year}::${t.month}`;
-    const sheet = sheetMap.get(key) || {
-      id: `sheet-${t.userId}-${t.year}-${t.month}`,
-      userId: t.userId,
-      month: t.month,
-      year: t.year,
-      days: {}
-    };
-
-    for (const [date, rawHours] of Object.entries(t.hours)) {
-      if (!sheet.days[date]) sheet.days[date] = [];
-      const hours = typeof rawHours === 'number' ? rawHours : (parseFloat(rawHours) || 0);
-      sheet.days[date].push({
-        id: `${t.id || 'task'}-${date}`,
-        taskName: t.taskName || '',
-        hours
-      });
-    }
-
-    sheetMap.set(key, sheet);
-  }
-
-  const migratedDb = { ...db, tasks: Array.from(sheetMap.values()) };
-  return { migrated: true, db: migratedDb };
-};
-
-const normalizeSheetDatesIfNeeded = (db) => {
-  const tasks = Array.isArray(db.tasks) ? db.tasks : [];
-  let changed = false;
-
-  const normalizedTasks = tasks.map(t => {
-    if (!t || typeof t !== 'object' || !t.days || typeof t.days !== 'object') return t;
-
-    const nextDays = {};
-    for (const [rawDate, items] of Object.entries(t.days)) {
-      const date = typeof rawDate === 'string' && rawDate.length >= 10 ? rawDate.slice(0, 10) : rawDate;
-      if (date !== rawDate) changed = true;
-
-      const arr = Array.isArray(items) ? items : [];
-      if (!nextDays[date]) nextDays[date] = [];
-      nextDays[date] = nextDays[date].concat(arr);
-    }
-
-    return { ...t, days: nextDays };
-  });
-
-  return { changed, db: changed ? { ...db, tasks: normalizedTasks } : db };
-};
+// 兼容旧代码的 readDb 和 writeDb 函数
+let cachedDb = null;
 
 const readDb = () => {
-  try {
-    if (!fs.existsSync(dbPath)) {
-      const initialDb = {
-        users: [],
-        tasks: [],
-        designers: [],
-        loginLogs: [],
-        settings: {
-          leaderboard: { enabled: true, allowAdmins: true, allowViewers: false },
-          workHours: { enabled: true, allowAdmins: true, allowViewers: false },
-          statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
-          systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
-          workdayOverrides: {},
-          system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true }
-        }
-      };
-      fs.writeFileSync(dbPath, JSON.stringify(initialDb, null, 2));
-      return initialDb;
-    }
-    const data = fs.readFileSync(dbPath, 'utf8');
-    const parsed = JSON.parse(data);
-    if (!parsed.designers) parsed.designers = [];
-    if (!parsed.settings) parsed.settings = {};
-    if (!parsed.settings.leaderboard) parsed.settings.leaderboard = { enabled: true, allowAdmins: true, allowViewers: false };
-    if (!parsed.settings.workHours) {
-      parsed.settings.workHours = parsed.settings.leaderboard
-        ? { ...parsed.settings.leaderboard }
-        : { enabled: true, allowAdmins: true, allowViewers: false };
-    }
-    if (!parsed.settings.statusTracking) {
-      parsed.settings.statusTracking = parsed.settings.workHours
-        ? { ...parsed.settings.workHours }
-        : { enabled: true, allowAdmins: true, allowViewers: false };
-    }
-    if (!parsed.settings.systemSettings) {
-      parsed.settings.systemSettings = { enabled: true, allowAdmins: true, allowViewers: false };
-    }
-    if (!parsed.settings.workdayOverrides || typeof parsed.settings.workdayOverrides !== 'object' || Array.isArray(parsed.settings.workdayOverrides)) {
-      parsed.settings.workdayOverrides = {};
-    }
-    if (!parsed.settings.system) {
-      parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
-    }
-    const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserDesignPlanColorMark');
-    const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserEditOwnTaskColor');
-    const allowOwnDesignPlanColor = hasDesignPlanColorMark || hasEditOwnTaskColor
-      ? Boolean(parsed.settings.system.allowUserDesignPlanColorMark || parsed.settings.system.allowUserEditOwnTaskColor)
-      : true;
-    parsed.settings.system.allowUserDesignPlanColorMark = allowOwnDesignPlanColor;
-    parsed.settings.system.allowUserEditOwnTaskColor = allowOwnDesignPlanColor;
-    if (!parsed.loginLogs) parsed.loginLogs = [];
-    
-    let migratedUsers = false;
-    parsed.users.forEach(u => {
-      if (u.forcePasswordChange === undefined) {
-        u.forcePasswordChange = false;
-        migratedUsers = true;
-      }
-    });
-    
-    if (migratedUsers) {
-      fs.writeFileSync(dbPath, JSON.stringify(parsed, null, 2));
-    }
-    
-    const migratedRes = migrateTasksIfNeeded(parsed);
-    const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
-    if (migratedRes.migrated || normalizedRes.changed) {
-      fs.writeFileSync(dbPath, JSON.stringify(normalizedRes.db, null, 2));
-    }
-    return normalizedRes.db;
-  } catch (err) {
-    console.error('Error reading database:', err);
-    return { users: [], tasks: [], designers: [] };
-  }
+  // 由于旧代码大量使用同步 readDb，我们这里返回一个代理或之前的缓存
+  // 但为了真正的 SQLite 迁移，我们需要重构路由。
+  // 暂时提供一个同步获取缓存的方法，并在初始化时加载
+  return cachedDb;
 };
 
-const writeDb = (data) => {
-  return new Promise((resolve, reject) => {
-    writeQueue.push({ data, resolve, reject });
-    processQueue();
+const refreshCache = async () => {
+  const users = await User.findAll();
+  const tasks = await TaskSheet.findAll();
+  const designers = await Designer.findAll();
+  const loginLogs = await LoginLog.findAll();
+  const settingsRecords = await Setting.findAll();
+  
+  const settings = {};
+  settingsRecords.forEach(r => {
+    settings[r.key] = r.value;
   });
+
+  cachedDb = {
+    users: users.map(u => u.toJSON()),
+    tasks: tasks.map(t => t.toJSON()),
+    designers: designers.map(d => d.toJSON()),
+    loginLogs: loginLogs.map(l => l.toJSON()),
+    settings
+  };
+  return cachedDb;
+};
+
+const writeDb = async (data) => {
+  if (data.users) {
+    for (const u of data.users) {
+      await User.upsert(u);
+    }
+  }
+  if (data.tasks) {
+    for (const t of data.tasks) {
+      await TaskSheet.upsert(t);
+    }
+  }
+  if (data.designers) {
+    for (const d of data.designers) {
+      await Designer.upsert(d);
+    }
+  }
+  if (data.settings) {
+    for (const [key, value] of Object.entries(data.settings)) {
+      await Setting.upsert({ key, value });
+    }
+  }
+  await refreshCache();
 };
 
 const initAdmin = async () => {
-  const db = readDb();
-  const superAdminExists = db.users.find(u => u.username === 'superadmin');
-  if (!superAdminExists) {
+  await initDb();
+  await refreshCache();
+  const superAdmin = await User.findOne({ where: { role: 'superadmin' } });
+  if (!superAdmin) {
     const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
     const hashedPassword = bcrypt.hashSync(defaultPassword, 10);
-    db.users.push({
+    await User.create({
       id: Date.now().toString(),
       username: process.env.DEFAULT_ADMIN_USERNAME || 'superadmin',
       password: hashedPassword,
@@ -216,14 +156,20 @@ const initAdmin = async () => {
       disabled: false,
       forcePasswordChange: true
     });
-    await writeDb(db);
+    await refreshCache();
     console.log(`SuperAdmin account created: ${process.env.DEFAULT_ADMIN_USERNAME || 'superadmin'} / ${defaultPassword}`);
-    console.log('[SECURITY] Default admin password is set. Please change it immediately after logging in.');
   }
 };
 
 module.exports = {
+  sequelize,
+  User,
+  Designer,
+  TaskSheet,
+  LoginLog,
+  Setting,
   readDb,
   writeDb,
-  initAdmin
+  initAdmin,
+  initDb
 };
