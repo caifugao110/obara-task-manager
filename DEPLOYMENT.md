@@ -330,6 +330,7 @@ GITEE_REPO_NAME=obara-task-manager
 - `enabled=true` 时，前端会自动打开 `allowAdmins` 和 `allowViewers`。
 - `allowViewers=true` 时，`allowAdmins` 必须为 `true`。
 - 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于游客/普通用户。
+- 状态追踪页面例外：未登录用户不能进入 `/status-tracking`，`statusTracking.allowViewers` 只表示允许普通用户访问。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问），一般管理员仅可查看数据管理模块的导出功能，不能导入。
 
 ## 备份与恢复
@@ -441,7 +442,7 @@ taskkill /PID <PID> /F
 ### 状态追踪页面无数据
 
 1. 确认已在系统设置中启用状态追踪页面
-2. 确认当前用户角色有权限访问该页面
+2. 确认已登录，且当前用户角色有权限访问该页面
 3. 确认已创建状态追踪记录
 
 ### 数据库文件损坏

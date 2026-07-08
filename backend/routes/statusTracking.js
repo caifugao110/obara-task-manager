@@ -72,7 +72,7 @@ function makeSpecMonthKeys(item) {
   return getItemPlanMonths(item).map(month => makeSpecMonthKey(item.specNumber, month));
 }
 
-router.get('/items', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/items', [authMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
   res.json(items);
@@ -161,7 +161,7 @@ router.delete('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(asyn
   res.json({ success: true });
 }));
 
-router.post('/sync', authMiddleware, asyncHandler(async (req, res) => {
+router.post('/sync', [authMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
   res.json(items);

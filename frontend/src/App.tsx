@@ -146,7 +146,7 @@ const AppRoutes = () => {
       <Route 
         path="/status-tracking" 
         element={
-          <ProtectedRoute allowGuest={guestAllowed}>
+          <ProtectedRoute>
             <StatusTracking />
           </ProtectedRoute>
         } 
