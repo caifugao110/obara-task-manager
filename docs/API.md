@@ -30,7 +30,7 @@ Authorization: Bearer <token>
 | `admin` | 一般管理员 |
 | `user` | 普通用户 |
 
-普通用户登录后可查看主页面，其他权限大体与游客一致。任务报表和工时管理是否可访问由“游客/普通用户”开关控制；状态追踪必须登录后访问，是否允许普通用户进入由状态追踪的 `allowViewers` 控制。
+普通用户登录后可查看主页面。任务报表、工时管理和状态追踪必须登录后访问，是否允许普通用户进入由对应页面的 `allowViewers` 控制。
 
 ## 权限速查
 
@@ -50,7 +50,7 @@ Authorization: Bearer <token>
 
 说明：
 
-- `settings.leaderboard`、`settings.workHours` 控制对应页面是否允许 `admin`、`user` 和游客访问；`settings.statusTracking` 控制 `admin` 和已登录 `user` 访问，未登录游客不能进入状态追踪页面。
+- `settings.leaderboard`、`settings.workHours`、`settings.statusTracking` 控制对应页面是否允许 `admin` 和已登录 `user` 访问，未登录游客不能进入任务报表、工时管理和状态追踪页面。
 - `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户和游客不能进入系统设置。
 - `authMiddleware` 只校验登录态；涉及写入任务、设计人员、状态追踪等接口还会继续校验角色。
 
@@ -800,14 +800,14 @@ Authorization: Bearer <token>
 |------|------|
 | `enabled` | 页面总开关 |
 | `allowAdmins` | 是否允许一般管理员访问 |
-| `allowViewers` | 是否允许游客和普通用户访问；在 `statusTracking` 中仅表示是否允许普通用户访问 |
+| `allowViewers` | 是否允许普通用户访问；未登录游客不能进入任务报表、工时管理、状态追踪和系统设置页面 |
 
 规则：
 
 - `allowViewers=true` 时，后端保存结果会强制 `allowAdmins=true`。
 - 前端主开关关闭时会同时关闭 `allowAdmins` 和 `allowViewers`。
 - 前端主开关打开时会同时打开 `allowAdmins` 和 `allowViewers`。
-- `statusTracking.allowViewers=true` 只允许普通用户访问状态追踪；未登录游客始终不能进入 `/status-tracking`。
+- `leaderboard.allowViewers=true`、`workHours.allowViewers=true`、`statusTracking.allowViewers=true` 只允许普通用户访问对应页面；未登录游客始终不能进入 `/leaderboard`、`/work-hours` 和 `/status-tracking`。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问）。
 
 ### 获取任务报表权限设置

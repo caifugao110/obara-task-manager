@@ -2139,17 +2139,9 @@ const Dashboard = () => {
   const canShowAccessLink = (access: typeof defaultAccessSettings) => {
     if (isSuperAdmin) return true;
     if (!access.enabled) return false;
-    if (!user) return access.allowViewers;
+    if (!user) return false;
     if (user.role === 'admin') return access.allowAdmins;
     if (user.role === 'user') return access.allowViewers;
-    return false;
-  };
-
-  const canShowStatusTrackingLink = () => {
-    if (isSuperAdmin) return true;
-    if (!statusTrackingAccess.enabled || !user) return false;
-    if (user.role === 'admin') return statusTrackingAccess.allowAdmins;
-    if (user.role === 'user') return statusTrackingAccess.allowViewers;
     return false;
   };
 
@@ -2255,7 +2247,7 @@ const Dashboard = () => {
                 <span>工时管理</span>
               </Link>
           )}
-          {canShowStatusTrackingLink() && (
+          {canShowAccessLink(statusTrackingAccess) && (
               <Link
                 to="/status-tracking"
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"

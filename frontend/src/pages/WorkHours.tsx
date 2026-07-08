@@ -90,7 +90,7 @@ const WorkHours = () => {
   const canViewWorkHours = useMemo(() => {
     if (isSuperAdmin) return true;
     if (!settings.enabled) return false;
-    if (!user) return settings.allowViewers;
+    if (!user) return false;
     if (user.role === 'admin' && settings.allowAdmins) return true;
     if (user.role === 'user' && settings.allowViewers) return true;
     return false;
@@ -132,7 +132,7 @@ const WorkHours = () => {
       updated.allowViewers = true;
     }
     if (next.allowAdmins === false && updated.allowViewers) {
-      addToast('游客/普通用户权限开启时，不能关闭一般管理员权限', 'error');
+      addToast('普通用户权限开启时，不能关闭一般管理员权限', 'error');
       return;
     }
     if (updated.allowViewers) updated.allowAdmins = true;
@@ -654,7 +654,7 @@ const WorkHours = () => {
               {[
                 { label: '启用工时管理', detail: 'Global Toggle', key: 'enabled' as const },
                 { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-                { label: '游客/普通用户', detail: 'Guest Access', key: 'allowViewers' as const }
+                { label: '普通用户', detail: 'User Access', key: 'allowViewers' as const }
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                   <div>

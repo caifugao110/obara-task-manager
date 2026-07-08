@@ -217,8 +217,8 @@ const Leaderboard = () => {
   const canViewLeaderboard = useMemo(() => {
     if (isSuperAdmin) return true;
     if (!leaderboardSettings.enabled) return false;
-    
-    if (!user) return leaderboardSettings.allowViewers;
+
+    if (!user) return false;
 
     const role = user.role;
     if (role === 'admin' && leaderboardSettings.allowAdmins) return true;
@@ -271,7 +271,7 @@ const Leaderboard = () => {
       updated.allowViewers = true;
     }
     if (next.allowAdmins === false && updated.allowViewers) {
-      addToast('游客/普通用户权限开启时，不能关闭一般管理员权限', 'error');
+      addToast('普通用户权限开启时，不能关闭一般管理员权限', 'error');
       return;
     }
     if (updated.allowViewers) updated.allowAdmins = true;
@@ -791,7 +791,7 @@ const Leaderboard = () => {
               {[
                 { label: '启用任务报表', detail: 'Global Toggle', key: 'enabled' as const },
                 { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-                { label: '游客/普通用户', detail: 'Guest Access', key: 'allowViewers' as const }
+                { label: '普通用户', detail: 'User Access', key: 'allowViewers' as const }
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                   <div>

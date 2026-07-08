@@ -329,8 +329,8 @@ GITEE_REPO_NAME=obara-task-manager
 - `enabled=false` 时，前端会自动关闭 `allowAdmins` 和 `allowViewers`。
 - `enabled=true` 时，前端会自动打开 `allowAdmins` 和 `allowViewers`。
 - `allowViewers=true` 时，`allowAdmins` 必须为 `true`。
-- 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于游客/普通用户。
-- 状态追踪页面例外：未登录用户不能进入 `/status-tracking`，`statusTracking.allowViewers` 只表示允许普通用户访问。
+- 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于普通用户。
+- 任务报表、工时管理、状态追踪页面均要求登录；`leaderboard.allowViewers`、`workHours.allowViewers`、`statusTracking.allowViewers` 只表示允许普通用户访问。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问），一般管理员仅可查看数据管理模块的导出功能，不能导入。
 
 ## 备份与恢复

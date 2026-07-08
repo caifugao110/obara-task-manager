@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import axios from 'axios';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import ChangePassword from './pages/ChangePassword';
@@ -74,15 +73,6 @@ const ChangePasswordRoute = ({
 
 const AppRoutes = () => {
   const { isAuthenticated } = useAuth();
-  const [allowGuestView, setAllowGuestView] = useState(true);
-
-  useEffect(() => {
-    axios.get('/api/system/settings')
-      .then(res => setAllowGuestView(res.data.allowGuestView ?? true))
-      .catch(() => {});
-  }, []);
-
-  const guestAllowed = allowGuestView;
 
   return (
     <Routes>
@@ -130,7 +120,7 @@ const AppRoutes = () => {
       <Route 
         path="/leaderboard" 
         element={
-          <ProtectedRoute allowGuest={guestAllowed}>
+          <ProtectedRoute>
             <Leaderboard />
           </ProtectedRoute>
         } 
@@ -138,7 +128,7 @@ const AppRoutes = () => {
       <Route 
         path="/work-hours" 
         element={
-          <ProtectedRoute allowGuest={guestAllowed}>
+          <ProtectedRoute>
             <WorkHours />
           </ProtectedRoute>
         } 
