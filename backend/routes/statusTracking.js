@@ -295,6 +295,21 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
       if (col.key === 'productionPlanMonth') {
         return getItemPlanMonths(item).join(', ');
       }
+      if (col.key === 'undrawnVarieties') {
+        return Math.max(0, (item.confirmedVarieties || 0) - (item.drawnVarieties || 0));
+      }
+      if (col.key === 'undrawnQuantity') {
+        return Math.max(0, (item.confirmedQuantity || 0) - (item.shippedCount || 0));
+      }
+      if (col.key === 'unconfirmedQuantity') {
+        return Math.max(0, (parseInt(item.quantity) || 0) - (item.confirmedQuantity || 0));
+      }
+      if (col.key === 'unconfirmedCount') {
+        return (item.confirmedQuantity || 0) < (parseInt(item.quantity) || 0) ? '是' : '';
+      }
+      if (col.key === 'designDeliveryDays') {
+        return item.designDeliveryDays >= 1 ? item.designDeliveryDays : '';
+      }
       return item[col.key] || '';
     });
   });

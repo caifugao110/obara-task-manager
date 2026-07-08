@@ -558,7 +558,19 @@ const StatusTracking = () => {
     let updatedItem: StatusItem | null = null;
     const updated = allItems.map(item => {
       if (item.id === id) {
-        updatedItem = { ...item, [field]: value };
+        const tempItem = { ...item, [field]: value };
+        const confirmedVarieties = tempItem.confirmedVarieties || 0;
+        const drawnVarieties = tempItem.drawnVarieties || 0;
+        const confirmedQuantity = tempItem.confirmedQuantity || 0;
+        const shippedCount = tempItem.shippedCount || 0;
+        const quantity = parseInt(tempItem.quantity || '0', 10) || 0;
+        
+        updatedItem = {
+          ...tempItem,
+          undrawnVarieties: Math.max(0, confirmedVarieties - drawnVarieties),
+          undrawnQuantity: Math.max(0, confirmedQuantity - shippedCount),
+          unconfirmedQuantity: Math.max(0, quantity - confirmedQuantity)
+        };
         return updatedItem;
       }
       return item;
@@ -598,7 +610,19 @@ const StatusTracking = () => {
     let updatedItem: StatusItem | null = null;
     const updated = allItems.map(item => {
       if (item.id === id) {
-        updatedItem = { ...item, ...updates };
+        const tempItem = { ...item, ...updates };
+        const confirmedVarieties = tempItem.confirmedVarieties || 0;
+        const drawnVarieties = tempItem.drawnVarieties || 0;
+        const confirmedQuantity = tempItem.confirmedQuantity || 0;
+        const shippedCount = tempItem.shippedCount || 0;
+        const quantity = parseInt(tempItem.quantity || '0', 10) || 0;
+        
+        updatedItem = {
+          ...tempItem,
+          undrawnVarieties: Math.max(0, confirmedVarieties - drawnVarieties),
+          undrawnQuantity: Math.max(0, confirmedQuantity - shippedCount),
+          unconfirmedQuantity: Math.max(0, quantity - confirmedQuantity)
+        };
         return updatedItem;
       }
       return item;
@@ -1226,13 +1250,13 @@ const StatusTracking = () => {
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
                     <VerticalHeader text="下图种数" />
                   </th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
+                  <th className="px-2 py-1.5 text-center border-r border-white bg-teal-400" rowSpan={2}>
                     <VerticalHeader text="未下种数" />
                   </th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
+                  <th className="px-2 py-1.5 text-center border-r border-white bg-teal-400" rowSpan={2}>
                     <VerticalHeader text="未下数量" />
                   </th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
+                  <th className="px-2 py-1.5 text-center border-r border-white bg-teal-400" rowSpan={2}>
                     <VerticalHeader text="未确认数" />
                   </th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
@@ -1338,14 +1362,8 @@ const StatusTracking = () => {
                             className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
-                          <input
-                            type="text"
-                            value={item.unconfirmedCount || ''}
-                            onChange={(e) => updateField(item.id, 'unconfirmedCount', parseInt(validateNumberInput(e.target.value)) || 0)}
-                            disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
+                        <td className="px-1 py-2 border-b border-gray-200 text-center font-bold">
+                          {(item.confirmedQuantity || 0) < (parseInt(item.quantity) || 0) ? '是' : ''}
                         </td>
                         <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <input
@@ -1412,37 +1430,34 @@ const StatusTracking = () => {
                             className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
-                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
+                        {(() => {
+                          const val1 = (item.confirmedVarieties || 0) - (item.drawnVarieties || 0);
+                          return (
+                            <td className={`px-1 py-2 border-b border-gray-200 text-center overflow-hidden ${val1 !== 0 ? 'font-bold text-red-600 bg-red-100' : ''}`}>
+                              {val1}
+                            </td>
+                          );
+                        })()}
+                        {(() => {
+                          const val2 = (item.confirmedQuantity || 0) - (item.shippedCount || 0);
+                          return (
+                            <td className={`px-1 py-2 border-b border-gray-200 text-center overflow-hidden ${val2 !== 0 ? 'font-bold text-red-600 bg-red-100' : ''}`}>
+                              {val2}
+                            </td>
+                          );
+                        })()}
+                        {(() => {
+                          const val3 = (parseInt(item.quantity) || 0) - (item.confirmedQuantity || 0);
+                          return (
+                            <td className={`px-1 py-2 border-b border-gray-200 text-center overflow-hidden ${val3 !== 0 ? 'font-bold text-red-600 bg-red-100' : ''}`}>
+                              {val3}
+                            </td>
+                          );
+                        })()}
+                        <td className={`px-1 py-2 border-b border-gray-200 text-center font-bold overflow-hidden ${item.designDeliveryDays <= 7 && item.designDeliveryDays >= 1 ? 'text-red-700' : item.designDeliveryDays <= 14 && item.designDeliveryDays >= 1 ? 'text-yellow-700' : item.designDeliveryDays >= 1 ? 'text-green-700' : ''}`}>
                           <input
                             type="text"
-                            value={item.undrawnVarieties || ''}
-                            onChange={(e) => updateField(item.id, 'undrawnVarieties', parseInt(validateNumberInput(e.target.value)) || 0)}
-                            disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
-                        </td>
-                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
-                          <input
-                            type="text"
-                            value={item.undrawnQuantity || ''}
-                            onChange={(e) => updateField(item.id, 'undrawnQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
-                            disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
-                        </td>
-                        <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
-                          <input
-                            type="text"
-                            value={item.unconfirmedQuantity || ''}
-                            onChange={(e) => updateField(item.id, 'unconfirmedQuantity', parseInt(validateNumberInput(e.target.value)) || 0)}
-                            disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
-                        </td>
-                        <td className={`px-1 py-2 border-b border-gray-200 text-center font-bold overflow-hidden ${item.designDeliveryDays <= 7 ? 'text-red-700' : item.designDeliveryDays <= 14 ? 'text-yellow-700' : 'text-green-700'}`}>
-                          <input
-                            type="text"
-                            value={item.designDeliveryDays || ''}
+                            value={item.designDeliveryDays >= 1 ? item.designDeliveryDays : ''}
                             onChange={(e) => updateField(item.id, 'designDeliveryDays', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked || !isAdmin}
                             className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
