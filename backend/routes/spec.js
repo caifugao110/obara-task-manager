@@ -8,6 +8,40 @@ const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 let PDFParse = null;
 async function getPdfParse() {
   if (!PDFParse) {
+    if (typeof DOMMatrix === 'undefined') {
+      global.DOMMatrix = class {
+        constructor(init) {
+          this.m11 = 1; this.m12 = 0; this.m21 = 0; this.m22 = 1; this.m41 = 0; this.m42 = 0;
+          if (init && typeof init === 'object' && 'm11' in init) {
+            Object.assign(this, init);
+          }
+        }
+        multiply(other) { return this; }
+        transformPoint(point) { return point; }
+        inverse() { return this; }
+      };
+    }
+    if (typeof ImageData === 'undefined') {
+      global.ImageData = class {
+        constructor(data, width, height) {
+          this.data = data; this.width = width; this.height = height;
+        }
+      };
+    }
+    if (typeof Path2D === 'undefined') {
+      global.Path2D = class {
+        constructor() {}
+        moveTo() {}
+        lineTo() {}
+        arc() {}
+        rect() {}
+        closePath() {}
+        addPath() {}
+      };
+    }
+    if (typeof process.getBuiltinModule === 'undefined') {
+      process.getBuiltinModule = () => ({});
+    }
     const module = require('pdf-parse');
     PDFParse = module.PDFParse;
   }
@@ -19,13 +53,13 @@ var SPEC_SHARE_PATH_BS = '\\\\192.168.160.6\\仕样书$\\';
 
 function isPathSafe(specNumber) {
   if (!specNumber || typeof specNumber !== 'string') return false;
-  
+
   const normalized = specNumber.normalize('NFC');
-  
+
   if (/\.{2}/.test(normalized)) return false;
-  
+
   if (/[\\\/:]/.test(normalized)) return false;
-  
+
   const encodedPathPatterns = [
     /%2e%2e/i,
     /%2e\./i,
@@ -38,31 +72,31 @@ function isPathSafe(specNumber) {
   for (const pattern of encodedPathPatterns) {
     if (pattern.test(normalized)) return false;
   }
-  
+
   if (!/^\d+$/.test(normalized)) return false;
-  
+
   return true;
 }
 
 function makePath(specNumber, suffix) {
   if (!isPathSafe(specNumber)) return null;
-  
+
   if (specNumber.length > 20) return null;
-  
+
   var basePath1 = path.normalize(SPEC_SHARE_PATH);
   var basePath2 = path.normalize(SPEC_SHARE_PATH_BS);
-  
+
   var fp = path.normalize(basePath1 + specNumber + suffix);
   var bp = path.normalize(basePath2 + specNumber + suffix);
-  
+
   if (!fp.startsWith(basePath1) && !fp.startsWith(basePath1.replace(/\/$/, ''))) {
     return null;
   }
-  
+
   if (!bp.startsWith(basePath2) && !bp.startsWith(basePath2.replace(/\\$/, ''))) {
     return null;
   }
-  
+
   if (fs2.existsSync(fp)) return fp;
   if (fs2.existsSync(bp)) return bp;
   return null;
@@ -266,7 +300,7 @@ async function extractSpecInfoFromPdf(p) {
         if (dateQtyLineIndex >= 1) {
           var prevLine = dataLines[dateQtyLineIndex - 1].trim();
           var dateQtyLine = dataLines[dateQtyLineIndex].trim();
-          
+
           if (!prevLine.includes('')) {
             if (/^\d{11}/.test(dateQtyLine)) {
               if (dateQtyLineIndex >= 2) {
@@ -283,23 +317,23 @@ async function extractSpecInfoFromPdf(p) {
 
         var finalClientCandidates = [];
         var salesPersonCandidates = [];
-        
+
         if (dateQtyLineIndex >= 0) {
           for (var k = dateQtyLineIndex + 1; k < dataLines.length; k++) {
             var line = dataLines[k].trim();
-            
-            if (line.includes('总图号') || line.includes('总审核') || line.includes('总品号') || 
+
+            if (line.includes('总图号') || line.includes('总审核') || line.includes('总品号') ||
                 line.includes('总工时') || line.includes('总设计类型') || line.includes('控制2设计') || line.includes('控制1设计')) {
               continue;
             }
-            
+
             if (line.includes('设计') || line.includes('项目')) {
               if (!info.projectName) {
                 info.projectName = line;
               }
               continue;
             }
-            
+
             var parts = line.split(/\s{2,}|\t/).filter(p => p.trim());
             for (var p = 0; p < parts.length; p++) {
               var part = parts[p].trim();
@@ -317,16 +351,16 @@ async function extractSpecInfoFromPdf(p) {
         if (finalClientCandidates.length > 0) {
           info.finalClient = finalClientCandidates[0].text;
         }
-        
+
         if (salesPersonCandidates.length > 0) {
           info.salesPerson = salesPersonCandidates[salesPersonCandidates.length - 1].text;
         }
-        
+
         if (!info.finalClient && salesPersonCandidates.length >= 2) {
           info.finalClient = salesPersonCandidates[0].text;
           info.salesPerson = salesPersonCandidates[salesPersonCandidates.length - 1].text;
         }
-        
+
         if (info.salesPerson) {
           info.salesPerson = info.salesPerson.replace(/^[A-Za-z]+\s*/, '').trim();
         }
@@ -419,15 +453,15 @@ router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(as
     if (!ok) return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
     var pdf = findLatestSpecPdf(n);
     if (!pdf) return res.json({success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'});
-    
+
     var buf = fs2.readFileSync(pdf);
-    var ParseClass = require('pdf-parse/lib/pdf-parse.js');
+    var ParseClass = await getPdfParse();
     var pdfParser = new ParseClass({data: buf});
     var textResult = await pdfParser.getText();
     var t = (textResult && textResult.text) || '';
-    
+
     var lines = t.split('\n').map((l, idx) => ({line: idx + 1, text: l.trim()})).filter(l => l.text);
-    
+
     return res.json({success: true, lines: lines, rawText: t});
   } catch(e) {
     return res.json({success: false, message: '获取原始文本失败: ' + e.message});
