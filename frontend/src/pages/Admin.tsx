@@ -182,7 +182,12 @@ const initialLoginUsers = [
   { username: 'zhangyz', password: 'nj.zhangyz', name: '张艳珍', role: 'user' },
   { username: 'lincx', password: 'nj.lincx', name: '林慈贤', role: 'user' },
   { username: 'wuj', password: 'nj.wuj', name: '吴健', role: 'user' },
-  { username: 'zhudd', password: 'nj.zhudd', name: '朱栋栋', role: 'user' }
+  { username: 'zhudd', password: 'nj.zhudd', name: '朱栋栋', role: 'user' },
+  { username: 'zhangj', password: 'nj.zhangj', name: '张杰', role: 'admin' },
+  { username: 'zhangzw', password: 'nj.zhangzw', name: '张祖旺', role: 'admin' },
+  { username: 'geh', password: 'nj.geh', name: '葛慧', role: 'user' },
+  { username: 'yanxx', password: 'nj.yanxx', name: '严新星', role: 'user' },
+  { username: 'chenhd', password: 'nj.chenhd', name: '陈浩东', role: 'user' }
 ] as const;
 
 const Admin = () => {
