@@ -10,6 +10,7 @@ const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
 
 const statusTrackingItemSchema = Joi.object({
+  id: Joi.string().allow(''),
   factory: Joi.string().allow(''),
   clientName: Joi.string().allow(''),
   specNumber: Joi.string().allow(''),
@@ -28,10 +29,18 @@ const statusTrackingItemSchema = Joi.object({
   drawnVarieties: Joi.number().integer().min(0).allow(null),
   undrawnVarieties: Joi.number().integer().min(0).allow(null),
   undrawnQuantity: Joi.number().integer().min(0).allow(null),
+  unconfirmedQuantity: Joi.number().integer().min(0).allow(null),
   designDeliveryDays: Joi.number().integer().min(0).allow(null),
   salesPerson: Joi.string().allow(''),
-  leader: Joi.string().allow('')
+  leader: Joi.string().allow(''),
+  createdAt: Joi.string().allow(''),
+  updatedAt: Joi.string().allow('')
 });
+
+function getItemPayload(value) {
+  const { id, createdAt, updatedAt, ...payload } = value;
+  return payload;
+}
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -73,16 +82,17 @@ router.post('/items', [authMiddleware, adminMiddleware], asyncHandler(async (req
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
   
-  const { error, value } = statusTrackingItemSchema.validate(req.body);
+  const { error, value } = statusTrackingItemSchema.validate(req.body, { stripUnknown: true });
   if (error) {
     return res.status(400).json({ message: '数据验证失败', details: error.details.map(d => d.message) });
   }
   
+  const payload = getItemPayload(value);
   const newItem = {
+    ...payload,
     id: Date.now().toString(),
-    ...value,
-    productionPlanMonth: value.productionPlanMonth || getCurrentMonthValue(),
-    productionPlanMonths: value.productionPlanMonths || [value.productionPlanMonth || getCurrentMonthValue()],
+    productionPlanMonth: payload.productionPlanMonth || getCurrentMonthValue(),
+    productionPlanMonths: payload.productionPlanMonths || [payload.productionPlanMonth || getCurrentMonthValue()],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -107,16 +117,17 @@ router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (
     return res.status(404).json({ message: '记录未找到' });
   }
   
-  const { error, value } = statusTrackingItemSchema.validate(req.body);
+  const { error, value } = statusTrackingItemSchema.validate(req.body, { stripUnknown: true });
   if (error) {
     return res.status(400).json({ message: '数据验证失败', details: error.details.map(d => d.message) });
   }
   
+  const payload = getItemPayload(value);
   data.statusTrackingItems[index] = {
     ...data.statusTrackingItems[index],
-    ...value,
-    productionPlanMonth: value.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
-    productionPlanMonths: value.productionPlanMonths || getItemPlanMonths(data.statusTrackingItems[index]),
+    ...payload,
+    productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
+    productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(data.statusTrackingItems[index]),
     updatedAt: new Date().toISOString()
   };
   
@@ -168,30 +179,34 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
   const existingIds = new Set(data.statusTrackingItems.map(item => item.id));
   
   for (const item of items) {
-    const { error, value } = statusTrackingItemSchema.validate(item);
+    const { error, value } = statusTrackingItemSchema.validate(item, { stripUnknown: true });
     if (error) {
       return res.status(400).json({ message: '数据验证失败', details: error.details.map(d => d.message) });
     }
+    const payload = getItemPayload(value);
+    const itemId = value.id || item.id || Date.now().toString() + Math.random().toString(36).slice(2, 9);
     
-    if (existingIds.has(item.id)) {
-      const index = data.statusTrackingItems.findIndex(i => i.id === item.id);
+    if (existingIds.has(itemId)) {
+      const index = data.statusTrackingItems.findIndex(i => i.id === itemId);
       if (index !== -1) {
         data.statusTrackingItems[index] = {
           ...data.statusTrackingItems[index],
-          ...value,
-          productionPlanMonth: value.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
-          productionPlanMonths: value.productionPlanMonths || getItemPlanMonths(value),
+          ...payload,
+          productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
+          productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(payload),
           updatedAt: new Date().toISOString()
         };
       }
     } else {
       data.statusTrackingItems.push({
-        ...value,
-        productionPlanMonth: value.productionPlanMonth || getItemPlanMonth(value) || getCurrentMonthValue(),
-        productionPlanMonths: value.productionPlanMonths || getItemPlanMonths(value),
+        ...payload,
+        id: itemId,
+        productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(payload) || getCurrentMonthValue(),
+        productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(payload),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       });
+      existingIds.add(itemId);
     }
   }
 

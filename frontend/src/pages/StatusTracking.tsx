@@ -386,9 +386,15 @@ const StatusTracking = () => {
   };
 
   const loadItems = useCallback(async () => {
+    if (!token) {
+      setAllItems([]);
+      return;
+    }
+
     try {
-      const res = await axios.get('/api/status-tracking/items');
-      if (res.data && res.data.length > 0) {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get('/api/status-tracking/items', authHeader);
+      if (Array.isArray(res.data)) {
         setAllItems(res.data);
         localStorage.setItem('statusTrackingItems', JSON.stringify(res.data));
       }
@@ -403,22 +409,36 @@ const StatusTracking = () => {
         }
       }
     }
-  }, []);
+  }, [token]);
 
   const saveItems = useCallback((newItems: StatusItem[]) => {
     localStorage.setItem('statusTrackingItems', JSON.stringify(newItems));
     setAllItems(newItems);
   }, []);
 
-  const syncItemsToServer = useCallback(async (items: StatusItem[]) => {
-    if (!token || !isAdmin) return;
-    try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      await axios.post('/api/status-tracking/items/bulk', items, authHeader);
-    } catch (err) {
-      console.error('Error syncing items to server:', err);
+  const createItemOnServer = useCallback(async (item: StatusItem) => {
+    if (!token || !isAdmin) {
+      throw new Error('Not authorized');
     }
+    const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+    const res = await axios.post('/api/status-tracking/items', item, authHeader);
+    return res.data as StatusItem;
   }, [token, isAdmin]);
+
+  const updateItemOnServer = useCallback(async (item: StatusItem) => {
+    if (!token || !isAdmin) {
+      throw new Error('Not authorized');
+    }
+    const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+    const res = await axios.put(`/api/status-tracking/items/${item.id}`, item, authHeader);
+    return res.data as StatusItem;
+  }, [token, isAdmin]);
+
+  const handlePersistError = useCallback((err: unknown) => {
+    console.error('Error syncing item to server:', err);
+    addToast('保存到服务器失败，已重新加载服务器数据', 'error');
+    loadItems();
+  }, [loadItems]);
 
   const addItem = useCallback(async () => {
     if (!isAdmin) {
@@ -488,9 +508,9 @@ const StatusTracking = () => {
         unconfirmedQuantity: 0
       };
 
-      const updated = [...allItems, newItem];
+      const savedItem = await createItemOnServer(newItem);
+      const updated = [...allItems, savedItem];
       saveItems(updated);
-      syncItemsToServer(updated);
 
       if (fetchError) {
         addToast(`已添加记录，但未找到仕样号信息，请手动编辑客户、数量、纳期等字段`, 'success');
@@ -509,7 +529,7 @@ const StatusTracking = () => {
     } finally {
       setLoading(false);
     }
-  }, [specNumberInput, allItems, token, saveItems, syncItemsToServer, leaderRules, currentMonth]);
+  }, [specNumberInput, allItems, token, saveItems, createItemOnServer, leaderRules, currentMonth]);
 
   const updateField = useCallback((id: string, field: keyof StatusItem, value: any) => {
     if (!isAdmin) {
@@ -535,15 +555,19 @@ const StatusTracking = () => {
         return;
       }
     }
+    let updatedItem: StatusItem | null = null;
     const updated = allItems.map(item => {
       if (item.id === id) {
-        return { ...item, [field]: value };
+        updatedItem = { ...item, [field]: value };
+        return updatedItem;
       }
       return item;
     });
     saveItems(updated);
-    syncItemsToServer(updated);
-  }, [allItems, saveItems, syncItemsToServer, isOffline, isAdmin]);
+    if (updatedItem) {
+      updateItemOnServer(updatedItem).catch(handlePersistError);
+    }
+  }, [allItems, saveItems, updateItemOnServer, handlePersistError, isOffline, isAdmin]);
 
   const toggleProductionPlanMonth = useCallback((id: string, month: string) => {
     const targetItem = allItems.find(item => item.id === id);
@@ -571,15 +595,19 @@ const StatusTracking = () => {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
+    let updatedItem: StatusItem | null = null;
     const updated = allItems.map(item => {
       if (item.id === id) {
-        return { ...item, ...updates };
+        updatedItem = { ...item, ...updates };
+        return updatedItem;
       }
       return item;
     });
     saveItems(updated);
-    syncItemsToServer(updated);
-  }, [allItems, saveItems, syncItemsToServer, isOffline, isAdmin]);
+    if (updatedItem) {
+      updateItemOnServer(updatedItem).catch(handlePersistError);
+    }
+  }, [allItems, saveItems, updateItemOnServer, handlePersistError, isOffline, isAdmin]);
 
   const deleteItem = useCallback(async (id: string) => {
     if (!isAdmin) {
@@ -593,17 +621,24 @@ const StatusTracking = () => {
     const updated = allItems.filter(item => item.id !== id);
     saveItems(updated);
     
-    if (token) {
-      try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        await axios.delete(`/api/status-tracking/items/${id}`, authHeader);
-      } catch (err) {
-        console.error('Error deleting item:', err);
-      }
+    if (!token) {
+      addToast('删除服务器记录失败，已重新加载服务器数据', 'error');
+      loadItems();
+      return;
+    }
+
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.delete(`/api/status-tracking/items/${id}`, authHeader);
+    } catch (err) {
+      console.error('Error deleting item:', err);
+      addToast('删除服务器记录失败，已重新加载服务器数据', 'error');
+      loadItems();
+      return;
     }
     
     addToast('记录已删除', 'success');
-  }, [allItems, token, isAdmin, saveItems, isOffline]);
+  }, [allItems, token, isAdmin, saveItems, isOffline, loadItems]);
 
   const updateItemInfo = useCallback(async (id: string) => {
     if (!isAdmin) {
@@ -634,9 +669,10 @@ const StatusTracking = () => {
       const designDeliveryDays = specInfo.deliveryDate ? calculateDesignDeliveryDays(specInfo.deliveryDate) : 0;
       const leader = specInfo.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : item.leader;
 
+      let updatedItem: StatusItem | null = null;
       const updated = allItems.map(i => {
         if (i.id === id) {
-          return {
+          updatedItem = {
             ...i,
             clientName: specInfo.clientName || i.clientName,
             quantity: specInfo.quantity || i.quantity,
@@ -645,12 +681,15 @@ const StatusTracking = () => {
             salesPerson: specInfo.salesPerson || i.salesPerson,
             leader
           };
+          return updatedItem;
         }
         return i;
       });
 
       saveItems(updated);
-      syncItemsToServer(updated);
+      if (updatedItem) {
+        await updateItemOnServer(updatedItem);
+      }
       addToast('信息已更新', 'success');
     } catch (err: any) {
       if (axios.isAxiosError(err) && err.code === 'ECONNABORTED') {
@@ -661,7 +700,7 @@ const StatusTracking = () => {
     } finally {
       setLoading(false);
     }
-  }, [allItems, token, saveItems, syncItemsToServer, leaderRules, isOffline, isAdmin]);
+  }, [allItems, token, saveItems, updateItemOnServer, leaderRules, isOffline, isAdmin]);
 
   const startEditing = useCallback((itemId: string) => {
     if (!isAdmin) {
@@ -817,18 +856,29 @@ const StatusTracking = () => {
         setAllItems(prev => {
           const exists = prev.find(i => i.id === data.item.id);
           if (exists) return prev;
-          return [...prev, data.item];
+          const next = [...prev, data.item];
+          localStorage.setItem('statusTrackingItems', JSON.stringify(next));
+          return next;
         });
       } else if (data.action === 'update') {
-        setAllItems(prev => prev.map(i => i.id === data.item.id ? data.item : i));
+        setAllItems(prev => {
+          const next = prev.map(i => i.id === data.item.id ? data.item : i);
+          localStorage.setItem('statusTrackingItems', JSON.stringify(next));
+          return next;
+        });
       } else if (data.action === 'delete') {
-        setAllItems(prev => prev.filter(i => i.id !== data.itemId));
+        setAllItems(prev => {
+          const next = prev.filter(i => i.id !== data.itemId);
+          localStorage.setItem('statusTrackingItems', JSON.stringify(next));
+          return next;
+        });
       }
     });
 
     newSocket.on('status_tracking_bulk', async (dataItems) => {
       console.log('Status tracking bulk sync:', dataItems);
       setAllItems(dataItems);
+      localStorage.setItem('statusTrackingItems', JSON.stringify(dataItems));
     });
 
     newSocket.on('status_tracking_edit_start', (data) => {
