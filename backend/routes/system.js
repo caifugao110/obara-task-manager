@@ -1027,7 +1027,30 @@ router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], async
 }));
 
 router.post('/maintenance/export-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  res.json({ message: '任务管理数据已导出', taskExport: maintenance.exportTaskData({ type: 'manual-task-export' }) });
+  maintenance.exportTaskData({ type: 'manual-task-export' });
+
+  const data = db.readDb();
+  const tasks = data.tasks || [];
+  const designers = data.designers || [];
+  const exportSheets = tasks.filter(sheetHasData);
+
+  if (exportSheets.length === 0) {
+    return res.status(404).json({ message: '没有可导出的数据' });
+  }
+
+  const monthGroups = new Map();
+  exportSheets.forEach(sheet => {
+    const key = `${sheet.year}-${String(sheet.month).padStart(2, '0')}`;
+    if (!monthGroups.has(key)) monthGroups.set(key, []);
+    monthGroups.get(key).push(sheet);
+  });
+
+  const xml = buildExcelXml(monthGroups, designers, normalizeWorkdayOverrides(data.settings?.workdayOverrides));
+  const buffer = Buffer.from(xml, 'utf8');
+  const filename = `obara-tasks-${formatDownloadTimestamp()}.xls`;
+  res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
 }));
 
 router.post('/maintenance/cleanup-backups', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {

@@ -25,6 +25,10 @@ backend/db.json
 backend/*.data.json
 *.data.json
 
+# Backup files
+backend/backups/
+backups/
+
 # Logs
 logs/
 *.log

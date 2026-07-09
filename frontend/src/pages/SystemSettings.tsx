@@ -336,9 +336,9 @@ const SystemSettings = () => {
       const res = await axios.put('/api/system/maintenance', maintenanceSettings, authHeader);
       setMaintenanceStatus(res.data);
       setMaintenanceSettings({ ...defaultMaintenanceSettings, ...res.data.settings });
-      addToast('??????????', 'success');
+      addToast('数据库维护设置已保存', 'success');
     } catch (err: any) {
-      addToast(err.response?.data?.message || '???????????', 'error');
+      addToast(err.response?.data?.message || '数据库维护设置保存失败', 'error');
     } finally {
       setMaintenanceSaving(false);
     }
@@ -352,7 +352,44 @@ const SystemSettings = () => {
       addToast(successMessage, 'success');
       await fetchMaintenanceStatus();
     } catch (err: any) {
-      addToast(err.response?.data?.message || '??????', 'error');
+      addToast(err.response?.data?.message || '操作失败', 'error');
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const handleManualTaskExport = async () => {
+    if (!token) return;
+    setMaintenanceLoading(true);
+    try {
+      const res = await axios.post('/api/system/maintenance/export-tasks', {}, {
+        ...authHeader,
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `obara-tasks-${format(new Date(), 'yyyy-MM-dd-HHmmss')}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      addToast('任务管理数据已导出', 'success');
+      await fetchMaintenanceStatus();
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        addToast('没有可导出的数据', 'error');
+      } else if (err.response?.data instanceof Blob) {
+        try {
+          const errorText = await err.response.data.text();
+          const errorData = JSON.parse(errorText);
+          addToast(errorData.message || '导出失败', 'error');
+        } catch {
+          addToast('导出失败', 'error');
+        }
+      } else {
+        addToast(err.response?.data?.message || '导出失败', 'error');
+      }
     } finally {
       setMaintenanceLoading(false);
     }
@@ -788,7 +825,7 @@ const SystemSettings = () => {
                 <h3 className="font-bold text-gray-800 mb-4">手动维护</h3>
                 <div className="grid grid-cols-1 gap-3">
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/backup', '数据库备份已完成')} disabled={maintenanceLoading} className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即备份数据库</button>
-                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/export-tasks', '任务管理数据已导出')} disabled={maintenanceLoading} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
+                  <button onClick={handleManualTaskExport} disabled={maintenanceLoading} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/cleanup-backups', '过期备份已清理')} disabled={maintenanceLoading} className="px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清理过期备份</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/yearly-cleanup', '年度任务清理检测已完成', { force: true })} disabled={maintenanceLoading} className="px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition">执行年度清理检测</button>
                 </div>
