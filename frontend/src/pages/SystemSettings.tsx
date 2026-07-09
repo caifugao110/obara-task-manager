@@ -172,7 +172,7 @@ const SystemSettings = () => {
       setMaintenanceStatus(res.data);
       setMaintenanceSettings({ ...defaultMaintenanceSettings, ...res.data.settings });
     } catch {
-      addToast('???????????', 'error');
+      addToast('\u6743\u9650\u8bbe\u7f6e\u52a0\u8f7d\u5931\u8d25', 'error');
     } finally {
       setMaintenanceLoading(false);
     }
@@ -359,7 +359,7 @@ const SystemSettings = () => {
   };
 
   const handleManualTaskExport = async () => {
-    await runMaintenanceAction('/api/system/maintenance/export-tasks', '???????');
+    await runMaintenanceAction('/api/system/maintenance/export-tasks', '\u4efb\u52a1\u8868\u683c\u5df2\u5bfc\u51fa');
   };
 
   const formatFileSize = (size: number) => {
@@ -762,7 +762,7 @@ const SystemSettings = () => {
                 {[
                   { label: '启用自动维护', key: 'enabled' as const },
                   { label: '每日数据库备份', key: 'dailyBackupEnabled' as const },
-                  { label: '每日任务导出', key: 'dailyTaskExportEnabled' as const },
+                  { label: '每日任务表格导出', key: 'dailyTaskExportEnabled' as const },
                   { label: '年度任务清理', key: 'yearlyCleanupEnabled' as const }
                 ].map(item => (
                   <label key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 font-bold text-gray-700">
@@ -823,7 +823,7 @@ const SystemSettings = () => {
                     {group.files.length === 0 ? <div className="text-sm text-gray-400">暂无文件</div> : group.files.map(file => (
                       <div key={file.path} className="rounded-lg bg-gray-50 border border-gray-100 p-3">
                         <div className="text-sm font-bold text-gray-700 break-all">{file.name}</div>
-                        <div className="text-xs text-gray-400 mt-1">{formatFileSize(file.size)} ? {format(new Date(file.mtime), 'yyyy-MM-dd HH:mm')}</div>
+                        <div className="text-xs text-gray-400 mt-1">{formatFileSize(file.size)} · {format(new Date(file.mtime), 'yyyy-MM-dd HH:mm')}</div>
                       </div>
                     ))}
                   </div>

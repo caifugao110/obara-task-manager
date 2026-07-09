@@ -1029,10 +1029,10 @@ router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], async
 router.post('/maintenance/export-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   try {
     const taskExport = maintenance.exportTaskData({ type: 'manual-task-export', requireData: true });
-    res.json({ message: '???????', taskExport });
+    res.json({ message: '\u4efb\u52a1\u8868\u683c\u5df2\u5bfc\u51fa', taskExport });
   } catch (error) {
     if (error.statusCode === 404) {
-      return res.status(404).json({ message: error.message || '????????' });
+      return res.status(404).json({ message: error.message || '\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684\u6570\u636e' });
     }
     throw error;
   }

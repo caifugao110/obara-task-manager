@@ -1,4 +1,4 @@
-﻿const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
 const db = require('../db');
 const XLSX = require('xlsx');
@@ -94,12 +94,12 @@ const getTaskHours = (item = {}) => {
 };
 
 const getTaskName = (item = {}) => {
-  if (item.leaveType === 'sick') return '??';
-  if (item.leaveType === 'vacation') return '??';
-  if (item.leaveType === 'illness') return '??';
+  if (item.leaveType === 'sick') return '\u4e8b\u5047';
+  if (item.leaveType === 'vacation') return '\u4f11\u5047';
+  if (item.leaveType === 'illness') return '\u75c5\u5047';
   if (item.leaveType === 'trip') {
     const name = String(item.taskName || '').trim();
-    return name ? (name.endsWith('??') ? name : `${name}??`) : '??';
+    return name ? (name.endsWith('\u51fa\u5dee') ? name : `${name}\u51fa\u5dee`) : '\u51fa\u5dee';
   }
   return item.taskName || '';
 };
@@ -118,13 +118,13 @@ const buildTaskExportWorkbook = (sheets, designers, workdayOverrides = {}) => {
   [...monthGroups.keys()].sort().forEach(key => {
     const [year, month] = key.split('-').map(Number);
     const daysInMonth = getDaysInMonth(year, month);
-    const header = ['???'];
+    const header = ['\u8bbe\u8ba1\u5458'];
     for (let day = 1; day <= daysInMonth; day += 1) {
       const dateKey = `${year}-${pad(month)}-${pad(day)}`;
-      const weekendMark = getEffectiveIsWeekend(dateKey, workdayOverrides) ? '???' : '';
-      header.push(`${day}?${weekendMark} ????`, `${day}? ??`);
+      const weekendMark = getEffectiveIsWeekend(dateKey, workdayOverrides) ? '\uff08\u4f11\uff09' : '';
+      header.push(`${day}\u65e5${weekendMark} \u4efb\u52a1\u5185\u5bb9`, `${day}\u65e5 \u5de5\u65f6`);
     }
-    header.push('????');
+    header.push('\u6708\u603b\u5de5\u65f6');
 
     const rows = [header];
     monthGroups.get(key).forEach(sheet => {
@@ -191,7 +191,7 @@ const exportTaskData = (options = {}) => {
   if (exportSheets.length === 0) {
     const result = { skipped: true, reason: 'no-data', taskSheets: 0, taskItems: 0 };
     if (options.requireData) {
-      const error = new Error('????????');
+      const error = new Error('\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684\u6570\u636e');
       error.statusCode = 404;
       error.result = result;
       throw error;
