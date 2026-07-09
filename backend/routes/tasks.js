@@ -200,7 +200,7 @@ const findBatchReplaceMatches = (data, findText, allTable, month, year) => {
 };
 
 router.get('/', guestViewMiddleware, asyncHandler(async (req, res) => {
-  const { month, year, designerId } = req.query;
+  const { month, year, designerId, summary } = req.query;
   const data = db.readDb();
 
   let tasks = data.tasks || [];
@@ -213,6 +213,23 @@ router.get('/', guestViewMiddleware, asyncHandler(async (req, res) => {
     const m = parseInt(month);
     const y = parseInt(year);
     tasks = tasks.filter(t => t.month === m && t.year === y);
+  }
+
+  if (summary === 'true') {
+    const summaryData = tasks.map(sheet => {
+      const totalItems = Object.values(sheet.days || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
+      return {
+        id: sheet.id,
+        designerId: sheet.designerId,
+        month: sheet.month,
+        year: sheet.year,
+        hasData: totalItems > 0,
+        itemCount: totalItems,
+        dates: Object.keys(sheet.days || {}).sort()
+      };
+    });
+    res.json(summaryData);
+    return;
   }
 
   res.json(tasks);

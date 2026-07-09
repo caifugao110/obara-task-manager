@@ -1405,6 +1405,49 @@ Authorization: Bearer <token>
 }
 ```
 
+### 文件上传安全验证
+
+系统对所有上传的 Excel 文件进行多层安全验证：
+
+#### 文件类型验证
+
+仅允许 `.xls` 和 `.xlsx` 扩展名，以及以下 MIME 类型：
+
+- `application/vnd.ms-excel`
+- `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- `application/octet-stream`
+
+#### 结构验证
+
+| 限制项 | 最大值 | 说明 |
+|--------|--------|------|
+| 工作表数量 | 10 | 超过限制则拒绝导入 |
+| 单工作表行数 | 10000 | 超过限制则拒绝导入 |
+| 单工作表列数 | 100 | 超过限制则拒绝导入 |
+| 文件大小 | 20MB | 通过 multer 配置限制 |
+
+#### 恶意内容扫描
+
+系统会扫描所有单元格内容，检测以下类型的恶意公式：
+
+| 类型 | 检测示例 |
+|------|----------|
+| 命令执行 | `=CMD|/C DIR`、`=POWERSHELL` |
+| 网络请求 | `=HYPERLINK("http://...")`、`=WEBSERVICE(...)` |
+| 脚本注入 | `=SCRIPT:`、`=JAVASCRIPT:` |
+| 文件操作 | `=EXEC("rm -rf /")`、`=SYSTEM("del")` |
+| 管道命令 | `=A1||CMD`、`=A1&&BASH` |
+| COM 对象 | `=CREATEOBJECT("WScript.Shell")` |
+
+#### 内容清理
+
+即使文件通过安全扫描，系统仍会对所有单元格进行清理处理：
+
+- 以 `=`、`+`、`-`、`@` 开头的单元格值会添加单引号前缀，转换为纯文本。
+- 检测到的恶意公式会被标记为文本，防止执行。
+
+验证失败时返回 `400` 错误，包含详细的错误信息和问题位置。
+
 ### 获取最新管理员登录记录
 
 `GET /api/system/admin-login-logs`
@@ -1523,6 +1566,363 @@ Authorization: Bearer <token>
 - 导出列包括时间、用户、姓名、操作类型、操作说明、方法、IP、状态码、耗时(ms)、浏览器信息。
 - 没有可导出的日志时返回 `404`。
 
+### 获取数据库统计信息
+
+`GET /api/system/db-stats`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "size": {
+    "bytes": 1048576,
+    "kb": 1024.00,
+    "mb": 1.00
+  },
+  "counts": {
+    "users": 5,
+    "designers": 20,
+    "tasks": 240,
+    "taskItems": 5000,
+    "months": 12,
+    "statusTrackingItems": 100,
+    "loginLogs": 200,
+    "auditLogs": 1500
+  },
+  "warnings": {
+    "over50MB": false,
+    "over10MB": false,
+    "oldTaskData": false
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `size.bytes` | 数据库文件大小（字节） |
+| `size.kb` | 数据库文件大小（KB） |
+| `size.mb` | 数据库文件大小（MB） |
+| `counts.users` | 用户数量 |
+| `counts.designers` | 设计人员数量 |
+| `counts.tasks` | 任务工作表数量 |
+| `counts.taskItems` | 任务条目总数 |
+| `counts.months` | 涉及的月份数 |
+| `counts.statusTrackingItems` | 状态追踪记录数 |
+| `counts.loginLogs` | 登录日志数 |
+| `counts.auditLogs` | 操作日志数 |
+| `warnings.over50MB` | 数据库超过 50MB |
+| `warnings.over10MB` | 数据库超过 10MB |
+| `warnings.oldTaskData` | 任务数据超过 24 个月 |
+
+### 获取维护状态
+
+`GET /api/system/maintenance`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "settings": {
+    "enabled": true,
+    "dailyBackupEnabled": true,
+    "dailyTaskExportEnabled": true,
+    "backupRetentionDays": 30,
+    "scheduleTime": "00:30",
+    "yearlyCleanupEnabled": true,
+    "yearlyCleanupMonth": 1,
+    "yearlyCleanupCheckDays": 10,
+    "yearlyTaskRetentionYears": 1,
+    "backupDir": "backups/database",
+    "taskExportDir": "backups/task-exports",
+    "yearlyArchiveDir": "backups/yearly-archives",
+    "yearlyCleanupHistory": {}
+  },
+  "paths": {
+    "database": "D:\\project\\backend\\db.json",
+    "backupDir": "D:\\project\\backend\\backups\\database",
+    "taskExportDir": "D:\\project\\backend\\backups\\task-exports",
+    "yearlyArchiveDir": "D:\\project\\backend\\backups\\yearly-archives"
+  },
+  "files": {
+    "backups": [...],
+    "taskExports": [...],
+    "yearlyArchives": [...]
+  },
+  "scheduler": {
+    "running": false,
+    "lastRun": {...},
+    "nextRunAt": "2026-07-11T00:30:00.000Z"
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `settings.enabled` | 是否启用自动维护 |
+| `settings.dailyBackupEnabled` | 是否启用每日数据库备份 |
+| `settings.dailyTaskExportEnabled` | 是否启用每日任务数据导出 |
+| `settings.backupRetentionDays` | 备份保留天数 |
+| `settings.scheduleTime` | 计划执行时间（HH:MM） |
+| `settings.yearlyCleanupEnabled` | 是否启用年度任务清理 |
+| `settings.yearlyCleanupMonth` | 年度清理月份 |
+| `settings.yearlyCleanupCheckDays` | 年度清理检查窗口天数 |
+| `settings.yearlyTaskRetentionYears` | 任务数据保留年限 |
+| `settings.backupDir` | 数据库备份目录 |
+| `settings.taskExportDir` | 任务导出目录 |
+| `settings.yearlyArchiveDir` | 年度归档目录 |
+| `paths.database` | 数据库文件绝对路径 |
+| `paths.backupDir` | 备份目录绝对路径 |
+| `paths.taskExportDir` | 任务导出目录绝对路径 |
+| `paths.yearlyArchiveDir` | 年度归档目录绝对路径 |
+| `files.backups` | 最近 10 个备份文件列表 |
+| `files.taskExports` | 最近 10 个任务导出文件列表 |
+| `files.yearlyArchives` | 最近 10 个年度归档文件列表 |
+| `scheduler.running` | 调度器是否正在运行 |
+| `scheduler.lastRun` | 上一次执行结果 |
+| `scheduler.nextRunAt` | 下次执行时间 |
+
+### 更新维护配置
+
+`PUT /api/system/maintenance`
+
+权限：仅 `superadmin`
+
+请求：
+
+```json
+{
+  "enabled": true,
+  "dailyBackupEnabled": true,
+  "dailyTaskExportEnabled": true,
+  "backupRetentionDays": 30,
+  "scheduleTime": "00:30",
+  "yearlyCleanupEnabled": true,
+  "yearlyCleanupMonth": 1,
+  "yearlyCleanupCheckDays": 10,
+  "yearlyTaskRetentionYears": 1,
+  "backupDir": "backups/database",
+  "taskExportDir": "backups/task-exports",
+  "yearlyArchiveDir": "backups/yearly-archives"
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `enabled` | 是 | 是否启用自动维护 |
+| `dailyBackupEnabled` | 是 | 是否启用每日数据库备份 |
+| `dailyTaskExportEnabled` | 是 | 是否启用每日任务数据导出 |
+| `backupRetentionDays` | 是 | 备份保留天数（1-3650） |
+| `scheduleTime` | 是 | 计划执行时间（格式 HH:MM） |
+| `yearlyCleanupEnabled` | 是 | 是否启用年度任务清理 |
+| `yearlyCleanupMonth` | 是 | 年度清理月份（1-12） |
+| `yearlyCleanupCheckDays` | 是 | 年度清理检查窗口天数（1-31） |
+| `yearlyTaskRetentionYears` | 是 | 任务数据保留年限（1-10） |
+| `backupDir` | 是 | 数据库备份目录（相对路径） |
+| `taskExportDir` | 是 | 任务导出目录（相对路径） |
+| `yearlyArchiveDir` | 是 | 年度归档目录（相对路径） |
+
+响应：返回更新后的维护状态，结构同 `GET /api/system/maintenance`。
+
+### 手动执行数据库备份
+
+`POST /api/system/maintenance/backup`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "message": "数据库备份已完成",
+  "backup": {
+    "fileName": "db-backup-20260710-103000.json",
+    "filePath": "D:\\project\\backend\\backups\\database\\db-backup-20260710-103000.json",
+    "dir": "D:\\project\\backend\\backups\\database",
+    "size": 1048576
+  }
+}
+```
+
+### 手动导出任务数据
+
+`POST /api/system/maintenance/export-tasks`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "message": "任务管理数据已导出",
+  "taskExport": {
+    "fileName": "task-export-20260710-103000.json",
+    "filePath": "D:\\project\\backend\\backups\\task-exports\\task-export-20260710-103000.json",
+    "dir": "D:\\project\\backend\\backups\\task-exports",
+    "size": 524288,
+    "taskSheets": 240,
+    "taskItems": 5000
+  }
+}
+```
+
+### 清理过期备份
+
+`POST /api/system/maintenance/cleanup-backups`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "message": "过期备份清理已完成",
+  "cleanup": {
+    "retentionDays": 30,
+    "removedCount": 5,
+    "removed": [...]
+  }
+}
+```
+
+### 手动执行年度任务清理
+
+`POST /api/system/maintenance/yearly-cleanup`
+
+权限：仅 `superadmin`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `force` | 否 | 是否强制执行（跳过时间检查），默认 `false` |
+
+响应（执行成功）：
+
+```json
+{
+  "message": "年度任务清理检测已完成",
+  "yearlyCleanup": {
+    "skipped": false,
+    "cutoffYear": 2025,
+    "archivedSheets": 120,
+    "removedSheets": 120,
+    "removedTaskItems": 2500,
+    "archive": {
+      "fileName": "yearly-archive-before-2025-20260710-103000.json",
+      "filePath": "...",
+      "dir": "...",
+      "size": 262144,
+      "taskSheets": 120,
+      "taskItems": 2500
+    }
+  }
+}
+```
+
+响应（跳过执行）：
+
+```json
+{
+  "message": "年度任务清理检测已跳过",
+  "yearlyCleanup": {
+    "skipped": true,
+    "reason": "disabled"
+  }
+}
+```
+
+说明：
+
+- 年度清理会在指定月份的前 N 天（`yearlyCleanupCheckDays`）自动执行。
+- 清理前会将旧数据归档到 `yearlyArchiveDir`。
+- 每年只执行一次，记录在 `yearlyCleanupHistory` 中。
+
+### 清空登录日志
+
+`DELETE /api/system/cleanup/login-logs`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "message": "登录日志已清空",
+  "cleanedCount": 200
+}
+```
+
+### 清空操作日志
+
+`DELETE /api/system/cleanup/audit-logs`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "message": "操作日志已清空",
+  "cleanedCount": 1500
+}
+```
+
+### 清理旧任务数据
+
+`DELETE /api/system/cleanup/old-tasks`
+
+权限：仅 `superadmin`
+
+查询参数：
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `keepMonths` | 否 | `12` | 保留最近 N 个月的任务数据 |
+
+响应：
+
+```json
+{
+  "message": "已清理 12 个月之前的任务数据",
+  "removedSheets": 120,
+  "removedTaskItems": 2500,
+  "remainingSheets": 120,
+  "dbSizeKbAfter": 512.00
+}
+```
+
+### 清理旧状态追踪数据
+
+`DELETE /api/system/cleanup/status-tracking`
+
+权限：仅 `superadmin`
+
+查询参数：
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `keepMonths` | 否 | `24` | 保留最近 N 个月的状态追踪数据 |
+
+响应：
+
+```json
+{
+  "message": "已清理 24 个月之前的状态追踪数据",
+  "removedCount": 50,
+  "remainingCount": 50
+}
+```
+
 ## 工时管理表接口
 
 ### 导出工时管理表
@@ -1546,11 +1946,22 @@ Authorization: Bearer <token>
 
 响应：`.xls` 文件流，文件名格式为 `work-hours-YYYY-MM.xls`。
 
-说明：
+导出列说明：
 
-- 按月份统计每位设计员的工时数据。
-- 导出列：设计员、总工时、工作日工时、周末加班工时、出差工时、请假工时。
+| 列名 | 说明 |
+|------|------|
+| 设计员 | 设计人员姓名 |
+| 总工时 | 所有任务工时总和（不含请假） |
+| 工作日工时 | 工作日内的任务工时（按覆盖规则计算） |
+| 周末加班工时 | 周末加班工时（总工时 - 工作日工时） |
+| 出差工时 | 出差任务的工时总和 |
+| 请假工时 | 事假 + 休假 + 病假工时总和 |
+
+统计规则：
+
 - 工作日工时和周末加班工时按 `settings.workdayOverrides` 覆盖后的有效工作日/周末计算。
+- 请假类型包括：事假（`sick`）、休假（`vacation`）、病假（`illness`）。
+- 出差任务（`leaveType: trip`）不计入请假工时，但计入总工时和工作日/周末加班工时。
 - 按总工时倒序排列。
 - 冻结首行和首列。
 - 工时为 0 的单元格显示为空。

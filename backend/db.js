@@ -130,6 +130,21 @@ const readDb = () => {
           workHours: { enabled: true, allowAdmins: true, allowViewers: false },
           statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
           systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
+          maintenance: {
+            enabled: true,
+            dailyBackupEnabled: true,
+            dailyTaskExportEnabled: true,
+            backupRetentionDays: 30,
+            scheduleTime: '00:30',
+            yearlyCleanupEnabled: true,
+            yearlyCleanupMonth: 1,
+            yearlyCleanupCheckDays: 10,
+            yearlyTaskRetentionYears: 1,
+            backupDir: 'backups/database',
+            taskExportDir: 'backups/task-exports',
+            yearlyArchiveDir: 'backups/yearly-archives',
+            yearlyCleanupHistory: {}
+          },
           workdayOverrides: {},
           system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true }
         }
@@ -155,6 +170,25 @@ const readDb = () => {
     if (!parsed.settings.systemSettings) {
       parsed.settings.systemSettings = { enabled: true, allowAdmins: true, allowViewers: false };
     }
+    if (!parsed.settings.maintenance || typeof parsed.settings.maintenance !== 'object' || Array.isArray(parsed.settings.maintenance)) {
+      parsed.settings.maintenance = {};
+    }
+    parsed.settings.maintenance = {
+      enabled: true,
+      dailyBackupEnabled: true,
+      dailyTaskExportEnabled: true,
+      backupRetentionDays: 30,
+      scheduleTime: '00:30',
+      yearlyCleanupEnabled: true,
+      yearlyCleanupMonth: 1,
+      yearlyCleanupCheckDays: 10,
+      yearlyTaskRetentionYears: 1,
+      backupDir: 'backups/database',
+      taskExportDir: 'backups/task-exports',
+      yearlyArchiveDir: 'backups/yearly-archives',
+      yearlyCleanupHistory: {},
+      ...parsed.settings.maintenance
+    };
     if (!parsed.settings.workdayOverrides || typeof parsed.settings.workdayOverrides !== 'object' || Array.isArray(parsed.settings.workdayOverrides)) {
       parsed.settings.workdayOverrides = {};
     }

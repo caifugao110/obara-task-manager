@@ -15,6 +15,7 @@ const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook
 const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDisplay');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
+const maintenance = require('../utils/dbMaintenance');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -40,6 +41,21 @@ const systemSettingsSchema = Joi.object({
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
   allowUserEditOwnTaskColor: Joi.boolean().optional()
+});
+
+const maintenanceSettingsSchema = Joi.object({
+  enabled: Joi.boolean().required(),
+  dailyBackupEnabled: Joi.boolean().required(),
+  dailyTaskExportEnabled: Joi.boolean().required(),
+  backupRetentionDays: Joi.number().integer().min(1).max(3650).required(),
+  scheduleTime: Joi.string().pattern(/^\d{2}:\d{2}$/).required(),
+  yearlyCleanupEnabled: Joi.boolean().required(),
+  yearlyCleanupMonth: Joi.number().integer().min(1).max(12).required(),
+  yearlyCleanupCheckDays: Joi.number().integer().min(1).max(31).required(),
+  yearlyTaskRetentionYears: Joi.number().integer().min(1).max(10).required(),
+  backupDir: Joi.string().trim().min(1).max(200).required(),
+  taskExportDir: Joi.string().trim().min(1).max(200).required(),
+  yearlyArchiveDir: Joi.string().trim().min(1).max(200).required()
 });
 
 const normalizeSystemSettings = (settings = {}) => {
@@ -983,6 +999,46 @@ router.put('/settings', [authMiddleware, superAdminMiddleware], asyncHandler(asy
   res.json(data.settings.system);
 }));
 
+router.get('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  res.json(maintenance.getMaintenanceStatus());
+}));
+
+router.put('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { error, value } = maintenanceSettingsSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const data = db.readDb();
+  if (!data.settings) data.settings = {};
+  const current = maintenance.normalizeMaintenanceSettings(data.settings.maintenance);
+  data.settings.maintenance = maintenance.normalizeMaintenanceSettings({
+    ...current,
+    ...value,
+    yearlyCleanupHistory: current.yearlyCleanupHistory
+  });
+  await db.writeDb(data);
+  maintenance.scheduleNextRun();
+  res.json(maintenance.getMaintenanceStatus());
+}));
+
+router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  res.json({ message: '数据库备份已完成', backup: maintenance.createDatabaseBackup() });
+}));
+
+router.post('/maintenance/export-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  res.json({ message: '任务管理数据已导出', taskExport: maintenance.exportTaskData({ type: 'manual-task-export' }) });
+}));
+
+router.post('/maintenance/cleanup-backups', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  res.json({ message: '过期备份清理已完成', cleanup: maintenance.cleanupOldBackups() });
+}));
+
+router.post('/maintenance/yearly-cleanup', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const result = await maintenance.runYearlyTaskCleanup({ force: Boolean(req.body?.force) });
+  res.json({ message: result.skipped ? '年度任务清理检测已跳过' : '年度任务清理检测已完成', yearlyCleanup: result });
+}));
+
 router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const { error, value } = loginLogQuerySchema.validate(req.query, { stripUnknown: true, convert: true });
   if (error) {
@@ -1435,6 +1491,164 @@ router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(a
     total: logs.length,
     page: pageNum,
     pageSize
+  });
+}));
+
+router.get('/db-stats', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  
+  const tasks = data.tasks || [];
+  const loginLogs = data.loginLogs || [];
+  const auditLogs = data.auditLogs || [];
+  const statusTrackingItems = data.statusTrackingItems || [];
+  const users = data.users || [];
+  const designers = data.designers || [];
+  
+  const totalTasks = tasks.reduce((sum, sheet) => {
+    return sum + Object.values(sheet.days || {}).reduce((daySum, items) => daySum + (Array.isArray(items) ? items.length : 0), 0);
+  }, 0);
+  
+  const monthCount = new Set(tasks.map(t => `${t.year}-${t.month}`)).size;
+  
+  const jsonString = JSON.stringify(data);
+  const sizeInBytes = Buffer.byteLength(jsonString, 'utf8');
+  const sizeInKB = (sizeInBytes / 1024).toFixed(2);
+  const sizeInMB = (sizeInBytes / (1024 * 1024)).toFixed(2);
+  
+  res.json({
+    size: {
+      bytes: sizeInBytes,
+      kb: parseFloat(sizeInKB),
+      mb: parseFloat(sizeInMB)
+    },
+    counts: {
+      users: users.length,
+      designers: designers.length,
+      tasks: tasks.length,
+      taskItems: totalTasks,
+      months: monthCount,
+      statusTrackingItems: statusTrackingItems.length,
+      loginLogs: loginLogs.length,
+      auditLogs: auditLogs.length
+    },
+    warnings: {
+      over50MB: sizeInBytes > 50 * 1024 * 1024,
+      over10MB: sizeInBytes > 10 * 1024 * 1024,
+      oldTaskData: monthCount > 24
+    }
+  });
+}));
+
+router.delete('/cleanup/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const beforeCount = (data.loginLogs || []).length;
+  
+  if (!data.loginLogs) data.loginLogs = [];
+  data.loginLogs = [];
+  
+  await db.writeDb(data);
+  
+  res.json({
+    message: '登录日志已清空',
+    cleanedCount: beforeCount
+  });
+}));
+
+router.delete('/cleanup/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const beforeCount = (data.auditLogs || []).length;
+  
+  if (!data.auditLogs) data.auditLogs = [];
+  data.auditLogs = [];
+  
+  await db.writeDb(data);
+  
+  res.json({
+    message: '操作日志已清空',
+    cleanedCount: beforeCount
+  });
+}));
+
+router.delete('/cleanup/old-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { keepMonths = 12 } = req.query;
+  const monthsToKeep = Math.max(1, parseInt(keepMonths, 10) || 12);
+  
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  
+  const cutoffMonth = (currentMonth - monthsToKeep + 12) % 12;
+  const cutoffYear = cutoffMonth > currentMonth ? currentYear - 1 : currentYear;
+  
+  const data = db.readDb();
+  const tasks = data.tasks || [];
+  
+  const beforeCount = tasks.length;
+  let removedCount = 0;
+  let removedItems = 0;
+  
+  data.tasks = tasks.filter(sheet => {
+    if (sheet.year < cutoffYear) {
+      removedCount++;
+      removedItems += Object.values(sheet.days || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
+      return false;
+    }
+    if (sheet.year === cutoffYear && sheet.month < cutoffMonth) {
+      removedCount++;
+      removedItems += Object.values(sheet.days || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
+      return false;
+    }
+    return true;
+  });
+  
+  await db.writeDb(data);
+  
+  const jsonString = JSON.stringify(data);
+  const sizeAfter = (Buffer.byteLength(jsonString, 'utf8') / 1024).toFixed(2);
+  
+  res.json({
+    message: `已清理 ${monthsToKeep} 个月之前的任务数据`,
+    removedSheets: removedCount,
+    removedTaskItems: removedItems,
+    remainingSheets: data.tasks.length,
+    dbSizeKbAfter: parseFloat(sizeAfter)
+  });
+}));
+
+router.delete('/cleanup/status-tracking', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { keepMonths = 24 } = req.query;
+  const monthsToKeep = Math.max(1, parseInt(keepMonths, 10) || 24);
+  
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  
+  const cutoffMonth = (currentMonth - monthsToKeep + 12) % 12;
+  const cutoffYear = cutoffMonth > currentMonth ? currentYear - 1 : currentYear;
+  
+  const data = db.readDb();
+  const items = data.statusTrackingItems || [];
+  
+  const beforeCount = items.length;
+  
+  data.statusTrackingItems = items.filter(item => {
+    const planMonth = item.productionPlanMonth || '';
+    if (!planMonth) return true;
+    
+    const [year, month] = planMonth.split('-').map(Number);
+    if (year < cutoffYear) return false;
+    if (year === cutoffYear && month < cutoffMonth) return false;
+    return true;
+  });
+  
+  await db.writeDb(data);
+  
+  const removedCount = beforeCount - data.statusTrackingItems.length;
+  
+  res.json({
+    message: `已清理 ${monthsToKeep} 个月之前的状态跟踪数据`,
+    removedCount,
+    remainingCount: data.statusTrackingItems.length
   });
 }));
 

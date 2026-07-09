@@ -4,6 +4,7 @@ const path = require('path');
 const fs2 = require('fs');
 const asyncHandler = require('express-async-handler');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const securityConfig = require('../config/security');
 
 let PDFParse = null;
 async function getPdfParse() {
@@ -48,8 +49,20 @@ async function getPdfParse() {
   return PDFParse;
 }
 
-var SPEC_SHARE_PATH = '//192.168.160.6/仕样书$/';
-var SPEC_SHARE_PATH_BS = '\\\\192.168.160.6\\仕样书$\\';
+function trimTrailingSeparators(value) {
+  return String(value || '').replace(/[\\/]+$/, '');
+}
+
+function toForwardSharePath(value) {
+  return trimTrailingSeparators(value).replace(/\\/g, '/') + '/';
+}
+
+function toBackslashSharePath(value) {
+  return trimTrailingSeparators(value).replace(/\//g, '\\') + '\\';
+}
+
+var SPEC_SHARE_PATH = toForwardSharePath(securityConfig.spec.sharePath);
+var SPEC_SHARE_PATH_BS = toBackslashSharePath(securityConfig.spec.sharePath);
 
 function isPathSafe(specNumber) {
   if (!specNumber || typeof specNumber !== 'string') return false;

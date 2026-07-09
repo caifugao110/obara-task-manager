@@ -38,6 +38,7 @@ app.use(bodyParser.json());
 
 // Database logic (Simple JSON storage)
 const db = require('./db');
+const { startMaintenanceScheduler } = require('./utils/dbMaintenance');
 
 // Middleware
 const { auditLogMiddleware } = require('./middleware/auditLog');
@@ -257,4 +258,5 @@ io.on('connection', (socket) => {
 server.listen(securityConfig.server.port, () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
   db.initAdmin();
+  startMaintenanceScheduler();
 });

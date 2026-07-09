@@ -198,6 +198,30 @@ export const tasksAPI = {
   },
 
   /**
+   * 获取任务摘要数据（轻量级，用于快速加载）
+   */
+  getTasksSummary: async (month: number, year: number, designerId?: string): Promise<{
+    id: string;
+    designerId: string;
+    month: number;
+    year: number;
+    hasData: boolean;
+    itemCount: number;
+    dates: string[];
+  }[]> => {
+    const params: Record<string, string> = { 
+      month: month.toString(), 
+      year: year.toString(),
+      summary: 'true'
+    };
+    if (designerId) {
+      params.designerId = designerId;
+    }
+    const response = await axiosInstance.get('/tasks', { params });
+    return response.data;
+  },
+
+  /**
    * 创建任务条目
    */
   createTask: async (params: CreateTaskParams): Promise<{
@@ -303,6 +327,89 @@ export const settingsAPI = {
   },
 };
 
+// ==================== 系统维护 API ====================
+
+export const systemAPI = {
+  /**
+   * 获取数据库统计信息
+   */
+  getDbStats: async (): Promise<{
+    size: {
+      bytes: number;
+      kb: number;
+      mb: number;
+    };
+    counts: {
+      users: number;
+      designers: number;
+      tasks: number;
+      taskItems: number;
+      months: number;
+      statusTrackingItems: number;
+      loginLogs: number;
+      auditLogs: number;
+    };
+    warnings: {
+      over50MB: boolean;
+      over10MB: boolean;
+      oldTaskData: boolean;
+    };
+  }> => {
+    const response = await axiosInstance.get('/system/db-stats');
+    return response.data;
+  },
+
+  /**
+   * 清理登录日志
+   */
+  cleanupLoginLogs: async (): Promise<{ message: string; cleanedCount: number }> => {
+    const response = await axiosInstance.delete('/system/cleanup/login-logs');
+    return response.data;
+  },
+
+  /**
+   * 清理操作日志
+   */
+  cleanupAuditLogs: async (): Promise<{ message: string; cleanedCount: number }> => {
+    const response = await axiosInstance.delete('/system/cleanup/audit-logs');
+    return response.data;
+  },
+
+  /**
+   * 清理旧任务数据
+   */
+  cleanupOldTasks: async (keepMonths?: number): Promise<{
+    message: string;
+    removedSheets: number;
+    removedTaskItems: number;
+    remainingSheets: number;
+    dbSizeKbAfter: number;
+  }> => {
+    const params: Record<string, string> = {};
+    if (keepMonths) {
+      params.keepMonths = keepMonths.toString();
+    }
+    const response = await axiosInstance.delete('/system/cleanup/old-tasks', { params });
+    return response.data;
+  },
+
+  /**
+   * 清理旧状态跟踪数据
+   */
+  cleanupStatusTracking: async (keepMonths?: number): Promise<{
+    message: string;
+    removedCount: number;
+    remainingCount: number;
+  }> => {
+    const params: Record<string, string> = {};
+    if (keepMonths) {
+      params.keepMonths = keepMonths.toString();
+    }
+    const response = await axiosInstance.delete('/system/cleanup/status-tracking', { params });
+    return response.data;
+  },
+};
+
 // ==================== 工具函数 ====================
 
 /**
@@ -359,4 +466,5 @@ export default {
   designers: designersAPI,
   tasks: tasksAPI,
   settings: settingsAPI,
+  system: systemAPI,
 };

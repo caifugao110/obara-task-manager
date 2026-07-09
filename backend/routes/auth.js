@@ -59,6 +59,8 @@ const getBrowserInfo = (userAgent = '') => {
   return { browser, os, device, summary: `${browser} / ${os} / ${device}` };
 };
 
+const MAX_LOGIN_LOGS = 2000;
+
 const appendLoginLog = async (data, entry) => {
   if (!data.loginLogs) data.loginLogs = [];
   data.loginLogs.push({
@@ -66,8 +68,8 @@ const appendLoginLog = async (data, entry) => {
     ...entry,
     timestamp: new Date().toISOString()
   });
-  if (data.loginLogs.length > 500) {
-    data.loginLogs = data.loginLogs.slice(-500);
+  if (data.loginLogs.length > MAX_LOGIN_LOGS) {
+    data.loginLogs = data.loginLogs.slice(-MAX_LOGIN_LOGS);
   }
 };
 

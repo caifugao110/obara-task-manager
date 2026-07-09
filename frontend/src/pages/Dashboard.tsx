@@ -120,6 +120,11 @@ const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__
 
 const editingSessionKey = (designerId: string, date: string) => `${designerId}__${date}`;
 
+const isEditableKeyboardTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+};
+
 const normalizeTaskColor = (value?: string) => String(value || '').trim().toLowerCase();
 const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
 const hasStoredUserMarkColor = (item: TaskItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
@@ -194,6 +199,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
         if (isAdmin) {
           if (e.key === 'Delete') {
             e.preventDefault();
+            e.stopPropagation();
             onDeleteTask(item, designerId, date);
           } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
             e.preventDefault();
@@ -437,13 +443,20 @@ const Dashboard = () => {
     isOfflineModeRef.current = isOfflineMode;
   }, [isOfflineMode]);
 
+  // 获取版本信息
+  useEffect(() => {
+    axiosInstance.get('/system/version')
+      .then(res => setVersionInfo(res.data))
+      .catch(() => {});
+  }, []);
+
   // Calculate table height dynamically
   useEffect(() => {
     const calculateHeight = () => {
       const viewportHeight = window.innerHeight;
       const headerHeight = 56; // Header height
       const footerHeight = 36; // Footer height
-      const padding = 8; // Bottom padding only
+      const padding = 0;
       const scrollbarHeight = 8; // Scrollbar height (minimal)
       const calculatedHeight = viewportHeight - headerHeight - footerHeight - padding - scrollbarHeight;
       setTableHeight(calculatedHeight);
@@ -452,13 +465,6 @@ const Dashboard = () => {
     calculateHeight();
     window.addEventListener('resize', calculateHeight);
     return () => window.removeEventListener('resize', calculateHeight);
-  }, []);
-
-  // 获取版本信息
-  useEffect(() => {
-    axiosInstance.get('/system/version')
-      .then(res => setVersionInfo(res.data))
-      .catch(() => {});
   }, []);
 
   // Input refs for modal focus
@@ -982,7 +988,7 @@ const Dashboard = () => {
       return;
     }
     if (warnIfCellLocked(designerId, date)) return;
-    deleteItem(designerId, date, item.id);
+    deleteSelectedTasks({ item, designerId, date });
   };
 
   const addToast = (message: string, type: 'success' | 'error') => {
@@ -1712,6 +1718,70 @@ const Dashboard = () => {
       .filter(Boolean) as { item: TaskItem; designerId: string; date: string }[];
   }
 
+
+  const deleteSelectedTasks = useCallback(async (fallback?: { item: TaskItem; designerId: string; date: string }) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
+    if (warnIfOfflineEdit()) return;
+
+    const selections = fallback
+      ? getSelectedTaskPayloads(fallback)
+      : selectedTasksRef.current
+          .map(selection => {
+            const item = getAllItems(selection.designerId, selection.date).find(task => task.id === selection.itemId);
+            return item ? { item, designerId: selection.designerId, date: selection.date } : null;
+          })
+          .filter(Boolean) as { item: TaskItem; designerId: string; date: string }[];
+
+    if (selections.length === 0) return;
+    if (selections.some(selection => warnIfCellLocked(selection.designerId, selection.date))) return;
+
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      for (const selection of selections) {
+        await axiosInstance.delete('/tasks/item', {
+          ...authHeader,
+          data: { designerId: selection.designerId, date: selection.date, itemId: selection.item.id }
+        });
+      }
+
+      if (selections.length === 1) {
+        const [selection] = selections;
+        addToHistory('delete', { designerId: selection.designerId, date: selection.date, item: selection.item });
+      } else {
+        addToHistory('batchDelete', {
+          items: selections.map(selection => ({ designerId: selection.designerId, date: selection.date, item: selection.item }))
+        });
+      }
+
+      fetchSheets();
+      socketRef.current?.emit('task_updated');
+      stopEditingCell();
+      setSelectedTasks([]);
+      setSelectedCell(null);
+      addToast(selections.length === 1 ? '任务已删除' : `已删除 ${selections.length} 个任务`, 'success');
+    } catch (err) {
+      addToast('删除任务失败', 'error');
+    }
+  }, [canEditTasks, isOfflineMode, token, fetchSheets, stopEditingCell, warnIfCellLocked, sheets]);
+
+  useEffect(() => {
+    const handleSelectedTasksDelete = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (modalOpen || batchReplaceOpen || isEditableKeyboardTarget(e.target)) return;
+      if (selectedTasksRef.current.length === 0) return;
+
+      e.preventDefault();
+      deleteSelectedTasks();
+    };
+
+    window.addEventListener('keydown', handleSelectedTasksDelete);
+    return () => window.removeEventListener('keydown', handleSelectedTasksDelete);
+  }, [deleteSelectedTasks, modalOpen, batchReplaceOpen]);
+
   const handleSelectTask = (itemId: string, designerId: string, date: string, append: boolean) => {
     const nextSelection = { itemId, designerId, date };
     if (!append) {
@@ -2323,8 +2393,8 @@ const Dashboard = () => {
       >
 
 
-        <main className="flex-1 overflow-auto p-4">
-          <div className="bg-white shadow-sm border border-gray-300 overflow-hidden" ref={tableContainerRef}>
+        <main className="flex-1 overflow-auto p-0">
+          <div className="bg-white shadow-sm border border-b-0 border-gray-300 overflow-hidden" ref={tableContainerRef}>
             <div style={{ height: `${tableHeight}px` }} className="overflow-auto">
               <table className="border-collapse text-[12px] w-full">
               <thead className="text-xs">

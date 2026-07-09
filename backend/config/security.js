@@ -41,6 +41,9 @@ const securityConfig = {
   },
   database: {
     path: process.env.DB_PATH || './db.json'
+  },
+  spec: {
+    sharePath: process.env.SPEC_SHARE_PATH || '\\\\192.168.160.6\\仕样书$'
   }
 };
 

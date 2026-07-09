@@ -376,7 +376,7 @@ copy backend\db.json backups\db-daily-20260705.json
 
 系统支持从网络共享目录读取仕样书 PDF 文件：
 
-- 默认共享路径：`\\192.168.160.6\仕样书$\`
+- 默认共享路径：`\\192.168.160.6\仕样书$\`，可通过 `SPEC_SHARE_PATH` 配置
 - 需要服务器或运行后端的主机能够访问该共享目录
 - 权限要求：需要有读取共享目录文件的权限
 - 超时时间：纳期获取 9 秒，完整信息获取 15 秒
@@ -387,7 +387,7 @@ copy backend\db.json backups\db-daily-20260705.json
 2. 确保共享目录 `仕样书$` 有读取权限
 3. PDF 文件命名格式：`仕样号.PDF` 或 `仕样号.01.PDF`、`仕样号.02.PDF` 等版本文件
 4. 系统会自动查找最新版本的 PDF 文件
-- 注意: 仕样书共享路径 `\\192.168.160.6\仕样书$\` 在 `backend/routes/spec.js` 中写死，不可通过环境变量配置；若路径变更需修改 `SPEC_SHARE_PATH` 并重启后端。
+- 注意: 仕样书共享路径可在 `backend/.env` 中通过 `SPEC_SHARE_PATH` 修改，修改后需重启后端。
 
 ## 常见问题
 
@@ -603,4 +603,93 @@ node --check backend\routes\settings.js
 4. **离线缓存**：后端断开时自动切换到 localStorage 缓存数据
 5. **操作日志精简**：GET 请求不记录响应消息，POST/PUT 请求体最大保留 2000 字符，避免数据库膨胀
 
-最后更新：2026-07-07
+## 数据库维护
+
+系统内置自动维护功能，可通过 API 管理数据库备份、任务导出和年度数据清理。
+
+### 自动维护功能
+
+自动维护在每日指定时间（默认 `00:30`）执行以下任务：
+
+| 任务 | 说明 | 默认状态 |
+|------|------|----------|
+| 数据库备份 | 复制 `db.json` 到备份目录 | 启用 |
+| 任务数据导出 | 导出任务数据为 JSON 文件 | 启用 |
+| 过期备份清理 | 删除超过保留天数的旧备份 | 自动执行 |
+| 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
+
+### 维护目录结构
+
+```text
+backend/
+├── backups/
+│   ├── database/          # 数据库备份
+│   ├── task-exports/      # 任务数据导出
+│   └── yearly-archives/   # 年度归档
+```
+
+### 维护配置
+
+维护配置存储在 `db.json` 的 `settings.maintenance` 中，可通过 API 更新：
+
+```json
+{
+  "enabled": true,
+  "dailyBackupEnabled": true,
+  "dailyTaskExportEnabled": true,
+  "backupRetentionDays": 30,
+  "scheduleTime": "00:30",
+  "yearlyCleanupEnabled": true,
+  "yearlyCleanupMonth": 1,
+  "yearlyCleanupCheckDays": 10,
+  "yearlyTaskRetentionYears": 1,
+  "backupDir": "backups/database",
+  "taskExportDir": "backups/task-exports",
+  "yearlyArchiveDir": "backups/yearly-archives"
+}
+```
+
+### 维护 API
+
+| API | 方法 | 说明 |
+|-----|------|------|
+| `/api/system/maintenance` | GET | 获取维护状态和配置 |
+| `/api/system/maintenance` | PUT | 更新维护配置 |
+| `/api/system/maintenance/backup` | POST | 手动创建数据库备份 |
+| `/api/system/maintenance/export-tasks` | POST | 手动导出任务数据 |
+| `/api/system/maintenance/cleanup-backups` | POST | 清理过期备份 |
+| `/api/system/maintenance/yearly-cleanup` | POST | 手动执行年度清理 |
+| `/api/system/db-stats` | GET | 获取数据库统计信息 |
+| `/api/system/cleanup/login-logs` | DELETE | 清空登录日志 |
+| `/api/system/cleanup/audit-logs` | DELETE | 清空操作日志 |
+| `/api/system/cleanup/old-tasks` | DELETE | 清理旧任务数据 |
+| `/api/system/cleanup/status-tracking` | DELETE | 清理旧状态追踪数据 |
+
+### 年度清理流程
+
+年度清理会在指定月份的前 N 天（默认 1 月 1-10 日）内自动执行：
+
+1. 检查当前月份和日期是否在清理窗口内
+2. 检查当年是否已执行过清理
+3. 将超过保留年限的任务数据归档到年度归档目录
+4. 从数据库中删除已归档的任务数据
+5. 记录清理历史到 `yearlyCleanupHistory`
+
+### 数据库统计
+
+`GET /api/system/db-stats` 返回数据库统计信息，包含：
+
+- **size**：数据库文件大小（字节/KB/MB）
+- **counts**：用户、设计人员、任务、任务条目、月份、状态追踪、登录日志、操作日志数量
+- **warnings**：数据库超过 10MB/50MB、任务数据超过 24 个月的警告
+
+### 维护最佳实践
+
+1. **监控数据库大小**：定期检查 `db-stats`，当超过 10MB 时考虑清理旧数据
+2. **调整备份保留天数**：根据存储容量调整 `backupRetentionDays`，建议至少保留 7 天
+3. **设置合理的数据保留年限**：根据业务需求设置 `yearlyTaskRetentionYears`
+4. **定期手动备份**：在执行重大操作（如升级、批量导入）前手动执行备份
+5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
+6. **测试恢复流程**：定期测试从备份恢复数据的流程
+
+最后更新：2026-07-10

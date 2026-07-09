@@ -340,11 +340,11 @@ node --check backend\routes\tasks.js
 
 系统支持从共享目录读取仕样书 PDF 文件，提取纳期和详细信息：
 
-- 搜索路径：`\\192.168.160.6\仕样书$\`
+- 搜索路径：默认 `\\192.168.160.6\仕样书$\`，可通过 `SPEC_SHARE_PATH` 配置
 - 支持按仕样号搜索，自动查找最新版本（如 `12345.PDF`、`12345.01.PDF` 等）
 - 可提取纳期、中间商、最终客户、项目名称、数量、营业担当等信息
 - 纳期获取超时时间为 9 秒，完整信息获取超时时间为 15 秒
-- **注意**：仕样书共享路径 `\\192.168.160.6\仕样书$\` 在 `backend/routes/spec.js` 中写死，不可通过环境变量配置；若网络路径变更需修改 `SPEC_SHARE_PATH`。
+- **注意**：仕样书共享路径可在 `backend/.env` 中通过 `SPEC_SHARE_PATH` 修改，修改后需重启后端服务。
 
 ## 强制修改密码
 
@@ -475,6 +475,70 @@ obara-task-manager/
 └── stop.bat
 ```
 
+## 数据库维护
+
+系统内置自动维护功能，可通过 API 或配置管理数据库备份、任务导出和年度数据清理。
+
+### 自动维护
+
+自动维护在每日指定时间（默认 `00:30`）执行以下任务：
+
+| 任务 | 说明 | 默认状态 |
+|------|------|----------|
+| 数据库备份 | 复制 `db.json` 到备份目录 | 启用 |
+| 任务数据导出 | 导出任务数据为 JSON 文件 | 启用 |
+| 过期备份清理 | 删除超过保留天数的旧备份 | 自动执行 |
+| 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
+
+### 维护配置
+
+默认配置：
+
+```json
+{
+  "enabled": true,
+  "dailyBackupEnabled": true,
+  "dailyTaskExportEnabled": true,
+  "backupRetentionDays": 30,
+  "scheduleTime": "00:30",
+  "yearlyCleanupEnabled": true,
+  "yearlyCleanupMonth": 1,
+  "yearlyCleanupCheckDays": 10,
+  "yearlyTaskRetentionYears": 1,
+  "backupDir": "backups/database",
+  "taskExportDir": "backups/task-exports",
+  "yearlyArchiveDir": "backups/yearly-archives"
+}
+```
+
+说明：
+- 年度清理会在指定月份（默认 1 月）的前 N 天（默认 10 天）内执行。
+- 清理前会将旧数据归档到年度归档目录，保留完整备份。
+- 每年只执行一次，记录在 `yearlyCleanupHistory` 中。
+
+### 手动维护操作
+
+超级管理员可通过以下 API 手动执行维护操作：
+
+| 操作 | API | 说明 |
+|------|-----|------|
+| 数据库备份 | `POST /api/system/maintenance/backup` | 立即创建数据库备份 |
+| 任务导出 | `POST /api/system/maintenance/export-tasks` | 立即导出任务数据 |
+| 清理过期备份 | `POST /api/system/maintenance/cleanup-backups` | 清理超过保留天数的备份 |
+| 年度清理 | `POST /api/system/maintenance/yearly-cleanup?force=true` | 强制执行年度任务清理 |
+| 清空登录日志 | `DELETE /api/system/cleanup/login-logs` | 清空所有登录日志 |
+| 清空操作日志 | `DELETE /api/system/cleanup/audit-logs` | 清空所有操作日志 |
+| 清理旧任务 | `DELETE /api/system/cleanup/old-tasks?keepMonths=12` | 清理指定月份之前的任务数据 |
+| 清理状态追踪 | `DELETE /api/system/cleanup/status-tracking?keepMonths=24` | 清理指定月份之前的状态追踪数据 |
+
+### 数据库统计
+
+`GET /api/system/db-stats` 返回数据库统计信息：
+
+- 文件大小（字节/KB/MB）
+- 用户、设计人员、任务、日志等数据条数
+- 警告信息（超过 10MB/50MB、数据超过 24 个月）
+
 ## 维护建议
 
 - 定期备份 `backend/db.json`，并在执行升级或批量导入前额外备份一次。
@@ -482,6 +546,8 @@ obara-task-manager/
 - 公网部署时建议关闭未登录查看，并根据需要关闭多设备同时在线。
 - 大批量导入前先在测试环境验证表格格式，确认设计人员列表已提前维护完成。
 - 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
+- 监控数据库大小，当超过 10MB 时考虑清理旧数据或增加存储空间。
+- 建议启用自动维护，并根据业务需求调整备份保留天数和数据保留年限。
 
 ## License
 

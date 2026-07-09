@@ -35,6 +35,50 @@ interface Toast {
   id: number;
 }
 
+interface MaintenanceFile {
+  name: string;
+  path: string;
+  size: number;
+  mtime: string;
+}
+
+interface MaintenanceSettings {
+  enabled: boolean;
+  dailyBackupEnabled: boolean;
+  dailyTaskExportEnabled: boolean;
+  backupRetentionDays: number;
+  scheduleTime: string;
+  yearlyCleanupEnabled: boolean;
+  yearlyCleanupMonth: number;
+  yearlyCleanupCheckDays: number;
+  yearlyTaskRetentionYears: number;
+  backupDir: string;
+  taskExportDir: string;
+  yearlyArchiveDir: string;
+}
+
+interface MaintenanceStatus {
+  settings: MaintenanceSettings;
+  paths: { database: string; backupDir: string; taskExportDir: string; yearlyArchiveDir: string };
+  files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[] };
+  scheduler: { running: boolean; nextRunAt?: string; lastRun?: any };
+}
+
+const defaultMaintenanceSettings: MaintenanceSettings = {
+  enabled: true,
+  dailyBackupEnabled: true,
+  dailyTaskExportEnabled: true,
+  backupRetentionDays: 30,
+  scheduleTime: '00:30',
+  yearlyCleanupEnabled: true,
+  yearlyCleanupMonth: 1,
+  yearlyCleanupCheckDays: 10,
+  yearlyTaskRetentionYears: 1,
+  backupDir: 'backups/database',
+  taskExportDir: 'backups/task-exports',
+  yearlyArchiveDir: 'backups/yearly-archives'
+};
+
 const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
@@ -46,7 +90,7 @@ const SystemSettings = () => {
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState<'data' | 'login' | 'logs'>('data');
+  const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs'>('data');
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
@@ -56,6 +100,10 @@ const SystemSettings = () => {
   const [stExportDeliveryMonth, setStExportDeliveryMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [stExportMonthMode, setStExportMonthMode] = useState<'production' | 'delivery'>('production');
   const [whExportMonth, setWhExportMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [maintenanceStatus, setMaintenanceStatus] = useState<MaintenanceStatus | null>(null);
+  const [maintenanceSettings, setMaintenanceSettings] = useState<MaintenanceSettings>(defaultMaintenanceSettings);
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false);
+  const [maintenanceSaving, setMaintenanceSaving] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -114,17 +162,33 @@ const SystemSettings = () => {
     }
   }, [isSuperAdmin, token]);
 
+
+
+  const fetchMaintenanceStatus = useCallback(async () => {
+    if (!isSuperAdmin || !token) return;
+    setMaintenanceLoading(true);
+    try {
+      const res = await axios.get('/api/system/maintenance', authHeader);
+      setMaintenanceStatus(res.data);
+      setMaintenanceSettings({ ...defaultMaintenanceSettings, ...res.data.settings });
+    } catch {
+      addToast('???????????', 'error');
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  }, [isSuperAdmin, token]);
+
   useEffect(() => {
     const init = async () => {
       await Promise.all([fetchSettings(), fetchAccessSettings()]);
-      await fetchLoginLogs();
+      await Promise.all([fetchLoginLogs(), fetchMaintenanceStatus()]);
       setLoading(false);
     };
     init();
-  }, [fetchSettings, fetchAccessSettings, fetchLoginLogs]);
+  }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchMaintenanceStatus]);
 
   useEffect(() => {
-    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs')) {
+    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'maintenance')) {
       setActiveTab('data');
     }
   }, [isSuperAdmin, activeTab]);
@@ -261,6 +325,44 @@ const SystemSettings = () => {
     }
   };
 
+  const updateMaintenanceField = <K extends keyof MaintenanceSettings>(key: K, value: MaintenanceSettings[K]) => {
+    setMaintenanceSettings(prev => ({ ...prev, [key]: value }));
+  };
+
+  const saveMaintenanceSettings = async () => {
+    if (!token) return;
+    setMaintenanceSaving(true);
+    try {
+      const res = await axios.put('/api/system/maintenance', maintenanceSettings, authHeader);
+      setMaintenanceStatus(res.data);
+      setMaintenanceSettings({ ...defaultMaintenanceSettings, ...res.data.settings });
+      addToast('??????????', 'success');
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '???????????', 'error');
+    } finally {
+      setMaintenanceSaving(false);
+    }
+  };
+
+  const runMaintenanceAction = async (url: string, successMessage: string, body: any = {}) => {
+    if (!token) return;
+    setMaintenanceLoading(true);
+    try {
+      await axios.post(url, body, authHeader);
+      addToast(successMessage, 'success');
+      await fetchMaintenanceStatus();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '??????', 'error');
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const formatFileSize = (size: number) => {
+    if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`;
+    return `${(size / 1024).toFixed(1)} KB`;
+  };
+
   const handleTaskImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !token) return;
@@ -377,6 +479,13 @@ const SystemSettings = () => {
           </button>
           {isSuperAdmin && (
             <>
+              <button
+                onClick={() => setActiveTab('maintenance')}
+                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'maintenance' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <Clock size={18} />
+                数据库维护
+              </button>
               <button
                 onClick={() => setActiveTab('login')}
                 className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'login' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
@@ -622,6 +731,102 @@ const SystemSettings = () => {
               </div>
             )}
           </>
+        )}
+
+        {activeTab === 'maintenance' && isSuperAdmin && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center">
+                    <Database className="mr-2 text-blue-600" size={22} />
+                    数据库维护
+                  </h3>
+                  <p className="text-sm text-gray-500 mt-1">默认每天 00:30 备份数据库、导出任务数据，并清理 30 天前的普通备份。</p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={fetchMaintenanceStatus} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 font-bold rounded-lg transition">
+                    <RefreshCw size={16} className={maintenanceLoading ? 'animate-spin' : ''} />刷新
+                  </button>
+                  <button onClick={saveMaintenanceSettings} disabled={maintenanceSaving} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-lg transition">
+                    {maintenanceSaving ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle size={16} />}保存设置
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                {[
+                  { label: '启用自动维护', key: 'enabled' as const },
+                  { label: '每日数据库备份', key: 'dailyBackupEnabled' as const },
+                  { label: '每日任务导出', key: 'dailyTaskExportEnabled' as const },
+                  { label: '年度任务清理', key: 'yearlyCleanupEnabled' as const }
+                ].map(item => (
+                  <label key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 font-bold text-gray-700">
+                    {item.label}
+                    <input type="checkbox" checked={Boolean(maintenanceSettings[item.key])} onChange={(e) => updateMaintenanceField(item.key, e.target.checked as any)} className="w-5 h-5 accent-blue-600" />
+                  </label>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-5">
+                <label className="block"><span className="text-sm font-bold text-gray-700">每日执行时间</span><input type="time" value={maintenanceSettings.scheduleTime} onChange={(e) => updateMaintenanceField('scheduleTime', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">备份保留天数</span><input type="number" min={1} value={maintenanceSettings.backupRetentionDays} onChange={(e) => updateMaintenanceField('backupRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">年度检测月份</span><input type="number" min={1} max={12} value={maintenanceSettings.yearlyCleanupMonth} onChange={(e) => updateMaintenanceField('yearlyCleanupMonth', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">月初检测天数</span><input type="number" min={1} max={31} value={maintenanceSettings.yearlyCleanupCheckDays} onChange={(e) => updateMaintenanceField('yearlyCleanupCheckDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">任务保留年数</span><input type="number" min={1} max={10} value={maintenanceSettings.yearlyTaskRetentionYears} onChange={(e) => updateMaintenanceField('yearlyTaskRetentionYears', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mt-5">
+                <label className="block"><span className="text-sm font-bold text-gray-700">数据库备份目录</span><input value={maintenanceSettings.backupDir} onChange={(e) => updateMaintenanceField('backupDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">任务导出目录</span><input value={maintenanceSettings.taskExportDir} onChange={(e) => updateMaintenanceField('taskExportDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">年度永久归档目录</span><input value={maintenanceSettings.yearlyArchiveDir} onChange={(e) => updateMaintenanceField('yearlyArchiveDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                <h3 className="font-bold text-gray-800 mb-4">手动维护</h3>
+                <div className="grid grid-cols-1 gap-3">
+                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/backup', '数据库备份已完成')} disabled={maintenanceLoading} className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即备份数据库</button>
+                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/export-tasks', '任务管理数据已导出')} disabled={maintenanceLoading} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
+                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/cleanup-backups', '过期备份已清理')} disabled={maintenanceLoading} className="px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清理过期备份</button>
+                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/yearly-cleanup', '年度任务清理检测已完成', { force: true })} disabled={maintenanceLoading} className="px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition">执行年度清理检测</button>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                <h3 className="font-bold text-gray-800 mb-4">运行状态</h3>
+                <div className="space-y-3 text-sm text-gray-600">
+                  <div><span className="font-bold text-gray-700">下次执行：</span>{maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-'}</div>
+                  <div><span className="font-bold text-gray-700">数据库：</span><span className="break-all">{maintenanceStatus?.paths?.database || '-'}</span></div>
+                  <div><span className="font-bold text-gray-700">备份目录：</span><span className="break-all">{maintenanceStatus?.paths?.backupDir || '-'}</span></div>
+                  <div><span className="font-bold text-gray-700">任务导出：</span><span className="break-all">{maintenanceStatus?.paths?.taskExportDir || '-'}</span></div>
+                  <div><span className="font-bold text-gray-700">年度归档：</span><span className="break-all">{maintenanceStatus?.paths?.yearlyArchiveDir || '-'}</span></div>
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-amber-800">年度清理会先永久归档将删除的数据；例如 2027 年 1 月会删除 2026 年 1 月之前的任务数据。</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {[
+                { title: '最近数据库备份', files: maintenanceStatus?.files?.backups || [] },
+                { title: '最近任务导出', files: maintenanceStatus?.files?.taskExports || [] },
+                { title: '年度永久归档', files: maintenanceStatus?.files?.yearlyArchives || [] }
+              ].map(group => (
+                <div key={group.title} className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                  <h3 className="font-bold text-gray-800 mb-4">{group.title}</h3>
+                  <div className="space-y-3">
+                    {group.files.length === 0 ? <div className="text-sm text-gray-400">暂无文件</div> : group.files.map(file => (
+                      <div key={file.path} className="rounded-lg bg-gray-50 border border-gray-100 p-3">
+                        <div className="text-sm font-bold text-gray-700 break-all">{file.name}</div>
+                        <div className="text-xs text-gray-400 mt-1">{formatFileSize(file.size)} ? {format(new Date(file.mtime), 'yyyy-MM-dd HH:mm')}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
         {activeTab === 'login' && (
