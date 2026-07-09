@@ -2368,14 +2368,14 @@ const Dashboard = () => {
       </header>
 
       {!isOnline && (
-        <div className="bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+        <div className="relative z-50 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>当前处于离线模式，正在使用本地缓存数据，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
         </div>
       )}
 
       {versionInfo?.hasUpdate && (
-        <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-blue-700 shadow-sm">
+        <div className="relative z-50 bg-blue-600 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-blue-700 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>
             检测到新版本 {versionInfo.latestVersion}，当前版本为 {versionInfo.currentVersion}。

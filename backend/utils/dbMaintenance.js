@@ -1,6 +1,8 @@
 ﻿const fs = require('fs');
 const path = require('path');
 const db = require('../db');
+const XLSX = require('xlsx');
+const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
 const securityConfig = require('../config/security');
 
 const backendRoot = path.resolve(__dirname, '..');
@@ -76,6 +78,86 @@ const countTaskItems = (tasks = []) => tasks.reduce((total, sheet) => {
   return total + dayItems;
 }, 0);
 
+
+const sheetHasData = (sheet) => {
+  if (!sheet?.days || typeof sheet.days !== 'object') return false;
+  return Object.values(sheet.days).some(items => Array.isArray(items) && items.length > 0);
+};
+
+const getDaysInMonth = (year, month) => new Date(year, month, 0).getDate();
+
+const getTaskHours = (item = {}) => {
+  if (Array.isArray(item.guns) && item.guns.length > 0) {
+    return item.guns.reduce((sum, gun) => sum + (parseFloat(gun?.hours) || 0), 0);
+  }
+  return parseFloat(item.hours) || 0;
+};
+
+const getTaskName = (item = {}) => {
+  if (item.leaveType === 'sick') return '??';
+  if (item.leaveType === 'vacation') return '??';
+  if (item.leaveType === 'illness') return '??';
+  if (item.leaveType === 'trip') {
+    const name = String(item.taskName || '').trim();
+    return name ? (name.endsWith('??') ? name : `${name}??`) : '??';
+  }
+  return item.taskName || '';
+};
+
+const buildTaskExportWorkbook = (sheets, designers, workdayOverrides = {}) => {
+  const workbook = XLSX.utils.book_new();
+  const designerMap = new Map((designers || []).map(designer => [designer.id, designer]));
+  const monthGroups = new Map();
+
+  sheets.forEach(sheet => {
+    const key = `${sheet.year}-${pad(sheet.month)}`;
+    if (!monthGroups.has(key)) monthGroups.set(key, []);
+    monthGroups.get(key).push(sheet);
+  });
+
+  [...monthGroups.keys()].sort().forEach(key => {
+    const [year, month] = key.split('-').map(Number);
+    const daysInMonth = getDaysInMonth(year, month);
+    const header = ['???'];
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const dateKey = `${year}-${pad(month)}-${pad(day)}`;
+      const weekendMark = getEffectiveIsWeekend(dateKey, workdayOverrides) ? '???' : '';
+      header.push(`${day}?${weekendMark} ????`, `${day}? ??`);
+    }
+    header.push('????');
+
+    const rows = [header];
+    monthGroups.get(key).forEach(sheet => {
+      const designer = designerMap.get(sheet.designerId) || designerMap.get(sheet.userId) || {};
+      const maxRows = Math.max(1, ...Array.from({ length: daysInMonth }, (_, index) => {
+        const dateKey = `${year}-${pad(month)}-${pad(index + 1)}`;
+        return Array.isArray(sheet.days?.[dateKey]) ? sheet.days[dateKey].length : 0;
+      }));
+      const monthlyTotal = Array.from({ length: daysInMonth }, (_, index) => {
+        const dateKey = `${year}-${pad(month)}-${pad(index + 1)}`;
+        return (sheet.days?.[dateKey] || []).reduce((sum, item) => sum + getTaskHours(item), 0);
+      }).reduce((sum, hours) => sum + hours, 0);
+
+      for (let rowIndex = 0; rowIndex < maxRows; rowIndex += 1) {
+        const row = [rowIndex === 0 ? (designer.name || sheet.designerName || sheet.designerId || '') : ''];
+        for (let day = 1; day <= daysInMonth; day += 1) {
+          const dateKey = `${year}-${pad(month)}-${pad(day)}`;
+          const item = sheet.days?.[dateKey]?.[rowIndex];
+          row.push(item ? getTaskName(item) : '', item ? getTaskHours(item) : '');
+        }
+        row.push(rowIndex === 0 ? monthlyTotal : '');
+        rows.push(row);
+      }
+    });
+
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    worksheet['!cols'] = [{ wch: 12 }, ...Array.from({ length: daysInMonth }, () => [{ wch: 28 }, { wch: 8 }]).flat(), { wch: 10 }];
+    XLSX.utils.book_append_sheet(workbook, worksheet, key);
+  });
+
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xls' });
+};
+
 const listManagedFiles = (dirPath, predicate = () => true) => {
   if (!fs.existsSync(dirPath)) return [];
   return fs.readdirSync(dirPath, { withFileTypes: true })
@@ -104,19 +186,32 @@ const exportTaskData = (options = {}) => {
   const taskExportDir = resolveManagedDir(options.dir || settings.taskExportDir);
   ensureDir(taskExportDir);
   const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  const payload = {
-    exportedAt: new Date().toISOString(),
-    type: options.type || 'scheduled-task-export',
-    taskSheets: tasks.length,
-    taskItems: countTaskItems(tasks),
-    designers: data.designers || [],
-    tasks,
-    workdayOverrides: data.settings?.workdayOverrides || {}
-  };
-  const fileName = `task-export-${toTimestamp()}.json`;
+  const exportSheets = tasks.filter(sheetHasData);
+
+  if (exportSheets.length === 0) {
+    const result = { skipped: true, reason: 'no-data', taskSheets: 0, taskItems: 0 };
+    if (options.requireData) {
+      const error = new Error('????????');
+      error.statusCode = 404;
+      error.result = result;
+      throw error;
+    }
+    return result;
+  }
+
+  const buffer = buildTaskExportWorkbook(exportSheets, data.designers || [], normalizeWorkdayOverrides(data.settings?.workdayOverrides));
+  const fileName = `task-export-${toTimestamp()}.xls`;
   const filePath = path.join(taskExportDir, fileName);
-  writeJsonFile(filePath, payload);
-  return { fileName, filePath, dir: taskExportDir, size: fs.statSync(filePath).size, taskSheets: payload.taskSheets, taskItems: payload.taskItems };
+  fs.writeFileSync(filePath, buffer);
+  return {
+    fileName,
+    filePath,
+    dir: taskExportDir,
+    size: fs.statSync(filePath).size,
+    taskSheets: exportSheets.length,
+    taskItems: countTaskItems(exportSheets),
+    type: options.type || 'scheduled-task-export'
+  };
 };
 
 const cleanupOldBackups = (options = {}) => {

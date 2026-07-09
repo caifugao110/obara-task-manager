@@ -359,40 +359,7 @@ const SystemSettings = () => {
   };
 
   const handleManualTaskExport = async () => {
-    if (!token) return;
-    setMaintenanceLoading(true);
-    try {
-      const res = await axios.post('/api/system/maintenance/export-tasks', {}, {
-        ...authHeader,
-        responseType: 'blob'
-      });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `obara-tasks-${format(new Date(), 'yyyy-MM-dd-HHmmss')}.xls`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-      addToast('任务管理数据已导出', 'success');
-      await fetchMaintenanceStatus();
-    } catch (err: any) {
-      if (err.response?.status === 404) {
-        addToast('没有可导出的数据', 'error');
-      } else if (err.response?.data instanceof Blob) {
-        try {
-          const errorText = await err.response.data.text();
-          const errorData = JSON.parse(errorText);
-          addToast(errorData.message || '导出失败', 'error');
-        } catch {
-          addToast('导出失败', 'error');
-        }
-      } else {
-        addToast(err.response?.data?.message || '导出失败', 'error');
-      }
-    } finally {
-      setMaintenanceLoading(false);
-    }
+    await runMaintenanceAction('/api/system/maintenance/export-tasks', '???????');
   };
 
   const formatFileSize = (size: number) => {
