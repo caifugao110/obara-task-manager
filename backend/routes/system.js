@@ -7,7 +7,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const https = require('https');
 const db = require('../db');
-const { authMiddleware, superAdminMiddleware, guestViewMiddleware } = require('../middleware/auth');
+const { authMiddleware, superAdminMiddleware, guestViewMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
@@ -16,6 +16,7 @@ const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDis
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
 const maintenance = require('../utils/dbMaintenance');
+const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -1088,7 +1089,7 @@ router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(a
   res.json(logs);
 }));
 
-router.get('/export-xls', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+router.get('/export-xls', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const tasks = data.tasks || [];
   const designers = data.designers || [];
@@ -1098,15 +1099,7 @@ router.get('/export-xls', [authMiddleware, superAdminMiddleware], asyncHandler(a
     return res.status(404).json({ message: '没有可导出的数据' });
   }
 
-  const monthGroups = new Map();
-  exportSheets.forEach(sheet => {
-    const key = `${sheet.year}-${String(sheet.month).padStart(2, '0')}`;
-    if (!monthGroups.has(key)) monthGroups.set(key, []);
-    monthGroups.get(key).push(sheet);
-  });
-
-  const xml = buildExcelXml(monthGroups, designers, normalizeWorkdayOverrides(data.settings?.workdayOverrides));
-  const buffer = Buffer.from(xml, 'utf8');
+  const buffer = buildTaskExportBuffer(exportSheets, designers, normalizeWorkdayOverrides(data.settings?.workdayOverrides));
   const filename = `obara-tasks-${formatDownloadTimestamp()}.xls`;
   res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

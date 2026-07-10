@@ -359,7 +359,7 @@ const SystemSettings = () => {
   };
 
   const handleManualTaskExport = async () => {
-    await runMaintenanceAction('/api/system/maintenance/export-tasks', '\u4efb\u52a1\u8868\u683c\u5df2\u5bfc\u51fa');
+    await handleTaskExport();
   };
 
   const formatFileSize = (size: number) => {
@@ -580,27 +580,27 @@ const SystemSettings = () => {
               </h3>
               <p className="text-sm text-gray-500 mb-6">
                 {isSuperAdmin
-                  ? '导入文件需与本系统导出的 xls 格式一致；每次导入只能选择一个月份进行覆盖。'
-                  : '任务数据的导入导出仅超级管理员可操作。'}
+                  ? '\u5bfc\u5165\u6587\u4ef6\u9700\u4e0e\u672c\u7cfb\u7edf\u5bfc\u51fa\u7684 xls \u683c\u5f0f\u4e00\u81f4\uff1b\u6bcf\u6b21\u5bfc\u5165\u53ea\u80fd\u9009\u62e9\u4e00\u4e2a\u6708\u4efd\u8fdb\u884c\u8986\u76d6\u3002'
+                  : '\u4e00\u822c\u7ba1\u7406\u5458\u53ef\u5bfc\u51fa\u4efb\u52a1\u6570\u636e\uff1b\u5bfc\u5165\u4efb\u52a1\u6570\u636e\u4ec5\u8d85\u7ea7\u7ba1\u7406\u5458\u53ef\u64cd\u4f5c\u3002'}
               </p>
               <div className="flex flex-wrap gap-4">
+                <button
+                  onClick={handleTaskExport}
+                  disabled={exporting}
+                  className="flex items-center gap-2 px-5 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                >
+                  {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                  {'\u5bfc\u51fa\u4efb\u52a1\u6570\u636e'}
+                </button>
                 {isSuperAdmin && (
                   <>
-                    <button
-                      onClick={handleTaskExport}
-                      disabled={exporting}
-                      className="flex items-center gap-2 px-5 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                    >
-                      {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
-                      导出任务数据
-                    </button>
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       disabled={importing}
                       className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
                     >
                       {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
-                      导入任务数据
+                      {'\u5bfc\u5165\u4efb\u52a1\u6570\u636e'}
                     </button>
                     <input
                       ref={fileInputRef}
@@ -610,11 +610,6 @@ const SystemSettings = () => {
                       onChange={handleTaskImport}
                     />
                   </>
-                )}
-                {!isSuperAdmin && (
-                  <div className="text-sm text-gray-500 bg-gray-50 rounded-xl px-4 py-3 border border-gray-100">
-                    任务数据的导入导出功能仅对超级管理员开放。
-                  </div>
                 )}
               </div>
             </div>
@@ -792,7 +787,7 @@ const SystemSettings = () => {
                 <h3 className="font-bold text-gray-800 mb-4">手动维护</h3>
                 <div className="grid grid-cols-1 gap-3">
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/backup', '数据库备份已完成')} disabled={maintenanceLoading} className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即备份数据库</button>
-                  <button onClick={handleManualTaskExport} disabled={maintenanceLoading} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
+                  <button onClick={handleManualTaskExport} disabled={maintenanceLoading || exporting} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/cleanup-backups', '过期备份已清理')} disabled={maintenanceLoading} className="px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清理过期备份</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/yearly-cleanup', '年度任务清理检测已完成', { force: true })} disabled={maintenanceLoading} className="px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition">执行年度清理检测</button>
                 </div>

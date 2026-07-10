@@ -3,6 +3,7 @@ const path = require('path');
 const db = require('../db');
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
+const { buildTaskExportBuffer } = require('./taskExportWorkbook');
 const securityConfig = require('../config/security');
 
 const backendRoot = path.resolve(__dirname, '..');
@@ -199,7 +200,7 @@ const exportTaskData = (options = {}) => {
     return result;
   }
 
-  const buffer = buildTaskExportWorkbook(exportSheets, data.designers || [], normalizeWorkdayOverrides(data.settings?.workdayOverrides));
+  const buffer = buildTaskExportBuffer(exportSheets, data.designers || [], normalizeWorkdayOverrides(data.settings?.workdayOverrides));
   const fileName = `task-export-${toTimestamp()}.xls`;
   const filePath = path.join(taskExportDir, fileName);
   fs.writeFileSync(filePath, buffer);
