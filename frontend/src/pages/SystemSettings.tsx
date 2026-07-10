@@ -359,7 +359,7 @@ const SystemSettings = () => {
   };
 
   const handleManualTaskExport = async () => {
-    await handleTaskExport();
+    await runMaintenanceAction('/api/system/maintenance/export-tasks', '\u4efb\u52a1\u8868\u683c\u5df2\u5bfc\u51fa');
   };
 
   const formatFileSize = (size: number) => {
