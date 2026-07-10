@@ -418,7 +418,6 @@ const Dashboard = () => {
   const [selectedCell, setSelectedCell] = useState<{designerId: string, date: string} | null>(null);
   const [editingSessions, setEditingSessions] = useState<Record<string, EditingSession>>({});
   const [history, setHistory] = useState<{operation: string, data: any, timestamp: number}[]>([]);
-  const [tableHeight, setTableHeight] = useState<number>(0);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const handledJumpKeyRef = useRef<string | null>(null);
   const hasShownDisconnectToast = useRef(false);
@@ -448,23 +447,6 @@ const Dashboard = () => {
     axiosInstance.get('/system/version')
       .then(res => setVersionInfo(res.data))
       .catch(() => {});
-  }, []);
-
-  // Calculate table height dynamically
-  useEffect(() => {
-    const calculateHeight = () => {
-      const viewportHeight = window.innerHeight;
-      const headerHeight = 56; // Header height
-      const footerHeight = 36; // Footer height
-      const padding = 0;
-      const scrollbarHeight = 8; // Scrollbar height (minimal)
-      const calculatedHeight = viewportHeight - headerHeight - footerHeight - padding - scrollbarHeight;
-      setTableHeight(calculatedHeight);
-    };
-
-    calculateHeight();
-    window.addEventListener('resize', calculateHeight);
-    return () => window.removeEventListener('resize', calculateHeight);
   }, []);
 
   // Input refs for modal focus
@@ -2253,7 +2235,7 @@ const Dashboard = () => {
       : '离线';
 
   return (
-    <div className="min-h-screen bg-[#f3f3f3] flex flex-col font-sans">
+    <div className="h-screen overflow-hidden bg-[#f3f3f3] flex flex-col font-sans">
       <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map(toast => (
           <div key={toast.id} className={`flex items-center gap-2 px-4 py-3 rounded shadow-lg text-white transition-all duration-300 ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
@@ -2263,7 +2245,7 @@ const Dashboard = () => {
         ))}
       </div>
 
-      <header className="bg-[#217346] text-white px-6 py-2 flex items-center justify-between shadow-md">
+      <header className="shrink-0 bg-[#217346] text-white px-6 py-2 flex items-center justify-between shadow-md">
         
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-2">
@@ -2368,14 +2350,14 @@ const Dashboard = () => {
       </header>
 
       {!isOnline && (
-        <div className="relative z-50 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+        <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>当前处于离线模式，正在使用本地缓存数据，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
         </div>
       )}
 
       {versionInfo?.hasUpdate && (
-        <div className="relative z-50 bg-blue-600 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-blue-700 shadow-sm">
+        <div className="relative z-50 shrink-0 bg-blue-600 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-blue-700 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>
             检测到新版本 {versionInfo.latestVersion}，当前版本为 {versionInfo.currentVersion}。
@@ -2393,9 +2375,9 @@ const Dashboard = () => {
       >
 
 
-        <main className="flex-1 overflow-auto p-0">
-          <div className="bg-white shadow-sm border border-b-0 border-gray-300 overflow-hidden" ref={tableContainerRef}>
-            <div style={{ height: `${tableHeight}px` }} className="overflow-auto">
+        <main className="flex-1 min-h-0 overflow-hidden p-0">
+          <div className="h-full bg-white shadow-sm border border-b-0 border-gray-300 overflow-hidden" ref={tableContainerRef}>
+            <div className="h-full overflow-auto">
               <table className="border-collapse text-[12px] w-full">
               <thead className="text-xs">
                 <tr className="bg-[#f8f9fa] text-gray-600 h-16 table-header-row">
@@ -2620,7 +2602,7 @@ const Dashboard = () => {
         </DragOverlay>
       </DndContext>
 
-      <footer className="bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex justify-between items-center text-[11px] text-gray-500">
+      <footer className="shrink-0 bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex justify-between items-center text-[11px] text-gray-500">
         <div className="flex items-center space-x-4">
           <div className="flex items-center gap-1.5">
             <div className={`w-2 h-2 rounded-full ${footerStatusDotClass}`}></div>
