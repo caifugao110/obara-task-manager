@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul 2>&1
 setlocal
 
@@ -23,12 +23,8 @@ goto :end
 
 :trigger_backup
 echo [INFO] Creating offline backup before shutdown...
-curl -s -X POST http://localhost:%BACKEND_PORT%/api/system/maintenance/offline-backup >nul 2>&1
-if not errorlevel 1 (
-    echo [OK] Offline backup triggered successfully.
-) else (
-    echo [WARN] Failed to trigger backup via API, will skip.
-)
+powershell -Command "try { Invoke-RestMethod -Uri 'http://localhost:%BACKEND_PORT%/api/system/maintenance/offline-backup' -Method POST -TimeoutSec 30; Write-Host '[OK] Offline backup triggered successfully.' } catch { Write-Host '[WARN] Failed to trigger backup via API, will skip.' }"
+
 exit /b 0
 
 :stop_by_port
