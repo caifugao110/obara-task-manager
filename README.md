@@ -413,9 +413,14 @@ obara-task-manager/
 │   │   └── workHours.js
 │   ├── templates/
 │   │   └── spec-pdf/
+│   ├── tests/
+│   │   └── pdf/
 │   └── utils/
 │       ├── auditLogDisplay.js
+│       ├── dbMaintenance.js
 │       ├── exportWorkbook.js
+│       ├── fileUploadSecurity.js
+│       ├── taskExportWorkbook.js
 │       └── workday.js
 ├── docs/
 │   └── API.md
@@ -462,7 +467,8 @@ obara-task-manager/
 │       └── utils/
 │           ├── axios.ts
 │           ├── debounce.ts
-│           └── loginLogs.ts
+│           ├── loginLogs.ts
+│           └── workdayOverrides.ts
 ├── .gitignore
 ├── DEPLOYMENT.md
 ├── LICENSE
@@ -474,6 +480,21 @@ obara-task-manager/
 ├── start-process-hidden.vbs
 └── stop.bat
 ```
+
+### 核心模块说明
+
+| 模块 | 路径 | 说明 |
+|------|------|------|
+| 前端 API 服务层 | `frontend/src/services/api.ts` | 统一管理所有 API 调用，封装认证、用户、设计人员、任务、设置和系统维护接口 |
+| 类型定义 | `frontend/src/types/index.ts` | TypeScript 类型定义，包含用户、任务、设计人员、报表等核心类型 |
+| 认证中间件 | `backend/middleware/auth.js` | JWT 认证、角色校验、游客访问控制 |
+| Socket.IO 认证 | `backend/middleware/socketAuth.js` | WebSocket 连接认证和单设备登录限制 |
+| 操作日志 | `backend/middleware/auditLog.js` | 自动记录所有已登录用户的 API 请求 |
+| 数据库维护 | `backend/utils/dbMaintenance.js` | 自动备份、任务导出、年度清理等维护功能 |
+| 文件上传安全 | `backend/utils/fileUploadSecurity.js` | Excel 文件类型验证、结构检查、恶意内容扫描 |
+| 任务导出 | `backend/utils/taskExportWorkbook.js` | 任务数据导出为 Excel 格式 |
+| 工作日工具 | `backend/utils/workday.js` | 工作日覆盖规则、周末判断等工具函数 |
+| 安全配置 | `backend/config/security.js` | JWT、CORS、Gitee API、数据库路径等安全配置 |
 
 ## 数据库维护
 

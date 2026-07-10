@@ -17,7 +17,9 @@ import {
   Database,
   Clock,
   FileSpreadsheet,
-  ClipboardList
+  ClipboardList,
+  Trash2,
+  X
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
@@ -46,7 +48,9 @@ interface MaintenanceSettings {
   enabled: boolean;
   dailyBackupEnabled: boolean;
   dailyTaskExportEnabled: boolean;
+  offlineBackupEnabled: boolean;
   backupRetentionDays: number;
+  offlineBackupRetentionDays: number;
   scheduleTime: string;
   yearlyCleanupEnabled: boolean;
   yearlyCleanupMonth: number;
@@ -55,12 +59,13 @@ interface MaintenanceSettings {
   backupDir: string;
   taskExportDir: string;
   yearlyArchiveDir: string;
+  offlineBackupDir: string;
 }
 
 interface MaintenanceStatus {
   settings: MaintenanceSettings;
-  paths: { database: string; backupDir: string; taskExportDir: string; yearlyArchiveDir: string };
-  files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[] };
+  paths: { database: string; backupDir: string; taskExportDir: string; yearlyArchiveDir: string; offlineBackupDir: string };
+  files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[]; offlineBackups: MaintenanceFile[] };
   scheduler: { running: boolean; nextRunAt?: string; lastRun?: any };
 }
 
@@ -68,7 +73,9 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   enabled: true,
   dailyBackupEnabled: true,
   dailyTaskExportEnabled: true,
+  offlineBackupEnabled: true,
   backupRetentionDays: 30,
+  offlineBackupRetentionDays: 7,
   scheduleTime: '00:30',
   yearlyCleanupEnabled: true,
   yearlyCleanupMonth: 1,
@@ -76,7 +83,8 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   yearlyTaskRetentionYears: 1,
   backupDir: 'backups/database',
   taskExportDir: 'backups/task-exports',
-  yearlyArchiveDir: 'backups/yearly-archives'
+  yearlyArchiveDir: 'backups/yearly-archives',
+  offlineBackupDir: 'backups/offline'
 };
 
 const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
@@ -105,6 +113,15 @@ const SystemSettings = () => {
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
   const [maintenanceSaving, setMaintenanceSaving] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [showCleanupTasksModal, setShowCleanupTasksModal] = useState(false);
+  const [cleanupTasksMode, setCleanupTasksMode] = useState<'single' | 'batch'>('single');
+  const [cleanupTasksMonth, setCleanupTasksMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [cleanupTasksBeforeMonth, setCleanupTasksBeforeMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [cleanupTasksProcessing, setCleanupTasksProcessing] = useState(false);
+  const [showCleanupStModal, setShowCleanupStModal] = useState(false);
+  const [cleanupStMode, setCleanupStMode] = useState<'production' | 'delivery'>('production');
+  const [cleanupStBeforeMonth, setCleanupStBeforeMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [cleanupStProcessing, setCleanupStProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isSuperAdmin = user?.role === 'superadmin';
@@ -362,6 +379,66 @@ const SystemSettings = () => {
     await runMaintenanceAction('/api/system/maintenance/export-tasks', '\u4efb\u52a1\u8868\u683c\u5df2\u5bfc\u51fa');
   };
 
+  const handleClearLogs = async () => {
+    if (!token) return;
+    if (!window.confirm('确定要清空所有登录日志和操作日志吗？此操作不可恢复！')) return;
+    setMaintenanceLoading(true);
+    try {
+      const res = await axios.post('/api/system/maintenance/clear-logs', {}, authHeader);
+      addToast(`已清空登录日志 ${res.data.loginLogsCount} 条、操作日志 ${res.data.auditLogsCount} 条`, 'success');
+      await fetchLoginLogs();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '清空日志失败', 'error');
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const handleCleanupTasks = async () => {
+    if (!token) return;
+    let confirmMsg = '';
+    let payload: any = {};
+    
+    if (cleanupTasksMode === 'single') {
+      confirmMsg = `确定要清理 ${cleanupTasksMonth} 的所有任务数据吗？此操作不可恢复！`;
+      const [year, month] = cleanupTasksMonth.split('-').map(Number);
+      payload = { year, month };
+    } else {
+      confirmMsg = `确定要清理 ${cleanupTasksBeforeMonth} 之前的所有任务数据吗？此操作不可恢复！`;
+      const [year, month] = cleanupTasksBeforeMonth.split('-').map(Number);
+      payload = { beforeYear: year, beforeMonth: month };
+    }
+
+    if (!window.confirm(confirmMsg)) return;
+    setCleanupTasksProcessing(true);
+    try {
+      const res = await axios.post('/api/system/maintenance/cleanup-tasks', payload, authHeader);
+      addToast(`已清理 ${res.data.removedCount} 条任务数据，剩余 ${res.data.remainingCount} 条`, 'success');
+      setShowCleanupTasksModal(false);
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '清理任务数据失败', 'error');
+    } finally {
+      setCleanupTasksProcessing(false);
+    }
+  };
+
+  const handleCleanupStatusTracking = async () => {
+    if (!token) return;
+    const confirmMsg = `确定要清理 ${cleanupStBeforeMonth} 之前的状态跟踪数据吗？（按${cleanupStMode === 'production' ? '生产计划月份' : '纳期月份'}）此操作不可恢复！`;
+    if (!window.confirm(confirmMsg)) return;
+    setCleanupStProcessing(true);
+    try {
+      const [year, month] = cleanupStBeforeMonth.split('-').map(Number);
+      const res = await axios.post('/api/status-tracking/cleanup', { beforeYear: year, beforeMonth: month, mode: cleanupStMode }, authHeader);
+      addToast(`已清理 ${res.data.removedCount} 条状态跟踪数据，剩余 ${res.data.remainingCount} 条`, 'success');
+      setShowCleanupStModal(false);
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '清理状态跟踪数据失败', 'error');
+    } finally {
+      setCleanupStProcessing(false);
+    }
+  };
+
   const formatFileSize = (size: number) => {
     if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`;
     return `${(size / 1024).toFixed(1)} KB`;
@@ -570,6 +647,164 @@ const SystemSettings = () => {
         </div>
       )}
 
+      {showCleanupTasksModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800 flex items-center">
+                  <Trash2 className="mr-2 text-red-600" size={20} />
+                  清理任务数据
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">选择清理方式，此操作不可恢复。</p>
+              </div>
+              <button onClick={() => setShowCleanupTasksModal(false)} className="p-1 hover:bg-gray-100 rounded">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">
+                清理后的数据将无法恢复，请谨慎操作！建议先进行数据库备份。
+              </div>
+              <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setCleanupTasksMode('single')}
+                  className={`px-4 py-2 text-sm font-medium transition ${
+                    cleanupTasksMode === 'single'
+                      ? 'bg-red-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  按月份清理
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCleanupTasksMode('batch')}
+                  className={`px-4 py-2 text-sm font-medium border-l border-gray-300 transition ${
+                    cleanupTasksMode === 'batch'
+                      ? 'bg-red-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  批量清理
+                </button>
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  {cleanupTasksMode === 'single' ? '选择要清理的月份' : '选择清理时间点（此月份之前的数据将被清理）'}
+                </label>
+                <input
+                  type="month"
+                  value={cleanupTasksMode === 'single' ? cleanupTasksMonth : cleanupTasksBeforeMonth}
+                  onChange={(e) => {
+                    if (cleanupTasksMode === 'single') {
+                      setCleanupTasksMonth(e.target.value);
+                    } else {
+                      setCleanupTasksBeforeMonth(e.target.value);
+                    }
+                  }}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-200 focus:border-red-400 outline-none"
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+              <button
+                onClick={() => setShowCleanupTasksModal(false)}
+                disabled={cleanupTasksProcessing}
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCleanupTasks}
+                disabled={cleanupTasksProcessing || (!cleanupTasksMonth && !cleanupTasksBeforeMonth)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {cleanupTasksProcessing && <RefreshCw size={16} className="animate-spin" />}
+                确认清理
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCleanupStModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800 flex items-center">
+                  <Trash2 className="mr-2 text-purple-600" size={20} />
+                  清理状态跟踪数据
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">选择清理时间点和方式，此操作不可恢复。</p>
+              </div>
+              <button onClick={() => setShowCleanupStModal(false)} className="p-1 hover:bg-gray-100 rounded">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="rounded-lg bg-purple-50 border border-purple-200 px-4 py-3 text-sm text-purple-800">
+                清理后的数据将无法恢复，请谨慎操作！建议先导出需要保留的数据。
+              </div>
+              <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setCleanupStMode('production')}
+                  className={`px-4 py-2 text-sm font-medium transition ${
+                    cleanupStMode === 'production'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  按生产计划月份
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCleanupStMode('delivery')}
+                  className={`px-4 py-2 text-sm font-medium border-l border-gray-300 transition ${
+                    cleanupStMode === 'delivery'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  按纳期月份
+                </button>
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  选择清理时间点（此月份之前的数据将被清理）
+                </label>
+                <input
+                  type="month"
+                  value={cleanupStBeforeMonth}
+                  onChange={(e) => setCleanupStBeforeMonth(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-200 focus:border-purple-400 outline-none"
+                />
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+              <button
+                onClick={() => setShowCleanupStModal(false)}
+                disabled={cleanupStProcessing}
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCleanupStatusTracking}
+                disabled={cleanupStProcessing || !cleanupStBeforeMonth}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {cleanupStProcessing && <RefreshCw size={16} className="animate-spin" />}
+                确认清理
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 p-8 max-w-5xl mx-auto w-full space-y-8">
         {activeTab === 'data' && (
           <>
@@ -601,6 +836,14 @@ const SystemSettings = () => {
                     >
                       {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
                       {'\u5bfc\u5165\u4efb\u52a1\u6570\u636e'}
+                    </button>
+                    <button
+                      onClick={() => setShowCleanupTasksModal(true)}
+                      disabled={exporting || importing}
+                      className="flex items-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                    >
+                      <Trash2 size={18} />
+                      清理任务数据
                     </button>
                     <input
                       ref={fileInputRef}
@@ -668,6 +911,16 @@ const SystemSettings = () => {
                   {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
                   导出状态跟踪表
                 </button>
+                {isSuperAdmin && (
+                  <button
+                    onClick={() => setShowCleanupStModal(true)}
+                    disabled={exporting}
+                    className="flex items-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                  >
+                    <Trash2 size={18} />
+                    清理状态追踪
+                  </button>
+                )}
               </div>
             </div>
 
@@ -758,7 +1011,8 @@ const SystemSettings = () => {
                   { label: '启用自动维护', key: 'enabled' as const },
                   { label: '每日数据库备份', key: 'dailyBackupEnabled' as const },
                   { label: '每日任务表格导出', key: 'dailyTaskExportEnabled' as const },
-                  { label: '年度任务清理', key: 'yearlyCleanupEnabled' as const }
+                  { label: '年度任务清理', key: 'yearlyCleanupEnabled' as const },
+                  { label: '断网自动备份', key: 'offlineBackupEnabled' as const }
                 ].map(item => (
                   <label key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 font-bold text-gray-700">
                     {item.label}
@@ -767,18 +1021,20 @@ const SystemSettings = () => {
                 ))}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-5">
+              <div className="grid grid-cols-1 md:grid-cols-6 gap-5">
                 <label className="block"><span className="text-sm font-bold text-gray-700">每日执行时间</span><input type="time" value={maintenanceSettings.scheduleTime} onChange={(e) => updateMaintenanceField('scheduleTime', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">备份保留天数</span><input type="number" min={1} value={maintenanceSettings.backupRetentionDays} onChange={(e) => updateMaintenanceField('backupRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">断网备份保留天数</span><input type="number" min={1} value={maintenanceSettings.offlineBackupRetentionDays} onChange={(e) => updateMaintenanceField('offlineBackupRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">年度检测月份</span><input type="number" min={1} max={12} value={maintenanceSettings.yearlyCleanupMonth} onChange={(e) => updateMaintenanceField('yearlyCleanupMonth', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">月初检测天数</span><input type="number" min={1} max={31} value={maintenanceSettings.yearlyCleanupCheckDays} onChange={(e) => updateMaintenanceField('yearlyCleanupCheckDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">任务保留年数</span><input type="number" min={1} max={10} value={maintenanceSettings.yearlyTaskRetentionYears} onChange={(e) => updateMaintenanceField('yearlyTaskRetentionYears', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mt-5">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-5 mt-5">
                 <label className="block"><span className="text-sm font-bold text-gray-700">数据库备份目录</span><input value={maintenanceSettings.backupDir} onChange={(e) => updateMaintenanceField('backupDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">任务导出目录</span><input value={maintenanceSettings.taskExportDir} onChange={(e) => updateMaintenanceField('taskExportDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">年度永久归档目录</span><input value={maintenanceSettings.yearlyArchiveDir} onChange={(e) => updateMaintenanceField('yearlyArchiveDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">断网备份目录</span><input value={maintenanceSettings.offlineBackupDir} onChange={(e) => updateMaintenanceField('offlineBackupDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
               </div>
             </div>
 
@@ -790,6 +1046,7 @@ const SystemSettings = () => {
                   <button onClick={handleManualTaskExport} disabled={maintenanceLoading || exporting} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/cleanup-backups', '过期备份已清理')} disabled={maintenanceLoading} className="px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清理过期备份</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/yearly-cleanup', '年度任务清理检测已完成', { force: true })} disabled={maintenanceLoading} className="px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition">执行年度清理检测</button>
+                  <button onClick={handleClearLogs} disabled={maintenanceLoading} className="px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清空所有日志</button>
                 </div>
               </div>
 
@@ -801,16 +1058,18 @@ const SystemSettings = () => {
                   <div><span className="font-bold text-gray-700">备份目录：</span><span className="break-all">{maintenanceStatus?.paths?.backupDir || '-'}</span></div>
                   <div><span className="font-bold text-gray-700">任务导出：</span><span className="break-all">{maintenanceStatus?.paths?.taskExportDir || '-'}</span></div>
                   <div><span className="font-bold text-gray-700">年度归档：</span><span className="break-all">{maintenanceStatus?.paths?.yearlyArchiveDir || '-'}</span></div>
-                  <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-amber-800">年度清理会先永久归档将删除的数据；例如 2027 年 1 月会删除 2026 年 1 月之前的任务数据。</div>
+                  <div><span className="font-bold text-gray-700">断网备份：</span><span className="break-all">{maintenanceStatus?.paths?.offlineBackupDir || '-'}</span></div>
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-amber-800">年度清理会先永久归档将删除的数据；例如 2027 年 1 月会删除 2026 年 1 月之前的任务数据。断网备份在服务器关闭时（Ctrl+C、SIGTERM）自动触发。</div>
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
               {[
                 { title: '最近数据库备份', files: maintenanceStatus?.files?.backups || [] },
                 { title: '最近任务导出', files: maintenanceStatus?.files?.taskExports || [] },
-                { title: '年度永久归档', files: maintenanceStatus?.files?.yearlyArchives || [] }
+                { title: '年度永久归档', files: maintenanceStatus?.files?.yearlyArchives || [] },
+                { title: '最近断网备份', files: maintenanceStatus?.files?.offlineBackups || [] }
               ].map(group => (
                 <div key={group.title} className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
                   <h3 className="font-bold text-gray-800 mb-4">{group.title}</h3>

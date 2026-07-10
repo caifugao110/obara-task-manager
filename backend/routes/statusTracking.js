@@ -558,4 +558,52 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
   res.json({ importedRows, updatedRows });
 }));
 
+router.post('/cleanup', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { beforeMonth, beforeYear, mode } = req.body;
+
+  if (!beforeMonth || !beforeYear) {
+    return res.status(400).json({ message: '请指定清理时间点' });
+  }
+
+  const m = parseInt(beforeMonth, 10);
+  const y = parseInt(beforeYear, 10);
+
+  const data = db.readDb();
+  const items = Array.isArray(data.statusTrackingItems) ? data.statusTrackingItems : [];
+  const originalCount = items.length;
+
+  let filteredItems;
+
+  if (mode === 'delivery') {
+    filteredItems = items.filter(item => {
+      if (!item.deliveryDate) return true;
+      const [dy, dm] = item.deliveryDate.split('-').map(Number);
+      if (dy < y) return false;
+      if (dy === y && dm < m) return false;
+      return true;
+    });
+  } else {
+    filteredItems = items.filter(item => {
+      const planMonths = getItemPlanMonths(item);
+      if (planMonths.length === 0) return true;
+      const oldestMonth = planMonths[0];
+      const [py, pm] = oldestMonth.split('-').map(Number);
+      if (py < y) return false;
+      if (py === y && pm < m) return false;
+      return true;
+    });
+  }
+
+  const removedCount = originalCount - filteredItems.length;
+  data.statusTrackingItems = filteredItems;
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  if (io) {
+    io.emit('status_tracking_bulk', data.statusTrackingItems);
+  }
+
+  res.json({ message: '状态跟踪数据清理完成', removedCount, remainingCount: filteredItems.length });
+}));
+
 module.exports = router;

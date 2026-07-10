@@ -1048,6 +1048,53 @@ router.post('/maintenance/yearly-cleanup', [authMiddleware, superAdminMiddleware
   res.json({ message: result.skipped ? '年度任务清理检测已跳过' : '年度任务清理检测已完成', yearlyCleanup: result });
 }));
 
+router.post('/maintenance/clear-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const loginLogsCount = (data.loginLogs || []).length;
+  const auditLogsCount = (data.auditLogs || []).length;
+  data.loginLogs = [];
+  data.auditLogs = [];
+  await db.writeDb(data);
+  res.json({ message: '日志已清空', loginLogsCount, auditLogsCount });
+}));
+
+router.post('/maintenance/cleanup-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { month, year, beforeMonth, beforeYear } = req.body;
+
+  const data = db.readDb();
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  const originalCount = tasks.length;
+
+  let filteredTasks;
+  let removedCount = 0;
+
+  if (month && year) {
+    const m = parseInt(month, 10);
+    const y = parseInt(year, 10);
+    filteredTasks = tasks.filter(t => !(t.month === m && t.year === y));
+    removedCount = originalCount - filteredTasks.length;
+  } else if (beforeMonth && beforeYear) {
+    const m = parseInt(beforeMonth, 10);
+    const y = parseInt(beforeYear, 10);
+    filteredTasks = tasks.filter(t => {
+      if (t.year < y) return false;
+      if (t.year === y && t.month < m) return false;
+      return true;
+    });
+    removedCount = originalCount - filteredTasks.length;
+  } else {
+    return res.status(400).json({ message: '请指定月份或清理时间点' });
+  }
+
+  data.tasks = filteredTasks;
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  if (io) io.emit('task_refreshed');
+
+  res.json({ message: '任务数据清理完成', removedCount, remainingCount: filteredTasks.length });
+}));
+
 router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const { error, value } = loginLogQuerySchema.validate(req.query, { stripUnknown: true, convert: true });
   if (error) {

@@ -444,11 +444,13 @@ Authorization: Bearer <token>
 | `month` | 否 | 月份，1-12 |
 | `year` | 否 | 年份 |
 | `designerId` | 否 | 设计人员 ID |
+| `summary` | 否 | 是否返回摘要数据，`true` 时返回轻量级摘要 |
 
 说明：
 
 - 传入 `month` 和 `year` 时返回指定月份任务。
 - 不传月份和年份时返回全部任务，供任务报表“全表搜索”使用。
+- `summary=true` 时返回轻量级摘要数据，包含工作表基本信息但不包含任务详情，用于快速加载。
 
 响应：
 
@@ -480,6 +482,30 @@ Authorization: Bearer <token>
   }
 ]
 ```
+
+响应（`summary=true`）：
+
+```json
+[
+  {
+    "id": "sheet-designer-1-2026-7",
+    "designerId": "designer-1",
+    "month": 7,
+    "year": 2026,
+    "hasData": true,
+    "itemCount": 10,
+    "dates": ["2026-07-01", "2026-07-02"]
+  }
+]
+```
+
+字段说明（摘要模式）：
+
+| 字段 | 说明 |
+|------|------|
+| `hasData` | 是否有任务数据 |
+| `itemCount` | 任务条目总数 |
+| `dates` | 包含任务的日期列表 |
 
 ### 创建任务
 
@@ -2266,6 +2292,9 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 登录限流窗口时间（毫秒） |
 | `RATE_LIMIT_MAX` | `20` | 登录限流最大尝试次数 |
+| `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
+| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
+| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
 
 ### CORS 配置示例
 
@@ -2287,13 +2316,22 @@ GITEE_REPO_NAME=obara-task-manager
 
 ```javascript
 {
-  jwt: { secret, expiresIn },
+  jwt: { secret, expiresIn, issuer, audience },
   cors: { origin, methods, credentials },
   rateLimit: { windowMs, max },
   gitee: { token, repoOwner, repoName },
   server: { port, environment },
-  database: { path }
+  database: { path },
+  spec: { sharePath }
 }
 ```
 
-最后更新：2026-07-07
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `jwt.issuer` | JWT 签发者，默认 `obara-task-manager` |
+| `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
+| `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
+
+最后更新：2026-07-10

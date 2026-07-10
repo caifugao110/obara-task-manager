@@ -255,6 +255,7 @@ RATE_LIMIT_MAX=20
 | `RATE_LIMIT_MAX` | `20` | 登录限流最大尝试次数 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
+| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径，用于读取纳期和详细信息 |
 
 生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。系统已增强 JWT 失效机制，登出或修改密码后旧令牌将立即失效。
 
@@ -581,19 +582,6 @@ cd frontend
 ```bat
 node --check backend\routes\settings.js
 ```
-
-## 安全建议
-
-1. **修改默认密码**：首次部署后立即修改 `superadmin` 密码
-2. **更换 JWT_SECRET**：在 `backend/.env` 中设置强随机密钥，服务启动时会强制校验该配置，缺失将导致启动失败
-3. **限制文件权限**：确保 `backend/db.json` 仅允许必要用户读写
-4. **关闭未登录查看**：公网部署时关闭 `allowGuestView`
-5. **启用单设备登录**：如需限制账号共享，关闭 `allowMultiDevice`
-6. **定期备份**：定期备份 `backend/db.json` 和导出 `.xls` 文件
-7. **关注操作日志**：定期查看「操作日志」页面，关注异常 IP 或失败请求
-8. **强制密码修改**：通过重置密码功能强制用户修改初始密码
-9. **路径安全校验**：仕样书 PDF 路径参数会进行多层严格校验，禁止路径遍历攻击，支持检测 URL 编码和 Unicode 编码绕过，无需额外配置
-10. **Socket.IO 安全**：WebSocket 连接强制验证 JWT Token，支持单设备登录限制，当 `allowMultiDevice=false` 时旧连接会被强制断开
 
 ## 性能优化建议
 

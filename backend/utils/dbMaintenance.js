@@ -13,7 +13,9 @@ const defaultMaintenanceSettings = {
   enabled: true,
   dailyBackupEnabled: true,
   dailyTaskExportEnabled: true,
+  offlineBackupEnabled: true,
   backupRetentionDays: 30,
+  offlineBackupRetentionDays: 7,
   scheduleTime: '00:30',
   yearlyCleanupEnabled: true,
   yearlyCleanupMonth: 1,
@@ -22,12 +24,15 @@ const defaultMaintenanceSettings = {
   backupDir: 'backups/database',
   taskExportDir: 'backups/task-exports',
   yearlyArchiveDir: 'backups/yearly-archives',
+  offlineBackupDir: 'backups/offline',
   yearlyCleanupHistory: {}
 };
 
 let schedulerTimer = null;
 let schedulerRunning = false;
 let lastSchedulerState = null;
+let lastOfflineBackupTime = 0;
+const OFFLINE_BACKUP_MIN_INTERVAL = 5 * 60 * 1000;
 
 const pad = (value) => String(value).padStart(2, '0');
 const toTimestamp = (date = new Date()) => `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
@@ -39,8 +44,10 @@ const normalizeMaintenanceSettings = (settings = {}) => ({
   enabled: settings.enabled ?? defaultMaintenanceSettings.enabled,
   dailyBackupEnabled: settings.dailyBackupEnabled ?? defaultMaintenanceSettings.dailyBackupEnabled,
   dailyTaskExportEnabled: settings.dailyTaskExportEnabled ?? defaultMaintenanceSettings.dailyTaskExportEnabled,
+  offlineBackupEnabled: settings.offlineBackupEnabled ?? defaultMaintenanceSettings.offlineBackupEnabled,
   yearlyCleanupEnabled: settings.yearlyCleanupEnabled ?? defaultMaintenanceSettings.yearlyCleanupEnabled,
   backupRetentionDays: Math.max(1, parseInt(settings.backupRetentionDays, 10) || defaultMaintenanceSettings.backupRetentionDays),
+  offlineBackupRetentionDays: Math.max(1, parseInt(settings.offlineBackupRetentionDays, 10) || defaultMaintenanceSettings.offlineBackupRetentionDays),
   yearlyCleanupMonth: Math.min(12, Math.max(1, parseInt(settings.yearlyCleanupMonth, 10) || defaultMaintenanceSettings.yearlyCleanupMonth)),
   yearlyCleanupCheckDays: Math.min(31, Math.max(1, parseInt(settings.yearlyCleanupCheckDays, 10) || defaultMaintenanceSettings.yearlyCleanupCheckDays)),
   yearlyTaskRetentionYears: Math.max(1, parseInt(settings.yearlyTaskRetentionYears, 10) || defaultMaintenanceSettings.yearlyTaskRetentionYears),
@@ -48,6 +55,7 @@ const normalizeMaintenanceSettings = (settings = {}) => ({
   backupDir: String(settings.backupDir || defaultMaintenanceSettings.backupDir).trim(),
   taskExportDir: String(settings.taskExportDir || defaultMaintenanceSettings.taskExportDir).trim(),
   yearlyArchiveDir: String(settings.yearlyArchiveDir || defaultMaintenanceSettings.yearlyArchiveDir).trim(),
+  offlineBackupDir: String(settings.offlineBackupDir || defaultMaintenanceSettings.offlineBackupDir).trim(),
   yearlyCleanupHistory: settings.yearlyCleanupHistory && typeof settings.yearlyCleanupHistory === 'object' && !Array.isArray(settings.yearlyCleanupHistory)
     ? settings.yearlyCleanupHistory
     : {}
@@ -182,6 +190,57 @@ const createDatabaseBackup = (options = {}) => {
   return { fileName, filePath, dir: backupDir, size: fs.statSync(filePath).size };
 };
 
+const createOfflineBackup = (userId, username, options = {}) => {
+  const { settings } = getMaintenanceSettings();
+  if (!settings.offlineBackupEnabled) {
+    const result = { skipped: true, reason: 'offline-backup-disabled' };
+    return options.async ? Promise.resolve(result) : result;
+  }
+  const now = Date.now();
+  if (now - lastOfflineBackupTime < OFFLINE_BACKUP_MIN_INTERVAL) {
+    const result = { skipped: true, reason: 'rate-limited', nextAvailableAt: lastOfflineBackupTime + OFFLINE_BACKUP_MIN_INTERVAL };
+    return options.async ? Promise.resolve(result) : result;
+  }
+  const offlineDir = resolveManagedDir(settings.offlineBackupDir);
+  ensureDir(offlineDir);
+  const timestamp = toTimestamp();
+  const prefix = userId ? `offline-backup-${userId}-${String(username || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_')}` : 'offline-backup-shutdown';
+  const fileName = `${prefix}-${timestamp}.json`;
+  const filePath = path.join(offlineDir, fileName);
+  
+  const performCopy = () => {
+    return new Promise((resolve) => {
+      fs.copyFile(dbPath, filePath, (err) => {
+        if (err) {
+          console.error(`[offline-backup] Failed to create backup${userId ? ` for user ${username} (${userId})` : ''}:`, err);
+          resolve({ fileName, filePath, dir: offlineDir, userId, username, skipped: false, success: false, error: err.message });
+        } else {
+          lastOfflineBackupTime = now;
+          const size = fs.statSync(filePath).size;
+          console.log(`[offline-backup] Created backup${userId ? ` for user ${username} (${userId})` : ''}: ${fileName} (${size} bytes)`);
+          resolve({ fileName, filePath, dir: offlineDir, userId, username, skipped: false, success: true, size });
+        }
+      });
+    });
+  };
+  
+  if (options.async) {
+    return performCopy();
+  }
+  
+  fs.copyFile(dbPath, filePath, (err) => {
+    if (err) {
+      console.error(`[offline-backup] Failed to create backup${userId ? ` for user ${username} (${userId})` : ''}:`, err);
+    } else {
+      lastOfflineBackupTime = now;
+      const size = fs.statSync(filePath).size;
+      console.log(`[offline-backup] Created backup${userId ? ` for user ${username} (${userId})` : ''}: ${fileName} (${size} bytes)`);
+    }
+  });
+  
+  return { fileName, filePath, dir: offlineDir, userId, username, skipped: false };
+};
+
 const exportTaskData = (options = {}) => {
   const { data, settings } = getMaintenanceSettings();
   const taskExportDir = resolveManagedDir(options.dir || settings.taskExportDir);
@@ -218,18 +277,24 @@ const exportTaskData = (options = {}) => {
 const cleanupOldBackups = (options = {}) => {
   const { settings } = getMaintenanceSettings();
   const retentionDays = Math.max(1, parseInt(options.retentionDays, 10) || settings.backupRetentionDays);
+  const offlineRetentionDays = Math.max(1, parseInt(options.offlineRetentionDays, 10) || settings.offlineBackupRetentionDays);
   const cutoffTime = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  const dirs = [resolveManagedDir(settings.backupDir), resolveManagedDir(settings.taskExportDir)];
+  const offlineCutoffTime = Date.now() - offlineRetentionDays * 24 * 60 * 60 * 1000;
+  const dirs = [
+    { path: resolveManagedDir(settings.backupDir), cutoff: cutoffTime },
+    { path: resolveManagedDir(settings.taskExportDir), cutoff: cutoffTime },
+    { path: resolveManagedDir(settings.offlineBackupDir), cutoff: offlineCutoffTime }
+  ];
   const removed = [];
 
-  dirs.forEach(dirPath => {
-    listManagedFiles(dirPath, file => file.mtime.getTime() < cutoffTime).forEach(file => {
+  dirs.forEach(({ path: dirPath, cutoff }) => {
+    listManagedFiles(dirPath, file => file.mtime.getTime() < cutoff).forEach(file => {
       fs.unlinkSync(file.path);
       removed.push({ fileName: file.name, dir: dirPath, size: file.size });
     });
   });
 
-  return { retentionDays, removedCount: removed.length, removed };
+  return { retentionDays, offlineRetentionDays, removedCount: removed.length, removed };
 };
 
 const createYearlyArchive = (archiveTasks, cutoffYear, settings) => {
@@ -363,12 +428,14 @@ const getMaintenanceStatus = () => {
       database: dbPath,
       backupDir: resolveManagedDir(settings.backupDir),
       taskExportDir: resolveManagedDir(settings.taskExportDir),
-      yearlyArchiveDir: resolveManagedDir(settings.yearlyArchiveDir)
+      yearlyArchiveDir: resolveManagedDir(settings.yearlyArchiveDir),
+      offlineBackupDir: resolveManagedDir(settings.offlineBackupDir)
     },
     files: {
       backups: listManagedFiles(resolveManagedDir(settings.backupDir)).slice(0, 10),
       taskExports: listManagedFiles(resolveManagedDir(settings.taskExportDir)).slice(0, 10),
-      yearlyArchives: listManagedFiles(resolveManagedDir(settings.yearlyArchiveDir)).slice(0, 10)
+      yearlyArchives: listManagedFiles(resolveManagedDir(settings.yearlyArchiveDir)).slice(0, 10),
+      offlineBackups: listManagedFiles(resolveManagedDir(settings.offlineBackupDir)).slice(0, 10)
     },
     scheduler: {
       running: schedulerRunning,
@@ -383,6 +450,7 @@ module.exports = {
   normalizeMaintenanceSettings,
   getMaintenanceStatus,
   createDatabaseBackup,
+  createOfflineBackup,
   exportTaskData,
   cleanupOldBackups,
   runYearlyTaskCleanup,

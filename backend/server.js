@@ -5,6 +5,7 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const helmet = require('helmet');
 const path = require('path');
+const fs = require('fs');
 
 const securityConfig = require('./config/security');
 const { socketAuthMiddleware, requireSocketAuth } = require('./middleware/socketAuth');
@@ -38,7 +39,7 @@ app.use(bodyParser.json());
 
 // Database logic (Simple JSON storage)
 const db = require('./db');
-const { startMaintenanceScheduler } = require('./utils/dbMaintenance');
+const { startMaintenanceScheduler, createOfflineBackup } = require('./utils/dbMaintenance');
 
 // Middleware
 const { auditLogMiddleware } = require('./middleware/auditLog');
@@ -254,6 +255,29 @@ io.on('connection', (socket) => {
   });
 });
 
+
+const handleShutdown = async (signal) => {
+  console.log(`\n[shutdown] Received ${signal}, starting graceful shutdown...`);
+  console.log('[shutdown] Creating offline backup before exit...');
+  
+  const backupResult = await createOfflineBackup(undefined, undefined, { async: true });
+  if (backupResult.skipped) {
+    console.log(`[shutdown] Backup skipped: ${backupResult.reason}`);
+  } else if (backupResult.success) {
+    console.log(`[shutdown] Backup completed: ${backupResult.fileName} (${backupResult.size} bytes)`);
+  } else {
+    console.error(`[shutdown] Backup failed: ${backupResult.error}`);
+  }
+  
+  console.log('[shutdown] Closing server...');
+  server.close(() => {
+    console.log('[shutdown] Server closed successfully');
+    process.exit(0);
+  });
+};
+
+process.on('SIGINT', handleShutdown);
+process.on('SIGTERM', handleShutdown);
 
 server.listen(securityConfig.server.port, () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
