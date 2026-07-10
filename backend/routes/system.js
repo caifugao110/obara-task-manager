@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const XLSX = require('xlsx');
@@ -1028,7 +1028,7 @@ router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], async
 }));
 
 router.post('/maintenance/offline-backup', asyncHandler(async (req, res) => {
-  const result = maintenance.createOfflineBackup();
+  const result = await maintenance.createOfflineBackup(null, null, { async: true });
   if (result.skipped) {
     res.json({ message: '断网备份已跳过', reason: result.reason });
   } else {
@@ -1791,3 +1791,4 @@ router.get('/admin-login-logs', [authMiddleware, superAdminMiddleware], asyncHan
 }));
 
 module.exports = router;
+
