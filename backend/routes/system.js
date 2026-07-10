@@ -1027,6 +1027,15 @@ router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], async
   res.json({ message: '数据库备份已完成', backup: maintenance.createDatabaseBackup() });
 }));
 
+router.post('/maintenance/offline-backup', asyncHandler(async (req, res) => {
+  const result = maintenance.createOfflineBackup();
+  if (result.skipped) {
+    res.json({ message: '断网备份已跳过', reason: result.reason });
+  } else {
+    res.json({ message: '断网备份已完成', backup: result });
+  }
+}));
+
 router.post('/maintenance/export-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   try {
     const taskExport = maintenance.exportTaskData({ type: 'manual-task-export', requireData: true });
