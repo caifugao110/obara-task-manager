@@ -432,10 +432,10 @@ const getMaintenanceStatus = () => {
       offlineBackupDir: resolveManagedDir(settings.offlineBackupDir)
     },
     files: {
-      backups: listManagedFiles(resolveManagedDir(settings.backupDir)).slice(0, 10),
-      taskExports: listManagedFiles(resolveManagedDir(settings.taskExportDir)).slice(0, 10),
-      yearlyArchives: listManagedFiles(resolveManagedDir(settings.yearlyArchiveDir)).slice(0, 10),
-      offlineBackups: listManagedFiles(resolveManagedDir(settings.offlineBackupDir)).slice(0, 10)
+      backups: listManagedFiles(resolveManagedDir(settings.backupDir)).slice(0, 5),
+      taskExports: listManagedFiles(resolveManagedDir(settings.taskExportDir)).slice(0, 5),
+      yearlyArchives: listManagedFiles(resolveManagedDir(settings.yearlyArchiveDir)).slice(0, 5),
+      offlineBackups: listManagedFiles(resolveManagedDir(settings.offlineBackupDir)).slice(0, 5)
     },
     scheduler: {
       running: schedulerRunning,

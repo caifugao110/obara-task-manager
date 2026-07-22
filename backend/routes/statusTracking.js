@@ -49,6 +49,25 @@ function getCurrentMonthValue() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function calculateDesignDeliveryDays(deliveryDate) {
+  if (!deliveryDate) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const targetDate = new Date(deliveryDate);
+  if (Number.isNaN(targetDate.getTime())) return 0;
+  targetDate.setHours(0, 0, 0, 0);
+  const diffTime = targetDate.getTime() - today.getTime();
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
+
+function withDynamicDesignDeliveryDays(item) {
+  if (!item) return item;
+  return {
+    ...item,
+    designDeliveryDays: calculateDesignDeliveryDays(item.deliveryDate)
+  };
+}
+
 function getItemPlanMonth(item) {
   return getItemPlanMonths(item)[0] || '';
 }
@@ -74,7 +93,7 @@ function makeSpecMonthKeys(item) {
 
 router.get('/items', [authMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const items = data.statusTrackingItems || [];
+  const items = (data.statusTrackingItems || []).map(withDynamicDesignDeliveryDays);
   res.json(items);
 }));
 
@@ -102,10 +121,10 @@ router.post('/items', [authMiddleware, adminMiddleware], asyncHandler(async (req
   
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_updated', { action: 'add', item: newItem });
+    io.emit('status_tracking_updated', { action: 'add', item: withDynamicDesignDeliveryDays(newItem) });
   }
   
-  res.json(newItem);
+  res.json(withDynamicDesignDeliveryDays(newItem));
 }));
 
 router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
@@ -133,12 +152,13 @@ router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (
   
   await db.writeDb(data);
   
+  const dynamicItem = withDynamicDesignDeliveryDays(data.statusTrackingItems[index]);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_updated', { action: 'update', item: data.statusTrackingItems[index] });
+    io.emit('status_tracking_updated', { action: 'update', item: dynamicItem });
   }
   
-  res.json(data.statusTrackingItems[index]);
+  res.json(dynamicItem);
 }));
 
 router.delete('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
@@ -163,7 +183,7 @@ router.delete('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(asyn
 
 router.post('/sync', [authMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const items = data.statusTrackingItems || [];
+  const items = (data.statusTrackingItems || []).map(withDynamicDesignDeliveryDays);
   res.json(items);
 }));
 
@@ -212,12 +232,13 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
 
   await db.writeDb(data);
   
+  const dynamicItems = data.statusTrackingItems.map(withDynamicDesignDeliveryDays);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_bulk', data.statusTrackingItems);
+    io.emit('status_tracking_bulk', dynamicItems);
   }
   
-  res.json(data.statusTrackingItems);
+  res.json(dynamicItems);
 }));
 
 router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
@@ -308,7 +329,8 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
         return (item.confirmedQuantity || 0) < (parseInt(item.quantity) || 0) ? '是' : '';
       }
       if (col.key === 'designDeliveryDays') {
-        return item.designDeliveryDays >= 1 ? item.designDeliveryDays : '';
+        const liveDays = calculateDesignDeliveryDays(item.deliveryDate);
+        return liveDays >= 1 ? liveDays : '';
       }
       return item[col.key] || '';
     });
@@ -550,9 +572,10 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
 
   await db.writeDb(data);
 
+  const dynamicItems = data.statusTrackingItems.map(withDynamicDesignDeliveryDays);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_bulk', data.statusTrackingItems);
+    io.emit('status_tracking_bulk', dynamicItems);
   }
 
   res.json({ importedRows, updatedRows });
@@ -598,9 +621,10 @@ router.post('/cleanup', [authMiddleware, superAdminMiddleware], asyncHandler(asy
   data.statusTrackingItems = filteredItems;
   await db.writeDb(data);
 
+  const dynamicItems = data.statusTrackingItems.map(withDynamicDesignDeliveryDays);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_bulk', data.statusTrackingItems);
+    io.emit('status_tracking_bulk', dynamicItems);
   }
 
   res.json({ message: '状态跟踪数据清理完成', removedCount, remainingCount: filteredItems.length });

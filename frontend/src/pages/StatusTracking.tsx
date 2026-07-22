@@ -1454,15 +1454,18 @@ const StatusTracking = () => {
                             </td>
                           );
                         })()}
-                        <td className={`px-1 py-2 border-b border-gray-200 text-center font-bold overflow-hidden ${item.designDeliveryDays <= 7 && item.designDeliveryDays >= 1 ? 'text-red-700' : item.designDeliveryDays <= 14 && item.designDeliveryDays >= 1 ? 'text-yellow-700' : item.designDeliveryDays >= 1 ? 'text-green-700' : ''}`}>
-                          <input
-                            type="text"
-                            value={item.designDeliveryDays >= 1 ? item.designDeliveryDays : ''}
-                            onChange={(e) => updateField(item.id, 'designDeliveryDays', parseInt(validateNumberInput(e.target.value)) || 0)}
-                            disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
-                        </td>
+                        {(() => {
+                          const designDays = item.deliveryDate ? calculateDesignDeliveryDays(item.deliveryDate) : 0;
+                          let colorClass = '';
+                          if (designDays <= 7 && designDays >= 1) colorClass = 'text-red-700';
+                          else if (designDays <= 14 && designDays >= 1) colorClass = 'text-yellow-700';
+                          else if (designDays >= 1) colorClass = 'text-green-700';
+                          return (
+                            <td className={`px-1 py-2 border-b border-gray-200 text-center font-bold overflow-hidden ${colorClass}`}>
+                              {designDays >= 1 ? designDays : ''}
+                            </td>
+                          );
+                        })()}
                         <td className="px-2 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <select
                             value={item.salesPerson}
