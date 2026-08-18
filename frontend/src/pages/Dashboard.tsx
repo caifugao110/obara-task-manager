@@ -36,6 +36,9 @@ interface GunItem {
   id: string;
   name: string;
   hours: number | string;
+  color?: string;
+  colorBeforeUserMark?: string;
+  colorMarkedBy?: { id: string; username: string; name: string };
 }
 
 interface TaskItem {
@@ -127,11 +130,12 @@ const isEditableKeyboardTarget = (target: EventTarget | null) => {
 
 const normalizeTaskColor = (value?: string) => String(value || '').trim().toLowerCase();
 const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
-const hasStoredUserMarkColor = (item: TaskItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
+const hasStoredUserMarkColor = (item: TaskItem | GunItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskClick, onDeleteGun, onDeleteTask, onMarkColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskClick, onDeleteGun, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
+  const isAutoMarked = item.colorMarkedBy?.id === 'auto';
   const canRestoreColor = canMarkColor && isWhiteTaskColor(item.color) && item.colorMarkedBy && hasStoredUserMarkColor(item);
   const showMarkWhite = canMarkColor && !isWhiteTaskColor(item.color);
 
@@ -232,39 +236,40 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
       tabIndex={isAdmin ? 0 : -1}
       className={`relative group/task grid grid-cols-[12rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
     >
-      {(showMarkWhite || canRestoreColor) && (
-        <div className="absolute right-0.5 top-0.5 z-20 flex gap-1 opacity-0 group-hover/task:opacity-100 transition-opacity">
-          {showMarkWhite && (
-            <button
-              type="button"
-              className="h-5 w-5 rounded border border-gray-300 bg-white shadow-sm hover:ring-2 hover:ring-blue-400"
-              title="标记为白色"
-              onClick={(e) => {
-                e.stopPropagation();
-                onMarkColor(item, designerId, date, 'white');
-              }}
-            />
-          )}
-          {canRestoreColor && (
-            <button
-              type="button"
-              className="h-5 w-5 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-2 hover:ring-blue-400"
-              title="恢复标记前颜色"
-              onClick={(e) => {
-                e.stopPropagation();
-                onMarkColor(item, designerId, date, 'restore');
-              }}
-            >
-              <RefreshCw size={12} />
-            </button>
-          )}
-        </div>
-      )}
       {/* Main Task Row */}
       <div
         className={`px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
       >
         <div className={`flex items-center ${item.leaveType ? 'justify-center' : 'justify-start'} w-full px-1`}>
+            {/* Mark buttons before task text */}
+            {!item.leaveType && canMarkColor && (
+              <div className="flex items-center gap-0.5 mr-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
+                {showMarkWhite && (
+                  <button
+                    type="button"
+                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    title="标记为白色"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMarkColor(item, designerId, date, 'white');
+                    }}
+                  />
+                )}
+                {canRestoreColor && (
+                  <button
+                    type="button"
+                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    title={isAutoMarked ? '恢复主任务及所有枪名标记前颜色' : '恢复标记前颜色'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMarkColor(item, designerId, date, 'restore');
+                    }}
+                  >
+                    <RefreshCw size={10} />
+                  </button>
+                )}
+              </div>
+            )}
             {typeLabel ? (
               <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'bg-pink-100 text-pink-700' : 'bg-yellow-100 text-yellow-800'}`}>
                 {typeLabel}
@@ -281,12 +286,49 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
       </div>
 
       {/* Gun Rows */}
-      {(item.guns || []).map((gun, index) => (
+      {(item.guns || []).map((gun, index) => {
+        const gunIsWhite = isWhiteTaskColor(gun.color);
+        const gunCanRestore = canMarkColor && gunIsWhite && gun.colorMarkedBy && hasStoredUserMarkColor(gun);
+        const gunShowMarkWhite = canMarkColor && !gunIsWhite;
+        
+        return (
         <React.Fragment key={gun.id}>
           <div 
-            className="border-r border-gray-200 px-3 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
+            className="border-r border-gray-200 px-2 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
+            style={{ backgroundColor: gun.color || 'transparent' }}
           >
-            <div className="flex-1">{gun.name || '未命名'}</div>
+            {/* Gun mark buttons before gun name */}
+            {canMarkColor && (
+              <div className="flex items-center gap-0.5 mr-1 shrink-0 opacity-0 group-hover/gun-row:opacity-100 transition-opacity">
+                {gunShowMarkWhite && (
+                  <button
+                    type="button"
+                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    title="标记为白色"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMarkGunColor(item, designerId, date, index, 'white');
+                    }}
+                  />
+                )}
+                {gunCanRestore && (
+                  <button
+                    type="button"
+                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    title="恢复标记前颜色"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMarkGunColor(item, designerId, date, index, 'restore');
+                    }}
+                  >
+                    <RefreshCw size={10} />
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="flex-1 flex items-center gap-1">
+              <span>{gun.name || '未命名'}</span>
+            </div>
              {isAdmin && (
                <button 
                  className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-red-500 transition-opacity"
@@ -301,11 +343,13 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
             </div>
           <div 
             className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
+            style={{ backgroundColor: gun.color || 'transparent' }}
           >
             {gun.hours}
           </div>
         </React.Fragment>
-      ))}
+        );
+      })}
     </div>
   );
 };
@@ -1166,6 +1210,39 @@ const Dashboard = () => {
       addToast(action === 'white' ? '已标记为白色' : '已恢复标记前颜色', 'success');
     } catch (err: any) {
       addToast(err.response?.data?.message || '标记颜色失败', 'error');
+      fetchSheets();
+    } finally {
+      setTimeout(() => {
+        socketRef.current?.emit('stop_editing', { designerId, date });
+      }, 800);
+    }
+  }, [fetchSheets, token, upsertSheet, user, warnIfCellLocked]);
+
+  const handleGunColorMark = useCallback(async (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => {
+    if (!user || !token) return;
+    if (warnIfOfflineEdit()) return;
+    if (warnIfCellLocked(designerId, date)) return;
+
+    socketRef.current?.emit('start_editing', {
+      designerId,
+      date,
+      userId: user.id,
+      username: user.username,
+      name: user.name,
+      mode: 'colorMark'
+    });
+
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const value = action === 'white' ? '#ffffff' : '__restore__';
+      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId: item.id, field: 'gunColor', value, gunIndex }, authHeader);
+      if (res.data.sheet) {
+        upsertSheet(res.data.sheet);
+      }
+      socketRef.current?.emit('task_updated');
+      addToast(action === 'white' ? '枪名已标记为白色' : '枪名已恢复标记前颜色', 'success');
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '枪名标记颜色失败', 'error');
       fetchSheets();
     } finally {
       setTimeout(() => {
@@ -2470,12 +2547,16 @@ const Dashboard = () => {
                                         <div className="flex flex-col min-h-[40px]">
                                           {items.map(item => {
                                             const canMarkColor = Boolean(
-                                              allowUserDesignPlanColorMark &&
-                                              user?.role === 'user' &&
                                               token &&
                                               !isOfflineMode &&
                                               !item.leaveType &&
-                                              String(d.name || '').trim() === String(user.name || '').trim()
+                                              (
+                                                (user?.role === 'admin' || user?.role === 'superadmin') ||
+                                                (user?.role === 'user' &&
+                                                  allowUserDesignPlanColorMark &&
+                                                  String(d.name || '').trim() === String(user.name || '').trim()
+                                                )
+                                              )
                                             );
 
                                             return (
@@ -2490,6 +2571,7 @@ const Dashboard = () => {
                                                 onDeleteGun={onDeleteGun}
                                                 onDeleteTask={onDeleteTask}
                                                 onMarkColor={handleUserDesignPlanColorMark}
+                                                onMarkGunColor={handleGunColorMark}
                                                 selectedTasks={selectedTasks}
                                                 metadataTitle={buildTaskMetadataTitle(item)}
                                                 onSelectTask={(itemId, designerId, date, append) => {

@@ -1,0 +1,31 @@
+# Build outputs
+bin/
+obj/
+Release/
+Debug/
+*.user
+*.suo
+*.cache
+
+# Visual Studio
+.vs/
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+*.stackdump
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Application generated
+App.config.bak
+
+# NuGet
+packages/
+*.nupkg

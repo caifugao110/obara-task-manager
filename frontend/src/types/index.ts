@@ -58,6 +58,8 @@ export interface TaskItem {
   taskName: string;
   hours: number | string;
   color?: string;
+  colorBeforeUserMark?: string;
+  colorMarkedBy?: UserMeta;
   guns?: GunItem[];
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
   fontSize?: string;
@@ -81,6 +83,9 @@ export interface GunItem {
   id: string;
   name: string;
   hours: number | string;
+  color?: string;
+  colorBeforeUserMark?: string;
+  colorMarkedBy?: UserMeta;
 }
 
 /**

@@ -22,7 +22,14 @@ const isWhiteColor = (value) => {
 const gunSchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().allow('').default(''),
-  hours: Joi.number().min(0).default(0)
+  hours: Joi.number().min(0).default(0),
+  color: Joi.string().allow('').default(''),
+  colorBeforeUserMark: Joi.string().allow('').default(''),
+  colorMarkedBy: Joi.object({
+    id: Joi.string().required(),
+    username: Joi.string().allow(''),
+    name: Joi.string().allow('')
+  }).optional()
 });
 
 const validateNamedGunHours = (guns) => {
@@ -60,7 +67,26 @@ const touchItem = (item, user) => {
 };
 
 const canUserMarkDesignPlanColor = (data, user, designerId, item) => {
-  if (user?.role !== 'user') return false;
+  if (!user) return false;
+  if (user.role === 'admin' || user.role === 'superadmin') {
+    return !item?.leaveType;
+  }
+  if (user.role !== 'user') return false;
+  if (!data.settings?.system?.allowUserDesignPlanColorMark && !data.settings?.system?.allowUserEditOwnTaskColor) return false;
+  if (item?.leaveType) return false;
+
+  const designer = (data.designers || []).find(d => d.id === designerId);
+  if (!designer) return false;
+
+  return normalizeName(designer.name) !== '' && normalizeName(designer.name) === normalizeName(user.name);
+};
+
+const canUserMarkGunColor = (data, user, designerId, item) => {
+  if (!user) return false;
+  if (user.role === 'admin' || user.role === 'superadmin') {
+    return !item?.leaveType;
+  }
+  if (user.role !== 'user') return false;
   if (!data.settings?.system?.allowUserDesignPlanColorMark && !data.settings?.system?.allowUserEditOwnTaskColor) return false;
   if (item?.leaveType) return false;
 
@@ -86,13 +112,14 @@ const updateItemSchema = Joi.object({
   designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
   itemId: Joi.string().required(),
-  field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'fontSize', 'textColor').required(),
+  field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'fontSize', 'textColor', 'gunColor').required(),
   value: Joi.alternatives().try(
     Joi.string().allow(''), 
     Joi.number().min(0),
     Joi.array().items(gunSchema),
     Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null)
-  ).required()
+  ).required(),
+  gunIndex: Joi.number().integer().min(0).optional()
 });
 
 const deleteItemSchema = Joi.object({
@@ -417,7 +444,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const { designerId, date: rawDate, itemId, field, value } = validated;
+  const { designerId, date: rawDate, itemId, field, value, gunIndex } = validated;
   const date = normalizeDate(rawDate);
   const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
@@ -431,37 +458,137 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(404).json({ message: '任务条目不存在' });
   }
 
-  const canUserMarkColor = !isAdmin && field === 'color' && canUserMarkDesignPlanColor(data, req.user, designerId, items[idx]);
-  if (!isAdmin && !canUserMarkColor) {
-    return res.status(403).json({ message: 'Only admins can edit tasks' });
-  }
+  const item = items[idx];
 
-  if (canUserMarkColor) {
+  // Main task color marking (admins or authorized users)
+  if (field === 'color') {
+    const canMarkColor = isAdmin || canUserMarkDesignPlanColor(data, req.user, designerId, item);
+    if (!canMarkColor) {
+      return res.status(403).json({ message: '无权标记颜色' });
+    }
+
     const isRestore = normalizeColorValue(value) === '__restore__';
     if (!isRestore && !isWhiteColor(value)) {
       return res.status(403).json({ message: 'Only white mark or restore is allowed' });
     }
 
     if (isRestore) {
+      const canRestore = isAdmin || canUserMarkDesignPlanColor(data, req.user, designerId, item) || item.colorMarkedBy?.id === req.user.id || item.colorMarkedBy?.id === 'auto';
       if (
-        isWhiteColor(items[idx].color) &&
-        items[idx].colorMarkedBy?.id === req.user.id &&
-        Object.prototype.hasOwnProperty.call(items[idx], 'colorBeforeUserMark')
+        isWhiteColor(item.color) &&
+        canRestore &&
+        Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark')
       ) {
-        items[idx].color = items[idx].colorBeforeUserMark || '';
-        delete items[idx].colorBeforeUserMark;
-        delete items[idx].colorMarkedBy;
+        // Restore all guns too (auto-marked or user-marked main task)
+        const guns = Array.isArray(item.guns) ? item.guns : [];
+        guns.forEach(gun => {
+          if (isWhiteColor(gun.color) && Object.prototype.hasOwnProperty.call(gun, 'colorBeforeUserMark')) {
+            gun.color = gun.colorBeforeUserMark || '';
+            delete gun.colorBeforeUserMark;
+            delete gun.colorMarkedBy;
+          }
+        });
+        item.guns = guns;
+        item.color = item.colorBeforeUserMark || '';
+        delete item.colorBeforeUserMark;
+        delete item.colorMarkedBy;
       }
-    } else if (!isWhiteColor(items[idx].color) || items[idx].colorMarkedBy?.id !== req.user.id) {
-      items[idx].colorBeforeUserMark = items[idx].color || '';
-      items[idx].colorMarkedBy = getUserMeta(req.user);
-      items[idx].color = '#ffffff';
+    } else if (!isWhiteColor(item.color) || item.colorMarkedBy?.id !== req.user.id) {
+      item.colorBeforeUserMark = item.color || '';
+      item.colorMarkedBy = getUserMeta(req.user);
+      item.color = '#ffffff';
+
+      // Sync: mark all guns white when main task is marked white
+      const guns = Array.isArray(item.guns) ? item.guns : [];
+      guns.forEach(gun => {
+        if (!isWhiteColor(gun.color)) {
+          gun.colorBeforeUserMark = gun.color || '';
+          gun.colorMarkedBy = { id: 'auto', username: 'auto', name: '系统联动' };
+          gun.color = '#ffffff';
+        }
+      });
+      item.guns = guns;
     }
 
-    touchItem(items[idx], req.user);
+    touchItem(item, req.user);
     sheet.days[date] = items;
     await db.writeDb(data);
-    return res.json({ sheetId: sheet.id, designerId, month, year, date, item: items[idx], sheet });
+    return res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
+  }
+
+  // Gun color marking (admins or authorized users)
+  if (field === 'gunColor') {
+    const canMarkGunColor = isAdmin || canUserMarkGunColor(data, req.user, designerId, item);
+    if (!canMarkGunColor) {
+      return res.status(403).json({ message: '无权标记枪名颜色' });
+    }
+
+    const guns = Array.isArray(item.guns) ? item.guns : [];
+    let targetGun = null;
+
+    if (typeof gunIndex === 'number' && gunIndex >= 0 && gunIndex < guns.length) {
+      targetGun = guns[gunIndex];
+    } else {
+      return res.status(400).json({ message: '枪名索引无效' });
+    }
+
+    if (!targetGun) {
+      return res.status(400).json({ message: '枪名不存在' });
+    }
+
+    const isRestore = normalizeColorValue(value) === '__restore__';
+    if (!isRestore && !isWhiteColor(value)) {
+      return res.status(403).json({ message: 'Only white mark or restore is allowed' });
+    }
+
+    if (isRestore) {
+      const canRestoreGun = isAdmin || canUserMarkGunColor(data, req.user, designerId, item) || targetGun.colorMarkedBy?.id === req.user.id || targetGun.colorMarkedBy?.id === 'auto';
+      if (
+        isWhiteColor(targetGun.color) &&
+        canRestoreGun &&
+        Object.prototype.hasOwnProperty.call(targetGun, 'colorBeforeUserMark')
+      ) {
+        targetGun.color = targetGun.colorBeforeUserMark || '';
+        delete targetGun.colorBeforeUserMark;
+        delete targetGun.colorMarkedBy;
+      }
+    } else if (!isWhiteColor(targetGun.color) || targetGun.colorMarkedBy?.id !== req.user.id) {
+      targetGun.colorBeforeUserMark = targetGun.color || '';
+      targetGun.colorMarkedBy = getUserMeta(req.user);
+      targetGun.color = '#ffffff';
+    }
+
+    item.guns = guns;
+
+    // Auto-sync main task color based on all guns' state
+    const allGuns = Array.isArray(item.guns) ? item.guns : [];
+    const hasAllGuns = allGuns.length > 0;
+    if (hasAllGuns) {
+      const allGunsWhite = allGuns.every(g => isWhiteColor(g.color));
+      if (allGunsWhite) {
+        // All guns are white, auto-mark main task white if not already white
+        if (!isWhiteColor(item.color)) {
+          item.colorBeforeUserMark = item.color || '';
+          item.colorMarkedBy = { id: 'auto', username: 'auto', name: '系统自动' };
+          item.color = '#ffffff';
+        }
+      } else if (isWhiteColor(item.color)) {
+        // Some gun restored, main task is white, restore it to original color
+        item.color = item.colorBeforeUserMark || '';
+        delete item.colorBeforeUserMark;
+        delete item.colorMarkedBy;
+      }
+    }
+
+    touchItem(item, req.user);
+    sheet.days[date] = items;
+    await db.writeDb(data);
+    return res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
+  }
+
+  // For non-color fields, check permissions
+  if (!isAdmin) {
+    return res.status(403).json({ message: 'Only admins can edit tasks' });
   }
 
   if (field === 'guns') {
@@ -472,23 +599,23 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   if (field === 'hours') {
-    items[idx].hours = typeof value === 'number' ? value : (parseFloat(value) || 0);
+    item.hours = typeof value === 'number' ? value : (parseFloat(value) || 0);
   } else if (field === 'color') {
-    items[idx].color = value;
-    delete items[idx].colorBeforeUserMark;
-    delete items[idx].colorMarkedBy;
+    item.color = value;
+    delete item.colorBeforeUserMark;
+    delete item.colorMarkedBy;
   } else if (field === 'guns') {
-    items[idx].guns = value;
+    item.guns = value;
   } else if (field === 'leaveType') {
-    items[idx].leaveType = value;
+    item.leaveType = value;
   } else {
-    items[idx].taskName = value;
+    item.taskName = value;
   }
-  touchItem(items[idx], req.user);
+  touchItem(item, req.user);
 
   sheet.days[date] = items;
   await db.writeDb(data);
-  res.json({ sheetId: sheet.id, designerId, month, year, date, item: items[idx], sheet });
+  res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
 }));
 
 router.delete('/item', authMiddleware, asyncHandler(async (req, res) => {
