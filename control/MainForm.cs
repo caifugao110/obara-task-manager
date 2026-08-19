@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using ObaraServiceController.Models;
 using ObaraServiceController.Utils;
@@ -16,6 +18,8 @@ namespace ObaraServiceController
         private readonly ServiceConfig _config;
         private readonly System.Windows.Forms.Timer _monitorTimer;
         private readonly System.Windows.Forms.Timer _animationTimer;
+        private readonly System.Windows.Forms.Timer _logFlushTimer;
+        private readonly ConcurrentQueue<string> _logQueue = new ConcurrentQueue<string>();
 
         private ServiceStatus _backendStatus;
         private ServiceStatus _frontendStatus;
@@ -28,6 +32,7 @@ namespace ObaraServiceController
         private bool _isMaximized;
         private Rectangle _normalBounds;
         private int _hoverButton;
+        private bool _isMonitoring;
 
         // Layout panels
         private Panel _titleBar;
@@ -109,6 +114,13 @@ namespace ObaraServiceController
             _monitorTimer.Tick += MonitorTimer_Tick;
             _monitorTimer.Start();
 
+            // Coalesce log output: drain the queue on the UI thread at most
+            // every 120 ms so a chatty service can't flood the UI thread.
+            _logFlushTimer = new System.Windows.Forms.Timer();
+            _logFlushTimer.Interval = 120;
+            _logFlushTimer.Tick += LogFlushTimer_Tick;
+            _logFlushTimer.Start();
+
             _animationTimer = new System.Windows.Forms.Timer();
             _animationTimer.Interval = 80;
             _animationTimer.Tick += AnimationTimer_Tick;
@@ -129,9 +141,14 @@ namespace ObaraServiceController
         {
             try
             {
-                typeof(Control).InvokeMember("DoubleBuffered",
-                    BindingFlags.SetProperty | BindingFlags.Instance | BindingFlags.NonPublic,
-                    null, control, new object[] { true });
+                // DoubleBuffered on native edit controls (TextBox / RichTextBox)
+                // breaks their text painting: text can be covered or not repainted.
+                if (!(control is TextBoxBase) && !(control is ComboBox))
+                {
+                    typeof(Control).InvokeMember("DoubleBuffered",
+                        BindingFlags.SetProperty | BindingFlags.Instance | BindingFlags.NonPublic,
+                        null, control, new object[] { true });
+                }
             }
             catch { }
             foreach (Control child in control.Controls)
@@ -154,9 +171,11 @@ namespace ObaraServiceController
         private void MainForm_Shown(object sender, EventArgs e)
         {
             LogMessage("系统", "Obara任务管理系统服务控制台已启动");
-            LogMessage("系统", string.Format("运行路径: {0}", PathResolver.BasePath));
+            LogMessage("系统", string.Format("运行路径: {0}", PathResolver.RootPath));
+            LogMessage("系统", string.Format("后端目录: {0}  前端目录: {1}",
+                PathResolver.BackendPath, PathResolver.FrontendPath));
             CheckNodeEnvironment();
-            UpdateAllStatus();
+            UpdateAllStatusAsync();
         }
 
         private void LoadConfig()
@@ -215,25 +234,32 @@ namespace ObaraServiceController
             }
         }
 
-        private void CheckNodeEnvironment()
+        private async void CheckNodeEnvironment()
         {
             try
             {
-                var psi = new ProcessStartInfo();
-                psi.FileName = "node";
-                psi.Arguments = "--version";
-                psi.UseShellExecute = false;
-                psi.RedirectStandardOutput = true;
-                psi.CreateNoWindow = true;
-                using (var p = Process.Start(psi))
+                // Run on a thread-pool thread so startup never blocks on node.exe.
+                string version = await Task.Run(() =>
                 {
-                    string version = p.StandardOutput.ReadToEnd().Trim();
-                    p.WaitForExit();
-                    if (p.ExitCode == 0)
-                        LogMessage("系统", string.Format("Node.js 版本: {0}", version));
-                    else
-                        LogMessage("警告", "Node.js 未安装或不在 PATH 中");
-                }
+                    var psi = new ProcessStartInfo();
+                    psi.FileName = "node";
+                    psi.Arguments = "--version";
+                    psi.UseShellExecute = false;
+                    psi.RedirectStandardOutput = true;
+                    psi.CreateNoWindow = true;
+                    using (var p = Process.Start(psi))
+                    {
+                        string v = p.StandardOutput.ReadToEnd().Trim();
+                        p.WaitForExit();
+                        return p.ExitCode == 0 ? v : null;
+                    }
+                });
+
+                if (IsDisposed || Disposing) return;
+                if (version != null)
+                    LogMessage("系统", string.Format("Node.js 版本: {0}", version));
+                else
+                    LogMessage("警告", "Node.js 未安装或不在 PATH 中");
             }
             catch
             {
@@ -353,7 +379,7 @@ namespace ObaraServiceController
             if (e.KeyCode == Keys.Escape)
                 Close();
             else if (e.Control && e.KeyCode == Keys.R)
-                UpdateAllStatus();
+                UpdateAllStatusAsync();
             else if (e.Control && e.KeyCode == Keys.B)
                 OpenBrowser();
         }
@@ -362,7 +388,7 @@ namespace ObaraServiceController
         {
             if (_pathLabel != null && _statusBar != null && _statusBar.Width > 0)
             {
-                _pathLabel.Text = string.Format("路径  {0}", PathResolver.BasePath);
+                _pathLabel.Text = string.Format("路径  {0}", PathResolver.RootPath);
                 _pathLabel.Location = new Point(Math.Max(0, _statusBar.Width - _pathLabel.Width - 20), 9);
             }
         }
@@ -393,7 +419,14 @@ namespace ObaraServiceController
             if (statusLabel != null)
                 statusLabel.Location = new Point(cardWidth - 92, 20);
             if (urlLabel != null)
-                urlLabel.Width = cardWidth - 40;
+            {
+                // Resize the containing URL box and keep the label inside it so
+                // the text never covers the globe icon on the right.
+                Panel urlBox = urlLabel.Parent as Panel;
+                if (urlBox != null)
+                    urlBox.Width = cardWidth - 40;
+                urlLabel.Width = Math.Max(60, cardWidth - 76);
+            }
         }
 
         private void RelayoutActionPanel()
@@ -582,7 +615,7 @@ namespace ObaraServiceController
             urlLabel.ForeColor = ThemeColors.Accent;
             urlLabel.AutoSize = false;
             urlLabel.Location = new Point(10, 5);
-            urlLabel.Size = new Size(cardWidth - 60, 16);
+            urlLabel.Size = new Size(Math.Max(60, cardWidth - 76), 16);
             urlLabel.BackColor = Color.FromArgb(25, 35, 60);
             urlLabel.Cursor = Cursors.Hand;
             urlLabel.Click += UrlLabel_Click;
@@ -704,8 +737,11 @@ namespace ObaraServiceController
             var rect = new Rectangle(0, 0, card.Width - 1, card.Height - 1);
 
             // Rounded card body with subtle fill
+            // Use ThemeColors.CardBackground so the body exactly matches the
+            // BackColor of the child labels; a different shade made every
+            // label look like a covered/overlaid rectangle.
             using (var path = RoundedRect(rect, 10))
-            using (var bodyBrush = new SolidBrush(Color.FromArgb(28, 32, 58)))
+            using (var bodyBrush = new SolidBrush(ThemeColors.CardBackground))
             using (var borderPen = new Pen(Color.FromArgb(70, ThemeColors.Border), 1))
             {
                 g.FillPath(bodyBrush, path);
@@ -862,7 +898,7 @@ namespace ObaraServiceController
 
         private void StartAllBtn_Click(object sender, EventArgs e) { StartAll(); }
         private void StopAllBtn_Click(object sender, EventArgs e) { StopAll(); }
-        private void RefreshBtn_Click(object sender, EventArgs e) { UpdateAllStatus(); }
+        private void RefreshBtn_Click(object sender, EventArgs e) { UpdateAllStatusAsync(); }
         private void OpenBrowserBtn_Click(object sender, EventArgs e) { OpenBrowser(); }
 
         // ==================================================================
@@ -1384,33 +1420,60 @@ namespace ObaraServiceController
 
         private void MonitorTimer_Tick(object sender, EventArgs e)
         {
-            UpdateAllStatus();
+            UpdateAllStatusAsync();
         }
 
-        private void UpdateAllStatus()
+        private async void UpdateAllStatusAsync()
         {
-            UpdateServiceStatus(true);
-            UpdateServiceStatus(false);
+            // Guard against overlapping runs (checks can take longer than the interval).
+            if (_isMonitoring) return;
+            _isMonitoring = true;
+            try
+            {
+                // Run the blocking TCP probes on thread-pool threads so the UI
+                // thread never freezes while waiting for connect timeouts.
+                Task<bool> backendProbe = Task.Run(() => PortChecker.IsPortListening(_config.BackendPort));
+                Task<bool> frontendProbe = Task.Run(() => PortChecker.IsPortListening(_config.FrontendPort));
+                await Task.WhenAll(backendProbe, frontendProbe);
+                if (IsDisposed || Disposing) return;
+
+                bool backendListening = backendProbe.Result;
+                bool frontendListening = frontendProbe.Result;
+
+                // Measure latency only for listening ports, off the UI thread.
+                Task<int> backendLatency = backendListening
+                    ? Task.Run(() => PortChecker.MeasureLatency(_config.BackendPort))
+                    : Task.FromResult(-1);
+                Task<int> frontendLatency = frontendListening
+                    ? Task.Run(() => PortChecker.MeasureLatency(_config.FrontendPort))
+                    : Task.FromResult(-1);
+                await Task.WhenAll(backendLatency, frontendLatency);
+                if (IsDisposed || Disposing) return;
+
+                ApplyStatusResult(true, backendListening, backendLatency.Result);
+                ApplyStatusResult(false, frontendListening, frontendLatency.Result);
+            }
+            catch { }
+            finally
+            {
+                _isMonitoring = false;
+            }
         }
 
-        private void UpdateServiceStatus(bool isBackend)
+        private void ApplyStatusResult(bool isBackend, bool portListening, int latency)
         {
-            int port = isBackend ? _config.BackendPort : _config.FrontendPort;
-            bool portListening = PortChecker.IsPortListening(port);
-            int latency = portListening ? PortChecker.MeasureLatency(port) : -1;
-
             if (isBackend)
             {
                 _backendLatency = latency;
                 if (portListening && _backendStatus != ServiceStatus.Running)
                 {
                     _backendStatus = ServiceStatus.Running;
-                    LogMessage("后端", string.Format("服务已在端口 {0} 上响应", port));
+                    LogMessage("后端", string.Format("服务已在端口 {0} 上响应", _config.BackendPort));
                 }
                 else if (!portListening && _backendStatus == ServiceStatus.Running)
                 {
                     _backendStatus = ServiceStatus.Stopped;
-                    LogMessage("后端", string.Format("端口 {0} 无响应", port));
+                    LogMessage("后端", string.Format("端口 {0} 无响应", _config.BackendPort));
                 }
             }
             else
@@ -1419,12 +1482,12 @@ namespace ObaraServiceController
                 if (portListening && _frontendStatus != ServiceStatus.Running)
                 {
                     _frontendStatus = ServiceStatus.Running;
-                    LogMessage("前端", string.Format("服务已在端口 {0} 上响应", port));
+                    LogMessage("前端", string.Format("服务已在端口 {0} 上响应", _config.FrontendPort));
                 }
                 else if (!portListening && _frontendStatus == ServiceStatus.Running)
                 {
                     _frontendStatus = ServiceStatus.Stopped;
-                    LogMessage("前端", string.Format("端口 {0} 无响应", port));
+                    LogMessage("前端", string.Format("端口 {0} 无响应", _config.FrontendPort));
                 }
             }
 
@@ -1521,40 +1584,60 @@ namespace ObaraServiceController
 
         private void LogMessage(string category, string message)
         {
+            if (IsDisposed || Disposing) return;
+            // Thread-safe enqueue; the UI thread drains the queue on the flush
+            // timer, so a chatty process can never flood the UI thread.
+            _logQueue.Enqueue(string.Format("[{0}] [{1}] {2}", DateTime.Now.ToString("HH:mm:ss"), category, message));
+        }
+
+        private const int MaxLogChars = 300000;
+
+        private void LogFlushTimer_Tick(object sender, EventArgs e)
+        {
+            if (_logBox == null) return;
+            if (IsDisposed || Disposing) return;
+
+            _logBox.SuspendLayout();
             try
             {
-                if (IsDisposed || Disposing) return;
-
-                if (InvokeRequired)
+                int appended = 0;
+                string line;
+                // Drain at most 60 lines per tick to keep the UI responsive
+                // while still coalescing bursts of output.
+                while (appended < 60 && _logQueue.TryDequeue(out line))
                 {
-                    Invoke(new MethodInvoker(delegate { LogMessage(category, message); }));
-                    return;
+                    Color color = ThemeColors.TextSecondary;
+                    if (line.Contains("[后端]") || line.Contains("[Backend]")) color = ThemeColors.Success;
+                    else if (line.Contains("[前端]") || line.Contains("[Frontend]")) color = ThemeColors.Accent;
+                    else if (line.Contains("[警告]") || line.Contains("[WARN]")) color = ThemeColors.Warning;
+                    else if (line.Contains("[错误]") || line.Contains("[ERROR]")) color = ThemeColors.Error;
+
+                    _logBox.SelectionStart = _logBox.TextLength;
+                    _logBox.SelectionLength = 0;
+                    _logBox.SelectionColor = color;
+                    _logBox.AppendText(line + "\n");
+                    appended++;
+                }
+
+                if (appended > 0)
+                {
+                    // Keep the log bounded so appends stay fast over time.
+                    if (_logBox.TextLength > MaxLogChars)
+                    {
+                        int excess = _logBox.TextLength - MaxLogChars;
+                        _logBox.Select(0, excess);
+                        _logBox.SelectedText = "";
+                        _logBox.SelectionStart = _logBox.TextLength;
+                        _logBox.SelectionLength = 0;
+                    }
+                    _logBox.SelectionStart = _logBox.TextLength;
+                    _logBox.ScrollToCaret();
                 }
             }
-            catch { return; }
-
-            if (_logBox == null) return;
-
-            string timestamp = DateTime.Now.ToString("HH:mm:ss");
-            Color color = ThemeColors.TextSecondary;
-            switch (category)
+            finally
             {
-                case "后端": color = ThemeColors.Success; break;
-                case "前端": color = ThemeColors.Accent; break;
-                case "警告": color = ThemeColors.Warning; break;
-                case "错误": color = ThemeColors.Error; break;
+                _logBox.ResumeLayout();
             }
-
-            string prefix = string.Format("[{0}] [{1}] ", timestamp, category);
-            _logBox.SelectionStart = _logBox.TextLength;
-            _logBox.SelectionLength = 0;
-            _logBox.SelectionColor = ThemeColors.TextMuted;
-            _logBox.AppendText(prefix);
-            _logBox.SelectionStart = _logBox.TextLength;
-            _logBox.SelectionLength = 0;
-            _logBox.SelectionColor = color;
-            _logBox.AppendText(message + "\n");
-            _logBox.ScrollToCaret();
         }
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
@@ -1596,6 +1679,7 @@ namespace ObaraServiceController
 
                 _monitorTimer.Stop();
                 _animationTimer.Stop();
+                _logFlushTimer.Stop();
                 _processManager.Dispose();
                 SaveConfig();
             }
@@ -1610,8 +1694,12 @@ namespace ObaraServiceController
             get
             {
                 CreateParams cp = base.CreateParams;
-                // WS_EX_COMPOSITED: top-level double buffering to reduce flicker
-                cp.ExStyle |= 0x02000000;
+                // NOTE: WS_EX_COMPOSITED (0x02000000) was removed on purpose.
+                // It forces software compositing of the whole window on every
+                // repaint, which makes the UI stutter badly with the many
+                // custom-painted child panels, and it can hide/cover text of
+                // child controls (RichTextBox/TextBox). DoubleBuffered on the
+                // form + per-control double buffering already prevent flicker.
                 return cp;
             }
         }

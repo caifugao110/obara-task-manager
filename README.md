@@ -14,9 +14,11 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-4+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-6+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) |
-| 后端 | ![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
+| 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-5+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) |
+| 后端 | ![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-5+-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
 | 数据库 | ![JSON](https://img.shields.io/badge/JSON%20File-000000?logo=json&logoColor=white) |
+| 控制台 | ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white) ![WinForms](https://img.shields.io/badge/WinForms-512BD4) |
+| CI/CD | ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white) ![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-222222?logo=githubpages&logoColor=white) |
 
 ## 浏览器兼容性
 
@@ -57,6 +59,8 @@ cd obara-task-manager
 npm run install:all
 npm run dev
 ```
+
+> 仓库同时镜像在 GitHub：`https://github.com/caifugao110/obara-task-manager.git`，可任选其一。GitHub 版本会触发 CI 自动构建控制台 EXE 并部署文档到 GitHub Pages。
 
 ## 主要页面
 
@@ -276,23 +280,35 @@ npm run dev
 
 ```bat
 npm run install:all
+npm run install:backend
+npm run install:frontend
 npm run dev
 npm run dev:backend
 npm run dev:frontend
 npm run build
+npm run build:frontend
 npm run start:backend
 npm run start:frontend
+npm run lint
+npm run lint:frontend
+npm run test:backend
 ```
 
 | 命令 | 说明 |
 |------|------|
 | `npm run install:all` | 安装根目录、`backend` 和 `frontend` 的依赖 |
+| `npm run install:backend` | 仅安装 `backend` 依赖 |
+| `npm run install:frontend` | 仅安装 `frontend` 依赖 |
 | `npm run dev` | 同时启动开发后端和 Vite 前端 |
-| `npm run dev:backend` | 仅启动后端开发服务 |
-| `npm run dev:frontend` | 仅启动前端开发服务 |
-| `npm run build` | 构建前端生产产物 |
+| `npm run dev:backend` | 仅启动后端开发服务（`nodemon server.js`） |
+| `npm run dev:frontend` | 仅启动前端开发服务（`vite`） |
+| `npm run build` | 构建前端生产产物（等同 `build:frontend`） |
+| `npm run build:frontend` | 构建前端生产产物（`tsc && vite build`） |
 | `npm run start:backend` | 使用 `node server.js` 启动后端 |
-| `npm run start:frontend` | 预览前端构建产物 |
+| `npm run start:frontend` | 预览前端构建产物（`vite preview`） |
+| `npm run lint` | 运行前端 ESLint 检查（等同 `lint:frontend`） |
+| `npm run lint:frontend` | 对 `frontend/src` 下的 `ts/tsx` 文件运行 ESLint，未使用规则告警阈值为 0 |
+| `npm run test:backend` | 后端测试入口（当前为占位脚本，会返回失败） |
 
 其他脚本：
 
@@ -302,6 +318,7 @@ npm run start:frontend
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
 | `stop.bat` | 停止前后端进程 |
+| `control/ObaraServiceController.csproj` | 使用 MSBuild 构建 Windows 服务控制台 EXE，详见「Windows 服务控制台」章节 |
 
 前端类型检查：
 
@@ -317,7 +334,7 @@ node --check backend\routes\system.js
 node --check backend\routes\tasks.js
 ```
 
-> 目前 `npm run test` 会调用后端占位测试脚本并返回失败；提交或部署前优先执行前端类型检查、后端语法检查和关键页面手动验证。
+> 目前 `npm run test` 会调用后端占位测试脚本并返回失败；提交或部署前优先执行前端类型检查、前端 ESLint、后端语法检查和关键页面手动验证。
 
 ## 键盘快捷键
 
@@ -387,7 +404,7 @@ node --check backend\routes\tasks.js
 ```text
 obara-task-manager/
 ├── .github/workflows/
-│   └── deploy.yml
+│   └── build-and-deploy.yml      # EXE 构建 + GitHub Pages 部署
 ├── backend/
 │   ├── .env.example
 │   ├── db.js
@@ -422,6 +439,25 @@ obara-task-manager/
 │       ├── fileUploadSecurity.js
 │       ├── taskExportWorkbook.js
 │       └── workday.js
+├── control/                      # .NET Framework 4.8 服务控制台（WinForms EXE）
+│   ├── .ignore                   # 控制台子项目的忽略规则
+│   ├── App.config
+│   ├── ObaraServiceController.csproj
+│   ├── Program.cs
+│   ├── MainForm.cs
+│   ├── MainForm.Designer.cs
+│   ├── ConfirmDialog.cs
+│   ├── Models/
+│   │   └── ServiceConfig.cs
+│   ├── Properties/
+│   │   └── AssemblyInfo.cs
+│   ├── Resources/
+│   │   └── app.ico
+│   └── Utils/
+│       ├── PathResolver.cs
+│       ├── PortChecker.cs
+│       ├── ProcessManager.cs
+│       └── ThemeColors.cs
 ├── docs/
 │   └── API.md
 ├── frontend/
@@ -495,6 +531,12 @@ obara-task-manager/
 | 任务导出 | `backend/utils/taskExportWorkbook.js` | 任务数据导出为 Excel 格式 |
 | 工作日工具 | `backend/utils/workday.js` | 工作日覆盖规则、周末判断等工具函数 |
 | 安全配置 | `backend/config/security.js` | JWT、CORS、Gitee API、数据库路径等安全配置 |
+| 服务控制台 | `control/ObaraServiceController.csproj` | .NET Framework 4.8 WinForms 程序，用于在 Windows 上控制服务启停、监控端口与一键打开浏览器界面 |
+| 路径解析 | `control/Utils/PathResolver.cs` | 从 EXE 目录向上查找 `backend/` 与 `frontend/`，绑定运行路径，不硬编码绝对路径 |
+| 端口检测 | `control/Utils/PortChecker.cs` | 实时探测前后端端口状态与延迟，用于状态卡片刷新 |
+| 进程管理 | `control/Utils/ProcessManager.cs` | 启停后端 / 前端进程，自动安装依赖，转发子进程输出到日志区 |
+| 控制台主题 | `control/Utils/ThemeColors.cs` | 暗色科技风 UI 配色与渐变定义 |
+| CI/CD | `.github/workflows/build-and-deploy.yml` | 自动构建控制台 EXE 并发布 Release，同时把 README 与 docs/ 部署到 GitHub Pages |
 
 ## 数据库维护
 
@@ -569,6 +611,82 @@ obara-task-manager/
 - 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
 - 监控数据库大小，当超过 10MB 时考虑清理旧数据或增加存储空间。
 - 建议启用自动维护，并根据业务需求调整备份保留天数和数据保留年限。
+
+## Windows 服务控制台
+
+系统提供基于 .NET Framework 4.8 的 WinForms 桌面控制台 `control/ObaraServiceController.csproj`，用于在 Windows 上一键管理前后端服务，无需手动开多个命令行窗口。
+
+### 功能
+
+- 服务启停：单独启停后端 / 前端，或一键启动、一键停止。
+- 实时监控：定时探测前后端端口（默认 2 秒一次），显示进程 PID、端口延迟和运行 / 停止 / 异常状态。
+- 端口配置：可在界面修改前后端端口并持久化到本地配置（默认后端 `5000`、前端 `5173`）。
+- 路径绑定：自动从 EXE 所在目录向上查找 `backend/` 与 `frontend/`，**不硬编码绝对路径**，整个项目目录移动后仍可直接使用。
+- 一键打开浏览器：点击「打开浏览器」可直接访问运行中的前端界面。
+- 依赖自动安装：首次启动服务时若依赖缺失会自动执行 `npm install`。
+- 日志显示：实时输出前后端子进程日志，支持清空。
+- 配置持久化：端口与监控间隔保存在本地配置文件，重启后自动加载。
+- UI 风格：暗色科技风（自定义 `ThemeColors`），双缓冲优化，避免鼠标悬停卡顿。
+
+### 构建产物
+
+| 文件 | 说明 |
+|------|------|
+| `control/bin/Release/Obara-Task-Management-Service-Console.exe` | 控制台主程序，可直接双击运行 |
+| `control/bin/Release/*.config` | 运行时配置文件，随主程序一起分发 |
+
+> 控制台 EXE 不依赖前后端代码，只通过运行进程的方式调用 `npm`/`node`，因此可单独拷贝到任意位置使用，但建议与项目根目录（包含 `backend/` 和 `frontend/`）放在同一目录。
+
+### 本地构建
+
+需要在 Windows 上安装 .NET Framework 4.8（Windows 10/11 自带）。使用 MSBuild 构建：
+
+```bat
+cd control
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceController.csproj /p:Configuration=Release /t:Build
+```
+
+构建完成后产物位于 `control/bin/Release/`。`control/.ignore` 文件用于排除 `bin/`、`obj/` 等中间产物，避免提交到版本库。
+
+### 自动构建
+
+控制台 EXE 由 GitHub Actions 自动构建并发布到 Release，详见下文 CI/CD 章节。
+
+## CI/CD
+
+项目通过 `.github/workflows/build-and-deploy.yml` 实现自动构建与文档部署，包含两个并行任务。
+
+### 触发条件
+
+- 推送到 `main` 分支，且改动了 `control/**`、`README.md`、`docs/**` 或 workflow 文件本身。
+- 推送 `v*` 形式的 tag（正式版本）。
+- 手动触发（`workflow_dispatch`）。
+
+### 任务一：构建控制台 EXE
+
+- 运行环境：`windows-latest`。
+- 自动生成动态版本号：tag 推送时使用 tag 名；常规推送时生成 `vYYYY.MM.DD-beta-N` 形式的版本号，避免重复。
+- 自动生成变更日志：从上一个 tag 到当前 HEAD 的提交信息汇总。
+- 使用系统自带的 .NET Framework 4.8 MSBuild 构建 `ObaraServiceController.csproj`，并自动写入 `AssemblyInfo.cs` 的版本字段。
+- 构建完成后清理 `obj/` 中间产物，并将 `bin/Release/` 打包为 `Obara-Task-Management-Service-Console_<version>.zip`。
+- 推送到 `main` 时自动创建 git tag 与 GitHub Release；推送 `v*` tag 时直接创建对应 Release。
+- Release 包含中文说明、变更日志、功能列表和下载链接。
+
+### 任务二：部署文档到 GitHub Pages
+
+- 运行环境：`ubuntu-latest`。
+- 将 `README.md` 复制为 `index.md`，连同 `docs/` 目录一起部署到 GitHub Pages。
+- 自动创建 `.nojekyll` 以保留原始目录结构。
+- 部署完成后可通过 GitHub Pages URL 访问在线文档。
+
+### 版本号规则
+
+| 触发方式 | 版本号格式 | 示例 |
+|----------|------------|------|
+| 推送 `v*` tag | tag 名 | `v1.2.3` |
+| 推送到 `main` | `vYYYY.MM.DD-beta-N` | `v2026.08.19-beta-1` |
+
+> 推送到 `main` 时若当日多次提交，`N` 会自动递增，避免 tag 冲突。
 
 ## License
 

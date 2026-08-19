@@ -16,8 +16,13 @@ namespace ObaraServiceController
         private void InitializeComponent()
         {
             this.SuspendLayout();
+            // The whole UI is laid out with explicit pixel coordinates in
+            // MainForm.BuildUi(), so Font-based auto-scaling must be disabled.
+            // AutoScaleMode.Font was scaling the form to ~1097x875 on this
+            // machine (vs the designed 940x700), distorting every control and
+            // causing text to be covered/overlapped.
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 12F);
-            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
             this.BackColor = System.Drawing.Color.FromArgb(15, 15, 26);
             this.ClientSize = new System.Drawing.Size(900, 650);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
