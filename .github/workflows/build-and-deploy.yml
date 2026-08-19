@@ -144,6 +144,7 @@ jobs:
           Write-Host "Built EXE version info:"
           $exePath = "bin\Release\Obara-Task-Management-Service-Console.exe"
           if (Test-Path $exePath) {
+            $exePath = (Resolve-Path $exePath).Path
             $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exePath)
             Write-Host "  FileVersion:     $($vi.FileVersion)"
             Write-Host "  ProductVersion: $($vi.ProductVersion)"

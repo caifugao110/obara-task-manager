@@ -20,6 +20,16 @@ build/
 */dist/
 */build/
 
+# C# build artifacts (ObaraServiceController)
+bin/
+obj/
+*/bin/
+*/obj/
+*.exe
+*.dll
+*.pdb
+*.cache
+
 # Data files (local JSON storage)
 backend/db.json
 backend/*.data.json

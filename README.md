@@ -1,5 +1,7 @@
 # Obara 任务管理系统
 
+![Version](https://img.shields.io/badge/版本-2.0.0-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20跨平台-lightgrey)
+
 Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管理工具，支持多人协作、任务录入、报表查询、工时排行、权限控制和数据导入导出。
 
 ## 文档导航
@@ -9,6 +11,29 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 | 本文档 | 使用者、维护者 | 功能概览、快速启动、页面说明、权限模型、数据结构和常用命令 |
 | [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
 | [Windows 部署指南](DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
+
+## 目录
+
+- [技术栈](#技术栈)
+- [浏览器兼容性](#浏览器兼容性)
+- [快速开始](#快速开始)
+- [主要页面](#主要页面)
+- [当前功能](#当前功能)
+- [权限模型](#权限模型)
+- [数据存储](#数据存储)
+- [常用命令](#常用命令)
+- [环境变量](#环境变量)
+- [键盘快捷键](#键盘快捷键)
+- [仕样信息搜索](#仕样信息搜索)
+- [强制修改密码](#强制修改密码)
+- [操作日志](#操作日志)
+- [安全配置](#安全配置)
+- [项目结构](#项目结构)
+- [数据库维护](#数据库维护)
+- [维护建议](#维护建议)
+- [Windows 服务控制台](#windows-服务控制台)
+- [CI/CD](#cicd)
+- [License](#license)
 
 ## 技术栈
 
@@ -251,7 +276,8 @@ npm run dev
     "systemSettings": { "enabled": true, "allowAdmins": true, "allowViewers": false },
     "workdayOverrides": {},
     "leaderRules": [],
-    "system": { "allowGuestView": true, "allowMultiDevice": true, "allowUserDesignPlanColorMark": true, "allowUserEditOwnTaskColor": true }
+    "system": { "allowGuestView": true, "allowMultiDevice": true, "allowUserDesignPlanColorMark": true, "allowUserEditOwnTaskColor": true },
+    "maintenance": { "enabled": true, "dailyBackupEnabled": true, "dailyTaskExportEnabled": true, "offlineBackupEnabled": true, "backupRetentionDays": 30, "offlineBackupRetentionDays": 7, "scheduleTime": "00:30", "yearlyCleanupEnabled": true, "yearlyCleanupMonth": 1, "yearlyCleanupCheckDays": 10, "yearlyTaskRetentionYears": 1, "backupDir": "backups/database", "taskExportDir": "backups/task-exports", "yearlyArchiveDir": "backups/yearly-archives", "offlineBackupDir": "backups/offline", "yearlyCleanupHistory": {} }
   }
 }
 ```
@@ -273,6 +299,7 @@ npm run dev
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend` |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.system` | 系统设置，如未登录查看、多设备登录、允许登录用户修改本人设计计划标记颜色 |
+| `settings.maintenance` | 自动维护配置，详见「数据库维护」章节 |
 
 建议定期备份 `backend/db.json`，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
 
@@ -287,6 +314,7 @@ npm run dev:backend
 npm run dev:frontend
 npm run build
 npm run build:frontend
+npm start
 npm run start:backend
 npm run start:frontend
 npm run lint
@@ -304,6 +332,7 @@ npm run test:backend
 | `npm run dev:frontend` | 仅启动前端开发服务（`vite`） |
 | `npm run build` | 构建前端生产产物（等同 `build:frontend`） |
 | `npm run build:frontend` | 构建前端生产产物（`tsc && vite build`） |
+| `npm start` | 启动后端生产服务（等同 `start:backend`，调用 `node server.js`） |
 | `npm run start:backend` | 使用 `node server.js` 启动后端 |
 | `npm run start:frontend` | 预览前端构建产物（`vite preview`） |
 | `npm run lint` | 运行前端 ESLint 检查（等同 `lint:frontend`） |
@@ -335,6 +364,32 @@ node --check backend\routes\tasks.js
 ```
 
 > 目前 `npm run test` 会调用后端占位测试脚本并返回失败；提交或部署前优先执行前端类型检查、前端 ESLint、后端语法检查和关键页面手动验证。
+
+## 环境变量
+
+所有配置项集中在 [backend/.env.example](backend/.env.example)，复制为 `backend/.env` 后按需修改。`JWT_SECRET` 为必填项，缺失会直接终止启动。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PORT` | `5000` | 后端服务端口 |
+| `NODE_ENV` | `development` | 运行环境（`development` / `production`） |
+| `JWT_SECRET` | **必填** | JWT 签名密钥，生产环境必须修改为随机字符串 |
+| `JWT_EXPIRES_IN` | `7d` | JWT 过期时间 |
+| `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
+| `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
+| `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（仅首次启动且无超管时生效） |
+| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码，生产环境必须立即修改 |
+| `RATE_LIMIT_WINDOW_MS` | `900000`（15 分钟） | 登录限流时间窗口 |
+| `RATE_LIMIT_MAX` | `20` | 时间窗口内最大尝试次数 |
+| `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
+| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录 |
+| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔 |
+| `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
+| `GITEE_REPO_OWNER` | `caifugao110` | Gitee 仓库所有者 |
+| `GITEE_REPO_NAME` | `obara-task-manager` | Gitee 仓库名称 |
+| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
+
+> 修改 `.env` 后必须重启后端服务才能生效。
 
 ## 键盘快捷键
 
@@ -526,7 +581,7 @@ obara-task-manager/
 | 认证中间件 | `backend/middleware/auth.js` | JWT 认证、角色校验、游客访问控制 |
 | Socket.IO 认证 | `backend/middleware/socketAuth.js` | WebSocket 连接认证和单设备登录限制 |
 | 操作日志 | `backend/middleware/auditLog.js` | 自动记录所有已登录用户的 API 请求 |
-| 数据库维护 | `backend/utils/dbMaintenance.js` | 自动备份、任务导出、年度清理等维护功能 |
+| 数据库维护 | `backend/utils/dbMaintenance.js` | 自动备份、任务导出、断网备份、年度清理等维护功能 |
 | 文件上传安全 | `backend/utils/fileUploadSecurity.js` | Excel 文件类型验证、结构检查、恶意内容扫描 |
 | 任务导出 | `backend/utils/taskExportWorkbook.js` | 任务数据导出为 Excel 格式 |
 | 工作日工具 | `backend/utils/workday.js` | 工作日覆盖规则、周末判断等工具函数 |
@@ -540,7 +595,7 @@ obara-task-manager/
 
 ## 数据库维护
 
-系统内置自动维护功能，可通过 API 或配置管理数据库备份、任务导出和年度数据清理。
+系统内置自动维护功能，可通过 API 或配置管理数据库备份、任务导出、断网备份和年度数据清理。
 
 ### 自动维护
 
@@ -553,6 +608,18 @@ obara-task-manager/
 | 过期备份清理 | 删除超过保留天数的旧备份 | 自动执行 |
 | 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
 
+### 断网备份
+
+断网备份（offline backup）是服务关闭前的快速备份机制，独立于定时备份：
+
+- 触发时机：后端收到 `SIGINT`/`SIGTERM` 信号（即 `Ctrl+C` 或服务停止）时，会先创建一次断网备份再退出。
+- 防抖机制：同一次会话内 5 分钟内只生成一次，避免短时间内重复备份。
+- 存储位置：独立目录 `backups/offline/`，便于与日常备份区分。
+- 备份文件名：
+  - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.json`
+  - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.json`
+- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发，**该接口无需鉴权**，便于在前端检测到离线状态时自动调用。
+
 ### 维护配置
 
 默认配置：
@@ -562,7 +629,9 @@ obara-task-manager/
   "enabled": true,
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
+  "offlineBackupEnabled": true,
   "backupRetentionDays": 30,
+  "offlineBackupRetentionDays": 7,
   "scheduleTime": "00:30",
   "yearlyCleanupEnabled": true,
   "yearlyCleanupMonth": 1,
@@ -570,7 +639,9 @@ obara-task-manager/
   "yearlyTaskRetentionYears": 1,
   "backupDir": "backups/database",
   "taskExportDir": "backups/task-exports",
-  "yearlyArchiveDir": "backups/yearly-archives"
+  "yearlyArchiveDir": "backups/yearly-archives",
+  "offlineBackupDir": "backups/offline",
+  "yearlyCleanupHistory": {}
 }
 ```
 
@@ -578,17 +649,21 @@ obara-task-manager/
 - 年度清理会在指定月份（默认 1 月）的前 N 天（默认 10 天）内执行。
 - 清理前会将旧数据归档到年度归档目录，保留完整备份。
 - 每年只执行一次，记录在 `yearlyCleanupHistory` 中。
+- 断网备份默认保留 7 天，超过自动清理。
 
 ### 手动维护操作
 
-超级管理员可通过以下 API 手动执行维护操作：
+超级管理员可通过以下 API 手动执行维护操作（除 `offline-backup` 外均需超级管理员权限）：
 
 | 操作 | API | 说明 |
 |------|-----|------|
 | 数据库备份 | `POST /api/system/maintenance/backup` | 立即创建数据库备份 |
+| 断网备份 | `POST /api/system/maintenance/offline-backup` | 立即创建断网备份（无需登录） |
 | 任务导出 | `POST /api/system/maintenance/export-tasks` | 立即导出任务数据 |
 | 清理过期备份 | `POST /api/system/maintenance/cleanup-backups` | 清理超过保留天数的备份 |
 | 年度清理 | `POST /api/system/maintenance/yearly-cleanup?force=true` | 强制执行年度任务清理 |
+| 清空所有日志 | `POST /api/system/maintenance/clear-logs` | 同时清空登录日志和操作日志 |
+| 清理指定月份任务 | `POST /api/system/maintenance/cleanup-tasks` | 请求体 `{month, year}` 或 `{beforeMonth, beforeYear}` |
 | 清空登录日志 | `DELETE /api/system/cleanup/login-logs` | 清空所有登录日志 |
 | 清空操作日志 | `DELETE /api/system/cleanup/audit-logs` | 清空所有操作日志 |
 | 清理旧任务 | `DELETE /api/system/cleanup/old-tasks?keepMonths=12` | 清理指定月份之前的任务数据 |

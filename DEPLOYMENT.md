@@ -244,9 +244,11 @@ RATE_LIMIT_MAX=20
 |----------|--------|------|
 | `PORT` | `5000` | 后端服务端口 |
 | `NODE_ENV` | `development` | 开发/生产环境，生产环境错误响应不包含堆栈信息 |
-| `JWT_SECRET` | `your-secret-key-change-in-production-2026` | JWT 签名密钥，生产环境**必须**修改为随机字符串 |
+| `JWT_SECRET` | **必填** | JWT 签名密钥，缺失将导致服务无法启动，生产环境**必须**修改为随机字符串 |
 | `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
-| `CORS_ORIGIN` | - | 允许的前端地址，多个用逗号分隔 |
+| `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
+| `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
+| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源 |
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
@@ -256,8 +258,9 @@ RATE_LIMIT_MAX=20
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径，用于读取纳期和详细信息 |
+| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
 
-生产环境必须修改 `JWT_SECRET`，并定期备份数据库文件。系统已增强 JWT 失效机制，登出或修改密码后旧令牌将立即失效。
+生产环境必须配置 `JWT_SECRET`（缺失会导致服务直接退出），并定期备份数据库文件。系统已增强 JWT 失效机制，登出或修改密码后旧令牌将立即失效。
 
 ### CORS 配置
 
@@ -613,8 +616,22 @@ backend/
 ├── backups/
 │   ├── database/          # 数据库备份
 │   ├── task-exports/      # 任务数据导出
-│   └── yearly-archives/   # 年度归档
+│   ├── yearly-archives/   # 年度归档
+│   └── offline/           # 断网备份（关闭前自动备份）
 ```
+
+### 断网备份
+
+断网备份（offline backup）是服务关闭前的快速备份机制，独立于定时备份：
+
+- 触发时机：后端收到 `SIGINT`/`SIGTERM` 信号（即 `Ctrl+C` 或服务停止）时，会先创建一次断网备份再退出。
+- 防抖机制：同一次会话内 5 分钟内只生成一次，避免短时间内重复备份。
+- 存储位置：独立目录 `backups/offline/`，便于与日常备份区分。
+- 备份文件名：
+  - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.json`
+  - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.json`
+- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发，**该接口无需鉴权**，便于在前端检测到离线状态时自动调用。
+- 默认保留 7 天（`offlineBackupRetentionDays`），超过自动清理。
 
 ### 维护配置
 
@@ -625,7 +642,9 @@ backend/
   "enabled": true,
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
+  "offlineBackupEnabled": true,
   "backupRetentionDays": 30,
+  "offlineBackupRetentionDays": 7,
   "scheduleTime": "00:30",
   "yearlyCleanupEnabled": true,
   "yearlyCleanupMonth": 1,
@@ -633,25 +652,32 @@ backend/
   "yearlyTaskRetentionYears": 1,
   "backupDir": "backups/database",
   "taskExportDir": "backups/task-exports",
-  "yearlyArchiveDir": "backups/yearly-archives"
+  "yearlyArchiveDir": "backups/yearly-archives",
+  "offlineBackupDir": "backups/offline",
+  "yearlyCleanupHistory": {}
 }
 ```
 
+> 说明：`PUT /api/system/maintenance` 接口仅接受核心字段，断网备份相关字段（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）由后端默认值控制，无法通过 API 修改。
+
 ### 维护 API
 
-| API | 方法 | 说明 |
-|-----|------|------|
-| `/api/system/maintenance` | GET | 获取维护状态和配置 |
-| `/api/system/maintenance` | PUT | 更新维护配置 |
-| `/api/system/maintenance/backup` | POST | 手动创建数据库备份 |
-| `/api/system/maintenance/export-tasks` | POST | 手动导出任务数据 |
-| `/api/system/maintenance/cleanup-backups` | POST | 清理过期备份 |
-| `/api/system/maintenance/yearly-cleanup` | POST | 手动执行年度清理 |
-| `/api/system/db-stats` | GET | 获取数据库统计信息 |
-| `/api/system/cleanup/login-logs` | DELETE | 清空登录日志 |
-| `/api/system/cleanup/audit-logs` | DELETE | 清空操作日志 |
-| `/api/system/cleanup/old-tasks` | DELETE | 清理旧任务数据 |
-| `/api/system/cleanup/status-tracking` | DELETE | 清理旧状态追踪数据 |
+| API | 方法 | 权限 | 说明 |
+|-----|------|------|------|
+| `/api/system/maintenance` | GET | 超级管理员 | 获取维护状态和配置 |
+| `/api/system/maintenance` | PUT | 超级管理员 | 更新维护配置 |
+| `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份 |
+| `/api/system/maintenance/offline-backup` | POST | **无需登录** | 手动触发断网备份 |
+| `/api/system/maintenance/export-tasks` | POST | 超级管理员 | 手动导出任务数据 |
+| `/api/system/maintenance/cleanup-backups` | POST | 超级管理员 | 清理过期备份 |
+| `/api/system/maintenance/yearly-cleanup` | POST | 超级管理员 | 手动执行年度清理 |
+| `/api/system/maintenance/clear-logs` | POST | 超级管理员 | 同时清空登录日志和操作日志 |
+| `/api/system/maintenance/cleanup-tasks` | POST | 超级管理员 | 清理指定月份或指定年月之前的任务 |
+| `/api/system/db-stats` | GET | 超级管理员 | 获取数据库统计信息 |
+| `/api/system/cleanup/login-logs` | DELETE | 超级管理员 | 清空登录日志 |
+| `/api/system/cleanup/audit-logs` | DELETE | 超级管理员 | 清空操作日志 |
+| `/api/system/cleanup/old-tasks` | DELETE | 超级管理员 | 清理旧任务数据（按保留月数） |
+| `/api/system/cleanup/status-tracking` | DELETE | 超级管理员 | 清理旧状态追踪数据 |
 
 ### 年度清理流程
 
@@ -680,4 +706,4 @@ backend/
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-07-10
+最后更新：2026-08-19

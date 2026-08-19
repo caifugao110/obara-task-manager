@@ -1658,7 +1658,9 @@ Authorization: Bearer <token>
     "enabled": true,
     "dailyBackupEnabled": true,
     "dailyTaskExportEnabled": true,
+    "offlineBackupEnabled": true,
     "backupRetentionDays": 30,
+    "offlineBackupRetentionDays": 7,
     "scheduleTime": "00:30",
     "yearlyCleanupEnabled": true,
     "yearlyCleanupMonth": 1,
@@ -1667,18 +1669,21 @@ Authorization: Bearer <token>
     "backupDir": "backups/database",
     "taskExportDir": "backups/task-exports",
     "yearlyArchiveDir": "backups/yearly-archives",
+    "offlineBackupDir": "backups/offline",
     "yearlyCleanupHistory": {}
   },
   "paths": {
     "database": "D:\\project\\backend\\db.json",
     "backupDir": "D:\\project\\backend\\backups\\database",
     "taskExportDir": "D:\\project\\backend\\backups\\task-exports",
-    "yearlyArchiveDir": "D:\\project\\backend\\backups\\yearly-archives"
+    "yearlyArchiveDir": "D:\\project\\backend\\backups\\yearly-archives",
+    "offlineBackupDir": "D:\\project\\backend\\backups\\offline"
   },
   "files": {
     "backups": [...],
     "taskExports": [...],
-    "yearlyArchives": [...]
+    "yearlyArchives": [...],
+    "offlineBackups": [...]
   },
   "scheduler": {
     "running": false,
@@ -1695,7 +1700,9 @@ Authorization: Bearer <token>
 | `settings.enabled` | 是否启用自动维护 |
 | `settings.dailyBackupEnabled` | 是否启用每日数据库备份 |
 | `settings.dailyTaskExportEnabled` | 是否启用每日任务数据导出 |
+| `settings.offlineBackupEnabled` | 是否启用断网备份（服务关闭前自动备份） |
 | `settings.backupRetentionDays` | 备份保留天数 |
+| `settings.offlineBackupRetentionDays` | 断网备份保留天数 |
 | `settings.scheduleTime` | 计划执行时间（HH:MM） |
 | `settings.yearlyCleanupEnabled` | 是否启用年度任务清理 |
 | `settings.yearlyCleanupMonth` | 年度清理月份 |
@@ -1704,13 +1711,17 @@ Authorization: Bearer <token>
 | `settings.backupDir` | 数据库备份目录 |
 | `settings.taskExportDir` | 任务导出目录 |
 | `settings.yearlyArchiveDir` | 年度归档目录 |
+| `settings.offlineBackupDir` | 断网备份目录 |
+| `settings.yearlyCleanupHistory` | 年度清理历史记录 |
 | `paths.database` | 数据库文件绝对路径 |
 | `paths.backupDir` | 备份目录绝对路径 |
 | `paths.taskExportDir` | 任务导出目录绝对路径 |
 | `paths.yearlyArchiveDir` | 年度归档目录绝对路径 |
-| `files.backups` | 最近 10 个备份文件列表 |
-| `files.taskExports` | 最近 10 个任务导出文件列表 |
-| `files.yearlyArchives` | 最近 10 个年度归档文件列表 |
+| `paths.offlineBackupDir` | 断网备份目录绝对路径 |
+| `files.backups` | 最近 5 个备份文件列表 |
+| `files.taskExports` | 最近 5 个任务导出文件列表 |
+| `files.yearlyArchives` | 最近 5 个年度归档文件列表 |
+| `files.offlineBackups` | 最近 5 个断网备份文件列表 |
 | `scheduler.running` | 调度器是否正在运行 |
 | `scheduler.lastRun` | 上一次执行结果 |
 | `scheduler.nextRunAt` | 下次执行时间 |
@@ -1756,6 +1767,8 @@ Authorization: Bearer <token>
 | `backupDir` | 是 | 数据库备份目录（相对路径） |
 | `taskExportDir` | 是 | 任务导出目录（相对路径） |
 | `yearlyArchiveDir` | 是 | 年度归档目录（相对路径） |
+
+> 说明：断网备份相关字段（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）由后端默认值控制，本接口不接受修改，未知字段会被自动过滤。
 
 响应：返回更新后的维护状态，结构同 `GET /api/system/maintenance`。
 
@@ -1872,6 +1885,116 @@ Authorization: Bearer <token>
 - 年度清理会在指定月份的前 N 天（`yearlyCleanupCheckDays`）自动执行。
 - 清理前会将旧数据归档到 `yearlyArchiveDir`。
 - 每年只执行一次，记录在 `yearlyCleanupHistory` 中。
+
+### 手动触发断网备份
+
+`POST /api/system/maintenance/offline-backup`
+
+权限：**无需登录**（便于前端检测到离线状态时主动调用）
+
+说明：
+
+- 后端服务收到 `SIGINT`/`SIGTERM` 信号关闭前会自动触发一次断网备份。
+- 同一次会话内 5 分钟内只会生成一次，避免短时间重复备份。
+- 备份文件存储在 `offlineBackupDir`（默认 `backups/offline`）。
+- 文件名格式：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.json`（关闭触发）或 `offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.json`（用户触发）。
+
+响应（成功）：
+
+```json
+{
+  "message": "断网备份已完成",
+  "backup": {
+    "fileName": "offline-backup-shutdown-20260710-103000.json",
+    "filePath": "D:\\project\\backend\\backups\\offline\\offline-backup-shutdown-20260710-103000.json",
+    "dir": "D:\\project\\backend\\backups\\offline",
+    "skipped": false,
+    "success": true,
+    "size": 1048576
+  }
+}
+```
+
+响应（跳过）：
+
+```json
+{
+  "message": "断网备份已跳过",
+  "reason": "rate-limited"
+}
+```
+
+跳过原因：
+
+| `reason` | 说明 |
+|----------|------|
+| `offline-backup-disabled` | 断网备份开关关闭 |
+| `rate-limited` | 5 分钟内已生成过断网备份 |
+
+### 清空所有日志
+
+`POST /api/system/maintenance/clear-logs`
+
+权限：仅 `superadmin`
+
+说明：
+
+- 同时清空 `loginLogs` 和 `auditLogs` 两个数组。
+- 与 `DELETE /api/system/cleanup/login-logs` 和 `DELETE /api/system/cleanup/audit-logs` 不同，本接口一次清空两类日志。
+
+响应：
+
+```json
+{
+  "message": "日志已清空",
+  "loginLogsCount": 200,
+  "auditLogsCount": 1500
+}
+```
+
+### 清理指定月份任务
+
+`POST /api/system/maintenance/cleanup-tasks`
+
+权限：仅 `superadmin`
+
+请求体（两种模式二选一）：
+
+```json
+{
+  "month": 7,
+  "year": 2026
+}
+```
+
+或
+
+```json
+{
+  "beforeMonth": 7,
+  "beforeYear": 2026
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `month` + `year` | 二选一 | 删除指定月份的任务工作表 |
+| `beforeMonth` + `beforeYear` | 二选一 | 删除指定年月之前的所有任务工作表 |
+
+响应：
+
+```json
+{
+  "message": "任务数据清理完成",
+  "removedCount": 12,
+  "remainingCount": 120
+}
+```
+
+说明：
+
+- 清理后通过 Socket.IO 广播 `task_refreshed` 通知所有客户端刷新数据。
+- 与 `DELETE /api/system/cleanup/old-tasks?keepMonths=N` 不同，本接口按精确年月清理，而非按"最近 N 个月"。
 
 ### 清空登录日志
 
@@ -2197,7 +2320,7 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
 
 ### 多设备登录踢下线机制
 
-`register_user` 事件用于注册用户 room，服务端通过 `session_invalidated` 事件通知其他设备下线。关闭多设备登录时，新登录会使旧会话失效。
+连接建立时，服务端会自动将 socket 加入 `user:${user.id}` room（无需客户端发送 `register_user` 事件）。新登录时，后端通过 `io.to(user:${user.id}).emit('session_invalidated', ...)` 通知该用户的其他设备下线。关闭多设备登录时（`allowMultiDevice=false`），新登录会使旧会话失效。
 
 ### 连接恢复自动加载
 
@@ -2209,10 +2332,11 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 |------|------|
 | `connect` | Socket 连接成功（可用于检测后端是否恢复） |
 | `connect_error` | Socket 连接失败（后端端口断开或网络异常） |
-| `register_user` | 注册当前用户 room，用于单设备登录踢下线 |
 | `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端 |
-| `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、`userId`、`username`、`name` |
+| `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`（可选 `mode` 为 `edit` 或 `colorMark`） |
 | `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 |
+| `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数包含 `itemId` |
+| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录，参数包含 `itemId` |
 
 ### 服务端事件
 
@@ -2224,6 +2348,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 |
 | `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格 |
 | `session_invalidated` | 当前会话被新登录踢下线 |
+| `status_tracking_edit_start` | 某用户开始编辑指定状态追踪记录，参数 `{ itemId, userId, username, socketId }` |
+| `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` |
 | `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` |
 | `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 |
 
@@ -2277,15 +2403,17 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 ## 环境变量配置
 
-后端支持以下环境变量，通过 `backend/.env` 文件配置：
+后端支持以下环境变量，通过 `backend/.env` 文件配置（参考 [backend/.env.example](../backend/.env.example)）：
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
 | `PORT` | `5000` | 后端服务端口 |
-| `NODE_ENV` | `development` | 运行环境 |
-| `JWT_SECRET` | `obara_task_secret_key_2026` | JWT 签名密钥，生产环境必须修改 |
+| `NODE_ENV` | `development` | 运行环境（`development` / `production`） |
+| `JWT_SECRET` | **必填** | JWT 签名密钥，缺失将导致服务无法启动，生产环境必须修改为随机字符串 |
 | `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
-| `CORS_ORIGIN` | - | 允许的前端地址，多个用逗号分隔 |
+| `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
+| `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
+| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源 |
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
@@ -2295,6 +2423,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
+| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
 
 ### CORS 配置示例
 
@@ -2334,4 +2463,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-07-10
+最后更新：2026-08-19

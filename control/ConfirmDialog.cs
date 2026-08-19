@@ -42,11 +42,20 @@ namespace ObaraServiceController
             InitializeDialog();
         }
 
+        // CJK-aware font helper, shared with MainForm — keeps the dialog's
+        // Chinese buttons and title from looking pixelated when Segoe UI
+        // falls back to a substitute CJK face with wrong metrics.
+        private static Font CreateUiFont(float size, FontStyle style)
+        {
+            try { return new Font("Microsoft YaHei UI", size, style); }
+            catch { try { return new Font("Microsoft YaHei", size, style); } catch { return new Font("Segoe UI", size, style); } }
+        }
+
         private void InitializeDialog()
         {
             SuspendLayout();
 
-            Size = new Size(440, 200);
+            Size = new Size(480, 220);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = ThemeColors.PanelBackground;
             FormBorderStyle = FormBorderStyle.None;
@@ -54,53 +63,77 @@ namespace ObaraServiceController
             MinimizeBox = false;
             MaximizeBox = false;
             ShowInTaskbar = false;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
             _titleBar = new Panel();
             _titleBar.Dock = DockStyle.Top;
-            _titleBar.Height = 36;
+            _titleBar.Height = 40;
             _titleBar.BackColor = ThemeColors.TitleBarActive;
             _titleBar.Paint += TitleBar_Paint;
             Controls.Add(_titleBar);
 
             var titleLabel = new Label();
             titleLabel.Text = _title;
-            titleLabel.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
+            titleLabel.Font = CreateUiFont(10.5F, FontStyle.Bold);
             titleLabel.ForeColor = ThemeColors.TextPrimary;
             titleLabel.AutoSize = true;
-            titleLabel.Location = new Point(16, 9);
+            titleLabel.Location = new Point(18, 11);
             _titleBar.Controls.Add(titleLabel);
 
+            // Close button (X) in the top-right — small, clean, high-res
+            var closeBtn = new Label();
+            closeBtn.Text = "✕";
+            closeBtn.Font = new Font("Segoe UI Symbol", 10F);
+            closeBtn.ForeColor = ThemeColors.TextSecondary;
+            closeBtn.Size = new Size(34, 28);
+            closeBtn.Location = new Point(Width - 42, 6);
+            closeBtn.TextAlign = ContentAlignment.MiddleCenter;
+            closeBtn.Cursor = Cursors.Hand;
+            closeBtn.MouseEnter += (s, e) =>
+            {
+                closeBtn.BackColor = ThemeColors.Error;
+                closeBtn.ForeColor = Color.White;
+            };
+            closeBtn.MouseLeave += (s, e) =>
+            {
+                closeBtn.BackColor = Color.Transparent;
+                closeBtn.ForeColor = ThemeColors.TextSecondary;
+            };
+            closeBtn.Click += (s, e) => { Result = ConfirmResult.Cancel; Close(); };
+            _titleBar.Controls.Add(closeBtn);
+
             _iconPanel = new Panel();
-            _iconPanel.Size = new Size(48, 48);
-            _iconPanel.Location = new Point(20, 58);
+            _iconPanel.Size = new Size(52, 52);
+            _iconPanel.Location = new Point(24, 62);
             _iconPanel.Paint += IconPanel_Paint;
             Controls.Add(_iconPanel);
 
             _messageLabel = new Label();
             _messageLabel.Text = _message;
-            _messageLabel.Font = new Font("Segoe UI", 9.5F);
+            _messageLabel.Font = CreateUiFont(9.5F, FontStyle.Regular);
             _messageLabel.ForeColor = ThemeColors.TextPrimary;
             _messageLabel.AutoSize = false;
-            _messageLabel.Location = new Point(80, 55);
-            _messageLabel.Size = new Size(Width - 110, 60);
+            _messageLabel.Location = new Point(92, 58);
+            _messageLabel.Size = new Size(Width - 124, 80);
             _messageLabel.TextAlign = ContentAlignment.MiddleLeft;
             Controls.Add(_messageLabel);
 
             _yesBtn = CreateDialogButton(_yesText, ThemeColors.Success);
-            _yesBtn.Size = new Size(90, 32);
-            _yesBtn.Location = new Point(Width - 290, Height - 56);
+            _yesBtn.Size = new Size(104, 36);
+            _yesBtn.Location = new Point(Width - 324, Height - 62);
             _yesBtn.Click += (s, e) => { Result = ConfirmResult.Yes; Close(); };
             Controls.Add(_yesBtn);
 
             _noBtn = CreateDialogButton(_noText, ThemeColors.Accent);
-            _noBtn.Size = new Size(90, 32);
-            _noBtn.Location = new Point(Width - 195, Height - 56);
+            _noBtn.Size = new Size(104, 36);
+            _noBtn.Location = new Point(Width - 212, Height - 62);
             _noBtn.Click += (s, e) => { Result = ConfirmResult.No; Close(); };
             Controls.Add(_noBtn);
 
             _cancelBtn = CreateDialogButton(_cancelText, ThemeColors.TextSecondary);
-            _cancelBtn.Size = new Size(90, 32);
-            _cancelBtn.Location = new Point(Width - 100, Height - 56);
+            _cancelBtn.Size = new Size(104, 36);
+            _cancelBtn.Location = new Point(Width - 100, Height - 62);
             _cancelBtn.Click += (s, e) => { Result = ConfirmResult.Cancel; Close(); };
             Controls.Add(_cancelBtn);
 
@@ -116,13 +149,13 @@ namespace ObaraServiceController
             var btn = new Button();
             btn.Text = text;
             btn.FlatStyle = FlatStyle.Flat;
-            btn.FlatAppearance.BorderColor = accentColor;
+            btn.FlatAppearance.BorderColor = Color.FromArgb(120, accentColor);
             btn.FlatAppearance.BorderSize = 1;
             btn.FlatAppearance.MouseOverBackColor = ThemeColors.ButtonPressed;
             btn.FlatAppearance.MouseDownBackColor = ThemeColors.ButtonHover;
-            btn.BackColor = ThemeColors.ButtonHover;
+            btn.BackColor = Color.FromArgb(30, 34, 62);
             btn.ForeColor = accentColor;
-            btn.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+            btn.Font = CreateUiFont(9F, FontStyle.Bold);
             btn.Cursor = Cursors.Hand;
             return btn;
         }
