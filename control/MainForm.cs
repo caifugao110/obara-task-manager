@@ -42,6 +42,55 @@ namespace ObaraServiceController
         private Panel _mainPanel;
         private Panel _statusBar;
 
+        // Cached build-date version.  Derived once from the executable's
+        // own file last-write time (which is set by the linker every time
+        // the .exe is rebuilt).  This replaces the hard-coded
+        // [assembly: AssemblyVersion("YYYY.M.D.REV")] in AssemblyInfo.cs
+        // as the source of truth shown in the title bar subtitle, so the
+        // displayed date always matches the day the exe was built and the
+        // developer never has to hand-edit three version attributes again.
+        private static readonly Lazy<string> _buildVersion = new Lazy<string>(ComputeBuildVersion);
+
+        private static string ComputeBuildVersion()
+        {
+            try
+            {
+                string location = typeof(MainForm).Assembly.Location;
+                if (!string.IsNullOrEmpty(location) && File.Exists(location))
+                {
+                    // Use LastWriteTimeUtc of the actual exe — this is the
+                    // linker's write-to-disk timestamp, which matches the
+                    // build day exactly.  Falling back to
+                    // AssemblyInformationalVersion keeps the old behaviour
+                    // for builds where the exe path is shadow-copied
+                    // (e.g. some unit-test runners, NGEN).
+                    DateTime buildTime = File.GetLastWriteTimeUtc(location).ToLocalTime();
+                    // Format: yyyy.M.d (same shape used by the previous
+                    // hand-written AssemblyInformationalVersion attribute)
+                    // so downstream consumers never see a surprising shape.
+                    return buildTime.Year.ToString() + "." + buildTime.Month.ToString() + "." + buildTime.Day.ToString();
+                }
+            }
+            catch { /* fall through to attribute fallback */ }
+
+            try
+            {
+                var attr = typeof(MainForm).Assembly
+                    .GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false)
+                    .Cast<AssemblyInformationalVersionAttribute>()
+                    .FirstOrDefault();
+                if (attr != null && !string.IsNullOrEmpty(attr.InformationalVersion))
+                    return attr.InformationalVersion;
+            }
+            catch { }
+            return DateTime.Today.Year.ToString() + "." + DateTime.Today.Month.ToString() + "." + DateTime.Today.Day.ToString();
+        }
+
+        // Public read-only accessor (keeps the backing Lazy private so no one
+        // can overwrite it at runtime).  Used by TitleBar_Paint and can also
+        // be surfaced in a hypothetical "About" dialog later.
+        public static string BuildVersion { get { return _buildVersion.Value; } }
+
         // Backend card controls
         private Panel _backendCard;
         private Panel _backendStatusDot;
@@ -257,30 +306,31 @@ namespace ObaraServiceController
         {
             try
             {
-                // Run on a thread-pool thread so startup never blocks on node.exe.
-                string version = await Task.Run(() =>
-                {
-                    var psi = new ProcessStartInfo();
-                    psi.FileName = "node";
-                    psi.Arguments = "--version";
-                    psi.UseShellExecute = false;
-                    psi.RedirectStandardOutput = true;
-                    psi.CreateNoWindow = true;
-                    psi.StandardOutputEncoding = Encoding.UTF8;
-                    psi.StandardErrorEncoding = Encoding.UTF8;
-                    using (var p = Process.Start(psi))
-                    {
-                        string v = p.StandardOutput.ReadToEnd().Trim();
-                        p.WaitForExit();
-                        return p.ExitCode == 0 ? v : null;
-                    }
-                });
+                // Reuse ProcessManager's robust node.exe discovery + cache:
+                // it handles PATH-scan, node.exe probe, npm.cmd shim parsing,
+                // and AppData fallbacks.  This eliminates the false-positive
+                // "[警告] 无法检测 Node.js 环境" warning that appeared when
+                // the naive Process.Start("node", "--version") probe failed
+                // (no .exe extension + missing RedirectStandardError caused
+                // an exception inside Start, even though the real services
+                // started fine through ProcessManager's cached paths).
+                string version = await Task.Run(() => ProcessManager.GetNodeVersion());
 
                 if (IsDisposed || Disposing) return;
                 if (version != null)
                     LogMessage("系统", string.Format("Node.js 版本: {0}", version));
                 else
-                    LogMessage("警告", "Node.js 未安装或不在 PATH 中");
+                {
+                    // Surface the underlying resolution error if available so
+                    // the user gets an actionable hint instead of a generic
+                    // "not installed" message.
+                    string error;
+                    ProcessManager.TryGetNodeExePath(out error);
+                    if (!string.IsNullOrEmpty(error))
+                        LogMessage("警告", string.Format("Node.js 不可用: {0}", error));
+                    else
+                        LogMessage("警告", "Node.js 未安装或不在 PATH 中");
+                }
             }
             catch
             {
@@ -1205,12 +1255,18 @@ namespace ObaraServiceController
                 g.DrawLine(pen, 26, 24, 32, 24);
             }
 
-            // Read the real assembly informational version once and cache it
-            // so the title bar never shows a hard-coded date string.
-            string version = (string)typeof(MainForm).Assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false)
-                .Cast<AssemblyInformationalVersionAttribute>()
-                .Select(a => a.InformationalVersion)
-                .FirstOrDefault() ?? "1.0.0";
+            // Version shown in the title bar subtitle.
+            // Priority:
+            //   1. BuildVersion (Lazy<string> above) — computed from the
+            //      actual .exe file last-write timestamp on disk, so every
+            //      rebuild automatically shows today's date without
+            //      touching AssemblyInfo.cs.  This is the answer to the
+            //      user's "version shouldn't be hard-coded, it should be
+            //      today's date dynamically" request.
+            //   2. Lazy<string> fallbacks (AssemblyInformationalVersion,
+            //      then DateTime.Today) keep things working on environments
+            //      where the .exe location isn't accessible to the process.
+            string version = BuildVersion;
 
             // Title text — use CJK-aware font so "任务管理系统服务控制台"
             // glyphs are measured correctly and never look clipped/covered at
@@ -1221,7 +1277,7 @@ namespace ObaraServiceController
                 g.DrawString("Obara任务管理系统服务控制台", font, brush, 52, 11);
             }
 
-            // Subtitle (small) with real version from assembly metadata
+            // Subtitle (small) with real build-date version
             using (var font = CreateUiFont(7.8F, FontStyle.Regular))
             using (var brush = new SolidBrush(ThemeColors.TextMuted))
             {
@@ -1333,19 +1389,17 @@ namespace ObaraServiceController
         {
             if (_titleBar == null) return;
 
-            // Slightly wider + taller buttons than before.  A 48×34 target
-            // meets modern Fluent / Win11 minimum hit-size recommendations
-            // and the extra room makes the drawn glyphs look crisp.
-            int btnWidth = 48;
-            int btnHeight = 34;
+            // High-DPI friendly control box.  Each button is a 52×40 target
+            // (Windows 11 Fluent Design minimum: 44 px) with 2 px of visual
+            // padding on each side so the hover highlight never bleeds into
+            // the window edge.  Previously 48×34 targets felt cramped and
+            // the glyphs looked pixelated next to the crisp CJK title text.
+            int btnWidth = 52;
+            int btnHeight = 40;
             int y = (_titleBar.Height - btnHeight) / 2;
             Color[] btnColors = { ThemeColors.TextSecondary, ThemeColors.TextSecondary, ThemeColors.Error };
             string[] tipTexts  = { "最小化", _isMaximized ? "还原" : "最大化", "关闭" };
 
-            // Update the tooltip when the hovered button changes.  Because
-            // the buttons are custom-drawn regions on a Panel we can't use
-            // per-Control SetToolTip — instead we refresh the tip for the
-            // _titleBar itself based on the currently hovered region.
             if (_toolTip != null && _titleBar.IsHandleCreated)
             {
                 try
@@ -1369,15 +1423,16 @@ namespace ObaraServiceController
                 int x = _titleBar.Width - (3 - i) * btnWidth;
                 var rect = new Rectangle(x, y, btnWidth, btnHeight);
 
-                // Hover background — rounded-rect fill for a modern feel
-                // (replaces the flat squared block used previously).
+                // Hover background — pill-shaped rounded rect.  On close the
+                // whole target fills red; otherwise a subtle button-overlay
+                // shade matches the action-button hover on the cards below.
                 Color bgColor = Color.Transparent;
                 if (_hoverButton == i)
                     bgColor = (i == 2) ? ThemeColors.Error : ThemeColors.ButtonHover;
 
                 if (bgColor != Color.Transparent)
                 {
-                    using (var bgPath = RoundedRect(rect, 5))
+                    using (var bgPath = RoundedRect(rect, 8))
                     using (var brush = new SolidBrush(bgColor))
                     {
                         g.FillPath(brush, bgPath);
@@ -1385,44 +1440,67 @@ namespace ObaraServiceController
                 }
 
                 Color iconColor = (i == 2 && _hoverButton == 2) ? Color.White : btnColors[i];
-                // Slightly thicker + round-capped pens so the glyphs look
-                // high-DPI clean and don't appear pixelated at any scale.
-                using (var pen = new Pen(iconColor, 2f))
+                // Thicker, round-capped strokes so the glyphs stay readable
+                // at 150%/200% DPI — the previous 2.0f strokes blurred into
+                // the title-bar background after GDI scaling interpolation.
+                using (var pen = new Pen(iconColor, 2.4f))
                 {
                     pen.StartCap = LineCap.Round;
                     pen.EndCap = LineCap.Round;
                     pen.LineJoin = LineJoin.Round;
 
+                    // Glyph canvas is a centered 24×20 box so each icon has
+                    // the same visual weight and alignment regardless of the
+                    // symbol shape (min bar / max square / close X).
+                    int cx = x + btnWidth / 2;
+                    int cy = y + btnHeight / 2;
+                    int glyphHalfW = 12;  // half-width of 24
+                    int glyphHalfH = 9;   // half-height of 18 (slightly narrower than wide)
+
                     switch (i)
                     {
-                        case 0: // minimize — single horizontal bar
-                            g.DrawLine(pen, x + 14, y + btnHeight / 2, x + btnWidth - 14, y + btnHeight / 2);
+                        case 0: // minimize — thick horizontal rule
+                            g.DrawLine(pen, cx - glyphHalfW, cy, cx + glyphHalfW, cy);
                             break;
                         case 1: // maximize / restore
                             if (_isMaximized)
                             {
-                                // Restore icon: two overlapping rectangles
-                                // Back rectangle (offset)
-                                g.DrawRectangle(pen, x + 15, y + 9, 14, 10);
-                                // Front rectangle (filled-looking via outer rect)
-                                g.DrawRectangle(pen, x + 19, y + 13, 14, 10);
-                                // Little "tab" on the front rect top-left
-                                g.DrawLine(pen, x + 19, y + 13, x + 19, y + 9);
-                                g.DrawLine(pen, x + 19, y + 9, x + 33, y + 9);
+                                // Restore icon: two offset rounded rects.
+                                // Back rect sits up-left (slightly faded by
+                                // drawing with the same pen — only outline is
+                                // used, which reads as "behind the front").
+                                // Draw it first so front overlays the top-left.
+                                var backR = new Rectangle(cx - glyphHalfW + 2, cy - glyphHalfH - 1, 18, 14);
+                                using (var p = RoundedRect(backR, 2))
+                                    g.DrawPath(pen, p);
+                                // Front rect sits down-right with a little
+                                // solid-tab accent on its top-left.
+                                var frontR = new Rectangle(cx - glyphHalfW - 2, cy - glyphHalfH + 3, 18, 14);
+                                using (var p = RoundedRect(frontR, 2))
+                                    g.DrawPath(pen, p);
+                                // Fill only the overlapping top-left corner
+                                // of the front rect so it unambiguously reads
+                                // as "stacked" (restore / un-maximize).
+                                using (var overlayPen = new Pen(iconColor, 2.8f))
+                                {
+                                    overlayPen.StartCap = LineCap.Round;
+                                    overlayPen.EndCap = LineCap.Round;
+                                    g.DrawLine(overlayPen, frontR.X, frontR.Y + 4, frontR.X, frontR.Y);
+                                    g.DrawLine(overlayPen, frontR.X, frontR.Y, frontR.X + 4, frontR.Y);
+                                }
                             }
                             else
                             {
-                                // Maximize icon: single rounded-edged rectangle
-                                var maxRect = new Rectangle(x + 14, y + 9, 20, 16);
-                                using (var maxPath = RoundedRect(maxRect, 2))
-                                {
-                                    g.DrawPath(pen, maxPath);
-                                }
+                                // Maximize icon: clean rounded-edged rect
+                                var maxR = new Rectangle(cx - glyphHalfW, cy - glyphHalfH, 24, 18);
+                                using (var p = RoundedRect(maxR, 2))
+                                    g.DrawPath(pen, p);
                             }
                             break;
-                        case 2: // close — clean rounded X
-                            g.DrawLine(pen, x + 15, y + 11, x + btnWidth - 15, y + btnHeight - 11);
-                            g.DrawLine(pen, x + btnWidth - 15, y + 11, x + 15, y + btnHeight - 11);
+                        case 2: // close — symmetric rounded X
+                            int xo = 10; // offset from center (makes a 20×20 X)
+                            g.DrawLine(pen, cx - xo, cy - xo, cx + xo, cy + xo);
+                            g.DrawLine(pen, cx + xo, cy - xo, cx - xo, cy + xo);
                             break;
                     }
                 }
@@ -1431,9 +1509,9 @@ namespace ObaraServiceController
 
         private Rectangle GetTitleBarButtonRect(int index)
         {
-            // Keep in sync with the dimensions used in DrawTitleBarButtons.
-            int btnWidth = 48;
-            int btnHeight = 34;
+            // Keep these three magic numbers in lock-step with DrawTitleBarButtons.
+            int btnWidth = 52;
+            int btnHeight = 40;
             int y = (_titleBar.Height - btnHeight) / 2;
             int x = _titleBar.Width - (3 - index) * btnWidth;
             return new Rectangle(x, y, btnWidth, btnHeight);
@@ -1441,8 +1519,8 @@ namespace ObaraServiceController
 
         private int HitTestTitleBarButtons(int x, int y)
         {
-            int btnWidth = 48;
-            int btnHeight = 34;
+            int btnWidth = 52;
+            int btnHeight = 40;
             int by = (_titleBar.Height - btnHeight) / 2;
             for (int i = 0; i < 3; i++)
             {
@@ -1457,6 +1535,18 @@ namespace ObaraServiceController
         {
             if (e.Button == MouseButtons.Left)
             {
+                // Never start dragging when the press lands on a title-bar
+                // control-box button.  Previously any click in the title bar
+                // set _isDragging = true, which meant clicking the close /
+                // maximize buttons first nudged the window by a few pixels
+                // (the "别扭" visual quirk the user reported) and made hover
+                // highlight feel sluggish because MouseUp then executed both
+                // the window-move side effect and the button click.
+                if (HitTestTitleBarButtons(e.X, e.Y) >= 0)
+                {
+                    _isDragging = false;
+                    return;
+                }
                 _isDragging = true;
                 _dragOffset = e.Location;
             }
@@ -1491,21 +1581,27 @@ namespace ObaraServiceController
 
         private void TitleBar_MouseUp(object sender, MouseEventArgs e)
         {
-            if (_isDragging)
+            // Always check for button clicks first, regardless of whether
+            // we were dragging.  When MouseDown detected a button hit it
+            // set _isDragging = false and returned early; the previous code
+            // then gated button logic behind `if (_isDragging)`, which meant
+            // no button click ever fired — making close / minimize / maximize
+            // all appear dead.
+            int clickedBtn = HitTestTitleBarButtons(e.X, e.Y);
+            if (clickedBtn >= 0 && e.Button == MouseButtons.Left)
             {
-                _isDragging = false;
-                if (_hoverButton >= 0)
+                switch (clickedBtn)
                 {
-                    switch (_hoverButton)
-                    {
-                        case 0: WindowState = FormWindowState.Minimized; break;
-                        case 1: ToggleMaximize(); break;
-                        case 2: Close(); break;
-                    }
-                    _hoverButton = -1;
-                    _titleBar.Invalidate();
+                    case 0: WindowState = FormWindowState.Minimized; break;
+                    case 1: ToggleMaximize(); break;
+                    case 2: Close(); break;
                 }
+                _hoverButton = -1;
+                _titleBar.Invalidate();
             }
+
+            if (_isDragging)
+                _isDragging = false;
         }
 
         private void TitleBar_MouseLeave(object sender, EventArgs e)
@@ -1969,41 +2065,52 @@ namespace ObaraServiceController
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            if (e.CloseReason == CloseReason.UserClosing)
+            if (e.CloseReason != CloseReason.UserClosing) return;
+
+            bool anyRunning = _processManager.IsBackendRunning || _processManager.IsFrontendRunning;
+            ConfirmResult result;
+
+            if (anyRunning)
             {
-                bool anyRunning = _processManager.IsBackendRunning || _processManager.IsFrontendRunning;
+                result = ConfirmDialog.Show(this,
+                    "确认退出",
+                    "服务仍在运行，是否停止后退出？\n点击【是】停止服务并退出；点击【否】保留服务运行，仅关闭控制台窗口；点击【取消】不退出。",
+                    "是(Y)", "否(N)", "取消");
+            }
+            else
+            {
+                result = ConfirmDialog.Show(this,
+                    "确认退出",
+                    "确定要退出 Obara任务管理系统服务控制台 吗？",
+                    "是(Y)", "否(N)", "取消");
+            }
 
-                if (anyRunning)
-                {
-                    ConfirmResult result = ConfirmDialog.Show(this,
-                        "确认退出",
-                        "服务仍在运行，是否停止后退出？\n点击【否】保留服务运行并退出界面。",
-                        "是(Y)", "否(N)", "取消");
+            // --- Cancel: stay open, don't touch services -------------------
+            if (result == ConfirmResult.Cancel)
+            {
+                e.Cancel = true;
+                return;
+            }
 
-                    if (result == ConfirmResult.Cancel)
-                    {
-                        e.Cancel = true;
-                        return;
-                    }
-                    else if (result == ConfirmResult.Yes)
-                    {
-                        _processManager.StopAll();
-                    }
-                }
-                else
-                {
-                    ConfirmResult result = ConfirmDialog.Show(this,
-                        "确认退出",
-                        "确定要退出 Obara任务管理系统服务控制台 吗？",
-                        "是(Y)", "否(N)", "取消");
+            // --- No: close the console window, but DO NOT stop services.
+            // This is the fix for the reported bug where clicking "否" still
+            // shut down backend + frontend because the old code fell through
+            // into _processManager.Dispose() → StopAll(). -----------------
+            if (result == ConfirmResult.No)
+            {
+                // Detach from the running processes (don't dispose, which
+                // would call StopAll inside) and just kill the timers.
+                _monitorTimer.Stop();
+                _animationTimer.Stop();
+                _logFlushTimer.Stop();
+                SaveConfig();
+                return;
+            }
 
-                    if (result == ConfirmResult.Cancel || result == ConfirmResult.No)
-                    {
-                        e.Cancel = true;
-                        return;
-                    }
-                }
-
+            // --- Yes: gracefully stop services + timers and close. ---------
+            if (result == ConfirmResult.Yes)
+            {
+                if (anyRunning) _processManager.StopAll();
                 _monitorTimer.Stop();
                 _animationTimer.Stop();
                 _logFlushTimer.Stop();

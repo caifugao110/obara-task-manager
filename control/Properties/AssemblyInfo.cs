@@ -14,6 +14,8 @@ using System.Runtime.InteropServices;
 
 [assembly: Guid("a1b2c3d4-e5f6-7890-abcd-ef1234567890")]
 
-[assembly: AssemblyVersion("2026.8.19.0")]
-[assembly: AssemblyFileVersion("2026.8.19.0")]
-[assembly: AssemblyInformationalVersion("2026.8.19")]
+// Version attributes are generated at build time into
+// Properties\GeneratedVersion.cs by the GenerateVersionFile MSBuild
+// target (see ObaraServiceController.csproj).  This keeps the Windows
+// file-properties version (right-click → Details) in sync with the
+// build date shown in the title bar, without manual editing.

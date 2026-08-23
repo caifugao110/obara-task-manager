@@ -87,6 +87,9 @@ coverage/
 # Trae AI tool data
 .trae/
 
+# WorkBuddy data
+.workbuddy/
+
 # Temporary files
 tmp/
 temp/

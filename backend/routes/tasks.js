@@ -468,6 +468,17 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     }
 
     const isRestore = normalizeColorValue(value) === '__restore__';
+
+    // Admin can set any color value directly (via task edit modal)
+    if (isAdmin && !isRestore && !isWhiteColor(value)) {
+      item.color = value;
+      touchItem(item, req.user);
+      sheet.days[date] = items;
+      await db.writeDb(data);
+      return res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
+    }
+
+    // Non-admin users: only white mark or restore is allowed
     if (!isRestore && !isWhiteColor(value)) {
       return res.status(403).json({ message: 'Only white mark or restore is allowed' });
     }

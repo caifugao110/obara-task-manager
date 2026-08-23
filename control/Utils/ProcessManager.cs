@@ -62,6 +62,56 @@ namespace ObaraServiceController.Utils
         public event EventHandler<ProcessEventArgs> LogMessage;
         public event EventHandler<ProcessEventArgs> StatusChanged;
 
+        // Public helper: resolves node + npm (using cached results after the
+        // first call) and returns the node.exe absolute path, or null if the
+        // runtime cannot be located.  Also populates _cachedResolutionError
+        // for the caller to inspect on failure.
+        public static string TryGetNodeExePath(out string errorOrNull)
+        {
+            EnsureNodeAndNpmResolved();
+            errorOrNull = _cachedResolutionError;
+            return _cachedNodeExe;
+        }
+
+        // Public helper: returns the Node.js runtime version string (e.g.
+        // "v20.11.0") by probing the resolved node.exe, or null on failure.
+        // Uses the exact same absolute-path + encoding settings as the
+        // service start logic, which eliminates the "检测不到 Node 但能
+        // 正常启动服务" false-positive warning the user reported.
+        public static string GetNodeVersion()
+        {
+            string error;
+            string nodeExe = TryGetNodeExePath(out error);
+            if (nodeExe == null) return null;
+            try
+            {
+                using (var probe = new Process())
+                {
+                    probe.StartInfo = new ProcessStartInfo
+                    {
+                        FileName = nodeExe,
+                        Arguments = "--version",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8,
+                    };
+                    probe.Start();
+                    string result = probe.StandardOutput.ReadLine();
+                    probe.WaitForExit(5000);
+                    if (probe.ExitCode == 0 && !string.IsNullOrEmpty(result))
+                    {
+                        result = result.Trim();
+                        if (result.Length > 0) return result;
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
         // Run PATH resolution once.  Caches are never cleared for the
         // lifetime of the controller process.
         private static void EnsureNodeAndNpmResolved()

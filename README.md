@@ -1,6 +1,6 @@
 # Obara 任务管理系统
 
-![Version](https://img.shields.io/badge/版本-2.0.0-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20跨平台-lightgrey)
+![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20跨平台-lightgrey) ![Socket.IO](https://img.shields.io/badge/实时协作-Socket.IO-010101?logo=socket.io&logoColor=white)
 
 Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管理工具，支持多人协作、任务录入、报表查询、工时排行、权限控制和数据导入导出。
 
@@ -130,6 +130,12 @@ npm run dev
   - 无法撤销时提示"暂无可撤销操作"
 - **支持 `Ctrl+Z` 撤销，同一用户最多保留 10 步撤销记录。主页面所有操作（包括删除单个枪名）均可撤销。**
 - **批量替换功能：支持在指定月份或全表范围内搜索并替换任务名和枪名中的文本，执行前可预览匹配结果。**
+- **颜色标记功能：**
+  - 开启系统设置中的「允许登录用户修改本人设计计划标记颜色」后，普通登录用户可在本人同名设计员的设计计划任务（含枪名单独行）上标记白色或恢复原色。
+  - 管理员可通过任务编辑模态框直接为任意任务或枪名设置任意颜色。
+  - 非管理员仅允许标记白色或恢复，后端会校验并拒绝其他颜色值。
+  - 标记操作会通过 Socket.IO 实时同步到所有客户端，标记期间其他用户会看到「正在标记任务颜色」的占用提示。
+  - 每个任务和枪名会记录 `colorMarkedBy`（标记者信息，系统自动标记为 `auto`），管理员悬浮任务时可查看。
 
 ### 离线模式
 
@@ -505,7 +511,8 @@ obara-task-manager/
 │   ├── Models/
 │   │   └── ServiceConfig.cs
 │   ├── Properties/
-│   │   └── AssemblyInfo.cs
+│   │   ├── AssemblyInfo.cs
+│   │   └── GeneratedVersion.cs   # 构建时由 MSBuild 自动生成，勿手工编辑
 │   ├── Resources/
 │   │   └── app.ico
 │   └── Utils/
@@ -589,7 +596,8 @@ obara-task-manager/
 | 服务控制台 | `control/ObaraServiceController.csproj` | .NET Framework 4.8 WinForms 程序，用于在 Windows 上控制服务启停、监控端口与一键打开浏览器界面 |
 | 路径解析 | `control/Utils/PathResolver.cs` | 从 EXE 目录向上查找 `backend/` 与 `frontend/`，绑定运行路径，不硬编码绝对路径 |
 | 端口检测 | `control/Utils/PortChecker.cs` | 实时探测前后端端口状态与延迟，用于状态卡片刷新 |
-| 进程管理 | `control/Utils/ProcessManager.cs` | 启停后端 / 前端进程，自动安装依赖，转发子进程输出到日志区 |
+| 进程管理 | `control/Utils/ProcessManager.cs` | 启停后端 / 前端进程，自动安装依赖，转发子进程输出到日志区；同时提供健壮的 node.exe 路径发现与版本检测 |
+| 构建版本生成 | `control/ObaraServiceController.csproj` | MSBuild 编译前自动生成 `Properties/GeneratedVersion.cs`，版本号按构建日期生成，无需手工维护 |
 | 控制台主题 | `control/Utils/ThemeColors.cs` | 暗色科技风 UI 配色与渐变定义 |
 | CI/CD | `.github/workflows/build-and-deploy.yml` | 自动构建控制台 EXE 并发布 Release，同时把 README 与 docs/ 部署到 GitHub Pages |
 
@@ -699,9 +707,18 @@ obara-task-manager/
 - 路径绑定：自动从 EXE 所在目录向上查找 `backend/` 与 `frontend/`，**不硬编码绝对路径**，整个项目目录移动后仍可直接使用。
 - 一键打开浏览器：点击「打开浏览器」可直接访问运行中的前端界面。
 - 依赖自动安装：首次启动服务时若依赖缺失会自动执行 `npm install`。
+- Node.js 环境检测：复用 `ProcessManager` 的健壮发现逻辑（PATH 扫描、`node.exe` 探测、`npm.cmd` 解析和 AppData 回退），检测失败时输出具体原因，避免误报「Node.js 未安装」。
 - 日志显示：实时输出前后端子进程日志，支持清空。
 - 配置持久化：端口与监控间隔保存在本地配置文件，重启后自动加载。
-- UI 风格：暗色科技风（自定义 `ThemeColors`），双缓冲优化，避免鼠标悬停卡顿。
+- UI 风格：暗色科技风（自定义 `ThemeColors`），双缓冲优化，避免鼠标悬停卡顿；标题栏与确认对话框针对高 DPI 优化。
+
+### 构建版本自动生成
+
+控制台版本号**按构建日期自动生成**，无需手工维护：
+
+- 标题栏副标题显示的版本取自 EXE 文件自身的最后写入时间（即链接器写盘时间），每次重新构建自动更新为构建当天日期。
+- MSBuild 在每次编译前通过 `GenerateVersionFile` 目标自动生成 `control/Properties/GeneratedVersion.cs`，写入 `AssemblyVersion` / `AssemblyFileVersion` / `AssemblyInformationalVersion` 三个属性（格式 `yyyy.M.d.0`），保证 Windows 文件属性「详细信息」页显示的版本与标题栏一致。
+- `AssemblyInfo.cs` 和 `.csproj` 中的版本字段仅保留占位值，构建时会被覆盖。
 
 ### 构建产物
 
@@ -721,7 +738,7 @@ cd control
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceController.csproj /p:Configuration=Release /t:Build
 ```
 
-构建完成后产物位于 `control/bin/Release/`。`control/.ignore` 文件用于排除 `bin/`、`obj/` 等中间产物，避免提交到版本库。
+构建完成后产物位于 `control/bin/Release/`。构建时 MSBuild 会自动生成 `Properties/GeneratedVersion.cs` 写入当日版本号，无需手工修改。`control/.ignore` 文件用于排除 `bin/`、`obj/` 等中间产物，避免提交到版本库。
 
 ### 自动构建
 
@@ -733,7 +750,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 
 ### 触发条件
 
-- 推送到 `main` 分支，且改动了 `control/**`、`README.md`、`docs/**` 或 workflow 文件本身。
+- 推送到 `main` 分支，且改动了 `control/**`（触发 EXE 构建）或 `README.md`、`docs/**`（触发文档部署）。
 - 推送 `v*` 形式的 tag（正式版本）。
 - 手动触发（`workflow_dispatch`）。
 
@@ -741,11 +758,11 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 
 - 运行环境：`windows-latest`。
 - 自动生成动态版本号：tag 推送时使用 tag 名；常规推送时生成 `vYYYY.MM.DD-beta-N` 形式的版本号，避免重复。
-- 自动生成变更日志：从上一个 tag 到当前 HEAD 的提交信息汇总。
-- 使用系统自带的 .NET Framework 4.8 MSBuild 构建 `ObaraServiceController.csproj`，并自动写入 `AssemblyInfo.cs` 的版本字段。
-- 构建完成后清理 `obj/` 中间产物，并将 `bin/Release/` 打包为 `Obara-Task-Management-Service-Console_<version>.zip`。
+- 自动生成变更日志：取当前提交的提交信息（单条），作为 Release 说明。
+- 使用系统自带的 .NET Framework 4.8 MSBuild 构建 `ObaraServiceController.csproj`，并自动写入 `AssemblyInfo.cs` 的版本字段（`AssemblyInformationalVersion` 不带 `v` 前缀）。
+- 构建完成后清理 `obj/` 中间产物，并将 `bin/Release/` 打包为 `Obara-Task-Management-Service-Console_<version>.zip`，以 Release Assets 附件形式发布。
 - 推送到 `main` 时自动创建 git tag 与 GitHub Release；推送 `v*` tag 时直接创建对应 Release。
-- Release 包含中文说明、变更日志、功能列表和下载链接。
+- Release 正文包含中文说明、变更日志和功能列表，下载请从 Release 页面的 Assets 获取。
 
 ### 任务二：部署文档到 GitHub Pages
 
@@ -766,3 +783,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 ## License
 
 MIT License
+
+---
+
+最后更新：2026-08-23

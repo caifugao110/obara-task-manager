@@ -26,6 +26,13 @@ namespace ObaraServiceController
             this.BackColor = System.Drawing.Color.FromArgb(15, 15, 26);
             this.ClientSize = new System.Drawing.Size(900, 650);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
+            using (var stream = typeof(MainForm).Assembly.GetManifestResourceStream("ObaraServiceController.Resources.app.ico"))
+            {
+                if (stream != null)
+                {
+                    this.Icon = new System.Drawing.Icon(stream);
+                }
+            }
             this.Name = "MainForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
             this.Text = "Obara任务管理系统服务控制台";
