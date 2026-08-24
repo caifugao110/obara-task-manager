@@ -25,10 +25,17 @@ bin/
 obj/
 */bin/
 */obj/
+Release/
+Debug/
 *.exe
 *.dll
 *.pdb
 *.cache
+*.user
+*.suo
+*.stackdump
+App.config.bak
+control/Properties/GeneratedVersion.cs
 
 # Data files (local JSON storage)
 backend/db.json
@@ -100,6 +107,11 @@ temp/
 # Documentation (optional)
 *.md.backup
 docs/build/
+
+# NuGet / Visual Studio
+packages/
+*.nupkg
+.vs/
 
 # Package manager locks (keep only one based on your choice)
 # package-lock.json (keep if using npm)
