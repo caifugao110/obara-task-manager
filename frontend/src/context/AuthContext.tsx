@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
+﻿﻿﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import { axiosInstance } from '../services/api';
 import { io, Socket } from 'socket.io-client';
 
@@ -103,6 +103,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (forceChange !== undefined) {
           setForcePasswordChange(forceChange);
           localStorage.setItem('forcePasswordChange', String(forceChange));
+        }
+        // 同步服务端最新用户信息（特别是 role 变更），确保路由守卫与中间件鉴权一致
+        const remoteUser = response.data.user;
+        if (remoteUser) {
+          setUser(prev => {
+            if (
+              prev &&
+              prev.id === remoteUser.id &&
+              prev.username === remoteUser.username &&
+              prev.role === remoteUser.role &&
+              prev.name === remoteUser.name
+            ) {
+              return prev;
+            }
+            const updated = { ...prev, ...remoteUser } as User;
+            localStorage.setItem('user', JSON.stringify(updated));
+            return updated;
+          });
         }
       } catch (err: any) {
         const code = err.response?.data?.code;

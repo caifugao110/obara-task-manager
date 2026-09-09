@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+﻿import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { UserPlus, Trash2, Shield, User, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download } from 'lucide-react';
+import { UserPlus, Trash2, Shield, User, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download, Settings } from 'lucide-react';
 import { format } from 'date-fns';
 import {
   DndContext,
@@ -210,6 +210,9 @@ const Admin = () => {
   const [resetPasswordUserId, setResetPasswordUserId] = useState<string | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
   const [resetPasswordSubmitting, setResetPasswordSubmitting] = useState(false);
+  const [setRoleUserId, setSetRoleUserId] = useState<string | null>(null);
+  const [setRoleValue, setSetRoleValue] = useState<'admin' | 'user'>('user');
+  const [setRoleSubmitting, setSetRoleSubmitting] = useState(false);
   
   // Edit Designer Modal
   const [editDesignerModalOpen, setEditDesignerModalOpen] = useState(false);
@@ -223,8 +226,8 @@ const Admin = () => {
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [initializingDesigners, setInitializingDesigners] = useState(false);
   const [initializingUsers, setInitializingUsers] = useState(false);
-  const [designersCollapsed, setDesignersCollapsed] = useState(false);
-  const [usersCollapsed, setUsersCollapsed] = useState(false);
+  const [designersCollapsed, setDesignersCollapsed] = useState(true);
+  const [usersCollapsed, setUsersCollapsed] = useState(true);
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const canInitializeDesigners = isSuperAdmin && designers.length === 0;
@@ -599,6 +602,30 @@ const Admin = () => {
     }
   };
 
+  const handleSetRole = async (id: string) => {
+    if (!isSuperAdmin) return;
+    const user = users.find(u => u.id === id);
+    if (!user) return;
+    setSetRoleUserId(id);
+    setSetRoleValue(user.role === 'admin' ? 'admin' : 'user');
+  };
+
+  const submitSetRole = async () => {
+    if (!isSuperAdmin) return;
+    if (!setRoleUserId) return;
+    setSetRoleSubmitting(true);
+    try {
+      await axiosInstance.put(`/users/${setRoleUserId}`, { role: setRoleValue });
+      addToast('权限已更新', 'success');
+      setSetRoleUserId(null);
+      fetchData();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '权限更新失败', 'error');
+    } finally {
+      setSetRoleSubmitting(false);
+    }
+  };
+
   const handleDeleteDesigner = async (id: string) => {
     if (!window.confirm('确定要从表格中移除该设计人员吗？其任务数据将保留在数据库中但不再显示。')) return;
     try {
@@ -734,6 +761,80 @@ const Admin = () => {
                 disabled={resetPasswordSubmitting}
               >
                 确认重置
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {setRoleUserId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => {
+              if (setRoleSubmitting) return;
+              setSetRoleUserId(null);
+            }}
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <div className="font-bold text-gray-800">
+                设置权限 - {users.find(u => u.id === setRoleUserId)?.name}
+              </div>
+              <button
+                className="p-1 rounded hover:bg-gray-100 text-gray-500"
+                onClick={() => {
+                  if (setRoleSubmitting) return;
+                  setSetRoleUserId(null);
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-5 space-y-2">
+              <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">权限角色</label>
+              <button
+                type="button"
+                className={`w-full p-3 rounded-lg border text-left transition flex items-center justify-between ${setRoleValue === 'admin' ? 'border-purple-500 bg-purple-50 text-purple-700 font-bold' : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                onClick={() => setSetRoleValue('admin')}
+                disabled={setRoleSubmitting}
+              >
+                <span className="flex items-center">
+                  <Shield size={16} className="mr-2" />
+                  一般管理员
+                </span>
+                {setRoleValue === 'admin' && <CheckCircle size={18} />}
+              </button>
+              <button
+                type="button"
+                className={`w-full p-3 rounded-lg border text-left transition flex items-center justify-between ${setRoleValue === 'user' ? 'border-purple-500 bg-purple-50 text-purple-700 font-bold' : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                onClick={() => setSetRoleValue('user')}
+                disabled={setRoleSubmitting}
+              >
+                <span className="flex items-center">
+                  <User size={16} className="mr-2" />
+                  普通用户
+                </span>
+                {setRoleValue === 'user' && <CheckCircle size={18} />}
+              </button>
+            </div>
+            <div className="px-5 py-4 bg-white border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-50 transition"
+                onClick={() => {
+                  if (setRoleSubmitting) return;
+                  setSetRoleUserId(null);
+                }}
+                disabled={setRoleSubmitting}
+              >
+                取消
+              </button>
+              <button
+                className="px-4 py-2 rounded-lg bg-purple-600 text-white font-bold hover:bg-purple-700 transition disabled:opacity-50"
+                onClick={submitSetRole}
+                disabled={setRoleSubmitting}
+              >
+                确认设置
               </button>
             </div>
           </div>
@@ -913,11 +1014,14 @@ const Admin = () => {
       <main className="flex-1 p-6 space-y-8 max-w-7xl mx-auto w-full">
         {/* Designers Management (Task Table Members) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
-            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+          <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
+            <div className="sticky top-[56px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
               <button
                 type="button"
-                onClick={() => setDesignersCollapsed(prev => !prev)}
+                onClick={() => {
+                  setDesignersCollapsed(prev => !prev);
+                  if (designersCollapsed) setUsersCollapsed(true);
+                }}
                 className="inline-flex items-center gap-2 rounded-lg px-2 py-1 -ml-2 text-lg font-bold text-gray-800 hover:bg-gray-100 transition"
                 title={designersCollapsed ? '展开设计人员列表' : '折叠设计人员列表'}
               >
@@ -1016,7 +1120,7 @@ const Admin = () => {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit">
+          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[56px] lg:self-start">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <UserPlus size={20} className="mr-2 text-blue-600" /> 添加设计人员
@@ -1056,11 +1160,14 @@ const Admin = () => {
 
         {/* Login Users Management (Admins) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-8 border-t border-gray-200">
-          <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
-            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+          <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
+            <div className="sticky top-[56px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
               <button
                 type="button"
-                onClick={() => setUsersCollapsed(prev => !prev)}
+                onClick={() => {
+                  setUsersCollapsed(prev => !prev);
+                  if (usersCollapsed) setDesignersCollapsed(true);
+                }}
                 className="inline-flex items-center gap-2 rounded-lg px-2 py-1 -ml-2 text-lg font-bold text-gray-800 hover:bg-gray-100 transition"
                 title={usersCollapsed ? '展开登录用户列表' : '折叠登录用户列表'}
               >
@@ -1162,6 +1269,15 @@ const Admin = () => {
                             </button>
                           )}
                           {isSuperAdmin && u.role !== 'superadmin' && (
+                            <button
+                              onClick={() => handleSetRole(u.id)}
+                              className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200"
+                              title="设置权限"
+                            >
+                              <Settings size={18} />
+                            </button>
+                          )}
+                          {isSuperAdmin && u.role !== 'superadmin' && (
                             <button 
                               onClick={() => handleResetPassword(u.id)}
                               className="p-2 text-gray-300 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all duration-200"
@@ -1189,7 +1305,7 @@ const Admin = () => {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit">
+          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[56px] lg:self-start">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <Shield size={20} className="mr-2 text-purple-600" /> 新增登录用户

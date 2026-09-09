@@ -36,7 +36,7 @@ const authMiddleware = (req, res, next) => {
       return res.status(401).json({ message, code: 'SESSION_INVALIDATED' });
     }
 
-    req.user = decoded;
+    req.user = { ...decoded, role: user.role, name: user.name, username: user.username };
     next();
   } catch (err) {
     res.status(401).json({ message: 'Token is not valid' });

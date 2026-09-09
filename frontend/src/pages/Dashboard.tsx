@@ -486,6 +486,21 @@ const Dashboard = () => {
     isOfflineModeRef.current = isOfflineMode;
   }, [isOfflineMode]);
 
+  // 普通用户且在设计人员列表中时，打开主页面默认只显示本人任务
+  const autoFilteredDesignerRef = useRef(false);
+  useEffect(() => {
+    if (autoFilteredDesignerRef.current) return;
+    if (!user || designers.length === 0) return;
+    autoFilteredDesignerRef.current = true;
+    if (user.role !== 'user') return; // 仅普通用户自动过滤
+    const targetName = String(user.name || '').trim().toLowerCase();
+    if (!targetName) return;
+    const matched = designers.find(d => String(d.name || '').trim().toLowerCase() === targetName);
+    if (matched) {
+      setSelectedDesignerId(matched.id);
+    }
+  }, [user, designers]);
+
   // 获取版本信息
   useEffect(() => {
     axiosInstance.get('/system/version')
