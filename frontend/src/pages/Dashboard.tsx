@@ -938,12 +938,16 @@ const Dashboard = () => {
   }, [modalOpen, focusTarget]);
 
   const [isAddMode, setIsAddMode] = useState(false);
+  // 是否在任务名称后显示/添加纳期（[M/D]），默认不勾选
+  const [showDeadline, setShowDeadline] = useState(false);
+  // 新增模式下查询到的纳期标签字符串（如 "[9/15]"），用于在输入框右侧预览显示
+  const [addModeDeadlineTag, setAddModeDeadlineTag] = useState<string | null>(null);
   const [selectedTaskType, setSelectedTaskType] = useState<'none' | 'trip' | 'sick' | 'vacation' | 'illness'>('none');
   const [addModeTaskName, setAddModeTaskName] = useState<string>('');
   const [addModeTripPlace, setAddModeTripPlace] = useState<string>('');
   const [addModeHours, setAddModeHours] = useState<string>('');
   const [addModeGuns, setAddModeGuns] = useState<GunItem[]>([]);
-  const [addModeColor, setAddModeColor] = useState<string>('#dcfce7');
+  const [addModeColor, setAddModeColor] = useState<string>('#86efac');
   const [addModeTaskType, setAddModeTaskType] = useState<'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange'>('none');
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' }>>({});
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -981,8 +985,10 @@ const Dashboard = () => {
     setAddModeTripPlace('');
     setAddModeHours('');
     setAddModeGuns([]);
-    setAddModeColor('#dcfce7');
+    setAddModeColor('#86efac');
     setAddModeTaskType('none');
+    setShowDeadline(false);
+    setAddModeDeadlineTag(null);
     clearAddModeSpecLookup();
     setTaskTypeDrafts({});
     setModalOpen(true);
@@ -999,6 +1005,8 @@ const Dashboard = () => {
     setModalDate(date);
     setFocusTarget({ itemId: item.id, type, gunIndex });
     setIsAddMode(false);
+    // 记住该任务原有的纳期状态：任务名以 [M/D] 结尾则勾选“显示纳期”
+    setShowDeadline(/\[\d{1,2}\/\d{1,2}\]\s*$/.test((item.taskName || '').trim()));
     setTaskTypeDrafts({});
     setModalOpen(true);
   };
@@ -1148,13 +1156,16 @@ const Dashboard = () => {
       addToast(infoResult.message || `未找到仕样号 ${baseName} 的客户信息`, 'error');
     }
 
-    const deliveryDate = specInfo?.deliveryDate || (await fetchSpecDeliveryDate(baseName)).date;
-    const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
-    if (deliverySuffix) {
-      return `${nextTaskName.replace(/\s*\[\d{1,2}\/\d{1,2}\]$/, '').trim()} ${deliverySuffix}`;
+    if (showDeadline) {
+      const deliveryDate = specInfo?.deliveryDate || (await fetchSpecDeliveryDate(baseName)).date;
+      const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
+      if (deliverySuffix) {
+        return `${nextTaskName.replace(/\s*\[\d{1,2}\/\d{1,2}\]$/, '').trim()} ${deliverySuffix}`;
+      }
+
+      addToast(`未找到仕样号 ${baseName} 的纳期信息`, 'error');
     }
 
-    addToast(`未找到仕样号 ${baseName} 的纳期信息`, 'error');
     return nextTaskName;
   };
 
@@ -1172,6 +1183,12 @@ const Dashboard = () => {
       if (specInfo.success && specInfo.clientName?.trim()) {
         const clientName = getDesignPlanClientName(specInfo, specNumber);
         setAddModeTaskName(current => current.trim() === specNumber ? clientName : current);
+        // 如果已勾选"显示纳期"，同步查询并预览纳期
+        if (showDeadline) {
+          const result = await fetchSpecDeliveryDate(specNumber);
+          const suffix = result.success ? getDeliveryDateSuffix(result.date) : null;
+          setAddModeDeadlineTag(suffix);
+        }
         return;
       }
 
@@ -2131,6 +2148,81 @@ const Dashboard = () => {
     debouncedSave(designerId, date, itemId, field, value);
   };
 
+  // 切换"显示纳期"复选框
+  // - 新增模式：勾选时查询仕样号纳期并在输入框右侧预览显示；取消勾选则清除
+  // - 编辑模式：勾选则查询仕样号纳期并追加 [M/D]；取消勾选则移除已有的 [M/D]
+  const handleDeadlineToggle = async (checked: boolean) => {
+    if (isAddMode) {
+      if (!checked) {
+        setShowDeadline(false);
+        setAddModeDeadlineTag(null);
+        return;
+      }
+      // 勾选：必须能从任务名中提取到五位数仕样号
+      const specNo = extractSpecNumber(addModeTaskName);
+      if (!specNo || specNo.length !== 5) {
+        addToast('请先在任务名中输入五位数仕样号', 'error');
+        return;
+      }
+      setShowDeadline(true);
+      const result = await fetchSpecDeliveryDate(specNo);
+      const suffix = result.success ? getDeliveryDateSuffix(result.date) : null;
+      if (suffix) {
+        setAddModeDeadlineTag(suffix);
+      } else {
+        addToast(result.message || `未找到仕样号 ${specNo} 的纳期信息`, 'error');
+        setShowDeadline(false);
+        setAddModeDeadlineTag(null);
+      }
+      return;
+    }
+    if (!modalDesignerId || !modalDate) return;
+
+    const targets = (focusTarget
+      ? getAllItems(modalDesignerId, modalDate).filter(i => i.id === focusTarget.itemId)
+      : getAllItems(modalDesignerId, modalDate)
+    )
+      .map(i => getItemWithPendingChanges(i))
+      .filter(i => !i.leaveType && (i.taskName || '').trim());
+
+    if (!checked) {
+      // 立即取消勾选并移除已有的纳期后缀
+      setShowDeadline(false);
+      targets.forEach(i => {
+        const raw = (i.taskName || '').trim();
+        if (/\[\d{1,2}\/\d{1,2}\]\s*$/.test(raw)) {
+          handleItemChange(modalDesignerId, modalDate, i.id, 'taskName', raw.replace(/\s*\[\d{1,2}\/\d{1,2}\]\s*$/, '').trim());
+        }
+      });
+      return;
+    }
+
+    // 勾选：立即给出勾选反馈，再异步查询纳期；全部失败时回退为未勾选
+    setShowDeadline(true);
+    let addedAny = false;
+    for (const i of targets) {
+      const raw = (i.taskName || '').trim();
+      if (/\[\d{1,2}\/\d{1,2}\]\s*$/.test(raw)) { addedAny = true; continue; }
+      const specNo = extractSpecNumber(raw);
+      if (!specNo) {
+        addToast('未能从任务名称中提取仕样号，无法获取纳期', 'error');
+        continue;
+      }
+      addToast(`正在获取仕样号 ${specNo} 的纳期...`, 'success');
+      const result = await fetchSpecDeliveryDate(specNo);
+      const suffix = result.success ? getDeliveryDateSuffix(result.date) : null;
+      if (suffix) {
+        const base = raw.replace(/\s*\[\d{1,2}\/\d{1,2}\]\s*$/, '').trim();
+        handleItemChange(modalDesignerId, modalDate, i.id, 'taskName', `${base} ${suffix}`);
+        addedAny = true;
+        addToast(`纳期已添加: ${suffix}`, 'success');
+      } else {
+        addToast(result.message || `未找到仕样号 ${specNo} 的纳期信息`, 'error');
+      }
+    }
+    if (!addedAny) setShowDeadline(false);
+  };
+
   const addItem = async (designerId: string, date: string, taskType?: 'none' | 'trip' | 'sick' | 'vacation' | 'illness') => {
     if (warnIfOfflineEdit()) return;
     try {
@@ -2227,21 +2319,47 @@ const Dashboard = () => {
 
   const PRESET_COLORS = [
     { label: '无', value: '' },
+    // 淡色系
     { label: '淡红', value: '#fee2e2' },
-    { label: '淡绿', value: '#dcfce7' },
-    { label: '淡蓝', value: '#dbeafe' },
-    { label: '淡黄', value: '#fef9c3' },
-    { label: '淡紫', value: '#f3e8ff' },
+    { label: '淡玫瑰', value: '#ffe4e6' },
     { label: '淡橙', value: '#ffedd5' },
+    { label: '淡琥珀', value: '#fef3c7' },
+    { label: '淡黄', value: '#fef9c3' },
+    { label: '淡黄绿', value: '#ecfccb' },
+    { label: '淡绿', value: '#dcfce7' },
+    { label: '淡翠绿', value: '#d1fae5' },
+    { label: '淡青', value: '#cffafe' },
+    { label: '淡天蓝', value: '#e0f2fe' },
+    { label: '淡蓝', value: '#dbeafe' },
+    { label: '淡靛', value: '#e0e7ff' },
+    { label: '淡紫', value: '#f3e8ff' },
+    { label: '淡粉', value: '#fce7f3' },
+    { label: '淡棕', value: '#f5e6d3' },
+    { label: '淡石板', value: '#f1f5f9' },
+    { label: '淡灰', value: '#f3f4f6' },
+    // 深色/饱和系
     { label: '深红', value: '#fca5a5' },
-    { label: '深绿', value: '#86efac' },
-    { label: '深蓝', value: '#93c5fd' },
-    { label: '深黄', value: '#fde047' },
-    { label: '深紫', value: '#d8b4fe' },
+    { label: '大红', value: '#f87171' },
+    { label: '玫红', value: '#fb7185' },
     { label: '深橙', value: '#fdba74' },
-    { label: '粉色', value: '#f9a8d4' },
+    { label: '橙红', value: '#fb923c' },
+    { label: '琥珀', value: '#fbbf24' },
+    { label: '深黄', value: '#fde047' },
+    { label: '黄绿', value: '#a3e635' },
+    { label: '深绿', value: '#86efac' },
+    { label: '翠绿', value: '#34d399' },
     { label: '青色', value: '#67e8f9' },
+    { label: '湖青', value: '#22d3ee' },
+    { label: '天蓝', value: '#38bdf8' },
+    { label: '深蓝', value: '#93c5fd' },
+    { label: '靛蓝', value: '#818cf8' },
+    { label: '深紫', value: '#d8b4fe' },
+    { label: '粉色', value: '#f9a8d4' },
+    { label: '桃红', value: '#f472b6' },
+    { label: '棕色', value: '#c08457' },
+    { label: '石板', value: '#94a3b8' },
     { label: '灰色', value: '#e5e7eb' },
+    { label: '深灰', value: '#6b7280' },
   ];
 
   const handleCopy = (designerId: string, date: string) => {
@@ -2341,7 +2459,7 @@ const Dashboard = () => {
         
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-2">
-            <FileSpreadsheet size={24} />
+            <img src="/favicon.ico" alt="Obara" className="w-6 h-6" />
             <a
               href="https://caifugao110.github.io/obara-task-manager/"
               target="_blank"
@@ -2740,14 +2858,26 @@ const Dashboard = () => {
                 <div className="font-bold text-lg">{designers.find(d => d.id === modalDesignerId)?.name}</div>
                 <div className="text-xs opacity-80">{modalDate}</div>
               </div>
-              {canEditTasks && (
-                <button
-                  onClick={() => { void openBatchReplaceDialog(); }}
-                  className="absolute left-1/2 -translate-x-1/2 px-4 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded text-sm font-bold transition"
-                >
-                  批量操作
-                </button>
-              )}
+              <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-3">
+                {canEditTasks && (
+                  <button
+                    onClick={() => { void openBatchReplaceDialog(); }}
+                    className="px-4 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded text-sm font-bold transition"
+                  >
+                    批量操作
+                  </button>
+                )}
+                <label className={`flex items-center gap-1.5 text-sm font-bold select-none ${isAddMode && extractSpecNumber(addModeTaskName)?.length !== 5 ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                  <input
+                    type="checkbox"
+                    checked={showDeadline}
+                    onChange={(e) => { void handleDeadlineToggle(e.target.checked); }}
+                    disabled={isAddMode && extractSpecNumber(addModeTaskName)?.length !== 5}
+                    className="w-4 h-4 cursor-pointer accent-white disabled:cursor-not-allowed"
+                  />
+                  显示纳期
+                </label>
+              </div>
               <button onClick={() => { 
                 // 清空待保存的更改
                 setPendingChanges([]);
@@ -2913,18 +3043,28 @@ const Dashboard = () => {
                             </div>
                             <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
                             <div></div>
-                            <input
-                              ref={el => inputRefs.current['task-new'] = el}
-                              className="h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                              value={addModeTaskName}
-                              onChange={(e) => {
-                                const nextValue = e.target.value;
-                                setAddModeTaskName(nextValue);
-                                scheduleAddModeSpecAutoFill(nextValue);
-                              }}
-                              placeholder="输入完整任务名称或者五位数仕样号自动对应"
-                              autoFocus
-                            />
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <input
+                                ref={el => inputRefs.current['task-new'] = el}
+                                className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                                value={addModeTaskName}
+                                onChange={(e) => {
+                                  const nextValue = e.target.value;
+                                  setAddModeTaskName(nextValue);
+                                  scheduleAddModeSpecAutoFill(nextValue);
+                                }}
+                                placeholder="输入完整任务名称或者五位数仕样号自动对应"
+                                autoFocus
+                              />
+                              {showDeadline && addModeDeadlineTag && (
+                                <span
+                                  className="shrink-0 px-2 py-1 text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg whitespace-nowrap"
+                                  title="纳期"
+                                >
+                                  {addModeDeadlineTag}
+                                </span>
+                              )}
+                            </div>
                             <input
                               ref={el => inputRefs.current['hours-new'] = el}
                               type="number"
@@ -3290,24 +3430,42 @@ const Dashboard = () => {
                               </div>
                               <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
                               <div className="flex items-center gap-2"></div>
-                              <input
-                                ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
-                                className="h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                                value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '')}
-                                onChange={(e) => {
-                                  const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更))?\s*(\[\d+\/\d+\])?$/);
-                                  const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
-                                  const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
-                                  const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                  const newName = e.target.value + typeSuffix + deadline;
-                                  setTaskTypeDrafts(prev => ({
-                                    ...prev,
-                                    [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: e.target.value, designGuns: currentItem.guns || [] }
-                                  }));
-                                  handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                }}
-                                placeholder="输入完整任务名称或者五位数仕样号自动对应"
-                              />
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <input
+                                  ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
+                                  className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                                  value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '')}
+                                  onChange={(e) => {
+                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更))?\s*(\[\d+\/\d+\])?$/);
+                                    const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
+                                    const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
+                                    let deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
+                                    // 如果已勾选显示纳期，但新的任务名中无法提取五位数仕样号，自动取消勾选并移除纳期后缀
+                                    if (showDeadline && extractSpecNumber(e.target.value)?.length !== 5) {
+                                      setShowDeadline(false);
+                                      deadline = '';
+                                    }
+                                    const newName = e.target.value + typeSuffix + deadline;
+                                    setTaskTypeDrafts(prev => ({
+                                      ...prev,
+                                      [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: e.target.value, designGuns: currentItem.guns || [] }
+                                    }));
+                                    handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                  }}
+                                  placeholder="输入完整任务名称或者五位数仕样号自动对应"
+                                />
+                                {showDeadline && (() => {
+                                  const deadlineTag = (currentItem.taskName || '').match(/(\[\d{1,2}\/\d{1,2}\])\s*$/);
+                                  return deadlineTag ? (
+                                    <span
+                                      className="shrink-0 px-2 py-1 text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg whitespace-nowrap"
+                                      title="纳期"
+                                    >
+                                      {deadlineTag[1]}
+                                    </span>
+                                  ) : null;
+                                })()}
+                              </div>
                               <input
                                 ref={el => inputRefs.current[`hours-${currentItem.id}`] = el}
                                 type="number"
@@ -3653,7 +3811,7 @@ const Dashboard = () => {
                         }
                       }
                       
-                      if (selectedTaskType === 'none' && taskName && taskName !== '未命名') {
+                      if (showDeadline && selectedTaskType === 'none' && taskName && taskName !== '未命名') {
                         const specNo = extractSpecNumber(taskName);
                         if (specNo) {
                           const result = fetchedSpecInfo?.specNumber === specNo && fetchedSpecInfo.deliveryDate

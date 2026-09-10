@@ -463,7 +463,7 @@ const WorkHours = () => {
                 <div className="flex items-center justify-between gap-4">
                   <h2 className="text-lg font-bold flex items-center text-gray-800">
                     <Clock className="mr-2 text-blue-600" size={22} />
-                    月度工时排行
+                    月度工时统计
                     {workHoursData.length > 10 && (
                       <button
                         className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-blue-200"
@@ -560,7 +560,7 @@ const WorkHours = () => {
                 <div className="flex items-center justify-between gap-4">
                   <h2 className="text-lg font-bold flex items-center text-gray-800">
                     <Calendar className="mr-2 text-red-600" size={22} />
-                    月度请假排行
+                    月度请假统计
                     {workHoursData.length > 10 && (
                       <button
                         className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-red-200"
