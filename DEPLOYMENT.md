@@ -188,7 +188,7 @@ nssm remove ObaraTaskManager
 
 ### 健康检查
 
-后端没有单独的 `/health` 接口，可使用以下轻量接口确认服务状态：
+后端没有单独的 `/health` 接口，也不托管前端静态文件（未挂载 `express.static`，仅提供 `/api/*` 接口和 Socket.IO 服务），生产环境前端需由 IIS/Nginx 等独立托管。可使用以下轻量接口确认服务状态：
 
 ```text
 GET http://localhost:5000/api/system/settings
@@ -253,8 +253,8 @@ RATE_LIMIT_MAX=20
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
-| `RATE_LIMIT_WINDOW_MS` | `900000` | 登录限流窗口时间（毫秒） |
-| `RATE_LIMIT_MAX` | `20` | 登录限流最大尝试次数 |
+| `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；当前登录/改密限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
+| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被限流器使用 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径，用于读取纳期和详细信息 |
@@ -301,7 +301,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `users` | 登录用户，角色包括 `superadmin`、`admin`、`user`，含 `forcePasswordChange` 字段 |
 | `designers` | 设计人员列表 |
 | `tasks` | 按设计人员(`designerId`)、年月保存的任务表 |
-| `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 500 条 |
+| `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 2000 条 |
 | `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
 | `statusTrackingItems` | 状态追踪记录 |
 | `settings.leaderboard` | 任务报表访问权限 |
@@ -588,7 +588,7 @@ node --check backend\routes\settings.js
 
 ## 性能优化建议
 
-1. **数据库文件大小**：`loginLogs` 最多保留 500 条记录，`auditLogs` 最多保留 2000 条记录，自动清理旧日志
+1. **数据库文件大小**：`loginLogs` 和 `auditLogs` 均最多保留 2000 条记录，自动清理旧日志
 2. **并发写入保护**：数据库写入采用队列机制，避免并发冲突
 3. **前端防抖**：任务字段变更采用 500ms 防抖保存，减少网络请求
 4. **离线缓存**：后端断开时自动切换到 localStorage 缓存数据
@@ -670,14 +670,15 @@ backend/
 | `/api/system/maintenance/offline-backup` | POST | **无需登录** | 手动触发断网备份 |
 | `/api/system/maintenance/export-tasks` | POST | 超级管理员 | 手动导出任务数据 |
 | `/api/system/maintenance/cleanup-backups` | POST | 超级管理员 | 清理过期备份 |
-| `/api/system/maintenance/yearly-cleanup` | POST | 超级管理员 | 手动执行年度清理 |
+| `/api/system/maintenance/yearly-cleanup` | POST | 超级管理员 | 手动执行年度清理；请求体传 `{"force": true}` 可跳过时间检查强制执行 |
 | `/api/system/maintenance/clear-logs` | POST | 超级管理员 | 同时清空登录日志和操作日志 |
 | `/api/system/maintenance/cleanup-tasks` | POST | 超级管理员 | 清理指定月份或指定年月之前的任务 |
 | `/api/system/db-stats` | GET | 超级管理员 | 获取数据库统计信息 |
 | `/api/system/cleanup/login-logs` | DELETE | 超级管理员 | 清空登录日志 |
 | `/api/system/cleanup/audit-logs` | DELETE | 超级管理员 | 清空操作日志 |
 | `/api/system/cleanup/old-tasks` | DELETE | 超级管理员 | 清理旧任务数据（按保留月数） |
-| `/api/system/cleanup/status-tracking` | DELETE | 超级管理员 | 清理旧状态追踪数据 |
+| `/api/system/cleanup/status-tracking` | DELETE | 超级管理员 | 清理旧状态追踪数据（按保留月数） |
+| `/api/status-tracking/cleanup` | POST | 超级管理员 | 按时间点清理状态追踪记录，请求体 `{beforeMonth, beforeYear, mode?}`；`mode=delivery` 按纳期月清理，缺省按生产计划月清理 |
 
 ### 年度清理流程
 
@@ -706,4 +707,4 @@ backend/
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-08-19
+最后更新：2026-09-10

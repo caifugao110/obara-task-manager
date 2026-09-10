@@ -39,7 +39,7 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-5+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) |
+| 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-5+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) ![Framer Motion](https://img.shields.io/badge/Framer%20Motion-0055FF?logo=framer&logoColor=white) |
 | 后端 | ![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-5+-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
 | 数据库 | ![JSON](https://img.shields.io/badge/JSON%20File-000000?logo=json&logoColor=white) |
 | 控制台 | ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white) ![WinForms](https://img.shields.io/badge/WinForms-512BD4) |
@@ -97,7 +97,7 @@ npm run dev
 | 管理后台 | `/admin` | 设计人员列表、登录用户列表、批量导入 |
 | 登录 | `/login` | 管理员和普通用户登录 |
 | 修改密码 | `/change-password` | 首次登录或被重置密码后强制修改密码 |
-| 系统设置 | `/system-settings` | 数据管理、登录管理、日志管理三大模块 |
+| 系统设置 | `/system-settings` | 数据管理、数据库维护、登录管理、日志管理四个标签页（数据库维护/登录管理/日志管理仅超级管理员可见） |
 | 操作日志 | `/system-logs` | 所有用户的操作日志明细和筛选 |
 | 状态追踪 | `/status-tracking` | 任务状态追踪与批量导入导出 |
 
@@ -190,45 +190,54 @@ npm run dev
 
 ### 状态追踪
 
-- 任务状态追踪页面支持查看、创建、编辑、删除状态追踪记录。
-- 支持批量导入状态追踪数据。
-- 实时同步：数据变更通过 Socket.IO 广播通知所有客户端。
+- 任务状态追踪页面支持查看、创建、编辑、删除状态追踪记录（添加记录仅管理员可用）。
+- 月份筛选支持两种模式：按「生产计划月」或按「纳期月」筛选，并支持「全表搜索」开关（开启后忽略月份条件）。
+- 支持按工厂筛选（如 `O/NJG`、`O/SHA`），以及关键词搜索（匹配客户名、仕样号、营业担当、组长）。
+- 组长列按营业担当自动匹配组长规则填充。
+- 管理员可「导出显示结果」为 `.xls`（按当前筛选条件导出），文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`；超级管理员可批量导入状态追踪数据，导入前支持「仕样号 + 生产计划月」组合重复检查，可选择覆盖导入。
+- 支持按纳期月或生产计划月清理历史状态追踪记录（仅超级管理员，在系统设置「数据库维护」中操作）。
+- 实时同步：数据变更通过 Socket.IO 广播通知所有客户端；编辑记录时其他人可见编辑占用提示。
+- **「组长规则」入口在本页面**：管理员可见 teal 色「组长规则」按钮，弹窗内可查看/编辑组长归属关系，超级管理员可一键重置为默认规则。
 - 超级管理员可设置状态追踪页面访问权限；未登录用户不能进入 `/status-tracking`，`allowViewers` 仅控制普通用户访问。
 
 ### 系统设置
 
-系统设置页面分为「数据管理」「登录管理」「日志管理」「组长规则」四大模块。
+系统设置页面包含「数据管理」「数据库维护」「登录管理」「日志管理」四个标签页。其中「数据库维护」「登录管理」「日志管理」仅超级管理员可见；「数据管理」对一般管理员的开放程度由系统设置页面权限控制。
 
 #### 数据管理
 
-- **任务管理**：导出渲染后的任务 `.xls` 表格，文件名格式为 `obara-tasks-YYYY-MM-DD-HHmmss.xls`；导入任务数据时必须使用系统导出的 `.xls` 格式，每次只能选择一个月份覆盖导入。导入只解析任务内容/工时列，`当日合计` 和 `月总工时` 不导入，由系统重新计算。导入月份天数与表格天数不一致时，多出来的日期列会被截断，缺少的日期会按空数据处理。导入表格中新增的设计员不会自动创建，会跳过并在结果中提示。任务管理导入/导出仅超级管理员可用。
-- **状态跟踪表**：按月份导出状态追踪数据为 `.xls`，文件名格式为 `status-tracking-YYYY-MM.xls`。仅超级管理员可导入，支持重复仕样号检查和覆盖导入选项。
+- **任务管理**：导出渲染后的任务 `.xls` 表格，文件名格式为 `obara-tasks-YYYY-MM-DD-HHmmss.xls`；导入任务数据时必须使用系统导出的 `.xls` 格式，每次只能选择一个月份覆盖导入。导入只解析任务内容/工时列，`当日合计` 和 `月总工时` 不导入，由系统重新计算。导入月份天数与表格天数不一致时，多出来的日期列会被截断，缺少的日期会按空数据处理。导入表格中新增的设计员不会自动创建，会跳过并在结果中提示。导入仅超级管理员可用；导出超级管理员始终可用，一般管理员需在系统设置权限中放行（仅导出，不能导入）。
+- **状态跟踪表**：按筛选条件导出状态追踪数据为 `.xls`（导出入口在状态追踪页面），文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`。仅超级管理员可导入，支持「仕样号 + 生产计划月」重复检查和覆盖导入选项。
 - **工时管理表**：按月份导出工时汇总数据为 `.xls`，文件名格式为 `work-hours-YYYY-MM.xls`。导出表格包含设计员、总工时、工作日工时、周末加班工时、出差工时、请假工时等列，按总工时倒序排列，冻结首行和首列。工作日工时和周末加班工时按主页面日期覆盖规则计算。
 
-#### 登录管理
+#### 数据库维护（仅超级管理员）
+
+- 自动维护开关：启用自动维护、每日数据库备份、每日任务表格导出、年度任务清理、断网自动备份。
+- 可配置每日执行时间、备份保留天数、断网备份保留天数、年度检测月份、月初检测天数、任务保留年数。
+- 可配置数据库备份目录、任务导出目录、年度永久归档目录、断网备份目录。
+- 手动维护操作：立即备份数据库、立即导出任务数据、清理过期备份、执行年度清理检测、清空所有日志。
+- 运行状态显示调度器下次执行时间、数据库与各备份目录绝对路径。
+- 显示最近数据库备份、最近任务导出、年度永久归档、最近断网备份各 5 个文件。
+- 年度清理会先将待删除数据永久归档；断网备份在服务器关闭时（Ctrl+C、SIGTERM）自动触发。
+
+#### 登录管理（仅超级管理员）
 
 - 可配置未登录查看主页面、多设备同时在线，以及“允许登录用户修改本人设计计划标记颜色”。该颜色标记开关默认开启；开启后，普通登录用户可在本人同名设计员的设计计划任务上标记/恢复颜色。
-- 仅超级管理员可访问登录管理模块。
 
-#### 日志管理
+#### 日志管理（仅超级管理员）
 
 - 主页面显示最新 10 条管理员（超级管理员和一般管理员）的登录记录，包含账号、姓名、角色、IP、浏览器信息和结果。
 - 点击「详细日志」进入操作日志页面（`/system-logs`），可查看所有用户的所有操作记录，支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
 - 操作日志自动记录所有已登录用户的 API 请求，包含操作描述、方法、路径、IP、浏览器信息、状态码、耗时等，最多保留 2000 条。
 - 操作类型和描述均为中文，例如「添加任务」「更新任务」「移动任务」「重新排序设计员」「批量替换任务」等。
 - 浏览器信息包含浏览器名称和版本号、操作系统和版本号、设备类型，例如「Chrome 120 / Windows 10 / Desktop」。
-- 仅超级管理员可访问日志管理模块。
 
-#### 组长规则
-
-- 用于配置设计人员的组长归属关系，每个组长对应若干组员。
-- 超级管理员和一般管理员可查看和修改组长规则。
-- 支持一键重置为默认组长规则。
-- 默认组长规则：
-  - 陈大仪组：郭涛、王兴龙、王会永、李广亮
-  - 张啸组：李守健、邓明江、贾银鑫、熊飞
-  - 张明组：吴露鹭、茅舒、沈雨帆、张晟隽、刘知新、梁科研、吴方盛
-  - 陈青松组：张广奇、李劲日、曹圩圩、许孟涵
+> 组长规则配置不在系统设置页面，入口位于状态追踪页面（见上文「状态追踪」章节）。默认组长规则：
+>
+> - 陈大仪组：郭涛、王兴龙、王会永、李广亮
+> - 张啸组：李守健、邓明江、贾银鑫、熊飞
+> - 张明组：吴露鹭、茅舒、沈雨帆、张晟隽、刘知新、梁科研、吴方盛
+> - 陈青松组：张广奇、李劲日、曹圩圩、许孟涵
 
 ## 权限模型
 
@@ -295,7 +304,7 @@ npm run dev
 | `users` | 登录用户列表，包含 `forcePasswordChange` 字段用于强制修改密码 |
 | `designers` | 设计人员列表 |
 | `tasks` | 按设计人员(`designerId`)、年月保存的任务表 |
-| `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 500 条 |
+| `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 2000 条 |
 | `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
 | `statusTrackingItems` | 状态追踪记录 |
 | `settings.leaderboard` | 任务报表访问权限 |
@@ -305,7 +314,9 @@ npm run dev
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend` |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.system` | 系统设置，如未登录查看、多设备登录、允许登录用户修改本人设计计划标记颜色 |
-| `settings.maintenance` | 自动维护配置，详见「数据库维护」章节 |
+| `settings.maintenance` | 自动维护配置，详见「数据库维护」章节；缺失字段由后端按默认值自动补齐（如断网备份默认开启、保留 7 天、目录 `backups/offline`） |
+
+> 注：`auditLogs`、`statusTrackingItems` 等键在全新数据库中可能不存在，后端读取时均按空数组容错处理；首次写入后自动创建。
 
 建议定期备份 `backend/db.json`，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
 
@@ -385,8 +396,8 @@ node --check backend\routes\tasks.js
 | `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（仅首次启动且无超管时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码，生产环境必须立即修改 |
-| `RATE_LIMIT_WINDOW_MS` | `900000`（15 分钟） | 登录限流时间窗口 |
-| `RATE_LIMIT_MAX` | `20` | 时间窗口内最大尝试次数 |
+| `RATE_LIMIT_WINDOW_MS` | `900000`（15 分钟） | 限流时间窗口配置（当前登录/改密限流器阈值为硬编码，未读取此变量） |
+| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置（同上，当前未被限流器使用） |
 | `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录 |
 | `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔 |
@@ -669,13 +680,14 @@ obara-task-manager/
 | 断网备份 | `POST /api/system/maintenance/offline-backup` | 立即创建断网备份（无需登录） |
 | 任务导出 | `POST /api/system/maintenance/export-tasks` | 立即导出任务数据 |
 | 清理过期备份 | `POST /api/system/maintenance/cleanup-backups` | 清理超过保留天数的备份 |
-| 年度清理 | `POST /api/system/maintenance/yearly-cleanup?force=true` | 强制执行年度任务清理 |
+| 年度清理 | `POST /api/system/maintenance/yearly-cleanup` | 执行年度任务清理，请求体传 `{"force": true}` 可跳过时间检查强制执行 |
 | 清空所有日志 | `POST /api/system/maintenance/clear-logs` | 同时清空登录日志和操作日志 |
 | 清理指定月份任务 | `POST /api/system/maintenance/cleanup-tasks` | 请求体 `{month, year}` 或 `{beforeMonth, beforeYear}` |
 | 清空登录日志 | `DELETE /api/system/cleanup/login-logs` | 清空所有登录日志 |
 | 清空操作日志 | `DELETE /api/system/cleanup/audit-logs` | 清空所有操作日志 |
 | 清理旧任务 | `DELETE /api/system/cleanup/old-tasks?keepMonths=12` | 清理指定月份之前的任务数据 |
-| 清理状态追踪 | `DELETE /api/system/cleanup/status-tracking?keepMonths=24` | 清理指定月份之前的状态追踪数据 |
+| 清理旧状态追踪 | `DELETE /api/system/cleanup/status-tracking?keepMonths=24` | 按保留月数清理旧状态追踪数据 |
+| 清理状态追踪记录 | `POST /api/status-tracking/cleanup` | 按时间点清理状态追踪记录，请求体 `{beforeMonth, beforeYear, mode?}`，`mode=delivery` 按纳期月清理，缺省按生产计划月清理 |
 
 ### 数据库统计
 
@@ -786,4 +798,4 @@ MIT License
 
 ---
 
-最后更新：2026-08-23
+最后更新：2026-09-10

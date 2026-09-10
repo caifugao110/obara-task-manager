@@ -21,6 +21,7 @@ Authorization: Bearer <token>
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
 - 本文中的“管理员”指 `admin` 或 `superadmin`；“仅超级管理员”只允许 `superadmin`。
+- 后端只提供 `/api/*` 接口和 Socket.IO 服务，**不托管前端静态文件**（未挂载 `express.static`），也没有 `/health` 健康检查接口；生产环境前端需独立部署（前端构建基础路径为 `/obara-task-manager/`）。
 
 ## 角色
 
@@ -320,6 +321,7 @@ Authorization: Bearer <token>
 
 - `settings.system.allowGuestView=true` 时可未登录访问。
 - 关闭未登录查看后需要有效 JWT。
+- 返回结果按 `order` 字段升序排列。
 
 响应：
 
@@ -505,7 +507,7 @@ Authorization: Bearer <token>
 |------|------|
 | `hasData` | 是否有任务数据 |
 | `itemCount` | 任务条目总数 |
-| `dates` | 包含任务的日期列表 |
+| `dates` | 包含任务的日期列表（`Object.keys(days)` 按日期升序排列） |
 
 ### 创建任务
 
@@ -607,19 +609,42 @@ Authorization: Bearer <token>
 }
 ```
 
-常用字段：
+标记枪名颜色时额外携带 `gunIndex`：
+
+```json
+{
+  "designerId": "designer-1",
+  "date": "2026-07-01",
+  "itemId": "task-1",
+  "field": "gunColor",
+  "gunIndex": 0,
+  "value": "#ffffff"
+}
+```
+
+`field` 合法值：
 
 - `taskName`
 - `hours`
-- `color`
-- `guns`
-- `leaveType`
+- `color`（主任务颜色）
+- `guns`（整体替换枪名数组）
+- `gunColor`（标记单个枪名颜色，需配合 `gunIndex` 指定枪名下标）
+- `leaveType`（合法值：`sick` 事假、`vacation` 休假、`illness` 病假、`trip` 出差、`null`）
 - `fontSize`
 - `textColor`
 
 更新 `guns` 时同样校验：枪名存在时工时不能为 0。
+
 - **所有任务内容的修改（包括枪名的编辑、复制、删除）都会自动更新 `updatedAt` 和 `updatedBy` 字段。**
-- 普通用户修改颜色标记时，系统会保存原始颜色到 `colorBeforeUserMark`，并记录标记人信息到 `colorMarkedBy`。
+- 枪名对象除 `id`、`name`、`hours` 外，还包含颜色标记字段：`color`（当前颜色）、`colorBeforeUserMark`（标记前的原始颜色）、`colorMarkedBy`（标记人 `{ id, username, name }`）。
+
+颜色标记规则（`field` 为 `color` 或 `gunColor`）：
+
+- 管理员可通过任务编辑弹窗设置任意颜色；白色标记/恢复操作管理员与授权普通用户均可执行。
+- 普通用户需满足：系统开启 `allowUserDesignPlanColorMark`（或旧开关 `allowUserEditOwnTaskColor`）、任务非请假条、且本人姓名与该设计人员姓名一致；普通用户只允许白色标记（`#ffffff`/`#fff`/`white`）或恢复（`value` 传 `__restore__`），否则返回 `403`。
+- 标记白色时，系统会保存原始颜色到 `colorBeforeUserMark`，并记录标记人信息到 `colorMarkedBy`；恢复时还原原始颜色并删除这两个字段。
+- 联动规则：主任务标记白色时，其下所有枪名联动标记为白色（枪名 `colorMarkedBy` 为 `{ id: 'auto', name: '系统联动' }`）；所有枪名都为白色时，主任务自动标记白色（`colorMarkedBy` 为 `{ id: 'auto', name: '系统自动' }`）；任一枪名恢复非白色时，主任务联动恢复原始颜色。
+- 请假条（`leaveType` 非空）不允许标记颜色。
 
 响应：
 
@@ -835,6 +860,7 @@ Authorization: Bearer <token>
 - 前端主开关打开时会同时打开 `allowAdmins` 和 `allowViewers`。
 - `leaderboard.allowViewers=true`、`workHours.allowViewers=true`、`statusTracking.allowViewers=true` 只允许普通用户访问对应页面；未登录游客始终不能进入 `/leaderboard`、`/work-hours` 和 `/status-tracking`。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问）。
+- 四个权限配置的 `GET` 接口（`/settings/leaderboard`、`/settings/work-hours`、`/settings/status-tracking`、`/settings/system-settings`）均使用 `guestViewMiddleware`：`allowGuestView` 开启时匿名可读，关闭后需携带有效 JWT；`PUT` 接口均仅 `superadmin`。
 
 ### 获取任务报表权限设置
 
@@ -885,7 +911,7 @@ Authorization: Bearer <token>
 
 `GET /api/settings/workday-overrides`
 
-无需认证。
+访问控制：使用 `guestViewMiddleware`——`settings.system.allowGuestView=true` 时可未登录访问，关闭后需要有效 JWT。
 
 响应：
 
@@ -931,10 +957,13 @@ Authorization: Bearer <token>
 
 - 主页面日期表头中的管理员复选框使用该接口保存。
 - 工作日工时、周末加班工时、主页面底部周末加班统计、工时管理排行和工时管理表导出均使用该规则。
+- 当传入的 `type` 与该日期的自然属性（自然工作日/自然周末）相同，或 `type` 为空时，后端会删除该日期的覆盖键（等效于恢复自然日）；GET/PUT 均会经过规范化处理，只保留有效覆盖项。
 
 ### 获取组长规则
 
 `GET /api/settings/leader-rules`
+
+访问控制：使用 `guestViewMiddleware`（`allowGuestView` 开启时游客可读，关闭后需登录）。
 
 响应示例：
 
@@ -998,9 +1027,29 @@ Authorization: Bearer <token>
 ```json
 [
   {
-    "id": "1234567890",
-    "field1": "value1",
-    "field2": "value2",
+    "id": "1752000000000",
+    "factory": "OBARA",
+    "clientName": "客户名称",
+    "specNumber": "12345",
+    "productionPlanMonth": "2026-07",
+    "productionPlanMonths": ["2026-07", "2026-08"],
+    "quantity": "100",
+    "deliveryDate": "2026-08-15",
+    "shippedCount": 60,
+    "unconfirmedCount": 0,
+    "totalVarieties": 10,
+    "feedbackVarieties": 8,
+    "feedbackPlan": "2026-07-20",
+    "drawingPlanStatus": "下图中",
+    "confirmedQuantity": 80,
+    "confirmedVarieties": 8,
+    "drawnVarieties": 6,
+    "undrawnVarieties": 2,
+    "undrawnQuantity": 20,
+    "unconfirmedQuantity": 20,
+    "designDeliveryDays": 35,
+    "salesPerson": "营业担当",
+    "leader": "组长",
     "createdAt": "2026-07-01T00:00:00.000Z",
     "updatedAt": "2026-07-01T00:00:00.000Z"
   }
@@ -1012,9 +1061,32 @@ Authorization: Bearer <token>
 | 字段 | 说明 |
 |------|------|
 | `id` | 记录唯一标识，创建时自动生成 |
+| `factory` | 工厂 |
+| `clientName` | 客户名称 |
+| `specNumber` | 仕样号 |
+| `productionPlanMonth` | 生产计划月份（`YYYY-MM`），创建时缺省取当前月 |
+| `productionPlanMonths` | 生产计划月份数组（`YYYY-MM`），支持一条记录对应多个月份；缺省时取 `productionPlanMonth`，再退回纳期月份 |
+| `quantity` | 数量（字符串保存） |
+| `deliveryDate` | 纳期，格式 `YYYY-MM-DD` |
+| `shippedCount` | 已发图数量 |
+| `unconfirmedCount` | 未确认标记（存在未确认数量时导出显示「是」） |
+| `totalVarieties` | 总种数 |
+| `feedbackVarieties` | 反馈种数 |
+| `feedbackPlan` | 反馈计划 |
+| `drawingPlanStatus` | 下图计划及状态 |
+| `confirmedQuantity` | 确认数量 |
+| `confirmedVarieties` | 确认种数 |
+| `drawnVarieties` | 下图种数 |
+| `undrawnVarieties` | 未下种数（导入/保存值；导出时动态按 `确认种数 - 下图种数` 计算） |
+| `undrawnQuantity` | 未下数量（导入/保存值；导出时动态按 `确认数量 - 已发图` 计算） |
+| `unconfirmedQuantity` | 未确认数（导入/保存值；导出时动态按 `数量 - 确认数量` 计算） |
+| `designDeliveryDays` | 设计纳期天数（纳期距今天数，**动态计算不存储**，小于 1 天时导出为空） |
+| `salesPerson` | 营业担当 |
+| `leader` | 组长（前端按营业担当自动匹配组长规则填充） |
 | `createdAt` | 创建时间，ISO 格式 |
 | `updatedAt` | 更新时间，ISO 格式 |
-| 其他字段 | 自定义字段，根据业务需求添加 |
+
+> 说明：未知字段会被 Joi 校验丢弃；`designDeliveryDays` 每次读取时根据 `deliveryDate` 实时计算。
 
 ### 创建状态追踪记录
 
@@ -1026,15 +1098,27 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "field1": "value1",
-  "field2": "value2"
+  "factory": "OBARA",
+  "clientName": "客户名称",
+  "specNumber": "12345",
+  "productionPlanMonth": "2026-07",
+  "productionPlanMonths": ["2026-07"],
+  "quantity": "100",
+  "deliveryDate": "2026-08-15",
+  "shippedCount": 0,
+  "totalVarieties": 10,
+  "salesPerson": "营业担当",
+  "leader": "组长"
 }
 ```
 
-响应：返回创建的完整记录，包含 `id`、`createdAt`、`updatedAt`。
+字段同 [获取状态追踪记录](#获取状态追踪记录) 的字段表；`id`、`createdAt`、`updatedAt` 由系统生成，传入会被忽略。
+
+响应：返回创建的完整记录（含动态计算的 `designDeliveryDays`）。
 
 说明：
 - 创建成功后通过 Socket.IO 广播 `status_tracking_updated` 事件，`action` 为 `add`
+- `productionPlanMonth` 缺省时取当前月；`productionPlanMonths` 缺省时取 `productionPlanMonth`
 
 ### 更新状态追踪记录
 
@@ -1042,20 +1126,22 @@ Authorization: Bearer <token>
 
 权限：`admin`、`superadmin`
 
-请求：
+请求：请求体为需要更新的字段集合（字段同记录字段表），例如：
 
 ```json
 {
-  "field1": "new-value",
-  "field2": "new-value"
+  "shippedCount": 80,
+  "drawnVarieties": 8,
+  "drawingPlanStatus": "已下图"
 }
 ```
 
-响应：返回更新后的完整记录。
+响应：返回更新后的完整记录（含动态计算的 `designDeliveryDays`）。
 
 说明：
 - 更新成功后通过 Socket.IO 广播 `status_tracking_updated` 事件，`action` 为 `update`
 - 记录不存在时返回 `404` 和 `记录未找到`
+- 未传 `productionPlanMonth`/`productionPlanMonths` 时保留原值
 
 ### 删除状态追踪记录
 
@@ -1086,16 +1172,21 @@ Authorization: Bearer <token>
 ```json
 [
   {
-    "id": "1234567890",
-    "field1": "updated-value"
+    "id": "1752000000000",
+    "shippedCount": 80
   },
   {
-    "field1": "new-record-value"
+    "factory": "OBARA",
+    "clientName": "新客户",
+    "specNumber": "67890",
+    "productionPlanMonth": "2026-08",
+    "quantity": "50",
+    "deliveryDate": "2026-09-30"
   }
 ]
 ```
 
-响应：返回所有状态追踪记录列表。
+响应：返回所有状态追踪记录列表（含动态计算的 `designDeliveryDays`）。
 
 说明：
 
@@ -1103,6 +1194,7 @@ Authorization: Bearer <token>
 - 已存在的记录（根据 `id` 匹配）会更新，不存在的记录会创建
 - 创建的新记录会自动生成 `id`、`createdAt`、`updatedAt`
 - 更新的记录会自动更新 `updatedAt` 字段
+- 每条记录都会经过 Joi 校验，未知字段被丢弃
 - 成功后通过 Socket.IO 广播 `status_tracking_bulk` 事件，包含所有记录列表
 
 ### 同步状态追踪记录
@@ -1157,13 +1249,14 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "duplicateSpecs": ["12345", "67890"]
+  "duplicateSpecs": ["12345(2026-07)", "67890(2026-08)"]
 }
 ```
 
 说明：
 
-- 解析文件中的仕样号列，返回与现有数据库仕样号重复的列表。
+- 按「仕样号 + 生产计划月」组合判重：文件中每行的仕样号与生产计划月份（「生产计划」列，支持逗号分隔多个月份，缺省取纳期月份）组合后，与数据库现有记录比对。
+- 重复项元素格式为 `仕样号(YYYY-MM)`，自动去重。
 - 用于导入前提示用户是否覆盖。
 
 ### 导入状态跟踪表
@@ -1192,9 +1285,52 @@ Authorization: Bearer <token>
 
 说明：
 
-- 自动根据仕样号匹配现有记录，存在则更新（仅当 `overwrite=true`），不存在则创建。
-- 表头列通过模糊匹配识别（如「工厂」「客户」「数量」「纳期」「仕样号」等）。
+- 按「仕样号 + 生产计划月」组合匹配现有记录，存在则更新（仅当 `overwrite=true`），不存在则创建；仕样号为空的行跳过。
+- 表头列通过模糊匹配识别（如「工厂」「客户」「生产计划」「数量」「纳期」「仕样号」等）；「生产计划」列支持逗号分隔多个月份，缺省时取纳期月份。
+- 上传文件同样经过文件类型、结构、恶意内容扫描和内容清理（见 [文件上传安全验证](#文件上传安全验证)）。
 - 导入成功后会通过 Socket.IO 广播 `status_tracking_bulk` 事件。
+
+### 清理状态追踪记录
+
+`POST /api/status-tracking/cleanup`
+
+权限：仅 `superadmin`
+
+请求体：
+
+```json
+{
+  "beforeMonth": 7,
+  "beforeYear": 2026,
+  "mode": "delivery"
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `beforeYear` | 是 | 清理截止年份 |
+| `beforeMonth` | 是 | 清理截止月份（1-12） |
+| `mode` | 否 | 清理模式：`delivery` 表示按纳期月份清理；缺省（或其他值）表示按生产计划月清理 |
+
+清理规则：
+
+- `mode=delivery`：删除纳期早于 `beforeYear-beforeMonth` 的记录；无纳期的记录保留。
+- 默认模式：删除最早生产计划月（取 `productionPlanMonths` 排序后的第一个月，缺省退回 `productionPlanMonth`/纳期月份）早于指定时间点的记录；无生产计划月的记录保留。
+
+响应：
+
+```json
+{
+  "message": "状态跟踪数据清理完成",
+  "removedCount": 50,
+  "remainingCount": 100
+}
+```
+
+说明：
+
+- 缺少 `beforeMonth` 或 `beforeYear` 时返回 `400` 和 `请指定清理时间点`。
+- 清理成功后通过 Socket.IO 广播 `status_tracking_bulk` 事件，包含剩余记录列表。
 
 ### Socket.IO 状态追踪事件
 
@@ -1382,7 +1518,11 @@ Authorization: Bearer <token>
 
 `GET /api/system/export-xls`
 
-权限：仅 `superadmin`
+权限：需要登录，受 `settings.systemSettings` 权限控制：
+
+- `superadmin` 始终可导出。
+- `admin` 需要 `settings.systemSettings.enabled=true` 且 `allowAdmins=true`（仅可导出，不能导入）。
+- `user` 和游客不能导出（`systemSettings.allowViewers` 后端强制为 `false`）。
 
 响应：`.xls` 文件流，文件名格式为 `obara-tasks-YYYY-MM-DD-HHmmss.xls`。
 
@@ -1501,7 +1641,7 @@ Authorization: Bearer <token>
 | `limit` | 否 | `100` | 每页条数 |
 | `page` | 否 | `1` | 页码 |
 | `username` | 否 | 空 | 按用户名精确匹配 |
-| `action` | 否 | 空 | 按操作描述精确匹配 |
+| `action` | 否 | 空 | 按操作显示标签精确匹配（中文标签，如 `用户登录`、`更新任务`，与筛选选项接口返回的 `actions` 一致） |
 | `method` | 否 | 空 | 按 HTTP 方法匹配（`GET`、`POST`、`PUT`、`DELETE`） |
 | `ip` | 否 | 空 | 按 IP 模糊匹配 |
 | `from` | 否 | 空 | 开始日期，ISO 日期格式 |
@@ -1561,21 +1701,16 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "usernames": ["superadmin", "admin001"],
-  "actions": [
-    { "value": "用户登录", "label": "用户登录" },
-    { "value": "更新任务", "label": "更新任务" },
-    { "value": "导出任务数据", "label": "导出任务数据" }
-  ]
+  "usernames": ["admin001", "superadmin"],
+  "actions": ["用户登录", "更新任务", "导出任务数据"]
 }
 ```
 
 说明：
 
-- 返回当前所有出现过的用户名和操作描述列表，用于前端筛选下拉框。
-- 用户名按字母排序。
-- 操作列表为 `{ value, label }` 格式，按 label 的中文拼音排序。
-- `value` 和 `label` 均为中文操作类型名称。
+- `usernames` 为当前所有出现过的用户名数组，按字母排序。
+- `actions` 为操作显示标签（中文字符串）数组，按 `zh-CN` 拼音排序。
+- 操作日志查询的 `action` 参数即与本数组中的标签精确匹配。
 
 ### 导出操作日志
 
@@ -1839,11 +1974,19 @@ Authorization: Bearer <token>
 
 权限：仅 `superadmin`
 
-查询参数：
+请求体（JSON，可选）：
 
-| 参数 | 必填 | 说明 |
+| 字段 | 必填 | 说明 |
 |------|------|------|
-| `force` | 否 | 是否强制执行（跳过时间检查），默认 `false` |
+| `force` | 否 | 是否强制执行（跳过时间检查），传 `true` 启用；默认 `false` |
+
+请求示例：
+
+```json
+{
+  "force": true
+}
+```
 
 响应（执行成功）：
 
@@ -2352,6 +2495,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` |
 | `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` |
 | `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 |
+| `error` | 事件处理出错，参数 `{ message }`（如未认证、缺少必填字段） |
 
 ## 常见错误码
 
@@ -2360,18 +2504,23 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `ACCOUNT_DISABLED` | 403 | 账号已禁用 |
 | `SESSION_INVALIDATED` | 401 | 会话在其他设备登录后失效 |
 | `GUEST_VIEW_DISABLED` | 401 | 未登录查看已关闭，需先登录 |
+| `USER_NOT_FOUND` | 401 | 校验会话时用户不存在（`GET /api/auth/validate`） |
 
 未带 `code` 字段的通用错误状态：
 
 | HTTP | 常见消息 | 说明 |
 |------|----------|------|
-| 400 | `输入格式不正确` | 参数校验失败 |
-| 401 | `No token, authorization denied` / `Token is not valid` | 未认证或 Token 无效 |
-| 403 | `管理员资源，访问被拒绝。` / `只有管理员可以编辑表格` | 权限不足 |
-| 404 | `用户不存在` / `任务条目不存在` / `记录未找到` 等 | 资源不存在 |
+| 400 | `输入格式不正确` / `请指定清理时间点` 等 | 参数校验失败 |
+| 401 | `No token, authorization denied` / `Token is not valid` / `用户名或密码错误` | 未认证、Token 无效或登录凭证错误 |
+| 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` | 权限不足（超管接口/管理员接口/页面权限开关未放行） |
+| 404 | `用户不存在` / `任务条目不存在` / `记录未找到` / `没有可导出的数据` 等 | 资源不存在 |
 | 500 | `服务器内部错误` | 服务端错误 |
 
-注意：登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
+注意：
+
+- 登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
+- 修改密码接口受速率限制（15 分钟内最多 5 次尝试），超限返回 `密码修改尝试过于频繁，请15分钟后再试`。
+- 登录请求体校验：`username` 为 3-30 位字母数字，`password` 至少 6 位。
 
 ## 数据库迁移说明
 
@@ -2392,7 +2541,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 1. **JWT 认证**：使用 JWT Token 进行身份验证，过期时间为 7 天（可通过 `JWT_EXPIRES_IN` 配置）
 2. **密码加密**：使用 bcrypt 对密码进行哈希加密
-3. **登录限流**：15 分钟内最多 20 次登录尝试（可通过 `RATE_LIMIT_WINDOW_MS` 和 `RATE_LIMIT_MAX` 配置）
+3. **登录限流**：登录接口 15 分钟内最多 20 次尝试，修改密码接口 15 分钟内最多 5 次尝试（阈值在 `backend/routes/auth.js` 中硬编码）
 4. **请求验证**：使用 Joi 进行请求参数验证
 5. **安全头**：使用 Helmet 设置安全相关的 HTTP 头
 6. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置）
@@ -2418,8 +2567,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
-| `RATE_LIMIT_WINDOW_MS` | `900000` | 登录限流窗口时间（毫秒） |
-| `RATE_LIMIT_MAX` | `20` | 登录限流最大尝试次数 |
+| `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口时间（毫秒），仅在 `security.js` 配置中定义；当前登录/改密限流器使用硬编码阈值，未读取此变量 |
+| `RATE_LIMIT_MAX` | `20` | 限流最大次数，同上，当前未被限流器使用 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
@@ -2463,4 +2612,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-08-19
+最后更新：2026-09-10
