@@ -893,11 +893,11 @@ const Dashboard = () => {
     }, 120);
   }, [jumpTarget, loading, sheets, designers]);
 
-  // 登录后自动将今日任务内容滚动到视图中央展示
+  // 打开主页面时自动将今日任务内容滚动到视图中央展示（所有用户，含未登录访客）
   const todayColumnScrolledRef = useRef(false);
   useEffect(() => {
     if (todayColumnScrolledRef.current) return;
-    if (!user || loading || sheets.length === 0 || designers.length === 0) return;
+    if (loading || sheets.length === 0 || designers.length === 0) return;
     if (jumpTarget) return; // 带 URL 跳转参数时由跳转逻辑负责定位
     const now = new Date();
     if (currentDate.getFullYear() !== now.getFullYear() || currentDate.getMonth() !== now.getMonth()) return;
@@ -908,7 +908,7 @@ const Dashboard = () => {
       target?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [user, loading, sheets, designers, currentDate, jumpTarget]);
+  }, [loading, sheets, designers, currentDate, jumpTarget]);
 
 
 
