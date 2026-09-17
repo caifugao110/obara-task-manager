@@ -893,6 +893,23 @@ const Dashboard = () => {
     }, 120);
   }, [jumpTarget, loading, sheets, designers]);
 
+  // 登录后自动将今日任务内容滚动到视图中央展示
+  const todayColumnScrolledRef = useRef(false);
+  useEffect(() => {
+    if (todayColumnScrolledRef.current) return;
+    if (!user || loading || sheets.length === 0 || designers.length === 0) return;
+    if (jumpTarget) return; // 带 URL 跳转参数时由跳转逻辑负责定位
+    const now = new Date();
+    if (currentDate.getFullYear() !== now.getFullYear() || currentDate.getMonth() !== now.getMonth()) return;
+    todayColumnScrolledRef.current = true;
+    const todayStr = format(now, 'yyyy-MM-dd');
+    const timer = window.setTimeout(() => {
+      const target = document.querySelector(`[data-date="${todayStr}"]`) as HTMLElement | null;
+      target?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [user, loading, sheets, designers, currentDate, jumpTarget]);
+
 
 
   // Handle focus when modal opens with focus target
