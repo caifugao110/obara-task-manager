@@ -1,13 +1,28 @@
 const fs = require('fs');
 const path = require('path');
+const Database = require('better-sqlite3');
 const db = require('../db');
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
-const securityConfig = require('../config/security');
+
+// 备份最终化：rawDb.backup() 生成的备份文件继承源库的 WAL 模式，
+// 会在备份目录留下 .db-wal / .db-shm 伴随文件，导致前端列表出现多条记录。
+// 这里打开备份文件并切换到 DELETE 日志模式，会把 WAL 内容合并入主库文件
+// 并删除伴随文件，最终只保留一个干净的单文件 .db 备份。
+const finalizeBackup = (filePath) => {
+  try {
+    const backupDb = new Database(filePath);
+    backupDb.pragma('journal_mode = DELETE');
+    backupDb.close();
+  } catch (err) {
+    console.warn(`[backup] 最终化备份文件失败 (${path.basename(filePath)}):`, err.message);
+  }
+};
 
 const backendRoot = path.resolve(__dirname, '..');
-const dbPath = path.resolve(backendRoot, securityConfig.database.path);
+// SQLite 数据库路径由 db 模块统一管理，避免路径不一致
+const getDbPath = () => db.getDbPath();
 
 const defaultMaintenanceSettings = {
   enabled: true,
@@ -180,13 +195,17 @@ const listManagedFiles = (dirPath, predicate = () => true) => {
     .sort((first, second) => second.mtime.getTime() - first.mtime.getTime());
 };
 
-const createDatabaseBackup = (options = {}) => {
+// 使用 SQLite 在线备份 API 生成一致性快照（即使数据库正在写入也安全）
+const createDatabaseBackup = async (options = {}) => {
   const { settings } = getMaintenanceSettings();
   const backupDir = resolveManagedDir(options.dir || settings.backupDir);
   ensureDir(backupDir);
-  const fileName = `db-backup-${toTimestamp()}.json`;
+  const fileName = `db-backup-${toTimestamp()}.db`;
   const filePath = path.join(backupDir, fileName);
-  fs.copyFileSync(dbPath, filePath);
+  const rawDb = db.getRawDb();
+  await rawDb.backup(filePath);
+  // 切换到 DELETE 日志模式，合并 WAL 并删除伴随文件，只保留单个 .db
+  finalizeBackup(filePath);
   return { fileName, filePath, dir: backupDir, size: fs.statSync(filePath).size };
 };
 
@@ -205,38 +224,31 @@ const createOfflineBackup = (userId, username, options = {}) => {
   ensureDir(offlineDir);
   const timestamp = toTimestamp();
   const prefix = userId ? `offline-backup-${userId}-${String(username || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_')}` : 'offline-backup-shutdown';
-  const fileName = `${prefix}-${timestamp}.json`;
+  const fileName = `${prefix}-${timestamp}.db`;
   const filePath = path.join(offlineDir, fileName);
   
-  const performCopy = () => {
-    return new Promise((resolve) => {
-      fs.copyFile(dbPath, filePath, (err) => {
-        if (err) {
-          console.error(`[offline-backup] Failed to create backup${userId ? ` for user ${username} (${userId})` : ''}:`, err);
-          resolve({ fileName, filePath, dir: offlineDir, userId, username, skipped: false, success: false, error: err.message });
-        } else {
-          lastOfflineBackupTime = now;
-          const size = fs.statSync(filePath).size;
-          console.log(`[offline-backup] Created backup${userId ? ` for user ${username} (${userId})` : ''}: ${fileName} (${size} bytes)`);
-          resolve({ fileName, filePath, dir: offlineDir, userId, username, skipped: false, success: true, size });
-        }
-      });
-    });
+  // 使用 SQLite 在线备份 API，保证即使有写入也能得到一致性快照
+  const performCopy = async () => {
+    try {
+      await db.getRawDb().backup(filePath);
+      // 切换到 DELETE 日志模式，合并 WAL 并删除伴随文件，只保留单个 .db
+      finalizeBackup(filePath);
+      lastOfflineBackupTime = now;
+      const size = fs.statSync(filePath).size;
+      console.log(`[offline-backup] Created backup${userId ? ` for user ${username} (${userId})` : ''}: ${fileName} (${size} bytes)`);
+      return { fileName, filePath, dir: offlineDir, userId, username, skipped: false, success: true, size };
+    } catch (err) {
+      console.error(`[offline-backup] Failed to create backup${userId ? ` for user ${username} (${userId})` : ''}:`, err);
+      return { fileName, filePath, dir: offlineDir, userId, username, skipped: false, success: false, error: err.message };
+    }
   };
   
   if (options.async) {
     return performCopy();
   }
   
-  fs.copyFile(dbPath, filePath, (err) => {
-    if (err) {
-      console.error(`[offline-backup] Failed to create backup${userId ? ` for user ${username} (${userId})` : ''}:`, err);
-    } else {
-      lastOfflineBackupTime = now;
-      const size = fs.statSync(filePath).size;
-      console.log(`[offline-backup] Created backup${userId ? ` for user ${username} (${userId})` : ''}: ${fileName} (${size} bytes)`);
-    }
-  });
+  // 非 async 调用：后台执行备份，立即返回（保持原接口语义）
+  performCopy();
   
   return { fileName, filePath, dir: offlineDir, userId, username, skipped: false };
 };
@@ -386,7 +398,7 @@ const runScheduledMaintenance = async () => {
       result.reason = 'disabled';
       return result;
     }
-    if (settings.dailyBackupEnabled) result.backup = createDatabaseBackup();
+    if (settings.dailyBackupEnabled) result.backup = await createDatabaseBackup();
     if (settings.dailyTaskExportEnabled) result.taskExport = exportTaskData();
     result.backupCleanup = cleanupOldBackups();
     result.yearlyCleanup = await runYearlyTaskCleanup();
@@ -422,6 +434,24 @@ const startMaintenanceScheduler = () => {
 
 const getMaintenanceStatus = () => {
   const { settings } = getMaintenanceSettings();
+
+  // 数据库物理文件大小（data.db + WAL + SHM）
+  const dbPath = getDbPath();
+  const walPath = `${dbPath}-wal`;
+  const shmPath = `${dbPath}-shm`;
+  const dbFileSize = fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0;
+  const walSize = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
+  const shmSize = fs.existsSync(shmPath) ? fs.statSync(shmPath).size : 0;
+  const totalDiskSize = dbFileSize + walSize + shmSize;
+
+  // tasks 集合的逻辑大小（JSON 序列化后的字节数）及任务统计
+  const data = db.readDb();
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  const tasksJsonSize = Buffer.byteLength(JSON.stringify(tasks), 'utf8');
+  const taskItemsCount = tasks.reduce((sum, sheet) => {
+    return sum + Object.values(sheet.days || {}).reduce((daySum, items) => daySum + (Array.isArray(items) ? items.length : 0), 0);
+  }, 0);
+
   return {
     settings,
     paths: {
@@ -430,6 +460,15 @@ const getMaintenanceStatus = () => {
       taskExportDir: resolveManagedDir(settings.taskExportDir),
       yearlyArchiveDir: resolveManagedDir(settings.yearlyArchiveDir),
       offlineBackupDir: resolveManagedDir(settings.offlineBackupDir)
+    },
+    database: {
+      dbFileSize,
+      walSize,
+      shmSize,
+      totalDiskSize,
+      tasksJsonSize,
+      tasksCount: tasks.length,
+      taskItemsCount
     },
     files: {
       backups: listManagedFiles(resolveManagedDir(settings.backupDir)).slice(0, 5),

@@ -41,7 +41,7 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 |------|------|
 | 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-5+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) ![Framer Motion](https://img.shields.io/badge/Framer%20Motion-0055FF?logo=framer&logoColor=white) |
 | 后端 | ![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-5+-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
-| 数据库 | ![JSON](https://img.shields.io/badge/JSON%20File-000000?logo=json&logoColor=white) |
+| 数据库 | ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white) |
 | 控制台 | ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white) ![WinForms](https://img.shields.io/badge/WinForms-512BD4) |
 | CI/CD | ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white) ![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-222222?logo=githubpages&logoColor=white) |
 
@@ -274,32 +274,9 @@ npm run dev
 
 ## 数据存储
 
-系统使用本地 JSON 文件保存数据，默认文件为 `backend/db.json`。主要字段：
+系统使用 **SQLite** 保存数据，默认文件为 `backend/data.db`（WAL 模式，运行时伴随 `data.db-wal` 和 `data.db-shm`）。数据以集合方式存储，主要集合：
 
-```json
-{
-  "users": [],
-  "designers": [],
-  "tasks": [],
-  "loginLogs": [],
-  "auditLogs": [],
-  "statusTrackingItems": [],
-  "settings": {
-    "leaderboard": { "enabled": true, "allowAdmins": true, "allowViewers": false },
-    "workHours": { "enabled": true, "allowAdmins": true, "allowViewers": false },
-    "statusTracking": { "enabled": true, "allowAdmins": true, "allowViewers": false },
-    "systemSettings": { "enabled": true, "allowAdmins": true, "allowViewers": false },
-    "workdayOverrides": {},
-    "leaderRules": [],
-    "system": { "allowGuestView": true, "allowMultiDevice": true, "allowUserDesignPlanColorMark": true, "allowUserEditOwnTaskColor": true },
-    "maintenance": { "enabled": true, "dailyBackupEnabled": true, "dailyTaskExportEnabled": true, "offlineBackupEnabled": true, "backupRetentionDays": 30, "offlineBackupRetentionDays": 7, "scheduleTime": "00:30", "yearlyCleanupEnabled": true, "yearlyCleanupMonth": 1, "yearlyCleanupCheckDays": 10, "yearlyTaskRetentionYears": 1, "backupDir": "backups/database", "taskExportDir": "backups/task-exports", "yearlyArchiveDir": "backups/yearly-archives", "offlineBackupDir": "backups/offline", "yearlyCleanupHistory": {} }
-  }
-}
-```
-
-字段说明：
-
-| 字段 | 说明 |
+| 集合 | 说明 |
 |------|------|
 | `users` | 登录用户列表，包含 `forcePasswordChange` 字段用于强制修改密码 |
 | `designers` | 设计人员列表 |
@@ -307,18 +284,11 @@ npm run dev
 | `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 2000 条 |
 | `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
 | `statusTrackingItems` | 状态追踪记录 |
-| `settings.leaderboard` | 任务报表访问权限 |
-| `settings.workHours` | 工时管理访问权限 |
-| `settings.statusTracking` | 状态追踪访问权限 |
-| `settings.systemSettings` | 系统设置页面访问权限（`allowViewers` 始终为 `false`） |
-| `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend` |
-| `settings.leaderRules` | 组长规则配置 |
-| `settings.system` | 系统设置，如未登录查看、多设备登录、允许登录用户修改本人设计计划标记颜色 |
-| `settings.maintenance` | 自动维护配置，详见「数据库维护」章节；缺失字段由后端按默认值自动补齐（如断网备份默认开启、保留 7 天、目录 `backups/offline`） |
+| `settings` | 系统配置，包含权限、工作日覆盖、维护等设置 |
 
-> 注：`auditLogs`、`statusTrackingItems` 等键在全新数据库中可能不存在，后端读取时均按空数组容错处理；首次写入后自动创建。
+> 如果存在遗留的 `backend/db.json`，后端首次启动时会**自动迁移**到 SQLite，并将原文件重命名为 `db.json.migrated-<时间戳>.bak`。
 
-建议定期备份 `backend/db.json`，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
+建议定期通过 `POST /api/system/maintenance/backup` 备份数据库，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
 
 ## 常用命令
 
@@ -360,7 +330,7 @@ npm run test:backend
 
 | 脚本 | 说明 |
 |------|------|
-| `start.bat` | Windows 一键启动前后端并打开浏览器 |
+| `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器） |
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
 | `stop.bat` | 停止前后端进程 |
@@ -398,7 +368,8 @@ node --check backend\routes\tasks.js
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码，生产环境必须立即修改 |
 | `RATE_LIMIT_WINDOW_MS` | `900000`（15 分钟） | 限流时间窗口配置（当前登录/改密限流器阈值为硬编码，未读取此变量） |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置（同上，当前未被限流器使用） |
-| `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
+| `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
+| `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录 |
 | `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔 |
 | `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
@@ -622,7 +593,7 @@ obara-task-manager/
 
 | 任务 | 说明 | 默认状态 |
 |------|------|----------|
-| 数据库备份 | 复制 `db.json` 到备份目录 | 启用 |
+| 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照 | 启用 |
 | 任务数据导出 | 导出任务数据为 JSON 文件 | 启用 |
 | 过期备份清理 | 删除超过保留天数的旧备份 | 自动执行 |
 | 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
@@ -699,7 +670,7 @@ obara-task-manager/
 
 ## 维护建议
 
-- 定期备份 `backend/db.json`，并在执行升级或批量导入前额外备份一次。
+- 定期通过 `POST /api/system/maintenance/backup` 备份 `backend/data.db`，并在执行升级或批量导入前额外备份一次。
 - 生产环境必须修改 `backend/.env` 中的 `JWT_SECRET`，并限制 `CORS_ORIGIN`。
 - 公网部署时建议关闭未登录查看，并根据需要关闭多设备同时在线。
 - 大批量导入前先在测试环境验证表格格式，确认设计人员列表已提前维护完成。
@@ -719,6 +690,7 @@ obara-task-manager/
 - 路径绑定：自动从 EXE 所在目录向上查找 `backend/` 与 `frontend/`，**不硬编码绝对路径**，整个项目目录移动后仍可直接使用。
 - 一键打开浏览器：点击「打开浏览器」可直接访问运行中的前端界面。
 - 依赖自动安装：首次启动服务时若依赖缺失会自动执行 `npm install`。
+- 数据库迁移状态检测：启动后端前自动检测遗留 `db.json` → SQLite（`data.db`）的迁移状态（待迁移 / 已完成 / 无需迁移），并在日志区输出说明。
 - Node.js 环境检测：复用 `ProcessManager` 的健壮发现逻辑（PATH 扫描、`node.exe` 探测、`npm.cmd` 解析和 AppData 回退），检测失败时输出具体原因，避免误报「Node.js 未安装」。
 - 日志显示：实时输出前后端子进程日志，支持清空。
 - 配置持久化：端口与监控间隔保存在本地配置文件，重启后自动加载。
@@ -798,4 +770,4 @@ MIT License
 
 ---
 
-最后更新：2026-09-10
+最后更新：2026-09-19

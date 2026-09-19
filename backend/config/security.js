@@ -40,7 +40,10 @@ const securityConfig = {
     environment: process.env.NODE_ENV || 'development'
   },
   database: {
-    path: process.env.DB_PATH || './db.json'
+    // 遗留 JSON 数据库路径（仅用于首次迁移导入，迁移完成后可删除）
+    legacyJsonPath: process.env.DB_PATH || './db.json',
+    // SQLite 数据库路径
+    sqlitePath: process.env.SQLITE_DB_PATH || './data.db'
   },
   spec: {
     sharePath: process.env.SPEC_SHARE_PATH || '\\\\192.168.160.6\\仕样书$'

@@ -34,7 +34,7 @@ start.bat
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
-> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。默认密码为 `admin123`，**生产环境必须立即修改**。也可在 `backend/db.json` 中手动配置，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
+> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。默认密码为 `admin123`，**生产环境必须立即修改**。也可直接操作 `backend/data.db`（使用 SQLite 工具）手动配置，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
 
 ## 部署方式选择
 
@@ -173,14 +173,14 @@ nssm restart ObaraTaskManager
 nssm remove ObaraTaskManager
 ```
 
-> 注意：运行服务的 Windows 用户需要有访问 `backend/db.json` 和网络共享目录的权限。
+> 注意：运行服务的 Windows 用户需要有对 `backend/` 目录的读写权限（用于创建和写入 `data.db` 及其 WAL 伴随文件），以及访问网络共享目录的权限。
 
 ### 上线前检查清单
 
 1. `backend/.env` 已存在，`JWT_SECRET` 必须配置（缺失将导致服务无法启动）。
 2. `CORS_ORIGIN` 只包含实际允许访问的前端地址。
-3. `backend/db.json` 已配置超级管理员，或已通过环境变量配置默认管理员账号（首次启动自动创建）。
-4. `backend/db.json` 已完成一次离线备份。
+3. `backend/data.db` 已存在并已配置超级管理员，或已通过环境变量配置默认管理员账号（首次启动自动创建）。
+4. `backend/data.db` 已完成一次备份（通过 `POST /api/system/maintenance/backup`）。
 5. `npm run build` 能成功完成前端构建。
 6. 后端启动后 `http://localhost:5000/api/system/version` 能返回 JSON。
 7. 前端能打开并完成登录、主页面加载、任务保存、导出文件下载等关键流程。
@@ -205,22 +205,22 @@ GET http://localhost:5000/api/system/version
 
 1. 通知正在使用系统的用户暂停编辑。
 2. 停止前后端进程，可以运行 `stop.bat`。
-3. 备份 `backend/db.json` 和 `backend/.env`。
+3. 备份 `backend/data.db` 和 `backend/.env`（建议通过 `POST /api/system/maintenance/backup` 生成一致性备份）。
 4. 拉取或替换新版本代码。
-5. 执行 `npm run install:all` 更新依赖。
+5. 执行 `npm run install:all` 更新依赖（含 `better-sqlite3` 原生模块）。
 6. 执行 `npm run build` 验证前端构建。
-7. 启动后端和前端，确认数据库迁移日志无异常。
+7. 启动后端和前端，确认数据库迁移日志无异常（若存在遗留 `db.json`，首次启动会自动迁移到 SQLite）。
 8. 登录后验证主页面、管理后台、系统设置、导入导出和关键报表。
 
 ### 回滚流程
 
 1. 停止当前版本进程。
 2. 恢复上一版本代码。
-3. 恢复升级前备份的 `backend/db.json`，必要时恢复 `backend/.env`。
+3. 恢复升级前备份的 `backend/data.db`（同时删除 `data.db-wal` 和 `data.db-shm`），必要时恢复 `backend/.env`。
 4. 执行 `npm run install:all`，避免依赖版本不匹配。
 5. 重新启动服务并完成关键流程验证。
 
-> 如果新版本已经产生了不可逆的数据结构变更，优先使用升级前的 `backend/db.json` 备份回滚。不要直接手工编辑生产数据文件，除非已经额外备份并确认 JSON 格式有效。
+> 如果新版本已经产生了不可逆的数据结构变更，优先使用升级前的 `backend/data.db` 备份回滚。不要直接手工编辑生产数据库文件，除非已经额外备份。
 
 ## 环境变量
 
@@ -235,6 +235,7 @@ CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173
 GITEE_TOKEN=your-gitee-token
 GITEE_REPO_OWNER=caifugao110
 GITEE_REPO_NAME=obara-task-manager
+SQLITE_DB_PATH=./data.db
 DB_PATH=./db.json
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
@@ -252,7 +253,8 @@ RATE_LIMIT_MAX=20
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
-| `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
+| `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径（生产环境使用） |
+| `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite，迁移完成后可删除 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；当前登录/改密限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被限流器使用 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
@@ -294,9 +296,15 @@ GITEE_REPO_NAME=obara-task-manager
 
 ## 数据文件
 
-默认数据文件为 `backend/db.json`。主要字段：
+系统使用 **SQLite** 作为数据库，默认文件为 `backend/data.db`。运行时还会生成 `backend/data.db-wal`（WAL 日志）和 `backend/data.db-shm`（共享内存索引），**服务运行期间请勿删除这两个伴随文件**。
 
-| 字段 | 说明 |
+数据库采用 WAL 模式，支持并发读取，写入通过事务持久化，进程崩溃不会损坏数据。
+
+### 数据集合
+
+数据库以键值集合方式存储，主要集合：
+
+| 集合 | 说明 |
 |------|------|
 | `users` | 登录用户，角色包括 `superadmin`、`admin`、`user`，含 `forcePasswordChange` 字段 |
 | `designers` | 设计人员列表 |
@@ -312,9 +320,13 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.system` | 系统设置，如未登录查看、多设备登录、允许登录用户修改本人设计计划标记颜色；颜色标记开关缺失时默认开启 |
 
-首次启动或旧版本升级时，`backend/db.js` 会自动补齐缺失的默认配置并执行数据库迁移（任务结构、日期格式、用户字段等）。
+### 从 JSON 自动迁移
 
-多人编辑占用状态保存在后端运行时内存中，用于防止同一设计人员同一天被多个用户同时编辑；服务重启后会自动清空，不写入 `backend/db.json`。
+如果 `backend/db.json` 存在且 SQLite 数据库为空，后端启动时会**自动**将 JSON 数据迁移到 SQLite，并将原 `db.json` 重命名为 `db.json.migrated-<时间戳>.bak`。迁移完成后可删除该备份文件。
+
+首次启动或旧版本升级时，`backend/db.js` 会自动补齐缺失的默认配置并执行数据结构迁移（任务结构、日期格式、用户字段等）。
+
+多人编辑占用状态保存在后端运行时内存中，用于防止同一设计人员同一天被多个用户同时编辑；服务重启后会自动清空，不写入数据库。
 
 ## 权限开关联动
 
@@ -339,42 +351,49 @@ GITEE_REPO_NAME=obara-task-manager
 
 ## 备份与恢复
 
-推荐同时保留文件级备份和 `.xls` 任务表导出备份。
+推荐同时保留数据库备份和 `.xls` 任务表导出备份。
 
-复制数据库文件：
+### 数据库备份
 
-```bat
-copy backend\db.json backup-db-20260701.json
+系统内置 SQLite 在线备份功能，即使数据库正在写入也能生成一致性快照。备份文件为 `.db` 格式。
+
+通过 API 手动备份（需超级管理员）：
+
+```text
+POST /api/system/maintenance/backup
 ```
 
-建议命名包含日期和用途，例如：
+系统也会在每日指定时间（默认 `00:30`）自动备份，并在服务关闭前自动生成断网备份。
+
+手动复制数据库文件时**必须先停止后端服务**，否则可能复制到不一致的状态：
 
 ```bat
-copy backend\db.json backups\db-before-upgrade-20260705.json
-copy backend\db.json backups\db-daily-20260705.json
+:: 停止服务后复制
+copy backend\data.db backups\db-before-upgrade-20260705.db
 ```
 
-通过页面备份：
+> 注意：不要直接复制运行中的 `data.db`，应通过系统的备份 API 生成一致性快照。
+
+通过页面备份任务数据：
 
 1. 使用超级管理员登录。
-2. 进入“系统设置”。
+2. 进入"系统设置"。
 3. 导出 `.xls` 任务表数据。
 
 说明：
 
 - `.xls` 导出只包含任务数据，适合任务表恢复；文件名包含日期和时间戳，例如 `obara-tasks-2026-07-02-093000.xls`。
 - 导出的表格是渲染后的任务表，每月一个工作表，包含冻结窗口、边框、任务颜色、任务/枪名单独行和自动合计。
-- 导出的任务表表头周末底色、工时管理页面和工时管理表导出的“工作日工时/周末加班工时”均按 `settings.workdayOverrides` 计算。
-- 登录用户、设计人员、登录日志和权限设置仍建议通过 `backend/db.json` 文件级备份保存。
+- 导出的任务表表头周末底色、工时管理页面和工时管理表导出的"工作日工时/周末加班工时"均按 `settings.workdayOverrides` 计算。
 
-恢复方式：
+### 恢复方式
 
-- 小规模恢复可以直接替换 `backend/db.json`。
-- 任务数据恢复可以通过“系统设置”导入 `.xls`。
-- 导入前必须选择要覆盖的月份；系统只覆盖所选月份，不会一次覆盖所有月份。
-- 导入时 `当日合计` 和 `月总工时` 会被忽略，系统会重新计算。
-- 如果表格天数与所选月份天数不一致，多出的日期自动截断，缺少的日期按空数据处理。
-- 表格中的新增设计员不会自动创建，会跳过并在导入结果中提示。
+- **整体恢复**：停止后端服务，用备份的 `.db` 文件替换 `backend/data.db`（同时删除 `data.db-wal` 和 `data.db-shm`），然后启动服务。
+- **任务数据恢复**：可以通过"系统设置"导入 `.xls`。
+  - 导入前必须选择要覆盖的月份；系统只覆盖所选月份，不会一次覆盖所有月份。
+  - 导入时 `当日合计` 和 `月总工时` 会被忽略，系统会重新计算。
+  - 如果表格天数与所选月份天数不一致，多出的日期自动截断，缺少的日期按空数据处理。
+  - 表格中的新增设计员不会自动创建，会跳过并在导入结果中提示。
 
 ## 仕样信息搜索配置
 
@@ -451,11 +470,12 @@ taskkill /PID <PID> /F
 
 ### 数据库文件损坏
 
-如果 `backend/db.json` 文件损坏或格式错误：
+SQLite 采用 WAL 模式和事务写入，正常情况下不会因进程崩溃而损坏。如果 `backend/data.db` 文件损坏：
 
 1. 停止后端服务
-2. 从备份恢复 `db.json`
-3. 重新启动后端，系统会自动补齐缺失的默认配置
+2. 删除 `backend/data.db-wal` 和 `backend/data.db-shm`
+3. 从备份恢复 `data.db`
+4. 重新启动后端，系统会自动补齐缺失的默认配置
 
 ### 版本检查失败
 
@@ -588,11 +608,13 @@ node --check backend\routes\settings.js
 
 ## 性能优化建议
 
-1. **数据库文件大小**：`loginLogs` 和 `auditLogs` 均最多保留 2000 条记录，自动清理旧日志
-2. **并发写入保护**：数据库写入采用队列机制，避免并发冲突
-3. **前端防抖**：任务字段变更采用 500ms 防抖保存，减少网络请求
-4. **离线缓存**：后端断开时自动切换到 localStorage 缓存数据
-5. **操作日志精简**：GET 请求不记录响应消息，POST/PUT 请求体最大保留 2000 字符，避免数据库膨胀
+1. **SQLite WAL 模式**：数据库启用 WAL（Write-Ahead Logging）模式，支持并发读取，写入通过事务持久化，单库上限 281 TB
+2. **内存缓存**：数据库数据加载到内存缓存，读取请求直接从内存返回，无需每次访问磁盘
+3. **数据库文件大小**：`loginLogs` 和 `auditLogs` 均最多保留 2000 条记录，自动清理旧日志
+4. **并发写入保护**：数据库写入采用队列机制，避免并发冲突
+5. **前端防抖**：任务字段变更采用 500ms 防抖保存，减少网络请求
+6. **离线缓存**：后端断开时自动切换到 localStorage 缓存数据
+7. **操作日志精简**：GET 请求不记录响应消息，POST/PUT 请求体最大保留 2000 字符，避免数据库膨胀
 
 ## 数据库维护
 
@@ -604,7 +626,7 @@ node --check backend\routes\settings.js
 
 | 任务 | 说明 | 默认状态 |
 |------|------|----------|
-| 数据库备份 | 复制 `db.json` 到备份目录 | 启用 |
+| 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照 | 启用 |
 | 任务数据导出 | 导出任务数据为 JSON 文件 | 启用 |
 | 过期备份清理 | 删除超过保留天数的旧备份 | 自动执行 |
 | 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
@@ -628,14 +650,14 @@ backend/
 - 防抖机制：同一次会话内 5 分钟内只生成一次，避免短时间内重复备份。
 - 存储位置：独立目录 `backups/offline/`，便于与日常备份区分。
 - 备份文件名：
-  - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.json`
-  - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.json`
+  - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
+  - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
 - 可通过 `POST /api/system/maintenance/offline-backup` 主动触发，**该接口无需鉴权**，便于在前端检测到离线状态时自动调用。
 - 默认保留 7 天（`offlineBackupRetentionDays`），超过自动清理。
 
 ### 维护配置
 
-维护配置存储在 `db.json` 的 `settings.maintenance` 中，可通过 API 更新：
+维护配置存储在数据库的 `settings.maintenance` 中，可通过 API 更新：
 
 ```json
 {
@@ -694,9 +716,10 @@ backend/
 
 `GET /api/system/db-stats` 返回数据库统计信息，包含：
 
-- **size**：数据库文件大小（字节/KB/MB）
+- **size**：逻辑数据大小（所有集合序列化后的体积，字节/KB/MB）
+- **storage**：SQLite 存储信息，包括引擎、驱动、journal 模式、`data.db`/`data.db-wal`/`data.db-shm` 文件大小
 - **counts**：用户、设计人员、任务、任务条目、月份、状态追踪、登录日志、操作日志数量
-- **warnings**：数据库超过 10MB/50MB、任务数据超过 24 个月的警告
+- **warnings**：数据库超过 10MB/50MB（仅为提示，非硬限制）、任务数据超过 24 个月的警告
 
 ### 维护最佳实践
 

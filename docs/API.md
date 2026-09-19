@@ -1808,7 +1808,7 @@ Authorization: Bearer <token>
     "yearlyCleanupHistory": {}
   },
   "paths": {
-    "database": "D:\\project\\backend\\db.json",
+    "database": "D:\\project\\backend\\data.db",
     "backupDir": "D:\\project\\backend\\backups\\database",
     "taskExportDir": "D:\\project\\backend\\backups\\task-exports",
     "yearlyArchiveDir": "D:\\project\\backend\\backups\\yearly-archives",
@@ -2533,7 +2533,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 5. **强制修改密码迁移**：首次访问用户列表或校验会话时，自动将非超级管理员用户的 `forcePasswordChange` 标记为 `true`
 
 迁移规则：
-- 迁移过程会自动保存到 `backend/db.json`
+- 迁移过程会自动保存到 SQLite 数据库（`backend/data.db`）
+- 若存在遗留 `backend/db.json`，首次启动会自动导入到 SQLite
 - 迁移后会在控制台输出迁移信息
 - 多次启动不会重复迁移
 
@@ -2566,7 +2567,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
-| `DB_PATH` | `./db.json` | JSON 数据库文件路径 |
+| `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
+| `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口时间（毫秒），仅在 `security.js` 配置中定义；当前登录/改密限流器使用硬编码阈值，未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数，同上，当前未被限流器使用 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |

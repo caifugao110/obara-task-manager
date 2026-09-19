@@ -1,5 +1,6 @@
-﻿const express = require('express');
+const express = require('express');
 const router = express.Router();
+const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const crypto = require('crypto');
@@ -1024,7 +1025,8 @@ router.put('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(
 }));
 
 router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  res.json({ message: '数据库备份已完成', backup: maintenance.createDatabaseBackup() });
+  const backup = await maintenance.createDatabaseBackup();
+  res.json({ message: '数据库备份已完成', backup });
 }));
 
 router.post('/maintenance/offline-backup', asyncHandler(async (req, res) => {
@@ -1567,16 +1569,37 @@ router.get('/db-stats', [authMiddleware, superAdminMiddleware], asyncHandler(asy
   
   const monthCount = new Set(tasks.map(t => `${t.year}-${t.month}`)).size;
   
+  // 逻辑数据大小（所有集合序列化后的体积）
   const jsonString = JSON.stringify(data);
   const sizeInBytes = Buffer.byteLength(jsonString, 'utf8');
   const sizeInKB = (sizeInBytes / 1024).toFixed(2);
   const sizeInMB = (sizeInBytes / (1024 * 1024)).toFixed(2);
+
+  // SQLite 物理存储信息
+  const dbPath = db.getDbPath();
+  const walPath = `${dbPath}-wal`;
+  const shmPath = `${dbPath}-shm`;
+  const dbFileSize = fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0;
+  const walSize = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
+  const shmSize = fs.existsSync(shmPath) ? fs.statSync(shmPath).size : 0;
+  const totalDiskSize = dbFileSize + walSize + shmSize;
+  const journalMode = db.getRawDb().pragma('journal_mode', { simple: true });
   
   res.json({
     size: {
       bytes: sizeInBytes,
       kb: parseFloat(sizeInKB),
       mb: parseFloat(sizeInMB)
+    },
+    storage: {
+      engine: 'SQLite',
+      driver: 'better-sqlite3',
+      journalMode,
+      path: dbPath,
+      dbFileSize,
+      walSize,
+      shmSize,
+      totalDiskSize
     },
     counts: {
       users: users.length,

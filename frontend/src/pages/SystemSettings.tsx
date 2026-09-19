@@ -65,6 +65,15 @@ interface MaintenanceSettings {
 interface MaintenanceStatus {
   settings: MaintenanceSettings;
   paths: { database: string; backupDir: string; taskExportDir: string; yearlyArchiveDir: string; offlineBackupDir: string };
+  database: {
+    dbFileSize: number;
+    walSize: number;
+    shmSize: number;
+    totalDiskSize: number;
+    tasksJsonSize: number;
+    tasksCount: number;
+    taskItemsCount: number;
+  };
   files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[]; offlineBackups: MaintenanceFile[] };
   scheduler: { running: boolean; nextRunAt?: string; lastRun?: any };
 }
@@ -1054,7 +1063,19 @@ const SystemSettings = () => {
                 <h3 className="font-bold text-gray-800 mb-4">运行状态</h3>
                 <div className="space-y-3 text-sm text-gray-600">
                   <div><span className="font-bold text-gray-700">下次执行：</span>{maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-'}</div>
-                  <div><span className="font-bold text-gray-700">数据库：</span><span className="break-all">{maintenanceStatus?.paths?.database || '-'}</span></div>
+                  <div><span className="font-bold text-gray-700">数据库文件：</span><span className="break-all">{maintenanceStatus?.paths?.database || '-'}</span></div>
+                  <div><span className="font-bold text-gray-700">数据库大小：</span>
+                    <span className="text-blue-600 font-bold">{maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.totalDiskSize) : '-'}</span>
+                    {maintenanceStatus?.database && maintenanceStatus.database.walSize > 0 && (
+                      <span className="text-gray-400 text-xs ml-2">（主文件 {formatFileSize(maintenanceStatus.database.dbFileSize)} + WAL {formatFileSize(maintenanceStatus.database.walSize)}）</span>
+                    )}
+                  </div>
+                  <div><span className="font-bold text-gray-700">tasks 集合大小：</span>
+                    <span className="text-green-600 font-bold">{maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.tasksJsonSize) : '-'}</span>
+                    {maintenanceStatus?.database && (
+                      <span className="text-gray-400 text-xs ml-2">（{maintenanceStatus.database.tasksCount} 个工作表，{maintenanceStatus.database.taskItemsCount} 条任务记录）</span>
+                    )}
+                  </div>
                   <div><span className="font-bold text-gray-700">备份目录：</span><span className="break-all">{maintenanceStatus?.paths?.backupDir || '-'}</span></div>
                   <div><span className="font-bold text-gray-700">任务导出：</span><span className="break-all">{maintenanceStatus?.paths?.taskExportDir || '-'}</span></div>
                   <div><span className="font-bold text-gray-700">年度归档：</span><span className="break-all">{maintenanceStatus?.paths?.yearlyArchiveDir || '-'}</span></div>

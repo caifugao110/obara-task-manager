@@ -37,10 +37,16 @@ Debug/
 App.config.bak
 control/Properties/GeneratedVersion.cs
 
-# Data files (local JSON storage)
+# Data files (local storage)
 backend/db.json
+backend/db.json.migrated-*.bak
 backend/*.data.json
 *.data.json
+# SQLite database files
+backend/data.db
+backend/data.db-wal
+backend/data.db-shm
+backend/*.db
 
 # Backup files
 backend/backups/

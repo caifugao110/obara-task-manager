@@ -329,6 +329,54 @@ namespace ObaraServiceController.Utils
             catch { }
         }
 
+        // Pre-flight database migration status check.  The Node backend
+        // (db.js) automatically migrates a legacy db.json into SQLite
+        // (data.db) on first start, but that migration only produces log
+        // lines after the process is already running.  By inspecting the
+        // files before launch we can give the user a clear, upfront status
+        // message in the controller log explaining whether migration will
+        // happen, has already happened, or is unnecessary.
+        private void CheckAndLogDatabaseMigration(int port)
+        {
+            try
+            {
+                string backendPath = PathResolver.BackendPath;
+                string legacyJson = Path.Combine(backendPath, "db.json");
+                string sqliteDb = Path.Combine(backendPath, "data.db");
+
+                bool hasLegacy = File.Exists(legacyJson);
+                bool hasSqlite = File.Exists(sqliteDb);
+
+                if (hasLegacy && !hasSqlite)
+                {
+                    OnLogMessage(new ProcessEventArgs(ServiceType.Backend,
+                        "检测到遗留 db.json，后端启动时将自动迁移到 SQLite (data.db)，迁移完成后原文件将被重命名为 .bak 备份。", port));
+                }
+                else if (hasLegacy && hasSqlite)
+                {
+                    OnLogMessage(new ProcessEventArgs(ServiceType.Backend,
+                        "数据库已迁移完成，使用 SQLite (data.db)。遗留的 db.json 可手动删除。", port));
+                }
+                else if (!hasLegacy && hasSqlite)
+                {
+                    OnLogMessage(new ProcessEventArgs(ServiceType.Backend,
+                        "使用 SQLite 数据库 (data.db)。", port));
+                }
+                else
+                {
+                    OnLogMessage(new ProcessEventArgs(ServiceType.Backend,
+                        "未找到数据库文件，首次启动将创建空的 SQLite 数据库 (data.db)。", port));
+                }
+            }
+            catch (Exception ex)
+            {
+                // A failure here must never block backend startup — the real
+                // migration logic lives in the Node process anyway.
+                OnLogMessage(new ProcessEventArgs(ServiceType.Backend,
+                    string.Format("[warn] 数据库迁移状态检测失败: {0}", ex.Message), port));
+            }
+        }
+
         public bool IsBackendRunning
         {
             get { return _backendProcess != null && !_backendProcess.HasExited; }
@@ -392,6 +440,12 @@ namespace ObaraServiceController.Utils
                         nmDirExisted ? "后端依赖损坏，正在重新安装..." : "后端依赖未安装，正在安装...", port));
                     RunNpmInstall(backendPath, ServiceType.Backend);
                 }
+
+                // ---- Database migration pre-flight check ----
+                // Log whether a legacy db.json → SQLite migration is pending,
+                // already done, or unnecessary.  The actual migration is
+                // performed by db.js inside the backend process on startup.
+                CheckAndLogDatabaseMigration(port);
 
                 // ---- Service startup: node.exe server.js (direct, no npm) ----
                 // Going through "npm start" would spawn an extra npm.cmd → cmd

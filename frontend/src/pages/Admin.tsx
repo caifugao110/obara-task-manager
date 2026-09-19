@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
@@ -164,7 +164,7 @@ const initialLoginUsers = [
   { username: 'gaoj', password: 'nj.gaoj', name: '高剑', role: 'user' },
   { username: 'yangh', password: 'nj.yangh', name: '杨虹', role: 'user' },
   { username: 'zhangwl', password: 'nj.zhangwl', name: '张万利', role: 'user' },
-  { username: 'zhaisx', password: 'nj.zhaisx', name: '翟世学', role: 'user' },
+  { username: 'zhaisx', password: 'nj.zhaisx', name: '翟世学', role: 'admin' },
   { username: 'daihq', password: 'nj.daihq', name: '戴红琴', role: 'user' },
   { username: 'chenaz', password: 'nj.chenaz', name: '陈爱珍', role: 'user' },
   { username: 'chendy', password: 'nj.chendy', name: '陈大仪', role: 'admin' },

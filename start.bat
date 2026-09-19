@@ -39,8 +39,6 @@ if errorlevel 1 goto end
 call :start_frontend
 if errorlevel 1 goto end
 
-call :open_browser
-
 echo.
 echo ===============================================
 echo Startup complete
@@ -50,6 +48,8 @@ echo Backend:  http://localhost:%BACKEND_PORT%
 echo Default admin:superadmin / admin123
 echo Logs: %LOG_DIR%
 echo.
+echo Note: Database auto-migrates from JSON to SQLite on first start if needed.
+echo.
 ping -n 4 127.0.0.1 >nul
 goto :end
 
@@ -58,7 +58,7 @@ if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 exit /b 0
 
 :check_node
-echo [1/8] Checking Node.js...
+echo [1/7] Checking Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js is not installed or not available in PATH.
@@ -71,7 +71,7 @@ exit /b 0
 
 :git_pull
 echo.
-echo [2/8] Pulling latest code from Gitee...
+echo [2/7] Pulling latest code from Gitee...
 
 where git >nul 2>&1
 if errorlevel 1 (
@@ -122,7 +122,7 @@ exit /b 0
 
 :check_ports
 echo.
-echo [3/8] Checking ports...
+echo [3/7] Checking ports...
 
 call :release_port %BACKEND_PORT% backend
 if errorlevel 1 exit /b 1
@@ -160,7 +160,7 @@ exit /b 0
 
 :install_deps
 echo.
-echo [4/8] Checking backend dependencies...
+echo [4/7] Checking backend dependencies...
 cd /d "%BACKEND_DIR%"
 if exist "node_modules" (
     echo [OK] Backend dependencies are installed.
@@ -174,7 +174,7 @@ if exist "node_modules" (
 )
 
 echo.
-echo [5/8] Checking frontend dependencies...
+echo [5/7] Checking frontend dependencies...
 cd /d "%FRONTEND_DIR%"
 if exist "node_modules" (
     echo [OK] Frontend dependencies are installed.
@@ -191,7 +191,7 @@ exit /b 0
 
 :start_backend
 echo.
-echo [6/8] Starting backend service...
+echo [6/7] Starting backend service...
 set "OBARA_BACKEND_LOG=%LOG_DIR%\backend.log"
 set "OBARA_BACKEND_ERR=%LOG_DIR%\backend.err.log"
 set "OBARA_BACKEND_PID=%LOG_DIR%\backend.pid"
@@ -207,7 +207,7 @@ exit /b 0
 
 :start_frontend
 echo.
-echo [7/8] Starting frontend service...
+echo [7/7] Starting frontend service...
 set "OBARA_FRONTEND_LOG=%LOG_DIR%\frontend.log"
 set "OBARA_FRONTEND_ERR=%LOG_DIR%\frontend.err.log"
 set "OBARA_FRONTEND_PID=%LOG_DIR%\frontend.pid"
@@ -239,12 +239,6 @@ for /l %%i in (1,1,20) do (
 echo [ERROR] %WAIT_NAME% did not start listening on port %WAIT_PORT%.
 echo Check logs in %LOG_DIR%
 exit /b 1
-
-:open_browser
-echo.
-echo [8/8] Opening browser...
-start "" "http://localhost:%FRONTEND_PORT%"
-exit /b 0
 
 :end
 endlocal
