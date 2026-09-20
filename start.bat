@@ -17,10 +17,11 @@ if /i not "%~1"=="--hidden" (
 
 call :ensure_logs
 
-rem 切换到脚本所在目录。本脚本经常在网络驱动器/UNC 路径下运行（例如
-rem \\192.168.160.10\GUNtools\Task\obara-task-manager\start.bat）。CMD 不支持把
-rem UNC 路径当作当前目录，cd /d 会直接失败，导致后续命令在错误的目录里执行。
-rem pushd 会自动为 UNC 路径映射一个临时盘符，所以这里统一用 pushd/popd。
+rem Switch to the directory of this script. It is often run from a network
+rem drive / UNC path (e.g. \\192.168.160.10\GUNtools\Task\obara-task-manager).
+rem CMD refuses to use a UNC path as the current directory, so "cd /d" fails
+rem and later commands run from the wrong directory. pushd maps a temporary
+rem drive letter for UNC paths automatically, hence pushd/popd are used here.
 pushd "%SCRIPT_DIR%" >nul 2>&1
 
 echo ===============================================
@@ -74,11 +75,11 @@ if errorlevel 1 (
 for /f "delims=" %%v in ('node -v') do set "NODE_VERSION=%%v"
 echo [OK] Node.js %NODE_VERSION%
 
-rem 本项目要求 Node.js 22 及以上：better-sqlite3@13 声明 engines.node ">=22"，
-rem joi@18 要求 >=20，pdf-parse@2.4 / pdfjs-dist@5.4 要求 >=20.16。在更低的
-rem 版本上，better-sqlite3 自带的原生二进制会以
-rem "FATAL ERROR: Error::New napi_get_last_error_info" 直接崩溃，
-rem 后端因此永远监听不到 5000 端口。这里提前拦下并给出明确提示。
+rem Node.js 22 or newer is required: better-sqlite3 13 supports Node 22+ only,
+rem joi 18 needs Node 20+, pdf-parse 2.4 and pdfjs-dist 5.4 need Node 20.16+.
+rem On older versions the prebuilt better-sqlite3 binary crashes with
+rem "FATAL ERROR: Error::New napi_get_last_error_info", so the backend never
+rem listens on port 5000. Catch that here with a clear message instead.
 set "NODE_MAJOR="
 for /f "tokens=1 delims=." %%m in ("%NODE_VERSION:v=%") do set "NODE_MAJOR=%%m"
 if not defined NODE_MAJOR (
