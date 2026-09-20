@@ -17,6 +17,12 @@ if /i not "%~1"=="--hidden" (
 
 call :ensure_logs
 
+rem 切换到脚本所在目录。本脚本经常在网络驱动器/UNC 路径下运行（例如
+rem \\192.168.160.10\GUNtools\Task\obara-task-manager\start.bat）。CMD 不支持把
+rem UNC 路径当作当前目录，cd /d 会直接失败，导致后续命令在错误的目录里执行。
+rem pushd 会自动为 UNC 路径映射一个临时盘符，所以这里统一用 pushd/popd。
+pushd "%SCRIPT_DIR%" >nul 2>&1
+
 echo ===============================================
 echo OBara Task Manager startup
 echo ===============================================
@@ -67,6 +73,25 @@ if errorlevel 1 (
 )
 for /f "delims=" %%v in ('node -v') do set "NODE_VERSION=%%v"
 echo [OK] Node.js %NODE_VERSION%
+
+rem 本项目要求 Node.js 22 及以上：better-sqlite3@13 声明 engines.node ">=22"，
+rem joi@18 要求 >=20，pdf-parse@2.4 / pdfjs-dist@5.4 要求 >=20.16。在更低的
+rem 版本上，better-sqlite3 自带的原生二进制会以
+rem "FATAL ERROR: Error::New napi_get_last_error_info" 直接崩溃，
+rem 后端因此永远监听不到 5000 端口。这里提前拦下并给出明确提示。
+set "NODE_MAJOR="
+for /f "tokens=1 delims=." %%m in ("%NODE_VERSION:v=%") do set "NODE_MAJOR=%%m"
+if not defined NODE_MAJOR (
+    echo [WARN] Could not determine the Node.js major version from "%NODE_VERSION%".
+    exit /b 0
+)
+if %NODE_MAJOR% LSS 22 (
+    echo [ERROR] Node.js %NODE_VERSION% is too old. Node.js 22 or newer is required.
+    echo [ERROR] better-sqlite3 13, joi 18 and pdf-parse 2.4 all need Node.js 22+,
+    echo         and the backend crashes on older versions.
+    echo [HINT]  Install Node.js 22 LTS from https://nodejs.org, then run start.bat again.
+    exit /b 1
+)
 exit /b 0
 
 :git_pull
@@ -83,8 +108,6 @@ if not exist "%SCRIPT_DIR%.git" (
     echo [WARN] Not a git repository. Skipping code update.
     exit /b 0
 )
-
-cd /d "%SCRIPT_DIR%"
 
 set "HAS_STASH=0"
 git diff --quiet 2>nul
@@ -169,7 +192,6 @@ rem Otherwise a single "npm install" at the workspace root installs the
 rem backend and frontend dependencies together.  The per-service folders
 rem are not checked: backend\node_modules does not exist under workspaces,
 rem and frontend\node_modules only holds Vite's .vite prebundle cache.
-cd /d "%SCRIPT_DIR%"
 if exist "%SCRIPT_DIR%node_modules\.bin\" (
     echo [OK] Workspace dependencies are installed.
     exit /b 0
@@ -236,5 +258,6 @@ echo Check logs in %LOG_DIR%
 exit /b 1
 
 :end
+popd >nul 2>&1
 endlocal
 exit /b 0
