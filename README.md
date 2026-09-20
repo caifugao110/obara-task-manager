@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20跨平台-lightgrey) ![Socket.IO](https://img.shields.io/badge/实时协作-Socket.IO-010101?logo=socket.io&logoColor=white)
 
-Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管理工具，支持多人协作、任务录入、报表查询、工时排行、权限控制和数据导入导出。
+Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管理工具，支持多人协作、任务录入、报表查询、工时管理、权限控制和数据导入导出。
 
 ## 文档导航
 
