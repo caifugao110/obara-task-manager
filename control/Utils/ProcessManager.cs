@@ -276,14 +276,70 @@ namespace ObaraServiceController.Utils
             return null;
         }
 
+        // Find the npm-workspaces root by walking up from a service folder
+        // until a package.json declaring "workspaces" is found.  Returns
+        // null for standalone (non-workspace) deployments.
+        private static string FindWorkspaceRoot(string projectDir)
+        {
+            try
+            {
+                DirectoryInfo dir = new DirectoryInfo(projectDir);
+                while (dir != null)
+                {
+                    string packageJson = Path.Combine(dir.FullName, "package.json");
+                    if (File.Exists(packageJson))
+                    {
+                        // package.json is plain JSON; a substring check for
+                        // the "workspaces" key is sufficient here and avoids
+                        // pulling in a JSON parser dependency.
+                        string text = File.ReadAllText(packageJson);
+                        if (text.IndexOf("\"workspaces\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            return dir.FullName;
+                        }
+                    }
+                    dir = dir.Parent;
+                }
+            }
+            catch { /* treat as standalone layout */ }
+            return null;
+        }
+
+        // Resolve the node_modules directory that actually holds a service's
+        // dependencies.  Two layouts are supported:
+        //
+        //   1. Standalone install (plain npm behaviour):
+        //        <projectDir>\node_modules
+        //
+        //   2. npm workspaces (this repo's root package.json declares
+        //      "workspaces": ["frontend", "backend"]): dependencies are
+        //      hoisted into the workspace ROOT, so the real folder is
+        //      <repoRoot>\node_modules.  Running "npm install" inside a
+        //      workspace member populates/repairs that root folder.  A
+        //      leftover <projectDir>\node_modules must NOT be treated as
+        //      the install location — under the frontend it only holds the
+        //      Vite prebundle cache (frontend\node_modules\.vite) and
+        //      deleting it forces a slow cold re-bundle on every launch.
+        private static string ResolveNodeModulesDir(string projectDir)
+        {
+            string workspaceRoot = FindWorkspaceRoot(projectDir);
+            if (workspaceRoot != null)
+            {
+                return Path.Combine(workspaceRoot, "node_modules");
+            }
+            return Path.Combine(projectDir, "node_modules");
+        }
+
         // A successful npm install always creates node_modules/.bin (for
         // package bin scripts).  If the directory exists but .bin is missing
         // the previous install was killed/corrupted and we must wipe and
         // reinstall from scratch — otherwise the naive "directory exists?"
         // check skips install entirely and the service can never boot.
+        // Under npm workspaces the hoisted root node_modules is checked
+        // instead (see ResolveNodeModulesDir).
         private static bool IsNodeModulesHealthy(string projectDir)
         {
-            string nm = Path.Combine(projectDir, "node_modules");
+            string nm = ResolveNodeModulesDir(projectDir);
             if (!Directory.Exists(nm)) return false;
             if (!Directory.Exists(Path.Combine(nm, ".bin"))) return false;
             return true;
@@ -424,9 +480,20 @@ namespace ObaraServiceController.Utils
                 // integrity check.  The previous pipe-deadlocked npm install
                 // could leave behind an empty node_modules shell that would
                 // skip install forever if we only checked Directory.Exists.
+                // Under npm workspaces the dependencies live in the hoisted
+                // repo-root node_modules (resolved automatically); a healthy
+                // root means install is skipped entirely.  Wipe logic only
+                // applies to standalone (non-workspace) deployments: the
+                // shared workspace root also holds the frontend's packages
+                // and is repaired in place by "npm install", and a leftover
+                // local folder may only contain the Vite cache — none of
+                // them may be deleted here.
+                string nodeModulesDir = ResolveNodeModulesDir(backendPath);
+                bool isWorkspace = FindWorkspaceRoot(backendPath) != null;
                 bool healthy = IsNodeModulesHealthy(backendPath);
-                bool nmDirExisted = Directory.Exists(Path.Combine(backendPath, "node_modules"));
-                if (nmDirExisted && !healthy)
+                bool localNmExists = Directory.Exists(Path.Combine(backendPath, "node_modules"));
+                bool nmDirExisted = Directory.Exists(nodeModulesDir);
+                if (!isWorkspace && localNmExists && !healthy)
                 {
                     OnLogMessage(new ProcessEventArgs(ServiceType.Backend,
                         "检测到遗留的损坏 node_modules，正在清理...", port));
@@ -546,9 +613,16 @@ namespace ObaraServiceController.Utils
                 string frontendPath = PathResolver.FrontendPath;
 
                 // Same node_modules health check as the backend path.
+                // Under npm workspaces the hoisted repo-root node_modules is
+                // authoritative (see ResolveNodeModulesDir); a leftover local
+                // folder only holds Vite's .vite cache and must be preserved.
+                // Corrupt-folder wipe is standalone deployments only.
+                string nodeModulesDir = ResolveNodeModulesDir(frontendPath);
+                bool isWorkspace = FindWorkspaceRoot(frontendPath) != null;
                 bool healthy = IsNodeModulesHealthy(frontendPath);
-                bool nmDirExisted = Directory.Exists(Path.Combine(frontendPath, "node_modules"));
-                if (nmDirExisted && !healthy)
+                bool localNmExists = Directory.Exists(Path.Combine(frontendPath, "node_modules"));
+                bool nmDirExisted = Directory.Exists(nodeModulesDir);
+                if (!isWorkspace && localNmExists && !healthy)
                 {
                     OnLogMessage(new ProcessEventArgs(ServiceType.Frontend,
                         "检测到遗留的损坏 node_modules，正在清理...", port));

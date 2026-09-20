@@ -120,6 +120,7 @@ npm run dev
 - **纳期更新功能：手动点击纳期更新时，将所有与该任务内容同一仕样号的计划任务一同更新或添加纳期（如果没有）。完成后提示已为多少个相同仕样号的计划任务添加纳期。**
 - **任务字段变更采用 500ms 防抖保存机制，减少网络请求。**
 - **支持 URL 参数直接跳转：`?date=YYYY-MM-DD&designerId=xxx&itemId=xxx` 可直接跳转到指定任务并自动选中和滚动定位。**
+- **打开主页面时自动将“今日”任务列滚动到视图中央展示（所有用户，含未登录访客）。**
 - **设计人员按分组显示，支持点击分组标题折叠/展开，状态保存在 localStorage。**
 - **顶部下拉菜单可筛选显示特定设计人员或全部人员。**
 - **任务列表会自动过滤掉无任务名且枪名全为空或"未命名"的无效任务，但在编辑模态框中仍能看到所有任务。**
@@ -486,7 +487,7 @@ obara-task-manager/
 │       ├── taskExportWorkbook.js
 │       └── workday.js
 ├── control/                      # .NET Framework 4.8 服务控制台（WinForms EXE）
-│   ├── .ignore                   # 控制台子项目的忽略规则
+│   ├── .gitignore                # 控制台子项目的忽略规则
 │   ├── App.config
 │   ├── ObaraServiceController.csproj
 │   ├── Program.cs
@@ -609,8 +610,8 @@ obara-task-manager/
 - 防抖机制：同一次会话内 5 分钟内只生成一次，避免短时间内重复备份。
 - 存储位置：独立目录 `backups/offline/`，便于与日常备份区分。
 - 备份文件名：
-  - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.json`
-  - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.json`
+  - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
+  - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
 - 可通过 `POST /api/system/maintenance/offline-backup` 主动触发，**该接口无需鉴权**，便于在前端检测到离线状态时自动调用。
 
 ### 维护配置
@@ -725,7 +726,7 @@ cd control
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceController.csproj /p:Configuration=Release /t:Build
 ```
 
-构建完成后产物位于 `control/bin/Release/`。构建时 MSBuild 会自动生成 `Properties/GeneratedVersion.cs` 写入当日版本号，无需手工修改。`control/.ignore` 文件用于排除 `bin/`、`obj/` 等中间产物，避免提交到版本库。
+构建完成后产物位于 `control/bin/Release/`。构建时 MSBuild 会自动生成 `Properties/GeneratedVersion.cs` 写入当日版本号，无需手工修改。`control/.gitignore` 文件用于排除 `bin/`、`obj/` 等中间产物，避免提交到版本库。
 
 ### 自动构建
 
@@ -773,4 +774,4 @@ MIT License
 
 ---
 
-最后更新：2026-09-19
+最后更新：2026-09-20

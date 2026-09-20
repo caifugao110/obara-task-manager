@@ -2740,8 +2740,10 @@ const Dashboard = () => {
             <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-white/80" size={14} />
           </div>
           {canShowAccessLink(leaderboardAccess) && (
-              <Link 
-                to="/leaderboard" 
+              <Link
+                to="/leaderboard"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
               >
                 <FileSpreadsheet size={16} className="text-blue-200" />
@@ -2751,6 +2753,8 @@ const Dashboard = () => {
           {canShowAccessLink(workHoursAccess) && (
               <Link
                 to="/work-hours"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
               >
                 <Clock size={16} className="text-amber-200" />
@@ -2760,6 +2764,8 @@ const Dashboard = () => {
           {canShowAccessLink(statusTrackingAccess) && (
               <Link
                 to="/status-tracking"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
               >
                 <Clock size={16} className="text-blue-200" />
@@ -2769,6 +2775,8 @@ const Dashboard = () => {
           {canShowSystemSettingsLink() && (
             <Link
               to="/system-settings"
+              target="_blank"
+              rel="noopener noreferrer"
               className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
             >
               <Settings size={16} className="text-purple-200" />
@@ -2791,7 +2799,7 @@ const Dashboard = () => {
               </div>
               <div className="h-6 w-[1px] bg-white/20"></div>
               {isAdmin && (
-                <Link to="/admin" className="p-1.5 hover:bg-[#1a5c38] rounded transition" title="用户管理">
+                <Link to="/admin" target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-[#1a5c38] rounded transition" title="用户管理">
                   <UserCog size={20} />
                 </Link>
               )}

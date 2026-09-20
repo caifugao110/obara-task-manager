@@ -58,7 +58,7 @@ if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 exit /b 0
 
 :check_node
-echo [1/7] Checking Node.js...
+echo [1/6] Checking Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js is not installed or not available in PATH.
@@ -71,7 +71,7 @@ exit /b 0
 
 :git_pull
 echo.
-echo [2/7] Pulling latest code from Gitee...
+echo [2/6] Pulling latest code from Gitee...
 
 where git >nul 2>&1
 if errorlevel 1 (
@@ -122,7 +122,7 @@ exit /b 0
 
 :check_ports
 echo.
-echo [3/7] Checking ports...
+echo [3/6] Checking ports...
 
 call :release_port %BACKEND_PORT% backend
 if errorlevel 1 exit /b 1
@@ -160,38 +160,33 @@ exit /b 0
 
 :install_deps
 echo.
-echo [4/7] Checking backend dependencies...
-cd /d "%BACKEND_DIR%"
-if exist "node_modules" (
-    echo [OK] Backend dependencies are installed.
-) else (
-    echo Installing backend dependencies...
-    call npm install
-    if errorlevel 1 (
-        echo [ERROR] Backend dependency installation failed.
-        exit /b 1
-    )
+echo [4/6] Checking dependencies...
+rem This repo uses npm workspaces (see the root package.json), so both the
+rem backend and frontend packages are hoisted into the repository-root
+rem node_modules.  A healthy install always contains node_modules\.bin; if
+rem it is present the dependencies are ready and install is skipped.
+rem Otherwise a single "npm install" at the workspace root installs the
+rem backend and frontend dependencies together.  The per-service folders
+rem are not checked: backend\node_modules does not exist under workspaces,
+rem and frontend\node_modules only holds Vite's .vite prebundle cache.
+cd /d "%SCRIPT_DIR%"
+if exist "%SCRIPT_DIR%node_modules\.bin\" (
+    echo [OK] Workspace dependencies are installed.
+    exit /b 0
 )
 
-echo.
-echo [5/7] Checking frontend dependencies...
-cd /d "%FRONTEND_DIR%"
-if exist "node_modules" (
-    echo [OK] Frontend dependencies are installed.
-) else (
-    echo Installing frontend dependencies...
-    call npm install
-    if errorlevel 1 (
-        echo [ERROR] Frontend dependency installation failed.
-        exit /b 1
-    )
+echo Installing workspace dependencies for backend and frontend...
+call npm install
+if errorlevel 1 (
+    echo [ERROR] Dependency installation failed.
+    exit /b 1
 )
 
 exit /b 0
 
 :start_backend
 echo.
-echo [6/7] Starting backend service...
+echo [5/6] Starting backend service...
 set "OBARA_BACKEND_LOG=%LOG_DIR%\backend.log"
 set "OBARA_BACKEND_ERR=%LOG_DIR%\backend.err.log"
 set "OBARA_BACKEND_PID=%LOG_DIR%\backend.pid"
@@ -207,7 +202,7 @@ exit /b 0
 
 :start_frontend
 echo.
-echo [7/7] Starting frontend service...
+echo [6/6] Starting frontend service...
 set "OBARA_FRONTEND_LOG=%LOG_DIR%\frontend.log"
 set "OBARA_FRONTEND_ERR=%LOG_DIR%\frontend.err.log"
 set "OBARA_FRONTEND_PID=%LOG_DIR%\frontend.pid"
