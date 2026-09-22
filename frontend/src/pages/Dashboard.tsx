@@ -469,6 +469,7 @@ const Dashboard = () => {
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineCacheUsed, setOfflineCacheUsed] = useState(false);
   const [versionInfo, setVersionInfo] = useState<{ currentVersion: string; hasUpdate: boolean; latestVersion: string | null } | null>(null);
+  const [clientInfo, setClientInfo] = useState<{ ip: string; summary: string } | null>(null);
   const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
   const [batchFindText, setBatchFindText] = useState('');
   const [batchReplaceText, setBatchReplaceText] = useState('');
@@ -506,6 +507,13 @@ const Dashboard = () => {
   useEffect(() => {
     axiosInstance.get('/system/version')
       .then(res => setVersionInfo(res.data))
+      .catch(() => {});
+  }, []);
+
+  // 获取当前登录用户的客户端信息（IP、浏览器）
+  useEffect(() => {
+    axiosInstance.get('/auth/client-info')
+      .then(res => setClientInfo(res.data))
       .catch(() => {});
   }, []);
 
@@ -3098,10 +3106,13 @@ const Dashboard = () => {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <span className="font-medium">100%</span>
-          <div className="w-24 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-            <div className="w-full h-full bg-blue-500"></div>
-          </div>
+          {clientInfo && (
+            <>
+              <span className="font-medium" title={clientInfo.summary}>IP: {clientInfo.ip || '未知'}</span>
+              <div className="w-[1px] h-3 bg-gray-300"></div>
+              <span className="font-medium" title={clientInfo.summary}>{clientInfo.summary}</span>
+            </>
+          )}
         </div>
       </footer>
 

@@ -261,14 +261,25 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
 router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   const userIndex = data.users.findIndex(u => u.id === req.user.id);
-  
+
   if (userIndex !== -1) {
     // Generate a new UUID on logout to invalidate all existing tokens for this user
     data.users[userIndex].sessionToken = crypto.randomUUID();
     await db.writeDb(data);
   }
-  
+
   res.json({ message: '退出成功' });
+}));
+
+// 获取当前登录用户的客户端信息（IP、浏览器）
+router.get('/client-info', authMiddleware, asyncHandler(async (req, res) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+    || req.headers['x-real-ip']
+    || req.socket?.remoteAddress
+    || '';
+  const userAgent = req.headers['user-agent'] || '';
+  const browserInfo = getBrowserInfo(userAgent);
+  res.json({ ip, ...browserInfo });
 }));
 
 module.exports = router;

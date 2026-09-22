@@ -433,7 +433,7 @@ const SystemSettings = () => {
 
   const handleCleanupStatusTracking = async () => {
     if (!token) return;
-    const confirmMsg = `确定要清理 ${cleanupStBeforeMonth} 之前的状态跟踪数据吗？（按${cleanupStMode === 'production' ? '生产计划月份' : '纳期月份'}）此操作不可恢复！`;
+    const confirmMsg = `确定要清理 ${cleanupStBeforeMonth} 之前的状态跟踪数据吗？（按${cleanupStMode === 'production' ? '添加时间月份' : '纳期月份'}）此操作不可恢复！`;
     if (!window.confirm(confirmMsg)) return;
     setCleanupStProcessing(true);
     try {
@@ -767,7 +767,7 @@ const SystemSettings = () => {
                       : 'bg-white text-gray-600 hover:bg-gray-50'
                   }`}
                 >
-                  按生产计划月份
+                  按添加时间月份
                 </button>
                 <button
                   type="button"
@@ -871,7 +871,7 @@ const SystemSettings = () => {
                 <ClipboardList className="mr-2 text-purple-600" size={22} />
                 状态跟踪表
               </h3>
-              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，可以选择按生产计划月份或纳期月份进行筛选导出。</p>
+              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，可以选择按添加时间月份或纳期月份进行筛选导出。</p>
               <div className="flex flex-wrap gap-4 items-center">
                 <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
                   <button
@@ -883,7 +883,7 @@ const SystemSettings = () => {
                         : 'bg-white text-gray-600 hover:bg-gray-50'
                     }`}
                   >
-                    生产计划月份
+                    添加时间月份
                   </button>
                   <button
                     type="button"

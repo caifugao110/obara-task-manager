@@ -223,6 +223,7 @@ const StatusTracking = () => {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [allItems, setAllItems] = useState<StatusItem[]>([]);
   const [fullTableSearch, setFullTableSearch] = useState(false);
+  const [showOutdatedDelivery, setShowOutdatedDelivery] = useState(false);
   const [loading, setLoading] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showModal, setShowModal] = useState(false);
@@ -254,21 +255,11 @@ const StatusTracking = () => {
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isOffline = syncStatus === 'disconnected';
   const isRealtimeSyncAvailable = Boolean(token);
-  const syncToneClass = !isRealtimeSyncAvailable
-    ? 'bg-amber-100 text-amber-700'
-    : syncStatus === 'connected'
-      ? 'bg-green-100 text-green-700'
-      : 'bg-red-100 text-red-700';
   const syncDotClass = !isRealtimeSyncAvailable
     ? 'bg-amber-500'
     : syncStatus === 'connected'
       ? 'bg-green-500'
       : 'bg-red-500';
-  const syncBadgeText = !isRealtimeSyncAvailable
-    ? '需手动刷新获取最新状态'
-    : syncStatus === 'connected'
-      ? '已同步'
-      : '未同步';
   const syncFooterIntro = !isRealtimeSyncAvailable
     ? '未登录时需手动刷新页面获取最新状态'
     : '数据同步至服务器';
@@ -457,7 +448,7 @@ const StatusTracking = () => {
       getItemPlanMonths(item).includes(operationMonth)
     ));
     if (existingItem) {
-      addToast(`该仕样号 "${specNumberInput.trim()}" 已存在于${formatMonthLabel(operationMonth)}生产计划`, 'error');
+      addToast(`该仕样号 "${specNumberInput.trim()}" 已存在于${formatMonthLabel(operationMonth)}添加时间`, 'error');
       return;
     }
 
@@ -551,7 +542,7 @@ const StatusTracking = () => {
         ))
         : null;
       if (duplicateItem) {
-        addToast('该仕样号已存在于选择的生产计划月份', 'error');
+        addToast('该仕样号已存在于选择的添加时间月份', 'error');
         return;
       }
     }
@@ -591,7 +582,7 @@ const StatusTracking = () => {
       : [...currentMonths, month].sort();
 
     if (nextMonths.length === 0) {
-      addToast('至少保留一个生产计划月份', 'error');
+      addToast('至少保留一个添加时间月份', 'error');
       return;
     }
 
@@ -775,6 +766,9 @@ const StatusTracking = () => {
       }
       if (fullTableSearch) {
         params.append('fullTableSearch', 'true');
+        if (showOutdatedDelivery) {
+          params.append('showOutdatedDelivery', 'true');
+        }
       }
       
       const res = await axios.get(`/api/status-tracking/export?${params.toString()}`, {
@@ -801,7 +795,7 @@ const StatusTracking = () => {
     } finally {
       setExporting(false);
     }
-  }, [token, monthFilterMode, currentMonth, deliveryMonth, factoryFilter, searchTerm, fullTableSearch]);
+  }, [token, monthFilterMode, currentMonth, deliveryMonth, factoryFilter, searchTerm, fullTableSearch, showOutdatedDelivery]);
 
   useEffect(() => {
     fetchSettings();
@@ -945,6 +939,9 @@ const StatusTracking = () => {
     if (!fullTableSearch && monthFilterMode === 'delivery') {
       result = result.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
     }
+    if (fullTableSearch && !showOutdatedDelivery) {
+      result = result.filter(item => (item.designDeliveryDays ?? 0) >= 1);
+    }
     if (factoryFilter) {
       result = result.filter(item => item.factory === factoryFilter);
     }
@@ -958,7 +955,7 @@ const StatusTracking = () => {
       );
     }
     return result;
-  }, [allItems, searchTerm, factoryFilter, monthFilterMode, currentMonth, deliveryMonth, fullTableSearch]);
+  }, [allItems, searchTerm, factoryFilter, monthFilterMode, currentMonth, deliveryMonth, fullTableSearch, showOutdatedDelivery]);
 
   const addLeaderRule = () => {
     setLeaderRules([...leaderRules, { leader: '', members: [''] }]);
@@ -1048,10 +1045,6 @@ const StatusTracking = () => {
           </Link>
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
           <h2 className="text-xl font-bold text-blue-600">状态跟踪表</h2>
-          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${syncToneClass}`}>
-            <span className={`w-2 h-2 rounded-full ${syncDotClass}`}></span>
-            {syncBadgeText}
-          </div>
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
           <div className="relative">
             <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -1072,9 +1065,22 @@ const StatusTracking = () => {
             />
             <span className="ml-2 text-sm text-gray-600">全表搜索</span>
           </label>
+          {fullTableSearch && (
+            <label className="flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showOutdatedDelivery}
+                onChange={(e) => setShowOutdatedDelivery(e.target.checked)}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <span className="ml-2 text-sm text-gray-600">过时纳期</span>
+            </label>
+          )}
         </div>
 
-        <div className="flex-1 flex items-center pl-8">
+        <div className="flex-1"></div>
+
+        <div className="flex items-center space-x-4">
           {isAdmin && (
             <button
               onClick={() => setShowModal(true)}
@@ -1083,9 +1089,6 @@ const StatusTracking = () => {
               添加记录
             </button>
           )}
-        </div>
-
-        <div className="flex items-center space-x-4">
           {isAdmin && (
             <button
               onClick={handleExport}
@@ -1120,7 +1123,7 @@ const StatusTracking = () => {
                   : 'bg-white text-gray-600 hover:bg-gray-50'
               }`}
             >
-              生产计划
+              添加时间
             </button>
             <button
               type="button"
@@ -1516,8 +1519,8 @@ const StatusTracking = () => {
                                 <button
                                   onClick={() => setPlanMonthEditorItemId(item.id)}
                                   className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition"
-                                  title={`生产计划月份: ${formatPlanMonthsLabel(item)}`}
-                                  aria-label="修改生产计划月份"
+                                  title={`添加时间月份: ${formatPlanMonthsLabel(item)}`}
+                                  aria-label="修改添加时间月份"
                                 >
                                   <Calendar size={16} />
                                 </button>
@@ -1649,7 +1652,7 @@ const StatusTracking = () => {
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
               <div className="flex items-center justify-between mb-5">
-                <h3 className="text-lg font-bold text-gray-800">生产计划月份</h3>
+                <h3 className="text-lg font-bold text-gray-800">添加时间月份</h3>
                 <button
                   onClick={() => setPlanMonthEditorItemId(null)}
                   className="p-1 text-gray-400 hover:text-gray-600 transition"

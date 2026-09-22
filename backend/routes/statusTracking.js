@@ -242,7 +242,7 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
 }));
 
 router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
-  const { month, deliveryMonth, factory, searchTerm, fullTableSearch } = req.query;
+  const { month, deliveryMonth, factory, searchTerm, fullTableSearch, showOutdatedDelivery } = req.query;
   
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
@@ -263,6 +263,10 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
     } else {
       return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
     }
+  }
+
+  if (fullTableSearch === 'true' && showOutdatedDelivery !== 'true') {
+    filteredItems = filteredItems.filter(item => calculateDesignDeliveryDays(item.deliveryDate) >= 1);
   }
   
   if (factory) {
@@ -286,7 +290,7 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
   const columns = [
     { key: 'factory', label: '工厂' },
     { key: 'clientName', label: '客户' },
-    { key: 'productionPlanMonth', label: '生产计划' },
+    { key: 'productionPlanMonth', label: '添加时间' },
     { key: 'quantity', label: '数量' },
     { key: 'deliveryDate', label: '纳期' },
     { key: 'shippedCount', label: '已发图' },
@@ -407,7 +411,7 @@ router.post('/import/check', [authMiddleware, superAdminMiddleware, upload.singl
     
     const headerRow = rawRows[0];
     const specColIndex = headerRow.findIndex(cell => String(cell).includes('仕样号'));
-    const productionPlanColIndex = headerRow.findIndex(cell => String(cell).includes('生产计划'));
+    const productionPlanColIndex = headerRow.findIndex(cell => String(cell).includes('添加时间'));
     if (specColIndex < 0) return;
     
     for (let i = 1; i < rawRows.length; i++) {
@@ -494,7 +498,7 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
       const label = String(cell).trim();
       if (label.includes('工厂')) columnMap.factory = index;
       else if (label.includes('客户')) columnMap.clientName = index;
-      else if (label.includes('生产计划')) columnMap.productionPlanMonth = index;
+      else if (label.includes('添加时间')) columnMap.productionPlanMonth = index;
       else if (label.includes('数量')) columnMap.quantity = index;
       else if (label.includes('纳期')) columnMap.deliveryDate = index;
       else if (label.includes('已发图')) columnMap.shippedCount = index;

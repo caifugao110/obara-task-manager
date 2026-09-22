@@ -700,7 +700,7 @@ backend/
 | `/api/system/cleanup/audit-logs` | DELETE | 超级管理员 | 清空操作日志 |
 | `/api/system/cleanup/old-tasks` | DELETE | 超级管理员 | 清理旧任务数据（按保留月数） |
 | `/api/system/cleanup/status-tracking` | DELETE | 超级管理员 | 清理旧状态追踪数据（按保留月数） |
-| `/api/status-tracking/cleanup` | POST | 超级管理员 | 按时间点清理状态追踪记录，请求体 `{beforeMonth, beforeYear, mode?}`；`mode=delivery` 按纳期月清理，缺省按生产计划月清理 |
+| `/api/status-tracking/cleanup` | POST | 超级管理员 | 按时间点清理状态追踪记录，请求体 `{beforeMonth, beforeYear, mode?}`；`mode=delivery` 按纳期月清理，缺省按添加时间月清理 |
 
 ### 年度清理流程
 

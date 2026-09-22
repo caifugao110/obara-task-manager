@@ -1064,8 +1064,8 @@ Authorization: Bearer <token>
 | `factory` | 工厂 |
 | `clientName` | 客户名称 |
 | `specNumber` | 仕样号 |
-| `productionPlanMonth` | 生产计划月份（`YYYY-MM`），创建时缺省取当前月 |
-| `productionPlanMonths` | 生产计划月份数组（`YYYY-MM`），支持一条记录对应多个月份；缺省时取 `productionPlanMonth`，再退回纳期月份 |
+| `productionPlanMonth` | 添加时间月份（`YYYY-MM`），创建时缺省取当前月 |
+| `productionPlanMonths` | 添加时间月份数组（`YYYY-MM`），支持一条记录对应多个月份；缺省时取 `productionPlanMonth`，再退回纳期月份 |
 | `quantity` | 数量（字符串保存） |
 | `deliveryDate` | 纳期，格式 `YYYY-MM-DD` |
 | `shippedCount` | 已发图数量 |
@@ -1215,7 +1215,7 @@ Authorization: Bearer <token>
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| `month` | 否 | 月份，格式 `YYYY-MM`，按生产计划月份字段过滤（与 `deliveryMonth` 二选一） |
+| `month` | 否 | 月份，格式 `YYYY-MM`，按添加时间月份字段过滤（与 `deliveryMonth` 二选一） |
 | `deliveryMonth` | 否 | 纳期月份，格式 `YYYY-MM`，按纳期字段过滤（与 `month` 二选一） |
 | `factory` | 否 | 按工厂筛选 |
 | `searchTerm` | 否 | 搜索关键词，匹配客户名、仕样号、营业担当、组长 |
@@ -1226,7 +1226,7 @@ Authorization: Bearer <token>
 说明：
 
 - 未开启全表搜索时，`month` 和 `deliveryMonth` 必须二选一。
-- `month` 按生产计划月份字段过滤。
+- `month` 按添加时间月份字段过滤。
 - `deliveryMonth` 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录。
 - 导出列包括工厂、客户、数量、纳期、已发图、未确认、总种数、反馈种数、反馈计划、下图计划及状态、确认数量、确认种数、下图种数、未下种数、未下数量、未确认数、设计纳期、营业担当、组长。
 - 纳期字段会从 `YYYY-MM-DD` 转换为 `M/D` 格式。
@@ -1255,7 +1255,7 @@ Authorization: Bearer <token>
 
 说明：
 
-- 按「仕样号 + 生产计划月」组合判重：文件中每行的仕样号与生产计划月份（「生产计划」列，支持逗号分隔多个月份，缺省取纳期月份）组合后，与数据库现有记录比对。
+- 按「仕样号 + 添加时间月」组合判重：文件中每行的仕样号与添加时间月份（「添加时间」列，支持逗号分隔多个月份，缺省取纳期月份）组合后，与数据库现有记录比对。
 - 重复项元素格式为 `仕样号(YYYY-MM)`，自动去重。
 - 用于导入前提示用户是否覆盖。
 
@@ -1285,8 +1285,8 @@ Authorization: Bearer <token>
 
 说明：
 
-- 按「仕样号 + 生产计划月」组合匹配现有记录，存在则更新（仅当 `overwrite=true`），不存在则创建；仕样号为空的行跳过。
-- 表头列通过模糊匹配识别（如「工厂」「客户」「生产计划」「数量」「纳期」「仕样号」等）；「生产计划」列支持逗号分隔多个月份，缺省时取纳期月份。
+- 按「仕样号 + 添加时间月」组合匹配现有记录，存在则更新（仅当 `overwrite=true`），不存在则创建；仕样号为空的行跳过。
+- 表头列通过模糊匹配识别（如「工厂」「客户」「添加时间」「数量」「纳期」「仕样号」等）；「添加时间」列支持逗号分隔多个月份，缺省时取纳期月份。
 - 上传文件同样经过文件类型、结构、恶意内容扫描和内容清理（见 [文件上传安全验证](#文件上传安全验证)）。
 - 导入成功后会通过 Socket.IO 广播 `status_tracking_bulk` 事件。
 
@@ -1310,12 +1310,12 @@ Authorization: Bearer <token>
 |------|------|------|
 | `beforeYear` | 是 | 清理截止年份 |
 | `beforeMonth` | 是 | 清理截止月份（1-12） |
-| `mode` | 否 | 清理模式：`delivery` 表示按纳期月份清理；缺省（或其他值）表示按生产计划月清理 |
+| `mode` | 否 | 清理模式：`delivery` 表示按纳期月份清理；缺省（或其他值）表示按添加时间月清理 |
 
 清理规则：
 
 - `mode=delivery`：删除纳期早于 `beforeYear-beforeMonth` 的记录；无纳期的记录保留。
-- 默认模式：删除最早生产计划月（取 `productionPlanMonths` 排序后的第一个月，缺省退回 `productionPlanMonth`/纳期月份）早于指定时间点的记录；无生产计划月的记录保留。
+- 默认模式：删除最早添加时间月（取 `productionPlanMonths` 排序后的第一个月，缺省退回 `productionPlanMonth`/纳期月份）早于指定时间点的记录；无添加时间月的记录保留。
 
 响应：
 
