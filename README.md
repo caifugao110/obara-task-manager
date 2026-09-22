@@ -40,7 +40,7 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 | 层级 | 技术 |
 |------|------|
 | 前端 | ![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-5+-646CFF?logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-3+-06B6D4?logo=tailwindcss&logoColor=white) ![Lucide React](https://img.shields.io/badge/Lucide%20React-4E60FF) ![Socket.IO Client](https://img.shields.io/badge/Socket.IO%20Client-010101?logo=socket.io&logoColor=white) ![DnD Kit](https://img.shields.io/badge/DnD%20Kit-6366F1) ![Date-fns](https://img.shields.io/badge/Date--fns-F29111) ![Framer Motion](https://img.shields.io/badge/Framer%20Motion-0055FF?logo=framer&logoColor=white) |
-| 后端 | ![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-5+-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
+| 后端 | ![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=nodedotjs&logoColor=white) ![Express](https://img.shields.io/badge/Express-5+-000000?logo=express&logoColor=white) ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socket.io&logoColor=white) ![JWT](https://img.shields.io/badge/JWT-000000?logo=jsonwebtokens&logoColor=white) ![Bcrypt](https://img.shields.io/badge/Bcrypt-4E5DC0) ![Multer](https://img.shields.io/badge/Multer-16A34A) ![XLSX](https://img.shields.io/badge/XLSX-217346?logo=microsoft-excel&logoColor=white) ![Helmet](https://img.shields.io/badge/Helmet-06B6D4) |
 | 数据库 | ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white) |
 | 控制台 | ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white) ![WinForms](https://img.shields.io/badge/WinForms-512BD4) |
 | CI/CD | ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white) ![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-222222?logo=githubpages&logoColor=white) |
@@ -60,16 +60,19 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 start.bat
 ```
 
+`start.bat` 会隐藏窗口运行（不打开浏览器），依次执行：检查 Node.js 版本 → 自动 `git pull --rebase` 拉取最新代码（本地修改会自动 stash 后恢复）→ 检查并释放 5000/5173 端口 → 按需安装依赖 → 后台启动前后端，日志输出到 `logs/` 目录。
+
 启动后访问：
 
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
+> `start.bat` 强制要求 Node.js 22+（better-sqlite3 13、joi 18、pdf-parse 2.4 在更低版本上无法运行），版本过低时会直接报错退出。
 > 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。
 
 ### 首次部署检查清单
 
-1. 安装 Node.js 18+、npm 9+ 和 Git。
+1. 安装 Node.js 22+（推荐 22 LTS）、npm 10+ 和 Git。
 2. 执行 `npm run install:all` 安装根目录、后端和前端依赖。
 3. 复制 `backend/.env.example` 为 `backend/.env`，必须修改 `JWT_SECRET`（缺失将导致服务无法启动），并配置 `CORS_ORIGIN`。
 4. 可选：配置 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 设置默认管理员账号（首次启动时自动创建）。
@@ -331,10 +334,10 @@ npm run test:backend
 
 | 脚本 | 说明 |
 |------|------|
-| `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器） |
+| `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器）；启动前自动检查 Node.js 22+、执行 `git pull --rebase` 更新代码、检查并释放端口、按需安装依赖 |
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
-| `stop.bat` | 停止前后端进程 |
+| `stop.bat` | 停止前后端进程；停止前先调用断网备份接口备份数据库 |
 | `control/ObaraServiceController.csproj` | 使用 MSBuild 构建 Windows 服务控制台 EXE，详见「Windows 服务控制台」章节 |
 
 前端类型检查：
@@ -598,8 +601,8 @@ obara-task-manager/
 | 任务 | 说明 | 默认状态 |
 |------|------|----------|
 | 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照 | 启用 |
-| 任务数据导出 | 导出任务数据为 JSON 文件 | 启用 |
-| 过期备份清理 | 删除超过保留天数的旧备份 | 自动执行 |
+| 任务数据导出 | 导出渲染后的任务表为 `.xls` 文件（`task-export-YYYYMMDD-HHmmss.xls`） | 启用 |
+| 过期备份清理 | 删除超过保留天数的旧备份（含数据库备份、任务导出和断网备份目录） | 自动执行 |
 | 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
 
 ### 断网备份
@@ -668,9 +671,10 @@ obara-task-manager/
 
 `GET /api/system/db-stats` 返回数据库统计信息：
 
-- 文件大小（字节/KB/MB）
+- 逻辑数据大小（所有集合序列化后的字节/KB/MB）
+- SQLite 物理存储信息：引擎、驱动、journal 模式，以及 `data.db`/`data.db-wal`/`data.db-shm` 三个文件的大小
 - 用户、设计人员、任务、日志等数据条数
-- 警告信息（超过 10MB/50MB、数据超过 24 个月）
+- 警告信息（逻辑数据超过 10MB/50MB、数据超过 24 个月，仅为提示非硬限制）
 
 ## 维护建议
 
@@ -679,7 +683,7 @@ obara-task-manager/
 - 公网部署时建议关闭未登录查看，并根据需要关闭多设备同时在线。
 - 大批量导入前先在测试环境验证表格格式，确认设计人员列表已提前维护完成。
 - 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
-- 监控数据库大小，当超过 10MB 时考虑清理旧数据或增加存储空间。
+- 监控数据库大小：`db-stats` 中 10MB/50MB 仅为提示性警告而非 SQLite 限制（SQLite 单库上限约 281TB，1GB 以内均可稳定运行），可结合任务月份数决定是否清理旧数据，必要时对数据库执行 `VACUUM` 回收空间。
 - 建议启用自动维护，并根据业务需求调整备份保留天数和数据保留年限。
 
 ## Windows 服务控制台
@@ -734,11 +738,11 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 
 ## CI/CD
 
-项目通过 `.github/workflows/build-and-deploy.yml` 实现自动构建与文档部署，包含两个并行任务。
+项目通过 `.github/workflows/build-and-deploy.yml` 实现自动构建与文档部署：先运行变更检测任务（按改动路径过滤），再按需条件执行 EXE 构建和文档部署两个任务。
 
 ### 触发条件
 
-- 推送到 `main` 分支，且改动了 `control/**`（触发 EXE 构建）或 `README.md`、`docs/**`（触发文档部署）。
+- 推送到 `main` 分支，且改动了 `control/**`（触发 EXE 构建）或 `README.md`、`docs/**`、`.github/workflows/build-and-deploy.yml`（触发文档部署）。
 - 推送 `v*` 形式的 tag（正式版本）。
 - 手动触发（`workflow_dispatch`）。
 
@@ -774,4 +778,4 @@ MIT License
 
 ---
 
-最后更新：2026-09-20
+最后更新：2026-09-22

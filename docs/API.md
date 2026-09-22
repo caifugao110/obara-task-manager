@@ -175,6 +175,28 @@ Authorization: Bearer <token>
 - 登出后会清除用户的 `sessionToken`，使当前会话失效。
 - 如果启用了单设备登录，其他设备不受影响。
 
+### 获取当前用户客户端信息
+
+`GET /api/auth/client-info`
+
+权限：需要登录。
+
+返回当前请求客户端的 IP 和解析后的浏览器信息，供前端展示本机登录环境使用。
+
+响应：
+
+```json
+{
+  "ip": "::1",
+  "browser": "Chrome",
+  "os": "Windows",
+  "device": "Desktop",
+  "summary": "Chrome / Windows / Desktop"
+}
+```
+
+> 该接口返回简化的浏览器信息（不含版本号；带版本号的完整解析用于登录日志和操作日志）。接口本身会被操作日志记录，操作类型显示为「查看自身浏览器信息」。
+
 ## 用户接口
 
 ### 获取登录用户列表
@@ -542,7 +564,7 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "sheetId": "sheet-designier-1-2026-7",
+  "sheetId": "sheet-designer-1-2026-7",
   "designerId": "designer-1",
   "month": 7,
   "year": 2026,
@@ -581,7 +603,7 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "sheetId": "sheet-designier-1-2026-7",
+  "sheetId": "sheet-designer-1-2026-7",
   "designerId": "designer-1",
   "month": 7,
   "year": 2026,
@@ -650,7 +672,7 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "sheetId": "sheet-designier-1-2026-7",
+  "sheetId": "sheet-designer-1-2026-7",
   "designerId": "designer-1",
   "month": 7,
   "year": 2026,
@@ -693,7 +715,7 @@ Authorization: Bearer <token>
 ```json
 {
   "message": "任务条目已删除",
-  "sheetId": "sheet-designier-1-2026-7",
+  "sheetId": "sheet-designer-1-2026-7",
   "designerId": "designer-1",
   "month": 7,
   "year": 2026,
@@ -1742,6 +1764,16 @@ Authorization: Bearer <token>
     "kb": 1024.00,
     "mb": 1.00
   },
+  "storage": {
+    "engine": "SQLite",
+    "driver": "better-sqlite3",
+    "journalMode": "wal",
+    "path": "D:\\project\\backend\\data.db",
+    "dbFileSize": 943718,
+    "walSize": 102400,
+    "shmSize": 32768,
+    "totalDiskSize": 1078886
+  },
   "counts": {
     "users": 5,
     "designers": 20,
@@ -1764,9 +1796,17 @@ Authorization: Bearer <token>
 
 | 字段 | 说明 |
 |------|------|
-| `size.bytes` | 数据库文件大小（字节） |
-| `size.kb` | 数据库文件大小（KB） |
-| `size.mb` | 数据库文件大小（MB） |
+| `size.bytes` | 逻辑数据大小（所有集合 JSON 序列化后的字节数） |
+| `size.kb` | 逻辑数据大小（KB） |
+| `size.mb` | 逻辑数据大小（MB） |
+| `storage.engine` | 数据库引擎，固定为 `SQLite` |
+| `storage.driver` | 驱动名称，固定为 `better-sqlite3` |
+| `storage.journalMode` | 日志模式（WAL 模式下为 `wal`） |
+| `storage.path` | `data.db` 数据库文件绝对路径 |
+| `storage.dbFileSize` | `data.db` 主文件大小（字节） |
+| `storage.walSize` | `data.db-wal` WAL 文件大小（字节） |
+| `storage.shmSize` | `data.db-shm` 共享内存文件大小（字节） |
+| `storage.totalDiskSize` | 以上三个物理文件大小之和（字节） |
 | `counts.users` | 用户数量 |
 | `counts.designers` | 设计人员数量 |
 | `counts.tasks` | 任务工作表数量 |
@@ -1775,8 +1815,8 @@ Authorization: Bearer <token>
 | `counts.statusTrackingItems` | 状态追踪记录数 |
 | `counts.loginLogs` | 登录日志数 |
 | `counts.auditLogs` | 操作日志数 |
-| `warnings.over50MB` | 数据库超过 50MB |
-| `warnings.over10MB` | 数据库超过 10MB |
+| `warnings.over50MB` | 逻辑数据超过 50MB（仅提示，非硬限制） |
+| `warnings.over10MB` | 逻辑数据超过 10MB（仅提示，非硬限制） |
 | `warnings.oldTaskData` | 任务数据超过 24 个月 |
 
 ### 获取维护状态
@@ -1813,6 +1853,15 @@ Authorization: Bearer <token>
     "taskExportDir": "D:\\project\\backend\\backups\\task-exports",
     "yearlyArchiveDir": "D:\\project\\backend\\backups\\yearly-archives",
     "offlineBackupDir": "D:\\project\\backend\\backups\\offline"
+  },
+  "database": {
+    "dbFileSize": 943718,
+    "walSize": 102400,
+    "shmSize": 32768,
+    "totalDiskSize": 1078886,
+    "tasksJsonSize": 524288,
+    "tasksCount": 240,
+    "taskItemsCount": 5000
   },
   "files": {
     "backups": [...],
@@ -1853,6 +1902,13 @@ Authorization: Bearer <token>
 | `paths.taskExportDir` | 任务导出目录绝对路径 |
 | `paths.yearlyArchiveDir` | 年度归档目录绝对路径 |
 | `paths.offlineBackupDir` | 断网备份目录绝对路径 |
+| `database.dbFileSize` | `data.db` 主文件大小（字节） |
+| `database.walSize` | `data.db-wal` 文件大小（字节） |
+| `database.shmSize` | `data.db-shm` 文件大小（字节） |
+| `database.totalDiskSize` | 三个物理文件大小之和（字节） |
+| `database.tasksJsonSize` | `tasks` 集合 JSON 序列化后的逻辑大小（字节） |
+| `database.tasksCount` | 任务工作表数量 |
+| `database.taskItemsCount` | 任务条目总数 |
 | `files.backups` | 最近 5 个备份文件列表 |
 | `files.taskExports` | 最近 5 个任务导出文件列表 |
 | `files.yearlyArchives` | 最近 5 个年度归档文件列表 |
@@ -1919,13 +1975,15 @@ Authorization: Bearer <token>
 {
   "message": "数据库备份已完成",
   "backup": {
-    "fileName": "db-backup-20260710-103000.json",
-    "filePath": "D:\\project\\backend\\backups\\database\\db-backup-20260710-103000.json",
+    "fileName": "db-backup-20260710-103000.db",
+    "filePath": "D:\\project\\backend\\backups\\database\\db-backup-20260710-103000.db",
     "dir": "D:\\project\\backend\\backups\\database",
     "size": 1048576
   }
 }
 ```
+
+> 备份使用 SQLite 在线备份 API 生成，并会切换到 DELETE 日志模式把 WAL 内容合并进主文件，最终只保留单个干净的 `.db` 文件，不产生 `.db-wal`/`.db-shm` 伴随文件。
 
 ### 手动导出任务数据
 
@@ -1937,17 +1995,23 @@ Authorization: Bearer <token>
 
 ```json
 {
-  "message": "任务管理数据已导出",
+  "message": "任务表格已导出",
   "taskExport": {
-    "fileName": "task-export-20260710-103000.json",
-    "filePath": "D:\\project\\backend\\backups\\task-exports\\task-export-20260710-103000.json",
+    "fileName": "task-export-20260710-103000.xls",
+    "filePath": "D:\\project\\backend\\backups\\task-exports\\task-export-20260710-103000.xls",
     "dir": "D:\\project\\backend\\backups\\task-exports",
     "size": 524288,
     "taskSheets": 240,
-    "taskItems": 5000
+    "taskItems": 5000,
+    "type": "manual-task-export"
   }
 }
 ```
+
+说明：
+
+- 导出内容为渲染后的任务表 `.xls`（与 `GET /api/system/export-xls` 相同的工作簿格式），而非 JSON 数据；每日定时自动导出的文件名为 `task-export-YYYYMMDD-HHmmss.xls`，`type` 为 `scheduled-task-export`。
+- 没有任何任务数据时返回 `404` 和 `没有可导出的数据`。
 
 ### 清理过期备份
 
@@ -2040,7 +2104,7 @@ Authorization: Bearer <token>
 - 后端服务收到 `SIGINT`/`SIGTERM` 信号关闭前会自动触发一次断网备份。
 - 同一次会话内 5 分钟内只会生成一次，避免短时间重复备份。
 - 备份文件存储在 `offlineBackupDir`（默认 `backups/offline`）。
-- 文件名格式：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.json`（关闭触发）或 `offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.json`（用户触发）。
+- 文件名格式：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`（关闭触发）或 `offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`（用户触发）。
 
 响应（成功）：
 
@@ -2048,8 +2112,8 @@ Authorization: Bearer <token>
 {
   "message": "断网备份已完成",
   "backup": {
-    "fileName": "offline-backup-shutdown-20260710-103000.json",
-    "filePath": "D:\\project\\backend\\backups\\offline\\offline-backup-shutdown-20260710-103000.json",
+    "fileName": "offline-backup-shutdown-20260710-103000.db",
+    "filePath": "D:\\project\\backend\\backups\\offline\\offline-backup-shutdown-20260710-103000.db",
     "dir": "D:\\project\\backend\\backups\\offline",
     "skipped": false,
     "success": true,
@@ -2601,7 +2665,7 @@ GITEE_REPO_NAME=obara-task-manager
   rateLimit: { windowMs, max },
   gitee: { token, repoOwner, repoName },
   server: { port, environment },
-  database: { path },
+  database: { legacyJsonPath, sqlitePath },
   spec: { sharePath }
 }
 ```
@@ -2612,6 +2676,8 @@ GITEE_REPO_NAME=obara-task-manager
 |------|------|
 | `jwt.issuer` | JWT 签发者，默认 `obara-task-manager` |
 | `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
+| `database.legacyJsonPath` | 遗留 JSON 数据库路径（`DB_PATH`，默认 `./db.json`），仅首次启动迁移时使用 |
+| `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-09-10
+最后更新：2026-09-22

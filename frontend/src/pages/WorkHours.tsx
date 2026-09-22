@@ -387,7 +387,7 @@ const WorkHours = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col">
+    <div className="h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col overflow-hidden">
       <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map(toast => (
           <div key={toast.id} className={`flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-white transition-all duration-300 ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
@@ -451,7 +451,8 @@ const WorkHours = () => {
         )}
       </header>
 
-      <main className="flex-1 p-8 max-w-7xl mx-auto w-full">
+      <main className="flex-1 max-w-7xl mx-auto w-full overflow-y-auto">
+       <div className="p-8">
         {dataLoading ? (
           <div className="flex items-center justify-center py-20">
             <RefreshCw className="animate-spin text-blue-600 mb-4" size={40} />
@@ -459,7 +460,7 @@ const WorkHours = () => {
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
-              <div className="sticky top-[73px] z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
+              <div className="sticky top-0 z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
                 <div className="flex items-center justify-between gap-4">
                   <h2 className="text-lg font-bold flex items-center text-gray-800">
                     <Clock className="mr-2 text-blue-600" size={22} />
@@ -556,7 +557,7 @@ const WorkHours = () => {
             </div>
 
             <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
-              <div className="sticky top-[73px] z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
+              <div className="sticky top-0 z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
                 <div className="flex items-center justify-between gap-4">
                   <h2 className="text-lg font-bold flex items-center text-gray-800">
                     <Calendar className="mr-2 text-red-600" size={22} />
@@ -676,9 +677,10 @@ const WorkHours = () => {
             </div>
           </div>
         )}
+       </div>
       </main>
 
-      <footer className="bg-white border-t border-gray-200 px-6 py-3">
+      <footer className="shrink-0 bg-white border-t border-gray-200 px-6 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center text-sm text-gray-500">
           <div>数据每月更新</div>
           <div className="flex items-center gap-2">

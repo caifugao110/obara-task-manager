@@ -15,11 +15,13 @@ const appendAuditLog = async (data, entry) => {
 };
 
 const getClientIp = (req) => {
-  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+  const raw = req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
     req.headers['x-real-ip'] ||
     req.connection?.remoteAddress ||
     req.socket?.remoteAddress ||
     '';
+  // 去除 IPv4 映射地址的 ::ffff: 前缀
+  return raw.replace(/^::ffff:/, '');
 };
 
 const MAX_RESPONSE_MESSAGE_LENGTH = 2000;

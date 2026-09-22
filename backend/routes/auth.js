@@ -59,6 +59,15 @@ const getBrowserInfo = (userAgent = '') => {
   return { browser, os, device, summary: `${browser} / ${os} / ${device}` };
 };
 
+// 获取客户端真实 IP：优先取代理转发头，并去除 IPv4 映射地址的 ::ffff: 前缀
+const getClientIp = (req) => {
+  const raw = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+    || req.headers['x-real-ip']
+    || req.socket?.remoteAddress
+    || '';
+  return raw.replace(/^::ffff:/, '');
+};
+
 const MAX_LOGIN_LOGS = 2000;
 
 const appendLoginLog = async (data, entry) => {
@@ -82,7 +91,7 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const { username, password } = req.body;
   const data = db.readDb();
   const user = data.users.find(u => u.username === username);
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
+  const ip = getClientIp(req);
   const userAgent = req.headers['user-agent'] || '';
   const browserInfo = getBrowserInfo(userAgent);
 
@@ -273,10 +282,7 @@ router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
 
 // 获取当前登录用户的客户端信息（IP、浏览器）
 router.get('/client-info', authMiddleware, asyncHandler(async (req, res) => {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-    || req.headers['x-real-ip']
-    || req.socket?.remoteAddress
-    || '';
+  const ip = getClientIp(req);
   const userAgent = req.headers['user-agent'] || '';
   const browserInfo = getBrowserInfo(userAgent);
   res.json({ ip, ...browserInfo });

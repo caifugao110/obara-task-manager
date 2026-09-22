@@ -466,7 +466,7 @@ const Leaderboard = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col">
+    <div className="h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col overflow-hidden">
       <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map(toast => (
           <div key={toast.id} className={`flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-white transition-all duration-300 ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
@@ -538,10 +538,10 @@ const Leaderboard = () => {
         )}
       </header>
 
-      <main className="flex-1 p-8 max-w-7xl mx-auto w-full">
+      <main className="flex-1 px-8 pb-8 max-w-7xl mx-auto w-full overflow-y-auto">
         {/* Specification Progress Management */}
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-8">
-          <div className="px-6 py-5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 my-8">
+          <div className="sticky top-0 z-30 rounded-t-2xl shadow-lg px-6 py-5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
             <div className="flex items-center justify-between gap-4">
               <h2 className="text-lg font-bold flex items-center">
                 <BarChart2 className="mr-2" size={22} />
@@ -691,8 +691,8 @@ const Leaderboard = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-          <div className="px-6 py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white">
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-100">
+          <div className="sticky top-0 z-40 rounded-t-2xl shadow-lg px-6 py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white">
             <div className="flex items-center justify-between gap-4">
               <h2 className="text-lg font-bold flex items-center">
                 <TrendingUp className="mr-2" size={22} />
@@ -815,7 +815,7 @@ const Leaderboard = () => {
         )}
       </main>
 
-      <footer className="bg-white border-t border-gray-200 px-6 py-3">
+      <footer className="shrink-0 bg-white border-t border-gray-200 px-6 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center text-sm text-gray-500">
           <div>数据每月更新</div>
           <div className="flex items-center gap-2">

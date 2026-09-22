@@ -13,6 +13,8 @@ const routeActionDisplays = {
   'POST change-password': { label: '修改密码', description: '用户修改登录密码' },
   'GET auth/validate': { label: '验证登录', description: '验证用户登录状态' },
   'GET validate': { label: '验证登录', description: '验证用户登录状态' },
+  'GET auth/client-info': { label: '查看自身浏览器信息', description: '查看自身浏览器信息' },
+  'GET client-info': { label: '查看自身浏览器信息', description: '查看自身浏览器信息' },
 
   'GET users': { label: '查看用户', description: '查看用户列表或用户详情' },
   'POST users': { label: '创建用户', description: '新增系统用户账号' },

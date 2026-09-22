@@ -7,9 +7,9 @@
 | 软件 | 版本 | 说明 |
 |------|------|------|
 | Windows | Windows 10/11 或 Windows Server | 推荐使用 PowerShell 或 CMD |
-| Node.js | 18+ | 安装时勾选加入 PATH |
-| npm | 9+ | 随 Node.js 安装 |
-| Git | 较新版本 | 用于拉取代码 |
+| Node.js | 22+（推荐 22 LTS） | 安装时勾选加入 PATH；`start.bat` 会强制校验主版本号，低于 22 直接报错退出（better-sqlite3 13、joi 18、pdf-parse 2.4 均要求 Node.js 22+） |
+| npm | 10+ | 随 Node.js 安装 |
+| Git | 较新版本 | 用于拉取代码；`start.bat` 启动时会自动执行 `git pull --rebase` |
 
 ## 一键启动
 
@@ -19,7 +19,13 @@
 start.bat
 ```
 
-脚本会检查端口、安装依赖、启动后端和前端，并打开浏览器。
+脚本以隐藏窗口方式运行（**不会打开浏览器**，需手动访问下方地址），依次执行以下步骤：
+
+1. 检查 Node.js 版本，主版本低于 22 直接报错退出。
+2. 自动执行 `git pull --rebase` 拉取最新代码；存在本地修改时会先自动 stash，拉取完成后再恢复（恢复失败时保留在 git stash 中需手工处理）。
+3. 检查 5000/5173 端口，被占用时自动结束占用进程并释放端口。
+4. 检查根目录 `node_modules/.bin`，依赖缺失时自动执行 `npm install`（仓库使用 npm workspaces，一条命令安装前后端全部依赖）。
+5. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`）。
 
 其他启动/停止脚本：
 
@@ -27,7 +33,7 @@ start.bat
 |------|------|
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口），适合长期运行 |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
-| `stop.bat` | 停止前后端进程 |
+| `stop.bat` | 先调用断网备份接口备份数据库，再按端口停止前后端进程 |
 
 默认访问地址：
 
@@ -40,7 +46,7 @@ start.bat
 
 | 场景 | 推荐方式 | 说明 |
 |------|----------|------|
-| 本机试用或局域网临时使用 | `start.bat` | 自动检查端口、安装依赖、启动前后端并打开浏览器 |
+| 本机试用或局域网临时使用 | `start.bat` | 自动拉取代码、检查 Node 版本与端口、按需安装依赖、隐藏窗口启动前后端（不打开浏览器） |
 | 开发调试 | `npm run dev` | 前后端同时运行，前端通过 Vite 代理访问后端 |
 | 长期运行 | 后端 `npm start` + 前端静态部署或 `npm run preview` | 建议配合任务计划程序、Windows 服务或 PM2 等进程管理工具 |
 | 仅后端 API 服务 | `npm run start:backend` | 适合前端已由 IIS/Nginx/静态文件服务托管的场景 |
@@ -206,7 +212,7 @@ GET http://localhost:5000/api/system/version
 1. 通知正在使用系统的用户暂停编辑。
 2. 停止前后端进程，可以运行 `stop.bat`。
 3. 备份 `backend/data.db` 和 `backend/.env`（建议通过 `POST /api/system/maintenance/backup` 生成一致性备份）。
-4. 拉取或替换新版本代码。
+4. 拉取或替换新版本代码（使用 `start.bat` 启动时会自动执行 `git pull --rebase`，可跳过本步）。
 5. 执行 `npm run install:all` 更新依赖（含 `better-sqlite3` 原生模块）。
 6. 执行 `npm run build` 验证前端构建。
 7. 启动后端和前端，确认数据库迁移日志无异常（若存在遗留 `db.json`，首次启动会自动迁移到 SQLite）。
@@ -231,14 +237,20 @@ PORT=5000
 NODE_ENV=production
 JWT_SECRET=your-secret-key-change-in-production-2026
 JWT_EXPIRES_IN=7d
-CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173
+JWT_ISSUER=obara-task-manager
+JWT_AUDIENCE=obara-task-manager-api
+DEFAULT_ADMIN_USERNAME=superadmin
+DEFAULT_ADMIN_PASSWORD=admin123
+CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173,http://127.0.0.1:5173,http://192.168.160.25:5173,http://192.168.160.10:5173
 GITEE_TOKEN=your-gitee-token
 GITEE_REPO_OWNER=caifugao110
 GITEE_REPO_NAME=obara-task-manager
 SQLITE_DB_PATH=./data.db
 DB_PATH=./db.json
+SPEC_SHARE_PATH=\\192.168.160.6\仕样书$
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
+# LOG_LEVEL=info
 ```
 
 | 环境变量 | 默认值 | 说明 |
@@ -565,9 +577,9 @@ GET /api/system/version
 
 ## 日志查看
 
-一键启动会打开前端和后端命令行窗口。排障时查看对应窗口输出即可。
+`start.bat` 以隐藏窗口方式运行，不会打开命令行窗口；前后端日志分别写入项目根目录的 `logs/backend.log`、`logs/frontend.log`（错误输出为 `logs/backend.err.log`、`logs/frontend.err.log`），启动脚本自身的输出在 `logs/startup.log`，排障时直接查看这些文件即可。
 
-手动启动时直接查看当前 PowerShell 或 CMD 输出。
+手动执行 `npm run dev` 时直接查看当前 PowerShell 或 CMD 输出。
 
 超级管理员也可以在页面中查看登录和操作日志：
 
@@ -627,8 +639,8 @@ node --check backend\routes\settings.js
 | 任务 | 说明 | 默认状态 |
 |------|------|----------|
 | 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照 | 启用 |
-| 任务数据导出 | 导出任务数据为 JSON 文件 | 启用 |
-| 过期备份清理 | 删除超过保留天数的旧备份 | 自动执行 |
+| 任务数据导出 | 导出渲染后的任务表为 `.xls` 文件（`task-export-YYYYMMDD-HHmmss.xls`） | 启用 |
+| 过期备份清理 | 删除超过保留天数的旧备份（数据库备份/任务导出按备份保留天数，断网备份按断网保留天数） | 自动执行 |
 | 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
 
 ### 维护目录结构
@@ -723,11 +735,11 @@ backend/
 
 ### 维护最佳实践
 
-1. **监控数据库大小**：定期检查 `db-stats`，当超过 10MB 时考虑清理旧数据
+1. **监控数据库大小**：定期检查 `db-stats`，其中 10MB/50MB 仅为提示性警告而非 SQLite 限制（SQLite 单库上限约 281TB，1GB 以内可稳定运行）；结合任务月份数判断是否需要清理旧数据，必要时执行 `VACUUM` 回收磁盘空间
 2. **调整备份保留天数**：根据存储容量调整 `backupRetentionDays`，建议至少保留 7 天
 3. **设置合理的数据保留年限**：根据业务需求设置 `yearlyTaskRetentionYears`
 4. **定期手动备份**：在执行重大操作（如升级、批量导入）前手动执行备份
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-09-10
+最后更新：2026-09-22

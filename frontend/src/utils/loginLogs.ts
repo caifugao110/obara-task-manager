@@ -92,11 +92,9 @@ const parseBrowserInfo = (userAgent = ''): BrowserInfo => {
 };
 
 export const getBrowserLabel = (log: LogWithBrowser) => {
-  if (log.browserInfo?.summary) return log.browserInfo.summary;
-  if (log.browserInfo?.browser || log.browserInfo?.os || log.browserInfo?.device) {
-    return [log.browserInfo.browser, log.browserInfo.os, log.browserInfo.device].filter(Boolean).join(' / ');
-  }
-  if (log.userAgent) return parseBrowserInfo(log.userAgent).summary;
+  // 仅显示具体浏览器名称；操作系统、设备等完整信息可由原始 UA 体现
+  if (log.browserInfo?.browser) return log.browserInfo.browser;
+  if (log.userAgent) return parseBrowserInfo(log.userAgent).browser;
   return '-';
 };
 
@@ -127,6 +125,8 @@ const routeActionDescriptions: Record<string, { label: string; description: stri
   'POST change-password': { label: '修改密码', description: '用户修改登录密码' },
   'GET auth/validate': { label: '验证登录', description: '验证用户登录状态' },
   'GET validate': { label: '验证登录', description: '验证用户登录状态' },
+  'GET auth/client-info': { label: '查看自身浏览器信息', description: '查看自身浏览器信息' },
+  'GET client-info': { label: '查看自身浏览器信息', description: '查看自身浏览器信息' },
   'GET ': { label: '查看数据', description: '查看数据列表' },
   'GET users': { label: '查看用户', description: '查看用户列表或用户详情' },
   'POST users': { label: '创建用户', description: '新增系统用户账号' },

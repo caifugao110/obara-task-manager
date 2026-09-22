@@ -15,9 +15,16 @@ export default defineConfig({
       interval: 1000
     },
     proxy: {
-      '/api': 'http://127.0.0.1:5000',
+      '/api': {
+        target: 'http://127.0.0.1:5000',
+        changeOrigin: true,
+        // 将真实客户端 IP 写入 X-Forwarded-For，否则后端只能看到代理地址 127.0.0.1
+        xfwd: true
+      },
       '/socket.io': {
         target: 'http://127.0.0.1:5000',
+        changeOrigin: true,
+        xfwd: true,
         ws: true
       }
     }

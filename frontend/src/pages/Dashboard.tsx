@@ -469,7 +469,7 @@ const Dashboard = () => {
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineCacheUsed, setOfflineCacheUsed] = useState(false);
   const [versionInfo, setVersionInfo] = useState<{ currentVersion: string; hasUpdate: boolean; latestVersion: string | null } | null>(null);
-  const [clientInfo, setClientInfo] = useState<{ ip: string; summary: string } | null>(null);
+  const [clientInfo, setClientInfo] = useState<{ ip: string; browser: string; summary: string } | null>(null);
   const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
   const [batchFindText, setBatchFindText] = useState('');
   const [batchReplaceText, setBatchReplaceText] = useState('');
@@ -495,13 +495,14 @@ const Dashboard = () => {
     if (!user || designers.length === 0) return;
     autoFilteredDesignerRef.current = true;
     if (user.role !== 'user') return; // 仅普通用户自动过滤
+    if (jumpTarget) return; // 带 URL 任务跳转参数时不按人员筛选，确保目标任务可见
     const targetName = String(user.name || '').trim().toLowerCase();
     if (!targetName) return;
     const matched = designers.find(d => String(d.name || '').trim().toLowerCase() === targetName);
     if (matched) {
       setSelectedDesignerId(matched.id);
     }
-  }, [user, designers]);
+  }, [user, designers, jumpTarget]);
 
   // 获取版本信息
   useEffect(() => {
@@ -2855,7 +2856,7 @@ const Dashboard = () => {
               <table className="border-collapse text-[12px] w-full">
               <thead className="text-xs">
                 <tr className="bg-[#f8f9fa] text-gray-600 h-16 table-header-row">
-                  <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 w-48 font-bold text-center shadow-[1px_0_0_0_#d1d5db] z-40">设计员</th>
+                  <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 w-48 min-w-[12rem] font-bold text-center shadow-[1px_0_0_0_#d1d5db] z-50">设计员</th>
                   {days.map(d => (
                     <th key={d.fullDate} colSpan={2} className={`group/date sticky top-0 border border-gray-300 min-w-[240px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
                       <div className="text-[10px] opacity-60">{d.dayName}</div>
@@ -2874,26 +2875,25 @@ const Dashboard = () => {
                       )}
                     </th>
                   ))}
-                  <th className="sticky right-0 bg-[#f8f9fa] border border-gray-300 w-24 font-bold text-center shadow-[-1px_0_0_0_#d1d5db] z-40">月总工时</th>
+                  <th className="sticky right-0 bg-[#f8f9fa] border border-gray-300 w-24 min-w-[6rem] font-bold text-center shadow-[-1px_0_0_0_#d1d5db] z-50">月总工时</th>
                 </tr>
                 <tr className="bg-[#f8f9fa] text-gray-500 text-[10px] h-6 table-header-row-secondary">
-                  <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 shadow-[1px_0_0_0_#d1d5db] z-30"></th>
+                  <th className="sticky left-0 top-16 bg-[#f8f9fa] border border-gray-300 min-w-[12rem] shadow-[1px_0_0_0_#d1d5db] z-40"></th>
                   {days.map(d => (
                     <React.Fragment key={`sub-${d.fullDate}`}>
                       <th className={`sticky top-16 border border-gray-300 w-48 z-30 ${d.isWeekend ? 'bg-[#fff2cc]/50' : ''}`}>任务内容</th>
                       <th className={`sticky top-16 border border-gray-300 w-12 z-30 ${d.isWeekend ? 'bg-[#fff2cc]/50' : ''}`}>工时</th>
                     </React.Fragment>
                   ))}
-                  <th className="sticky right-0 bg-[#f8f9fa] border border-gray-300 shadow-[-1px_0_0_0_#d1d5db] z-30"></th>
+                  <th className="sticky right-0 top-16 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db] z-40"></th>
                 </tr>
               </thead>
               {sortedGroups.map(group => (
                 <React.Fragment key={group}>
                   <tbody>
-                    <tr className="bg-gray-200/80 cursor-pointer hover:bg-gray-300 transition-colors" onClick={() => toggleGroup(group)}>
+                    <tr className="group/grp cursor-pointer transition-colors" onClick={() => toggleGroup(group)}>
                       <td 
-                        className="sticky left-0 z-30 bg-gray-200 border border-gray-300 px-3 py-1.5 font-black text-gray-700 shadow-[1px_0_0_0_#d1d5db]"
-                        colSpan={1 + (days.length * 2) + 1}
+                        className="sticky left-0 z-30 bg-gray-200 group-hover/grp:bg-gray-300 border border-gray-300 px-3 py-1.5 min-w-[12rem] font-black text-gray-700 shadow-[1px_0_0_0_#d1d5db]"
                       >
                         <div className="flex items-center gap-2">
                           {collapsedGroups[group] ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
@@ -2901,6 +2901,13 @@ const Dashboard = () => {
                           <span className="text-[10px] font-normal opacity-60 ml-2">({designersByGroup[group].length} 人)</span>
                         </div>
                       </td>
+                      <td
+                        colSpan={days.length * 2}
+                        className="bg-gray-200 group-hover/grp:bg-gray-300 border-y border-gray-300"
+                      ></td>
+                      <td
+                        className="sticky right-0 z-30 bg-gray-200 group-hover/grp:bg-gray-300 border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db]"
+                      ></td>
                     </tr>
                   </tbody>
 
@@ -2911,7 +2918,7 @@ const Dashboard = () => {
                           {({ attributes, listeners }) => (
                             <>
                               <tr className="align-top hover:bg-blue-50/20 group/row transition-colors">
-                                <td className="sticky left-0 z-20 bg-white border border-gray-300 px-2 py-3 font-bold text-gray-800 text-center align-middle shadow-[1px_0_0_0_#d1d5db] group-hover/row:bg-blue-50/40">
+                                <td className="sticky left-0 z-20 bg-white border border-gray-300 px-2 py-3 min-w-[12rem] font-bold text-gray-800 text-center align-middle shadow-[1px_0_0_0_#d1d5db] group-hover/row:bg-blue-50/40">
                                   <div className="flex items-center justify-center gap-1.5 h-full">
                                     {canEditTasks && (
                                       <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-0.5 hover:bg-blue-100 rounded">
@@ -3024,12 +3031,12 @@ const Dashboard = () => {
                                     </DroppableCell>
                                   );
                                 })}
-                                <td className="sticky right-0 z-20 bg-[#f8f9fa] border border-gray-300 px-2 py-3 font-bold text-center text-green-700 shadow-[-1px_0_0_0_#d1d5db] group-hover/row:bg-green-50/40">
+                                <td className="sticky right-0 z-20 bg-[#f8f9fa] border border-gray-300 px-2 py-3 min-w-[6rem] font-bold text-center text-green-700 shadow-[-1px_0_0_0_#d1d5db] group-hover/row:bg-green-50/40">
                                   {calculateMonthlyTotal(d.id).toFixed(1)}
                                 </td>
                               </tr>
                               <tr className="bg-blue-50/10 text-[10px]">
-                                <td className="sticky left-0 z-20 bg-blue-50/30 border border-gray-300 px-2 py-0.5 font-bold text-gray-500 text-center whitespace-nowrap shadow-[1px_0_0_0_#d1d5db]">
+                                <td className="sticky left-0 z-20 bg-blue-50 border border-gray-300 px-2 py-0.5 min-w-[12rem] font-bold text-gray-500 text-center whitespace-nowrap shadow-[1px_0_0_0_#d1d5db]">
                                   当日合计
                                 </td>
                                 {days.map(day => (
@@ -3037,7 +3044,7 @@ const Dashboard = () => {
                                     {calculateDailyTotal(d.id, day.fullDate)}
                                   </td>
                                 ))}
-                                <td className="sticky right-0 z-20 bg-blue-50/30 border border-gray-300 shadow-[-1px_0_0_0_#d1d5db]"></td>
+                                <td className="sticky right-0 z-20 bg-blue-50 border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db]"></td>
                               </tr>
                             </>
                           )}
@@ -3110,7 +3117,7 @@ const Dashboard = () => {
             <>
               <span className="font-medium" title={clientInfo.summary}>IP: {clientInfo.ip || '未知'}</span>
               <div className="w-[1px] h-3 bg-gray-300"></div>
-              <span className="font-medium" title={clientInfo.summary}>{clientInfo.summary}</span>
+              <span className="font-medium" title={clientInfo.summary}>{clientInfo.browser}</span>
             </>
           )}
         </div>

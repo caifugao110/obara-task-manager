@@ -1026,7 +1026,7 @@ const StatusTracking = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col">
+    <div className="h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col overflow-hidden">
 
       <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map(toast => (
@@ -1195,7 +1195,7 @@ const StatusTracking = () => {
         </div>
       </header>
 
-      <main className="flex-1 p-6 overflow-auto">
+      <main className="flex-1 p-6 overflow-y-auto">
         <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
           {offlineWarning && (
             <div className="bg-red-100 border-b border-red-200 px-4 py-2 flex items-center justify-center gap-2">
@@ -1578,7 +1578,7 @@ const StatusTracking = () => {
         )}
       </main>
 
-      <footer className="bg-white border-t border-gray-200 px-6 py-3">
+      <footer className="shrink-0 bg-white border-t border-gray-200 px-6 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center text-sm text-gray-500">
           <div>{syncFooterIntro}</div>
           <div className="flex items-center gap-2">
