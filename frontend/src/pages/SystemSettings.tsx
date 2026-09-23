@@ -19,17 +19,12 @@ import {
   FileSpreadsheet,
   ClipboardList,
   Trash2,
-  X
+  X,
+  CalendarDays
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
-
-interface SystemSettingsData {
-  allowGuestView: boolean;
-  allowMultiDevice: boolean;
-  allowUserDesignPlanColorMark: boolean;
-  allowUserEditOwnTaskColor?: boolean;
-}
 
 interface Toast {
   message: string;
@@ -96,18 +91,18 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   offlineBackupDir: 'backups/offline'
 };
 
-const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
+const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 const SystemSettings = () => {
   const { user, token, logout } = useAuth();
-  const [settings, setSettings] = useState<SystemSettingsData>(defaultSettings);
+  const { settings, setSettings, refreshSettings } = useSystemSettings();
   const [accessSettings, setAccessSettings] = useState(defaultAccessSettings);
   const [accessSettingsLoaded, setAccessSettingsLoaded] = useState(false);
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs'>('data');
+  const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs' | 'plan'>('data');
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
@@ -162,21 +157,9 @@ const SystemSettings = () => {
   }, []);
 
   const fetchSettings = useCallback(async () => {
-    try {
-      const res = await axios.get('/api/system/settings');
-      const allowOwnDesignPlanColor = res.data.allowUserDesignPlanColorMark ?? res.data.allowUserEditOwnTaskColor ?? true;
-      setSettings({
-        ...defaultSettings,
-        ...res.data,
-        allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
-        allowUserEditOwnTaskColor: allowOwnDesignPlanColor
-      });
-    } catch {
-      addToast('无法加载系统设置', 'error');
-    } finally {
-      setSettingsLoaded(true);
-    }
-  }, []);
+    await refreshSettings();
+    setSettingsLoaded(true);
+  }, [refreshSettings]);
 
   const fetchLoginLogs = useCallback(async () => {
     if (!isSuperAdmin || !token) return;
@@ -214,7 +197,7 @@ const SystemSettings = () => {
   }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchMaintenanceStatus]);
 
   useEffect(() => {
-    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'maintenance')) {
+    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'maintenance' || activeTab === 'plan')) {
       setActiveTab('data');
     }
   }, [isSuperAdmin, activeTab]);
@@ -589,6 +572,13 @@ const SystemSettings = () => {
               >
                 <History size={18} />
                 日志管理
+              </button>
+              <button
+                onClick={() => setActiveTab('plan')}
+                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'plan' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <CalendarDays size={18} />
+                计划管理
               </button>
             </>
           )}
@@ -1213,6 +1203,42 @@ const SystemSettings = () => {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'plan' && (
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
+              <CalendarDays className="mr-2 text-blue-600" size={22} />
+              仕样号管理
+            </h3>
+            <div className="space-y-6">
+              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
+                <div>
+                  <div className="font-bold text-gray-700">仕样号位数</div>
+                  <div className="text-xs text-gray-400 mt-1">设置全局仕样号的位数，影响所有仕样号输入与校验</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {([5, 6] as const).map(digit => (
+                    <button
+                      key={digit}
+                      onClick={() => updateSettings({ specNumberDigits: digit })}
+                      disabled={!isSuperAdmin}
+                      className={`px-5 py-2.5 rounded-lg font-bold text-sm transition ${
+                        settings.specNumberDigits === digit
+                          ? 'bg-blue-600 text-white shadow'
+                          : 'bg-white text-gray-600 border border-gray-200 hover:border-blue-300'
+                      } ${!isSuperAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      {digit} 位
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="text-xs text-gray-400">
+                当前配置：仕样号需输入 <span className="font-bold text-blue-600">{settings.specNumberDigits}</span> 位数字
+              </div>
             </div>
           </div>
         )}

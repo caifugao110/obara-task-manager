@@ -121,7 +121,7 @@ const getInitialDb = () => ({
       yearlyCleanupHistory: {}
     },
     workdayOverrides: {},
-    system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true }
+    system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 }
   }
 });
 
@@ -239,7 +239,7 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.workdayOverrides = {};
   }
   if (!parsed.settings.system) {
-    parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
+    parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
   }
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserDesignPlanColorMark');
   const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserEditOwnTaskColor');
@@ -248,6 +248,9 @@ const applySettingsDefaults = (parsed) => {
     : true;
   parsed.settings.system.allowUserDesignPlanColorMark = allowOwnDesignPlanColor;
   parsed.settings.system.allowUserEditOwnTaskColor = allowOwnDesignPlanColor;
+  if (![5, 6].includes(parsed.settings.system.specNumberDigits)) {
+    parsed.settings.system.specNumberDigits = 5;
+  }
   if (!parsed.loginLogs) parsed.loginLogs = [];
   if (!parsed.statusTrackingItems) parsed.statusTrackingItems = [];
   if (!parsed.auditLogs) parsed.auditLogs = [];

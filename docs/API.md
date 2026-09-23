@@ -1385,7 +1385,8 @@ Authorization: Bearer <token>
   "allowGuestView": true,
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
-  "allowUserEditOwnTaskColor": true
+  "allowUserEditOwnTaskColor": true,
+  "specNumberDigits": 5
 }
 ```
 
@@ -1393,6 +1394,7 @@ Authorization: Bearer <token>
 
 - `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划标记颜色。
+- `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
 
 ### 更新系统设置
 
@@ -1406,9 +1408,15 @@ Authorization: Bearer <token>
 {
   "allowGuestView": false,
   "allowMultiDevice": true,
-  "allowUserDesignPlanColorMark": true
+  "allowUserDesignPlanColorMark": true,
+  "specNumberDigits": 6
 }
 ```
+
+字段说明：
+
+- 所有字段含义同 `GET /api/system/settings`。
+- `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
 
 ### 获取系统版本信息
 
@@ -1746,7 +1754,7 @@ Authorization: Bearer <token>
 
 说明：
 
-- 导出列包括时间、用户、姓名、操作类型、操作说明、方法、IP、状态码、耗时(ms)、浏览器信息。
+- 导出列包括时间、用户、姓名、操作类型、操作说明、方法、IP、状态码、耗时(ms)、浏览器信息（仅浏览器名称，如 `Chrome`）。
 - 没有可导出的日志时返回 `404`。
 
 ### 获取数据库统计信息
@@ -2324,6 +2332,8 @@ Authorization: Bearer <token>
 
 ## 仕样号搜索接口
 
+> 通用校验：本章节所有接口的 `specNumber` 必须为纯数字，且位数需与系统设置 `specNumberDigits`（5 或 6 位，默认 5）一致；位数不符时返回 `仕样号必须为 N 位数字`（N 为当前配置位数）。
+
 ### 获取仕样纳期
 
 `POST /api/spec/delivery-date`
@@ -2342,9 +2352,9 @@ Authorization: Bearer <token>
 
 说明：
 
-- `specNumber` 必须为纯数字。
+- `specNumber` 必须为纯数字，且位数需与系统设置 `specNumberDigits` 一致（5 或 6 位，默认 5）。
 - 系统会查找 `仕样书$\12345.PDF` 及 `12345.01.PDF` ～ `12345.99.PDF` 等版本文件，取最新版本。
-- 从 PDF 中搜索"纳期"关键词，提取日期信息。
+- 从 PDF 中搜索“纳期”关键词，提取日期信息。
 - 请求超时时间为 9 秒。
 - 需要能够访问共享目录（网络权限）。
 
@@ -2371,7 +2381,7 @@ Authorization: Bearer <token>
 | 消息 | 说明 |
 |------|------|
 | `仕样号不能为空` | 未提供 `specNumber` |
-| `仕样号格式不正确` | `specNumber` 不是纯数字 |
+| `仕样号必须为 N 位数字` | `specNumber` 位数与系统配置 `specNumberDigits`（5 或 6）不一致 |
 | `无法访问共享目录，请检查网络连接和权限` | 无法访问网络共享 |
 | `未找到仕样号 N 的PDF文件` | 共享目录中无对应 PDF |
 | `未在PDF中找到纳期信息` | PDF 中未找到日期 |
@@ -2395,7 +2405,7 @@ Authorization: Bearer <token>
 
 说明：
 
-- `specNumber` 必须为纯数字。
+- `specNumber` 必须为纯数字，且位数需与系统设置 `specNumberDigits` 一致（见章节通用校验）。
 - 系统会查找 `仕样书$\12345.PDF` 及 `12345.01.PDF` ～ `12345.99.PDF` 等版本文件，取最新版本。
 - 请求超时时间为 15 秒。
 - 需要能够访问共享目录（网络权限）。

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, Clock, Calendar, TrendingUp, Medal, Sun, Cloud, Umbrella, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
 import { format } from 'date-fns';
@@ -43,6 +44,7 @@ interface Toast {
 
 const Leaderboard = () => {
   const { user, token, logout } = useAuth();
+  const { specNumberDigits } = useSystemSettings();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [designers, setDesigners] = useState<DesignerData[]>([]);
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardData[]>([]);
@@ -102,18 +104,17 @@ const Leaderboard = () => {
     return Array.from(gunSet).sort();
   };
 
-  // Extract specification number from task name (only 5 digit number)
+  // Extract specification number from task name (matching configured digit count)
   const extractSpecNumber = (taskName: string): string | null => {
     if (!taskName) return null;
-    // Match exactly 5 digits
-    const match = taskName.match(/\d{5}/);
+    const match = taskName.match(new RegExp(`\\d{${specNumberDigits}}`));
     return match ? match[0] : null;
   };
 
   const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean, gunListModeOverride?: boolean) => {
     const targetSpec = currentSpec !== undefined ? currentSpec : specNumber;
     const gunListMode = gunListModeOverride !== undefined ? gunListModeOverride : specGunListMode;
-    if (targetSpec.length !== 5) {
+    if (targetSpec.length !== specNumberDigits) {
       setSpecResults([]);
       setSpecGunList([]);
       return;
@@ -161,7 +162,7 @@ const Leaderboard = () => {
       console.error('Error searching spec:', err);
       addToast('搜索失败', 'error');
     }
-  }, [specNumber, currentDate, designers, token, specFullSearch, specGunListMode]);
+  }, [specNumber, currentDate, designers, token, specFullSearch, specGunListMode, specNumberDigits]);
 
   const searchByGunName = useCallback(async (currentGunName?: string, fullSearchOverride?: boolean) => {
     const targetGunName = (currentGunName !== undefined ? currentGunName : gunName).trim();
@@ -210,7 +211,7 @@ const Leaderboard = () => {
   }, [gunName, currentDate, designers, token, gunFullSearch]);
 
   const refreshSearches = () => {
-    if (specNumber.length === 5) searchBySpecNumber(specNumber);
+    if (specNumber.length === specNumberDigits) searchBySpecNumber(specNumber);
     if (gunName.trim()) searchByGunName(gunName);
   };
 
@@ -361,7 +362,7 @@ const Leaderboard = () => {
 
   useEffect(() => {
     if (loading || designers.length === 0) return;
-    if (specNumber.length === 5) searchBySpecNumber(specNumber);
+    if (specNumber.length === specNumberDigits) searchBySpecNumber(specNumber);
     if (gunName.trim()) searchByGunName(gunName);
   }, [currentDate, specFullSearch, gunFullSearch]);
 
@@ -557,7 +558,7 @@ const Leaderboard = () => {
                       onChange={(e) => {
                         const next = e.target.checked;
                         setSpecGunListMode(next);
-                        if (specNumber.length === 5) searchBySpecNumber(specNumber, undefined, next);
+                        if (specNumber.length === specNumberDigits) searchBySpecNumber(specNumber, undefined, next);
                       }}
                       className="peer sr-only"
                     />
@@ -574,7 +575,7 @@ const Leaderboard = () => {
                       onChange={(e) => {
                         const next = e.target.checked;
                         setSpecFullSearch(next);
-                        if (specNumber.length === 5) searchBySpecNumber(specNumber, next);
+                        if (specNumber.length === specNumberDigits) searchBySpecNumber(specNumber, next);
                       }}
                       className="peer sr-only"
                     />
@@ -584,28 +585,28 @@ const Leaderboard = () => {
                 </label>
               </div>
             </div>
-            <p className="text-blue-100 text-sm mt-1">输入五位仕样号查看任务状态</p>
+            <p className="text-blue-100 text-sm mt-1">输入{specNumberDigits}位仕样号查看任务状态</p>
           </div>
           
           <div className="p-6">
             <div className="flex items-center gap-4 mb-6">
               <div className="flex-1">
-                <label className="block text-sm font-medium text-gray-700 mb-2">仕样号 (必须为5位数字)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">仕样号 (必须为{specNumberDigits}位数字)</label>
                 <div className="flex gap-2">
                   <input
                     type="text"
-                    maxLength={5}
+                    maxLength={specNumberDigits}
                     value={specNumber}
                     onChange={(e) => {
-                      const val = e.target.value.replace(/\D/g, '').slice(0, 5);
+                      const val = e.target.value.replace(/\D/g, '').slice(0, specNumberDigits);
                       setSpecNumber(val);
-                      if (val.length === 5) {
+                      if (val.length === specNumberDigits) {
                         searchBySpecNumber(val);
                       } else {
                         setSpecResults([]);
                       }
                     }}
-                    placeholder="例如: 56483"
+                    placeholder={`例如: ${'5'.repeat(specNumberDigits)}`}
                     className="flex-1 h-12 px-4 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:border-blue-400 focus:bg-white transition text-gray-800 text-lg"
                   />
                 </div>
@@ -676,7 +677,7 @@ const Leaderboard = () => {
                   ))}
                 </div>
               </div>
-            ) : specNumber.length === 5 ? (
+            ) : specNumber.length === specNumberDigits ? (
               <div className="text-center py-8 text-gray-400">
                 <TrendingUp size={40} className="mx-auto mb-2 opacity-50" />
                 <p>未找到匹配该仕样号的任务</p>
@@ -684,8 +685,8 @@ const Leaderboard = () => {
             ) : (
               <div className="text-center py-8 text-gray-400">
                 <TrendingUp size={40} className="mx-auto mb-2 opacity-50" />
-                <p>输入五位仕样号开始精确搜索</p>
-                <p className="text-xs mt-2">系统将自动从任务内容中提取并匹配五位连续数字</p>
+                <p>输入{specNumberDigits}位仕样号开始精确搜索</p>
+                <p className="text-xs mt-2">系统将自动从任务内容中提取并匹配{specNumberDigits}位连续数字</p>
               </div>
             )}
           </div>

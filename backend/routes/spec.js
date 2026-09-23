@@ -5,6 +5,30 @@ const fs2 = require('fs');
 const asyncHandler = require('express-async-handler');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
+const db = require('../db');
+
+// 获取系统配置的仕样号位数（默认 5，可配置为 5 或 6）
+function getConfiguredSpecDigits() {
+  try {
+    const data = db.readDb();
+    const digits = data?.settings?.system?.specNumberDigits;
+    return digits === 6 ? 6 : 5;
+  } catch (e) {
+    return 5;
+  }
+}
+
+// 校验仕样号位数是否符合全局配置
+function validateSpecNumberDigits(specNumber) {
+  const digits = getConfiguredSpecDigits();
+  if (!/^\d+$/.test(specNumber)) {
+    return { valid: false, message: '仕样号格式不正确' };
+  }
+  if (specNumber.length !== digits) {
+    return { valid: false, message: `仕样号必须为 ${digits} 位数字` };
+  }
+  return { valid: true };
+}
 
 let PDFParse = null;
 async function getPdfParse() {
@@ -417,7 +441,8 @@ router.post('/delivery-date', [authMiddleware, adminMiddleware], asyncHandler(as
 
   if (!n) return res.json({success: false, message: '仕样号不能为空'});
 
-  if (!/^\d+$/.test(n)) return res.json({success: false, message: '仕样号格式不正确'});
+  const digitCheck = validateSpecNumberDigits(n);
+  if (!digitCheck.valid) return res.json({success: false, message: digitCheck.message});
 
   try {
 
@@ -460,7 +485,8 @@ router.post('/delivery-date', [authMiddleware, adminMiddleware], asyncHandler(as
 router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   var n = req.body.specNumber;
   if (!n) return res.json({success: false, message: '仕样号不能为空'});
-  if (!/^\d+$/.test(n)) return res.json({success: false, message: '仕样号格式不正确'});
+  const digitCheck = validateSpecNumberDigits(n);
+  if (!digitCheck.valid) return res.json({success: false, message: digitCheck.message});
   try {
     var ok = fs2.existsSync(SPEC_SHARE_PATH) || fs2.existsSync(SPEC_SHARE_PATH_BS);
     if (!ok) return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
@@ -487,7 +513,8 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
   if (!n) return res.json({success: false, message: '仕样号不能为空'});
 
-  if (!/^\d+$/.test(n)) return res.json({success: false, message: '仕样号格式不正确'});
+  const digitCheck = validateSpecNumberDigits(n);
+  if (!digitCheck.valid) return res.json({success: false, message: digitCheck.message});
 
   try {
 

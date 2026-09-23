@@ -315,11 +315,9 @@ const getAuditActionDisplay = (log = {}) => {
 };
 
 const getBrowserLabel = (log = {}) => {
-  if (log.browserInfo?.summary) return log.browserInfo.summary;
-  if (log.browserInfo?.browser || log.browserInfo?.os || log.browserInfo?.device) {
-    return [log.browserInfo.browser, log.browserInfo.os, log.browserInfo.device].filter(Boolean).join(' / ');
-  }
-  if (log.userAgent) return getBrowserInfo(log.userAgent).summary;
+  // 与前端页面显示保持一致：仅展示浏览器名称（如 Chrome、Microsoft Edge）
+  if (log.browserInfo?.browser) return log.browserInfo.browser;
+  if (log.userAgent) return getBrowserInfo(log.userAgent).browser;
   return '-';
 };
 

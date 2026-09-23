@@ -26,6 +26,7 @@ import {
   Calendar
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useSystemSettings } from '../context/SystemSettingsContext';
 
 interface StatusItem {
   id: string;
@@ -219,6 +220,7 @@ const VerticalHeader = ({ text }: { text: string }) => (
 
 const StatusTracking = () => {
   const { user, token, logout } = useAuth();
+  const { specNumberDigits } = useSystemSettings();
   const [settings, setSettings] = useState(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [allItems, setAllItems] = useState<StatusItem[]>([]);
@@ -438,6 +440,11 @@ const StatusTracking = () => {
     }
     if (!specNumberInput.trim()) {
       addToast('请输入仕样号', 'error');
+      return;
+    }
+    const trimmedSpec = specNumberInput.trim();
+    if (!/^\d+$/.test(trimmedSpec) || trimmedSpec.length !== specNumberDigits) {
+      addToast(`仕样号必须为 ${specNumberDigits} 位数字`, 'error');
       return;
     }
 
@@ -1613,7 +1620,7 @@ const StatusTracking = () => {
                     onKeyPress={(e) => {
                       if (e.key === 'Enter') addItem();
                     }}
-                    placeholder="请输入仕样号，如：57048"
+                    placeholder={`请输入仕样号（${specNumberDigits}位数字）`}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     autoFocus
                   />
@@ -1621,7 +1628,7 @@ const StatusTracking = () => {
                     <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-blue-600" size={20} />
                   )}
                 </div>
-                <p className="text-xs text-gray-400 mt-2">输入仕样号后，系统将自动从PDF文件中获取客户名、纳期、数量和营业担当信息</p>
+                <p className="text-xs text-gray-400 mt-2">请输入 {specNumberDigits} 位仕样号，系统将自动从PDF文件中获取客户名、纳期、数量和营业担当信息</p>
               </div>
             </div>
             <div className="flex space-x-3 mt-6">

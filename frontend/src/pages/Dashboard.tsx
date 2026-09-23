@@ -3,6 +3,7 @@ import { axiosInstance } from '../services/api';
 import { isAxiosError } from 'axios';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
+import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
 import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
@@ -410,6 +411,7 @@ interface Toast {
 
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
+  const { specNumberDigits } = useSystemSettings();
   const location = useLocation();
   const jumpTarget = useMemo(() => {
     const params = new URLSearchParams(location.search);
@@ -1097,7 +1099,7 @@ const Dashboard = () => {
      return digitsMatch ? digitsMatch[1] : null;
    };
 
-  const isPureFiveDigitSpecNumber = (value: string) => /^\d{5}$/.test(value.trim());
+  const isPureFiveDigitSpecNumber = (value: string) => new RegExp(`^\\d{${specNumberDigits}}$`).test(value.trim());
 
   const fetchSpecInfo = async (specNumber: string): Promise<SpecInfoResponse> => {
     try {
@@ -2410,10 +2412,10 @@ const Dashboard = () => {
         setAddModeDeadlineTag(null);
         return;
       }
-      // 勾选：必须能从任务名中提取到五位数仕样号
+      // 勾选：必须能从任务名中提取到指定位数的仕样号
       const specNo = extractSpecNumber(addModeTaskName);
-      if (!specNo || specNo.length !== 5) {
-        addToast('请先在任务名中输入五位数仕样号', 'error');
+      if (!specNo || specNo.length !== specNumberDigits) {
+        addToast(`请先在任务名中输入${specNumberDigits}位数仕样号`, 'error');
         return;
       }
       setShowDeadline(true);
@@ -3141,12 +3143,12 @@ const Dashboard = () => {
                     批量操作
                   </button>
                 )}
-                <label className={`flex items-center gap-1.5 text-sm font-bold select-none ${isAddMode && extractSpecNumber(addModeTaskName)?.length !== 5 ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                <label className={`flex items-center gap-1.5 text-sm font-bold select-none ${isAddMode && extractSpecNumber(addModeTaskName)?.length !== specNumberDigits ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
                   <input
                     type="checkbox"
                     checked={showDeadline}
                     onChange={(e) => { void handleDeadlineToggle(e.target.checked); }}
-                    disabled={isAddMode && extractSpecNumber(addModeTaskName)?.length !== 5}
+                    disabled={isAddMode && extractSpecNumber(addModeTaskName)?.length !== specNumberDigits}
                     className="w-4 h-4 cursor-pointer accent-white disabled:cursor-not-allowed"
                   />
                   显示纳期
@@ -3327,7 +3329,7 @@ const Dashboard = () => {
                                   setAddModeTaskName(nextValue);
                                   scheduleAddModeSpecAutoFill(nextValue);
                                 }}
-                                placeholder="输入完整任务名称或者五位数仕样号自动对应"
+                                placeholder={`输入完整任务名称或者${specNumberDigits}位数仕样号自动对应`}
                                 autoFocus
                               />
                               {showDeadline && addModeDeadlineTag && (
@@ -3714,8 +3716,8 @@ const Dashboard = () => {
                                     const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
                                     const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                     let deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                    // 如果已勾选显示纳期，但新的任务名中无法提取五位数仕样号，自动取消勾选并移除纳期后缀
-                                    if (showDeadline && extractSpecNumber(e.target.value)?.length !== 5) {
+                                    // 如果已勾选显示纳期，但新的任务名中无法提取指定位数仕样号，自动取消勾选并移除纳期后缀
+                                    if (showDeadline && extractSpecNumber(e.target.value)?.length !== specNumberDigits) {
                                       setShowDeadline(false);
                                       deadline = '';
                                     }
@@ -3726,7 +3728,7 @@ const Dashboard = () => {
                                     }));
                                     handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
                                   }}
-                                  placeholder="输入完整任务名称或者五位数仕样号自动对应"
+                                  placeholder={`输入完整任务名称或者${specNumberDigits}位数仕样号自动对应`}
                                 />
                                 {showDeadline && (() => {
                                   const deadlineTag = (currentItem.taskName || '').match(/(\[\d{1,2}\/\d{1,2}\])\s*$/);

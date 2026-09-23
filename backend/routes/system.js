@@ -21,7 +21,7 @@ const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const defaultSystemSettings = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true };
+const defaultSystemSettings = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
 const formatDownloadTimestamp = () => {
@@ -42,7 +42,8 @@ const systemSettingsSchema = Joi.object({
   allowGuestView: Joi.boolean().required(),
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
-  allowUserEditOwnTaskColor: Joi.boolean().optional()
+  allowUserEditOwnTaskColor: Joi.boolean().optional(),
+  specNumberDigits: Joi.number().integer().valid(5, 6).optional()
 });
 
 const maintenanceSettingsSchema = Joi.object({

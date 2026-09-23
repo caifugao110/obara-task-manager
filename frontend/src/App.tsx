@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SystemSettingsProvider } from './context/SystemSettingsContext';
 import Login from './pages/Login';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
@@ -151,9 +152,11 @@ const basename = process.env.NODE_ENV === 'production' ? '/obara-task-manager' :
 function App() {
   return (
     <AuthProvider>
-      <Router basename={basename}>
-        <AppRoutes />
-      </Router>
+      <SystemSettingsProvider>
+        <Router basename={basename}>
+          <AppRoutes />
+        </Router>
+      </SystemSettingsProvider>
     </AuthProvider>
   );
 }
