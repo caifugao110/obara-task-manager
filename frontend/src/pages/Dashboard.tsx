@@ -2906,13 +2906,19 @@ const Dashboard = () => {
                 <React.Fragment key={group}>
                   <tbody>
                     <tr className="group/grp cursor-pointer transition-colors bg-gray-200 group-hover/grp:bg-gray-300" onClick={() => toggleGroup(group)}>
-                      <td colSpan={days.length * 2 + 2} className="border border-gray-300 px-3 py-1.5 font-black text-gray-700 sticky top-[88px] z-[25] bg-gray-200 group-hover/grp:bg-gray-300">
-                        <div className="flex items-center gap-2">
+                      {/* td1: 固定列 + 固定分组名，高 z-index 让溢出内容盖在 td2 上 */}
+                      <td className="sticky left-0 top-[88px] z-[30] relative overflow-visible p-0 border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300 shadow-[1px_0_0_0_#d1d5db]">
+                        {/* 占位：撑出 td 高度，不参与列宽 */}
+                        <div style={{ height: 29 }} />
+                        {/* 实际内容：绝对定位，不撑宽 td1，允许溢出到右边 */}
+                        <div className="absolute left-0 top-0 flex items-center gap-2 whitespace-nowrap px-3 py-1.5 font-black text-gray-700 bg-gray-200 group-hover/grp:bg-gray-300">
                           {collapsedGroups[group] ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                           <span>{group}</span>
                           <span className="text-[10px] font-normal opacity-60 ml-2">({designersByGroup[group].length} 人)</span>
                         </div>
                       </td>
+                      {/* td2: 剩余列，低 z-index 避免遮挡 td1 溢出的分组名 */}
+                      <td colSpan={days.length * 2 + 1} className="sticky top-[88px] z-10 border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300"></td>
                     </tr>
                   </tbody>
 
