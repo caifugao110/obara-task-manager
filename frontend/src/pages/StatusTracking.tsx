@@ -1195,15 +1195,15 @@ const StatusTracking = () => {
         </div>
       </header>
 
-      <main className="flex-1 p-6 overflow-y-auto">
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+      <main className="flex-1 px-6 pb-6 overflow-y-auto overflow-x-auto">
+        <div className="h-6 shrink-0"></div>
+        <div className="w-fit min-w-full bg-white rounded-2xl shadow-xl border border-gray-100">
           {offlineWarning && (
-            <div className="bg-red-100 border-b border-red-200 px-4 py-2 flex items-center justify-center gap-2">
+            <div className="bg-red-100 border-b border-red-200 px-4 py-2 flex items-center justify-center gap-2 rounded-t-2xl">
               <AlertTriangle size={18} className="text-red-600" />
               <span className="text-sm font-medium text-red-700">当前离线，禁止编辑！</span>
             </div>
           )}
-          <div className="overflow-x-auto">
             <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
               <colgroup>
                 <col style={{ width: '80px' }} />
@@ -1227,9 +1227,9 @@ const StatusTracking = () => {
                 <col style={{ width: '80px' }} />
                 <col style={{ width: '96px' }} />
               </colgroup>
-              <thead>
+              <thead className="sticky top-0 z-20">
                 <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>工厂</th>
+                  <th className="px-2 py-1.5 text-center border-r border-white rounded-tl-2xl" rowSpan={2}>工厂</th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>客户</th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
                     <VerticalHeader text="数量" />
@@ -1267,7 +1267,7 @@ const StatusTracking = () => {
                   </th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>营业担当</th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>组长</th>
-                  <th className="px-2 py-1.5 text-center" rowSpan={2}>操作</th>
+                  <th className="px-2 py-1.5 text-center rounded-tr-2xl" rowSpan={2}>操作</th>
                 </tr>
                 <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
                   <th className="px-2 py-1.5 text-center border-r border-white bg-green-600">
@@ -1541,7 +1541,6 @@ const StatusTracking = () => {
                 )}
               </tbody>
             </table>
-          </div>
         </div>
 
         {isSuperAdmin && (

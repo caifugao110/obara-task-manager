@@ -1120,8 +1120,8 @@ const Admin = () => {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-xl border border-gray-200 h-fit">
-            <div className="sticky top-[56px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 rounded-t-xl">
+          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[56px] lg:self-start">
+            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <UserPlus size={20} className="mr-2 text-blue-600" /> 添加设计人员
               </h2>
