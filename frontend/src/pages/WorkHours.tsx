@@ -418,8 +418,19 @@ const WorkHours = () => {
             >
               <ChevronLeft size={18} />
             </button>
-            <span className="px-6 font-bold text-gray-700 min-w-[140px] text-center">
+            <span className="relative px-6 font-bold text-gray-700 min-w-[140px] text-center cursor-pointer hover:bg-white rounded transition">
               {format(currentDate, 'yyyy年 MM月')}
+              <input
+                type="month"
+                className="delivery-date-input"
+                value={format(currentDate, 'yyyy-MM')}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    const [y, m] = e.target.value.split('-').map(Number);
+                    setCurrentDate(new Date(y, m - 1, 1));
+                  }
+                }}
+              />
             </span>
             <button
               onClick={() => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}

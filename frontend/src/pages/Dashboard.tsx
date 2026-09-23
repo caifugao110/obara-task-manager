@@ -2732,7 +2732,20 @@ const Dashboard = () => {
             <button onClick={() => changeMonth(-1)} className="p-1 hover:bg-[#217346] rounded transition">
               <ChevronLeft size={18} />
             </button>
-            <span className="px-4 font-bold text-sm min-w-[110px] text-center">{format(currentDate, 'yyyy年 MM月')}</span>
+            <span className="relative px-4 font-bold text-sm min-w-[110px] text-center cursor-pointer hover:bg-[#217346] rounded transition">
+              {format(currentDate, 'yyyy年 MM月')}
+              <input
+                type="month"
+                className="delivery-date-input"
+                value={format(currentDate, 'yyyy-MM')}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    const [y, m] = e.target.value.split('-').map(Number);
+                    setCurrentDate(new Date(y, m - 1, 1));
+                  }
+                }}
+              />
+            </span>
             <button onClick={() => changeMonth(1)} className="p-1 hover:bg-[#217346] rounded transition">
               <ChevronRight size={18} />
             </button>
