@@ -94,7 +94,7 @@ input[type="number"] {
 
 .table-header-row-secondary {
   position: sticky;
-  top: 40px;
+  top: 64px;
   z-index: 30;
 }
 
