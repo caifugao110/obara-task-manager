@@ -2917,8 +2917,8 @@ const Dashboard = () => {
                           <span className="text-[10px] font-normal opacity-60 ml-2">({designersByGroup[group].length} 人)</span>
                         </div>
                       </td>
-                      {/* td2: 剩余列，低 z-index 避免遮挡 td1 溢出的分组名 */}
-                      <td colSpan={days.length * 2 + 1} className="sticky top-[88px] z-10 border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300"></td>
+                      {/* td2: 剩余列，z-[25] 高于月总工时列(z-20)使其被分组行覆盖，但低于 td1(z-[30])不遮挡分组名溢出 */}
+                      <td colSpan={days.length * 2 + 1} className="sticky top-[88px] z-[25] border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300"></td>
                     </tr>
                   </tbody>
 
