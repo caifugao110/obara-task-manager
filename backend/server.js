@@ -54,6 +54,7 @@ const systemRoutes = require('./routes/system');
 const specRoutes = require('./routes/spec');
 const statusTrackingRoutes = require('./routes/statusTracking');
 const workHoursRoutes = require('./routes/workHours');
+const gunLedgerRoutes = require('./routes/gunLedger');
 
 app.use(auditLogMiddleware);
 
@@ -66,6 +67,7 @@ app.use('/api/system', systemRoutes);
 app.use('/api/spec', specRoutes);
 app.use('/api/status-tracking', statusTrackingRoutes);
 app.use('/api/work-hours', workHoursRoutes);
+app.use('/api/gun-ledger', gunLedgerRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
@@ -109,6 +111,32 @@ const removeSessions = (predicate) => {
   return removedSessions;
 };
 
+// 焊枪编号台账：按行锁定会话（锁键 tableId::serialNumber）
+const gunLedgerSessions = new Map();
+const gunLedgerKey = (tableId, serialNumber) => `${tableId}::${serialNumber}`;
+const publicGunLedgerSessions = () => Array.from(gunLedgerSessions.values());
+const broadcastGunLedgerStopped = (sessions, sourceSocket) => {
+  sessions.forEach(session => {
+    const payload = { tableId: session.tableId, serialNumber: session.serialNumber, userId: session.userId };
+    if (sourceSocket) {
+      sourceSocket.broadcast.emit('gun_ledger_edit_stop', payload);
+      sourceSocket.emit('gun_ledger_edit_stop', payload);
+    } else {
+      io.emit('gun_ledger_edit_stop', payload);
+    }
+  });
+};
+const removeGunLedgerSessions = (predicate) => {
+  const removed = [];
+  for (const [key, session] of gunLedgerSessions.entries()) {
+    if (predicate(session)) {
+      gunLedgerSessions.delete(key);
+      removed.push(session);
+    }
+  }
+  return removed;
+};
+
 // 错误处理：认证失败
 io.on('connect_error', (error) => {
   console.error('Socket connection error:', error.message);
@@ -121,6 +149,7 @@ io.on('connection', (socket) => {
   console.log(`User connected: ${user.username} (${socket.id})`);
 
   socket.emit('editing_state', publicEditingSessions());
+  socket.emit('gun_ledger_editing_state', publicGunLedgerSessions());
 
   // task_updated 事件：验证用户身份
   socket.on('task_updated', (data) => {
@@ -230,14 +259,70 @@ io.on('connection', (socket) => {
   socket.on('status_tracking_stop_edit', (data) => {
     try {
       requireSocketAuth(socket);
-      
+
       if (!data?.itemId) {
         socket.emit('error', { message: 'Missing itemId' });
         return;
       }
-      
+
       socket.broadcast.emit('status_tracking_edit_stop', { itemId: data.itemId });
       socket.emit('status_tracking_edit_stop', { itemId: data.itemId });
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
+  });
+
+  // 焊枪编号台账：开始编辑某行（取号）
+  socket.on('gun_ledger_start_edit', (data) => {
+    try {
+      const authenticatedUser = requireSocketAuth(socket);
+      if (!data?.tableId || data?.serialNumber === undefined || data?.serialNumber === null) {
+        socket.emit('error', { message: 'Missing tableId or serialNumber' });
+        return;
+      }
+      const serialNumber = Number(data.serialNumber);
+      const key = gunLedgerKey(data.tableId, serialNumber);
+      const existing = gunLedgerSessions.get(key);
+      if (existing && existing.socketId !== socket.id && existing.userId !== authenticatedUser.id) {
+        socket.emit('gun_ledger_edit_blocked', existing);
+        return;
+      }
+      // 一个用户同时只持一把行锁：清除自身其他锁并广播停止
+      const removedOwn = removeGunLedgerSessions(s =>
+        s.userId === authenticatedUser.id && gunLedgerKey(s.tableId, s.serialNumber) !== key
+      );
+      broadcastGunLedgerStopped(removedOwn, socket);
+
+      const session = {
+        tableId: data.tableId,
+        serialNumber,
+        userId: authenticatedUser.id,
+        username: authenticatedUser.username,
+        name: authenticatedUser.name,
+        socketId: socket.id
+      };
+      gunLedgerSessions.set(key, session);
+      socket.broadcast.emit('gun_ledger_edit_start', session);
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
+  });
+
+  // 焊枪编号台账：停止编辑某行
+  socket.on('gun_ledger_stop_edit', (data) => {
+    try {
+      requireSocketAuth(socket);
+      if (!data?.tableId || data?.serialNumber === undefined || data?.serialNumber === null) {
+        socket.emit('error', { message: 'Missing tableId or serialNumber' });
+        return;
+      }
+      const serialNumber = Number(data.serialNumber);
+      const key = gunLedgerKey(data.tableId, serialNumber);
+      const session = gunLedgerSessions.get(key);
+      if (session && session.socketId === socket.id) {
+        gunLedgerSessions.delete(key);
+        broadcastGunLedgerStopped([session], socket);
+      }
     } catch (err) {
       socket.emit('error', { message: err.message });
     }
@@ -246,6 +331,8 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const removedSessions = removeSessions(session => session.socketId === socket.id);
     broadcastStoppedSessions(removedSessions, socket);
+    const removedGunSessions = removeGunLedgerSessions(s => s.socketId === socket.id);
+    broadcastGunLedgerStopped(removedGunSessions, socket);
     console.log(`User disconnected: ${user.username} (${socket.id})`);
   });
 

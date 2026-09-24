@@ -32,7 +32,7 @@ const normalizeAccessSettings = (settings = defaultAccessSettings) => {
 
 const normalizeAccessSettingsForKey = (key, settings = defaultAccessSettings) => {
   const normalized = normalizeAccessSettings(settings);
-  if (key === 'systemSettings') {
+  if (key === 'systemSettings' || key === 'gunLedger') {
     normalized.allowViewers = false;
   }
   return normalized;
@@ -71,6 +71,9 @@ router.put('/design-standards', updateAccessSettings('designStandards'));
 
 router.get('/system-settings', guestViewMiddleware, getAccessSettings('systemSettings'));
 router.put('/system-settings', updateAccessSettings('systemSettings'));
+
+router.get('/gun-ledger', guestViewMiddleware, getAccessSettings('gunLedger'));
+router.put('/gun-ledger', updateAccessSettings('gunLedger'));
 
 router.get('/workday-overrides', guestViewMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();

@@ -12,6 +12,7 @@ import StatusTracking from './pages/StatusTracking';
 import SystemSettings from './pages/SystemSettings';
 import SystemLogs from './pages/SystemLogs';
 import DesignStandards from './pages/DesignStandards';
+import GunLedger from './pages/GunLedger';
 
 const ProtectedRoute = ({
   children,
@@ -116,6 +117,14 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <DesignStandards />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/gun-ledger"
+        element={
+          <ProtectedRoute>
+            <GunLedger />
           </ProtectedRoute>
         }
       />

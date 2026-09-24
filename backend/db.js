@@ -66,7 +66,7 @@ const persistCache = () => {
     `INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.value`
   );
-  const topLevelKeys = ['users', 'tasks', 'designers', 'loginLogs', 'settings', 'statusTrackingItems', 'auditLogs'];
+  const topLevelKeys = ['users', 'tasks', 'designers', 'loginLogs', 'settings', 'statusTrackingItems', 'auditLogs', 'gunLedger'];
   const tx = db.transaction(() => {
     for (const key of topLevelKeys) {
       if (Object.prototype.hasOwnProperty.call(_cache, key)) {
@@ -93,6 +93,79 @@ const loadFromDb = () => {
   return data;
 };
 
+const buildDefaultGunTable = (name) => ({
+  id: `gun-tbl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  name,
+  rows: []
+});
+
+const buildDefaultGunLedger = () => {
+  const now = Date.now().toString(36);
+  const makeId = (i) => `gun-tbl-${now}-${i}-${Math.random().toString(36).slice(2, 6)}`;
+  const tables = (names, offset) => names.map((n, i) => ({ id: makeId(offset + i), name: n, rows: [] }));
+  return {
+    categories: {
+      'X2C': tables(['SRTC', 'SRTX', 'SRTV', 'SRTC-ALA-DC', 'SRTX-ALA-DC', 'SRTD', 'SRTS'], 0),
+      'X2C-V2': tables(['C', 'X'], 100),
+      'X2C-V3': tables(['C', 'X'], 200)
+    },
+    defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪']
+  };
+};
+
+const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3'];
+
+const normalizeTableList = (list) => {
+  if (!Array.isArray(list)) return [];
+  return list.map(t => {
+    if (typeof t === 'string') return { id: `gun-tbl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, name: t, rows: [] };
+    if (!t || typeof t !== 'object') return null;
+    return {
+      id: t.id || `gun-tbl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      name: String(t.name || '未命名表'),
+      rows: Array.isArray(t.rows) ? t.rows.filter(r => r && typeof r === 'object').map(r => ({
+        id: r.id || `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        serialNumber: Number.isFinite(Number(r.serialNumber)) ? Number(r.serialNumber) : 0,
+        gunName: String(r.gunName || ''),
+        customer: String(r.customer || ''),
+        time: String(r.time || ''),
+        responsiblePerson: String(r.responsiblePerson || ''),
+        remarks: String(r.remarks || ''),
+        createdAt: r.createdAt || '',
+        createdBy: r.createdBy || null,
+        updatedAt: r.updatedAt || '',
+        updatedBy: r.updatedBy || null
+      })) : []
+    };
+  }).filter(Boolean);
+};
+
+const normalizeGunLedger = (gunLedger) => {
+  const base = buildDefaultGunLedger();
+  if (!gunLedger || typeof gunLedger !== 'object' || Array.isArray(gunLedger)) {
+    return base;
+  }
+  const categories = gunLedger.categories && typeof gunLedger.categories === 'object' && !Array.isArray(gunLedger.categories)
+    ? gunLedger.categories
+    : {};
+  // 保留所有已有分类（含用户新增），并确保三个默认分类存在
+  const merged = {};
+  // 先放入默认分类，保证顺序
+  for (const cat of DEFAULT_CATEGORIES) {
+    merged[cat] = normalizeTableList(categories[cat]);
+  }
+  // 再放入用户新增的分类（非默认分类）
+  for (const cat of Object.keys(categories)) {
+    if (!DEFAULT_CATEGORIES.includes(cat)) {
+      merged[cat] = normalizeTableList(categories[cat]);
+    }
+  }
+  const defaultResponsiblePersons = Array.isArray(gunLedger.defaultResponsiblePersons) && gunLedger.defaultResponsiblePersons.length
+    ? gunLedger.defaultResponsiblePersons.map(p => String(p)).filter(Boolean)
+    : base.defaultResponsiblePersons;
+  return { categories: merged, defaultResponsiblePersons };
+};
+
 const getInitialDb = () => ({
   users: [],
   tasks: [],
@@ -100,11 +173,13 @@ const getInitialDb = () => ({
   loginLogs: [],
   statusTrackingItems: [],
   auditLogs: [],
+  gunLedger: buildDefaultGunLedger(),
   settings: {
     leaderboard: { enabled: true, allowAdmins: true, allowViewers: false },
     workHours: { enabled: true, allowAdmins: true, allowViewers: false },
     statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
     systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
+    gunLedger: { enabled: true, allowAdmins: true, allowViewers: false },
     maintenance: {
       enabled: true,
       dailyBackupEnabled: true,
@@ -216,6 +291,9 @@ const applySettingsDefaults = (parsed) => {
   if (!parsed.settings.systemSettings) {
     parsed.settings.systemSettings = { enabled: true, allowAdmins: true, allowViewers: false };
   }
+  if (!parsed.settings.gunLedger) {
+    parsed.settings.gunLedger = { enabled: true, allowAdmins: true, allowViewers: false };
+  }
   if (!parsed.settings.maintenance || typeof parsed.settings.maintenance !== 'object' || Array.isArray(parsed.settings.maintenance)) {
     parsed.settings.maintenance = {};
   }
@@ -254,6 +332,7 @@ const applySettingsDefaults = (parsed) => {
   if (!parsed.loginLogs) parsed.loginLogs = [];
   if (!parsed.statusTrackingItems) parsed.statusTrackingItems = [];
   if (!parsed.auditLogs) parsed.auditLogs = [];
+  parsed.gunLedger = normalizeGunLedger(parsed.gunLedger);
 
   let migratedUsers = false;
   parsed.users.forEach(u => {

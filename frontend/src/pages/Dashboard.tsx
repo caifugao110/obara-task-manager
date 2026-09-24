@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
@@ -438,6 +438,7 @@ const Dashboard = () => {
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
   const [statusTrackingAccess, setStatusTrackingAccess] = useState(defaultAccessSettings);
   const [designStandardsAccess, setDesignStandardsAccess] = useState(defaultAccessSettings);
+  const [gunLedgerAccess, setGunLedgerAccess] = useState(defaultAccessSettings);
   const [systemSettingsAccess, setSystemSettingsAccess] = useState(defaultAccessSettings);
   const [workdayOverrides, setWorkdayOverrides] = useState<WorkdayOverrides>({});
   const [updatingWorkdayOverrideDate, setUpdatingWorkdayOverrideDate] = useState<string | null>(null);
@@ -1782,9 +1783,10 @@ const Dashboard = () => {
       axiosInstance.get('/settings/work-hours'),
       axiosInstance.get('/settings/status-tracking'),
       axiosInstance.get('/settings/system-settings'),
-      axiosInstance.get('/settings/design-standards')
+      axiosInstance.get('/settings/design-standards'),
+      axiosInstance.get('/settings/gun-ledger')
     ])
-      .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes, designStandardsRes]) => {
+      .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes, designStandardsRes, gunLedgerRes]) => {
         const guestAllowed = systemRes.data.allowGuestView ?? true;
         setAllowGuestView(guestAllowed);
         setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? true);
@@ -1793,6 +1795,7 @@ const Dashboard = () => {
         setStatusTrackingAccess(statusTrackingRes.data || defaultAccessSettings);
         setSystemSettingsAccess(systemSettingsRes.data || defaultAccessSettings);
         setDesignStandardsAccess(designStandardsRes.data || defaultAccessSettings);
+        setGunLedgerAccess(gunLedgerRes.data || defaultAccessSettings);
         if (!guestAllowed && !user) setLoading(false);
       })
       .catch(() => setAllowGuestView(true))
@@ -2675,6 +2678,12 @@ const Dashboard = () => {
     return user?.role === 'admin' && systemSettingsAccess.allowAdmins;
   };
 
+  const canShowGunLedgerLink = () => {
+    if (isSuperAdmin) return true;
+    if (!gunLedgerAccess.enabled) return false;
+    return user?.role === 'admin' && gunLedgerAccess.allowAdmins;
+  };
+
   const formatTaskMetaTime = (value?: string) => {
     if (!value) return '暂无记录';
     const date = new Date(value);
@@ -2810,6 +2819,20 @@ const Dashboard = () => {
               <span>设计规范与标准</span>
               <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-400 text-amber-900">
                 待开发
+              </span>
+            </Link>
+          )}
+          {canShowGunLedgerLink() && (
+            <Link
+              to="/gun-ledger"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+            >
+              <ClipboardList size={16} className="text-emerald-200" />
+              <span>焊枪编号台账</span>
+              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-green-500 text-white">
+                开发中
               </span>
             </Link>
           )}
