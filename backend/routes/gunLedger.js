@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const gunTableLocks = require('../utils/gunTableLocks');
 const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
 const Joi = require('joi');
@@ -114,11 +115,17 @@ router.delete('/categories/:category', [authMiddleware, superAdminMiddleware, ac
   if (['X2C', 'X2C-V2', 'X2C-V3'].includes(category)) {
     return res.status(400).json({ message: '默认分类不允许删除' });
   }
+  // 释放该分类下所有表的编辑锁
+  const removedTableIds = (data.gunLedger.categories[category] || []).map(t => t && t.id).filter(Boolean);
+  removedTableIds.forEach(id => gunTableLocks.forceRelease(id));
   delete data.gunLedger.categories[category];
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'delete_category', category });
+  if (io) {
+    removedTableIds.forEach(id => io.emit('gun_ledger_table_unlocked', { tableId: id }));
+    io.emit('gun_ledger_updated', { action: 'delete_category', category });
+  }
 
   res.json({ success: true });
 }));
@@ -233,8 +240,14 @@ router.delete('/tables/:tableId', [authMiddleware, superAdminMiddleware, accessS
   found.list.splice(found.index, 1);
   await db.writeDb(data);
 
+  // 释放该表的编辑锁
+  gunTableLocks.forceRelease(req.params.tableId);
+
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'delete_table', tableId: req.params.tableId });
+  if (io) {
+    io.emit('gun_ledger_table_unlocked', { tableId: req.params.tableId });
+    io.emit('gun_ledger_updated', { action: 'delete_table', tableId: req.params.tableId });
+  }
 
   res.json({ success: true });
 }));
@@ -249,6 +262,12 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
   if (!data.gunLedger) return res.status(404).json({ message: '表未找到' });
   const found = findTable(data.gunLedger, req.params.tableId);
   if (!found) return res.status(404).json({ message: '表未找到' });
+
+  // 表级编辑锁保护：锁被他人持有时拒绝写入
+  const holder = gunTableLocks.get(req.params.tableId);
+  if (holder && (!req.user || holder.userId !== req.user.id)) {
+    return res.status(409).json({ message: `该表正由「${holder.name || holder.username}」编辑，请等待其完成后再保存` });
+  }
 
   const meta = userMeta(req);
   const now = new Date().toISOString();

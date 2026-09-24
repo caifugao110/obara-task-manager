@@ -14,7 +14,9 @@ import {
   Check,
   X,
   Lock,
+  Unlock,
   UserPlus,
+  Users,
   ArrowUp,
   ArrowDown,
 } from 'lucide-react';
@@ -64,6 +66,14 @@ interface EditingSession {
   username: string;
   name: string;
   socketId: string;
+}
+
+interface TableLockSession {
+  tableId: string;
+  userId: string;
+  username: string;
+  name: string;
+  lockedAt?: number;
 }
 
 // 默认分类（用于排序与删除保护）
@@ -133,12 +143,15 @@ const GunLedger: React.FC = () => {
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [editingSessions, setEditingSessions] = useState<Record<string, EditingSession>>({});
+  // 表级独占编辑锁：tableId -> 持有者会话
+  const [tableLocks, setTableLocks] = useState<Record<string, TableLockSession>>({});
   const [renamingTableId, setRenamingTableId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [newPersonInput, setNewPersonInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [online, setOnline] = useState(true);
   const [showPersonPanel, setShowPersonPanel] = useState(false);
+  const [showAccessPanel, setShowAccessPanel] = useState(false);
   const [specLookupLoading, setSpecLookupLoading] = useState(false);
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
   const [addCategoryValue, setAddCategoryValue] = useState('');
@@ -157,6 +170,13 @@ const GunLedger: React.FC = () => {
   const dirtyRowIdsRef = useRef<Set<string>>(new Set());
   const inputRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
   const specLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 表级锁相关 refs（供 socket 回调与卸载清理读取最新值）
+  const activeTableIdRef = useRef<string | null>(null);
+  const prevActiveTableRef = useRef<string | null>(null);
+  const isAdminRef = useRef(isAdmin);
+  const userRef = useRef(user);
+  isAdminRef.current = isAdmin;
+  userRef.current = user;
 
   const authHeader = useMemo(() => (token ? { headers: { Authorization: `Bearer ${token}` } } : {}), [token]);
 
@@ -223,13 +243,14 @@ const GunLedger: React.FC = () => {
     return ledger.categories[activeCategory] || [];
   }, [ledger, activeCategory]);
 
-  // 自动选中第一个表
+  // 仅查看者（无编辑权限）自动选中第一张表；管理员需手动点击打开，打开即获取该表的独占编辑锁
   useEffect(() => {
+    if (isAdmin) return;
     if (tables.length && (!activeTableId || !tables.find(t => t.id === activeTableId))) {
       setActiveTableId(tables[0].id);
     }
     if (!tables.length) setActiveTableId(null);
-  }, [tables, activeTableId]);
+  }, [tables, activeTableId, isAdmin]);
 
   const activeTable = useMemo<GunTable | null>(() => {
     if (!ledger || !activeTableId) return null;
@@ -303,6 +324,52 @@ const GunLedger: React.FC = () => {
     return s;
   }, [editingSessions, user]);
 
+  // ===== 表级独占编辑锁 =====
+  const requestTableLock = useCallback((tableId: string) => {
+    socketRef.current?.emit('gun_ledger_lock_table', { tableId });
+  }, []);
+
+  const releaseTableLock = useCallback((tableId: string) => {
+    socketRef.current?.emit('gun_ledger_unlock_table', { tableId });
+  }, []);
+
+  // 某表是否正被他人锁定
+  const getTableHolder = useCallback((tableId: string): TableLockSession | null => {
+    const s = tableLocks[tableId];
+    if (!s) return null;
+    if (userRef.current && s.userId === userRef.current.id) return null;
+    return s;
+  }, [tableLocks]);
+
+  // 点击左侧表名：他人编辑中则禁止打开并提示
+  const handleSelectTable = useCallback((t: GunTable) => {
+    const holder = getTableHolder(t.id);
+    if (holder) {
+      addToast(`「${holder.name || holder.username}」正在编辑表「${t.name}」，请稍后再试`, 'error');
+      return;
+    }
+    if (activeTableIdRef.current && activeTableIdRef.current !== t.id) stopRowLock();
+    setActiveTableId(t.id);
+    if (isAdminRef.current) requestTableLock(t.id);
+  }, [getTableHolder, addToast, stopRowLock, requestTableLock]);
+
+  // 完成编辑：释放锁并关闭当前表
+  const handleFinishEditing = useCallback(() => {
+    const tid = activeTableIdRef.current;
+    if (tid) releaseTableLock(tid);
+    stopRowLock();
+    setActiveTableId(null);
+    addToast('已结束编辑，其他人员现在可以打开该表', 'success');
+  }, [releaseTableLock, stopRowLock, addToast]);
+
+  // 切换分类：关闭并释放当前表锁
+  const handleSelectCategory = useCallback((cat: string) => {
+    if (cat === activeCategory) return;
+    stopRowLock();
+    setActiveTableId(null);
+    setActiveCategory(cat);
+  }, [activeCategory, stopRowLock]);
+
   // 更新本地某表的行
   const patchTableRows = useCallback((tableId: string, updater: (rows: GunRow[]) => GunRow[]) => {
     setLedger(prev => {
@@ -357,9 +424,18 @@ const GunLedger: React.FC = () => {
       }).then(() => {
         dirtyRowIdsRef.current.clear();
         setSaving(false);
-      }).catch(() => {
+      }).catch((err: any) => {
         setSaving(false);
-        addToast('保存失败，请重试', 'error');
+        if (err?.response?.status === 409) {
+          addToast(err?.response?.data?.message || '该表正被他人编辑，暂时无法保存', 'error');
+          // 锁已不属于自己：释放本地占用并关闭表格
+          if (activeTableIdRef.current === tableId) {
+            socketRef.current?.emit('gun_ledger_unlock_table', { tableId });
+            setActiveTableId(null);
+          }
+        } else {
+          addToast('保存失败，请重试', 'error');
+        }
       });
       return prev;
     });
@@ -455,16 +531,21 @@ const GunLedger: React.FC = () => {
     if (!name || !ledger) return;
     try {
       const res = await axiosInstance.post(`/gun-ledger/categories/${encodeURIComponent(activeCategory)}/tables`, { name }, authHeader);
-      setLedger(prev => prev ? {
-        ...prev,
-        categories: { ...prev.categories, [activeCategory]: [...(prev.categories[activeCategory] || []), res.data] }
-      } : prev);
+      // 服务端先广播后响应，socket 的 add_table 可能已先一步追加；此处同样按 id 去重，避免同一新表出现两条
+      setLedger(prev => {
+        if (!prev) return prev;
+        const list = prev.categories[activeCategory] || [];
+        if (list.some(t => t.id === res.data.id)) return prev;
+        return { ...prev, categories: { ...prev.categories, [activeCategory]: [...list, res.data] } };
+      });
       setActiveTableId(res.data.id);
+      // 新建后自动进入编辑：获取该表独占锁（切换 effect 会自动释放上一张表的锁）
+      requestTableLock(res.data.id);
       addToast(`已新增表 ${name}`, 'success');
     } catch (err: any) {
       addToast(err?.response?.data?.message || '新增表失败', 'error');
     }
-  }, [ledger, activeCategory, authHeader, addToast]);
+  }, [ledger, activeCategory, authHeader, addToast, requestTableLock]);
 
   // 新增分类
   const handleAddCategory = useCallback(async (rawName: string) => {
@@ -474,7 +555,8 @@ const GunLedger: React.FC = () => {
     if (Object.prototype.hasOwnProperty.call(ledger.categories, name)) { addToast('已存在同名分类', 'error'); return; }
     try {
       await axiosInstance.post('/gun-ledger/categories', { name }, authHeader);
-      setLedger(prev => prev ? { ...prev, categories: { ...prev.categories, [name]: [] } } : prev);
+      // socket 广播可能先于响应到达，按分类名去重
+      setLedger(prev => prev ? { ...prev, categories: { ...prev.categories, [name]: prev.categories[name] || [] } } : prev);
       setActiveCategory(name);
       setActiveTableId(null);
       addToast(`已新增分类 ${name}`, 'success');
@@ -669,9 +751,45 @@ const GunLedger: React.FC = () => {
     const socket = io('/', { path: '/socket.io', reconnection: true, reconnectionAttempts: 10, reconnectionDelay: 3000, timeout: 10000, auth: { token } });
     socketRef.current = socket;
 
-    socket.on('connect', () => { setOnline(true); });
+    socket.on('connect', () => {
+      setOnline(true);
+      // 断线重连后重新申请表级锁；若期间锁被他人取得，会收到 blocked 事件并自动关闭
+      const tid = activeTableIdRef.current;
+      if (tid && isAdminRef.current) socket.emit('gun_ledger_lock_table', { tableId: tid });
+    });
     socket.on('disconnect', () => { setOnline(false); stopRowLock(); });
     socket.on('connect_error', () => { setOnline(false); });
+
+    // ===== 表级独占编辑锁事件 =====
+    socket.on('gun_ledger_table_locks_state', (sessions: TableLockSession[]) => {
+      const next: Record<string, TableLockSession> = {};
+      (Array.isArray(sessions) ? sessions : []).forEach(s => {
+        if (s?.tableId) next[s.tableId] = s;
+      });
+      setTableLocks(next);
+    });
+    socket.on('gun_ledger_table_locked', (s: TableLockSession) => {
+      if (!s?.tableId) return;
+      setTableLocks(prev => ({ ...prev, [s.tableId]: s }));
+      // 自己正打开着该表，但锁被他人取得（如他人在同一刻抢先打开）→ 自动关闭并提示
+      const me = userRef.current;
+      if (me && s.userId !== me.id && activeTableIdRef.current === s.tableId) {
+        addToast(`「${s.name || s.username}」正在编辑本表，表格已关闭`, 'error');
+        stopRowLock();
+        setActiveTableId(null);
+      }
+    });
+    socket.on('gun_ledger_table_unlocked', (data: { tableId: string }) => {
+      if (!data?.tableId) return;
+      setTableLocks(prev => { const n = { ...prev }; delete n[data.tableId]; return n; });
+    });
+    socket.on('gun_ledger_table_lock_blocked', (data: { tableId: string; holder: TableLockSession }) => {
+      if (!data?.tableId) return;
+      const holder = data.holder;
+      addToast(`「${holder?.name || holder?.username || '他人'}」正在编辑该表，无法打开`, 'error');
+      stopRowLock();
+      setActiveTableId(prev => (prev === data.tableId ? null : prev));
+    });
 
     socket.on('gun_ledger_editing_state', (sessions: EditingSession[]) => {
       const next: Record<string, EditingSession> = {};
@@ -732,7 +850,13 @@ const GunLedger: React.FC = () => {
           return prev;
         });
       } else if (data.action === 'add_table' && data.category && data.table) {
-        setLedger(prev => prev ? { ...prev, categories: { ...prev.categories, [data.category!]: [...(prev.categories[data.category!] || []), data.table!] } } : prev);
+        // 广播对创建者本人也会到达；创建者已通过 POST 响应本地追加，故按 id 去重，避免列表出现两条相同表格
+        setLedger(prev => {
+          if (!prev) return prev;
+          const list = prev.categories[data.category!] || [];
+          if (list.some(t => t.id === data.table!.id)) return prev;
+          return { ...prev, categories: { ...prev.categories, [data.category!]: [...list, data.table!] } };
+        });
       } else if (data.action === 'rename_table' && data.tableId && data.name) {
         setLedger(prev => {
           if (!prev) return prev;
@@ -782,7 +906,11 @@ const GunLedger: React.FC = () => {
 
     const onVis = () => { if (document.hidden) stopRowLock(); };
     document.addEventListener('visibilitychange', onVis);
-    const onBeforeUnload = () => stopRowLock();
+    const onBeforeUnload = () => {
+      stopRowLock();
+      const tid = activeTableIdRef.current;
+      if (tid) socket.emit('gun_ledger_unlock_table', { tableId: tid });
+    };
     window.addEventListener('beforeunload', onBeforeUnload);
 
     return () => {
@@ -795,28 +923,47 @@ const GunLedger: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, canAccess]);
 
-  // 切换表时释放旧锁
+  // 切换表时：释放上一张表的表级锁与行锁，并同步 ref
   useEffect(() => {
+    const prev = prevActiveTableRef.current;
+    if (prev && prev !== activeTableId) {
+      releaseTableLock(prev);
+    }
+    prevActiveTableRef.current = activeTableId;
+    activeTableIdRef.current = activeTableId;
     stopRowLock();
-  }, [activeTableId, stopRowLock]);
+  }, [activeTableId, stopRowLock, releaseTableLock]);
+
+  // 表级锁心跳：每 20 秒续期一次（服务端 TTL 60 秒）
+  useEffect(() => {
+    if (!activeTableId || !isAdmin) return;
+    const timer = setInterval(() => {
+      socketRef.current?.emit('gun_ledger_table_heartbeat', { tableId: activeTableId });
+    }, 20000);
+    return () => clearInterval(timer);
+  }, [activeTableId, isAdmin]);
 
   // 卸载清理
   useEffect(() => () => {
     if (stopTimeoutRef.current) clearTimeout(stopTimeoutRef.current);
+    const tid = prevActiveTableRef.current;
+    if (tid) socketRef.current?.emit('gun_ledger_unlock_table', { tableId: tid });
   }, []);
 
   // Esc 关闭弹窗
   useEffect(() => {
-    if (!addCategoryOpen && !addTableOpen && !deleteCategoryTarget && !deleteTableTarget) return;
+    if (!addCategoryOpen && !addTableOpen && !deleteCategoryTarget && !deleteTableTarget && !showPersonPanel && !showAccessPanel) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (!submitting) { setAddCategoryOpen(false); setAddTableOpen(false); }
         if (!deleting) { setDeleteCategoryTarget(null); setDeleteTableTarget(null); }
+        setShowPersonPanel(false);
+        setShowAccessPanel(false);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget, submitting, deleting]);
+  }, [addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget, showPersonPanel, showAccessPanel, submitting, deleting]);
 
   const closeAddModals = () => {
     if (!submitting) {
@@ -930,10 +1077,21 @@ const GunLedger: React.FC = () => {
           )}
         </div>
         {user && (
-          <div className="flex items-center space-x-4 relative">
+          <div className="flex items-center space-x-4">
+            {/* 焊枪编号台账查看权限设置 */}
             {isSuperAdmin && (
               <button
-                onClick={() => setShowPersonPanel(v => !v)}
+                onClick={() => { setShowAccessPanel(true); setShowPersonPanel(false); }}
+                className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
+                title="焊枪编号台账查看权限设置"
+              >
+                <Shield size={18} /><span>权限设置</span>
+              </button>
+            )}
+            {/* 默认担当人员管理 */}
+            {isSuperAdmin && (
+              <button
+                onClick={() => { setShowPersonPanel(true); setShowAccessPanel(false); }}
                 className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
                 title="管理默认担当人员"
               >
@@ -944,44 +1102,6 @@ const GunLedger: React.FC = () => {
             <button onClick={logout} className="flex items-center space-x-1.5 text-white hover:text-red-300 text-sm font-semibold transition">
               <LogOut size={18} /><span>退出</span>
             </button>
-            {/* 默认担当人员管理弹窗 */}
-            {showPersonPanel && (
-              <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-xl shadow-2xl border border-gray-200 p-4 z-50">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-bold text-gray-800 text-sm flex items-center">
-                    <UserPlus className="mr-1.5 text-emerald-600" size={16} />
-                    默认担当人员
-                  </h3>
-                  <button onClick={() => setShowPersonPanel(false)} className="text-gray-400 hover:text-gray-600">
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 mb-3">
-                  <input
-                    type="text"
-                    value={newPersonInput}
-                    onChange={e => setNewPersonInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && newPersonInput.trim()) handleAddPerson(newPersonInput); }}
-                    placeholder="添加姓名"
-                    className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-200"
-                  />
-                  <button onClick={() => newPersonInput.trim() && handleAddPerson(newPersonInput)} className="px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center gap-1 shrink-0">
-                    <Plus size={14} />添加
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-2 max-h-40 overflow-auto">
-                  {(ledger?.defaultResponsiblePersons || []).length === 0 && <span className="text-xs text-gray-400">暂无默认人员</span>}
-                  {(ledger?.defaultResponsiblePersons || []).map(p => (
-                    <span key={p} className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-50 border border-emerald-200 rounded-full text-sm text-gray-700">
-                      {p}
-                      <button onClick={() => handleRemovePerson(p)} className="text-gray-400 hover:text-red-500" title="移除">
-                        <X size={13} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         )}
       </header>
@@ -1014,7 +1134,7 @@ const GunLedger: React.FC = () => {
                     className={`group flex items-center rounded-lg transition ${activeCategory === cat ? 'bg-emerald-600 text-white shadow' : 'text-gray-700 hover:bg-emerald-50'}`}
                   >
                     <button
-                      onClick={() => { stopRowLock(); setActiveCategory(cat); }}
+                      onClick={() => handleSelectCategory(cat)}
                       className={`flex-1 px-3 py-2 text-sm font-bold text-left transition ${activeCategory === cat ? 'text-white' : 'text-gray-700'}`}
                     >
                       {cat}
@@ -1070,11 +1190,15 @@ const GunLedger: React.FC = () => {
                 const isActive = t.id === activeTableId;
                 const canMoveUp = idx > 0;
                 const canMoveDown = idx < arr.length - 1;
+                const holder = getTableHolder(t.id);
+                const lockedByOther = Boolean(holder);
+                const lockedBySelf = Boolean(tableLocks[t.id]) && !lockedByOther;
                 return (
-                  <div key={t.id} className={`group flex items-center ${isActive ? 'bg-emerald-50 border border-emerald-300' : 'hover:bg-gray-50 border border-transparent'} rounded-lg`}>
+                  <div key={t.id} className={`group flex items-center ${isActive ? 'bg-emerald-50 border border-emerald-300' : lockedByOther ? 'bg-amber-50 border border-amber-200' : 'hover:bg-gray-50 border border-transparent'} rounded-lg`}>
                     <button
-                      onClick={() => setActiveTableId(t.id)}
-                      className={`flex-1 px-3 py-2 text-sm text-left font-medium truncate ${isActive ? 'text-emerald-700' : 'text-gray-700'}`}
+                      onClick={() => handleSelectTable(t)}
+                      title={lockedByOther ? `「${holder!.name || holder!.username}」正在编辑该表，暂时无法打开` : undefined}
+                      className={`flex-1 px-3 py-2 text-sm text-left font-medium truncate ${isActive ? 'text-emerald-700' : lockedByOther ? 'text-amber-700' : 'text-gray-700'}`}
                     >
                       {renamingTableId === t.id ? (
                         <input
@@ -1086,9 +1210,15 @@ const GunLedger: React.FC = () => {
                           className="w-full px-1 py-0 text-sm border border-emerald-400 rounded outline-none"
                         />
                       ) : (
-                        <span className="flex items-center gap-2">
+                        <span className="flex items-center gap-2 min-w-0">
                           <ClipboardList size={14} className="shrink-0 opacity-70" />
                           <span className="truncate">{t.name}</span>
+                          {lockedByOther && (
+                            <Lock size={12} className="shrink-0 text-amber-600" aria-label={`${holder!.name || holder!.username} 正在编辑`} />
+                          )}
+                          {lockedBySelf && (
+                            <Lock size={12} className="shrink-0 text-emerald-600" aria-label="我正在编辑" />
+                          )}
                         </span>
                       )}
                     </button>
@@ -1123,11 +1253,25 @@ const GunLedger: React.FC = () => {
                 <h3 className="font-bold text-gray-800 flex items-center gap-2">
                   <ClipboardList size={18} className="text-emerald-600" />
                   {activeTable.name}
+                  {isAdmin && Boolean(tableLocks[activeTable.id]) && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700 border border-emerald-200" title="编辑期间其他人员无法打开该表">
+                      <Lock size={11} />编辑中 · 其他人暂无法打开
+                    </span>
+                  )}
                   <span className="text-xs font-normal text-gray-400 ml-2">序号自动递增 · 预留 {PLACEHOLDER_COUNT} 个未取号行</span>
                 </h3>
                 <div className="flex items-center gap-2">
                   {isAdmin && renamingTableId !== activeTable.id && (
                     <>
+                      {isAdmin && (
+                        <button
+                          onClick={handleFinishEditing}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-amber-700 hover:text-white bg-amber-50 hover:bg-amber-500 border border-amber-200 hover:border-amber-500 rounded transition"
+                          title="释放编辑锁，关闭本表，其他人员即可打开"
+                        >
+                          <Unlock size={13} />完成编辑
+                        </button>
+                      )}
                       {isAdmin && <button onClick={() => { setRenamingTableId(activeTable.id); setRenameValue(activeTable.name); }} className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded" title="重命名表"><Pencil size={15} /></button>}
                       {isSuperAdmin && <button onClick={() => openDeleteTableModal(activeTable.id, activeTable.name)} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" title="删除表"><Trash2 size={15} /></button>}
                     </>
@@ -1149,8 +1293,10 @@ const GunLedger: React.FC = () => {
                     {displayRows.map((row, rowIdx) => {
                       const blocking = activeTable ? getBlockingSession(activeTable.id, row.serialNumber) : null;
                       const isPlaceholder = String(row.id).startsWith('__placeholder__');
+                      // key 使用 serialNumber：占位行首次输入提升为真实行时 DOM 不重建、输入焦点不丢失。
+                      // 行顺序始终只按 serialNumber 排序，焊枪名（含英文前缀）改动仅影响当前行，不改变行号与其他行。
                       return (
-                        <tr key={row.id} className={rowIdx % 2 === 0 ? 'bg-white' : 'bg-[#fafafa]'}>
+                        <tr key={row.serialNumber} className={rowIdx % 2 === 0 ? 'bg-white' : 'bg-[#fafafa]'}>
                           <td className="border border-gray-300 px-2 py-1 text-center text-gray-600 font-mono">{row.serialNumber}</td>
                           {EDITABLE_COLS.map((field, colIdx) => {
                             const refKey = `${row.serialNumber}-${field}`;
@@ -1203,6 +1349,12 @@ const GunLedger: React.FC = () => {
               <div className="shrink-0 px-4 py-1.5 border-t border-gray-200 bg-[#f8f9fa] flex items-center justify-between text-xs text-gray-500">
                 <div>已取号 {activeTable.rows?.length || 0} 行 · 占位 {PLACEHOLDER_COUNT} 行</div>
                 <div className="flex items-center gap-3">
+                  {isAdmin && Boolean(tableLocks[activeTable.id]) && (
+                    <span className="flex items-center gap-1 text-emerald-600 font-medium">
+                      <Lock size={12} />
+                      你正在编辑（其他人员无法打开此表）
+                    </span>
+                  )}
                   {Object.values(editingSessions).filter(s => s.tableId === activeTable.id).length > 0 && (
                     <span className="flex items-center gap-1 text-amber-600">
                       <Lock size={12} />
@@ -1216,40 +1368,6 @@ const GunLedger: React.FC = () => {
           )}
         </main>
       </div>
-
-      {/* 底部超管区：权限设置 */}
-      {isSuperAdmin && (
-        <section className="shrink-0 bg-white border-t border-gray-200 px-6 py-4">
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
-              <Shield className="mr-2 text-purple-600" size={22} />
-              焊枪编号台账查看权限设置
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {[
-                { label: '启用焊枪编号台账', detail: 'Global Toggle', key: 'enabled' as const },
-                { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-              ].map(item => (
-                <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                  <div>
-                    <div className="font-bold text-gray-700">{item.label}</div>
-                    <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">{item.detail}</div>
-                  </div>
-                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
-                    <input
-                      type="checkbox"
-                      checked={accessSettings[item.key]}
-                      onChange={e => updateAccessSettings({ [item.key]: e.target.checked })}
-                      className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                    />
-                    <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${accessSettings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
 
       {/* 新增分类弹窗 */}
       {addCategoryOpen && (
@@ -1460,6 +1578,139 @@ const GunLedger: React.FC = () => {
               >
                 {deleting && <RefreshCw size={14} className="animate-spin" />}
                 {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 权限设置弹窗 */}
+      {showAccessPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowAccessPanel(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-purple-600 to-purple-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <Shield size={20} />
+                查看权限设置
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowAccessPanel(false)}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-xs text-gray-400 leading-relaxed">控制谁可以查看焊枪编号台账，修改即时生效并自动保存。</p>
+              {[
+                { label: '启用焊枪编号台账', detail: 'Global Toggle', key: 'enabled' as const },
+                { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
+              ].map(item => (
+                <div key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 hover:border-purple-200 transition">
+                  <div>
+                    <div className="font-bold text-gray-700 text-sm">{item.label}</div>
+                    <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5 tracking-wider">{item.detail}</div>
+                  </div>
+                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                    <input
+                      type="checkbox"
+                      checked={accessSettings[item.key]}
+                      onChange={e => updateAccessSettings({ [item.key]: e.target.checked })}
+                      className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                    />
+                    <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${accessSettings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end">
+              <button
+                className="px-5 py-2 rounded-lg bg-purple-600 text-white font-bold hover:bg-purple-700 transition"
+                onClick={() => setShowAccessPanel(false)}
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 默认担当人员管理弹窗 */}
+      {showPersonPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowPersonPanel(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[480px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <Users size={20} />
+                默认担当人员
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowPersonPanel(false)}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-gray-400 leading-relaxed">新增焊枪记录时，「担当」列将从此名单中快速选择。</p>
+              {/* 添加人员 */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <UserPlus size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={newPersonInput}
+                    onChange={e => setNewPersonInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && newPersonInput.trim()) handleAddPerson(newPersonInput); }}
+                    placeholder="输入姓名，回车快速添加"
+                    autoFocus
+                    maxLength={20}
+                    className="w-full pl-9 pr-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none text-sm text-gray-800 font-semibold transition"
+                  />
+                </div>
+                <button
+                  onClick={() => newPersonInput.trim() && handleAddPerson(newPersonInput)}
+                  disabled={!newPersonInput.trim()}
+                  className="px-4 py-2.5 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center gap-1.5 shrink-0 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Plus size={15} />添加
+                </button>
+              </div>
+              {/* 人员列表 */}
+              <div>
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">人员列表</span>
+                  <span className="text-[11px] text-gray-400">共 {(ledger?.defaultResponsiblePersons || []).length} 人</span>
+                </div>
+                <div className="max-h-64 overflow-auto space-y-2 pr-1">
+                  {(ledger?.defaultResponsiblePersons || []).length === 0 && (
+                    <div className="flex flex-col items-center justify-center py-8 text-gray-300">
+                      <Users size={32} className="mb-2" />
+                      <span className="text-xs text-gray-400">暂无默认担当人员，请在上方添加</span>
+                    </div>
+                  )}
+                  {(ledger?.defaultResponsiblePersons || []).map(p => (
+                    <div key={p} className="group flex items-center justify-between px-3 py-2 bg-gray-50 hover:bg-emerald-50 border border-gray-100 hover:border-emerald-200 rounded-lg transition">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs font-black shrink-0">
+                          {p.slice(0, 1)}
+                        </span>
+                        <span className="text-sm font-semibold text-gray-700 truncate">{p}</span>
+                      </div>
+                      <button
+                        onClick={() => handleRemovePerson(p)}
+                        className="p-1.5 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition opacity-0 group-hover:opacity-100"
+                        title="移除"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end">
+              <button
+                className="px-5 py-2 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition"
+                onClick={() => setShowPersonPanel(false)}
+              >
+                完成
               </button>
             </div>
           </div>

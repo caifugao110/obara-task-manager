@@ -40,6 +40,7 @@ app.use(bodyParser.json());
 // Database logic (Simple JSON storage)
 const db = require('./db');
 const { startMaintenanceScheduler, createOfflineBackup } = require('./utils/dbMaintenance');
+const gunTableLocks = require('./utils/gunTableLocks');
 
 // Middleware
 const { auditLogMiddleware } = require('./middleware/auditLog');
@@ -150,6 +151,7 @@ io.on('connection', (socket) => {
 
   socket.emit('editing_state', publicEditingSessions());
   socket.emit('gun_ledger_editing_state', publicGunLedgerSessions());
+  socket.emit('gun_ledger_table_locks_state', gunTableLocks.snapshot());
 
   // task_updated 事件：验证用户身份
   socket.on('task_updated', (data) => {
@@ -328,11 +330,68 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 焊枪编号台账：申请表级独占编辑锁（打开表准备编辑时触发）
+  socket.on('gun_ledger_lock_table', (data) => {
+    try {
+      const authenticatedUser = requireSocketAuth(socket);
+      if (!data?.tableId) {
+        socket.emit('error', { message: 'Missing tableId' });
+        return;
+      }
+      const tableId = String(data.tableId);
+      const result = gunTableLocks.lock(tableId, authenticatedUser, socket.id);
+      if (result.status === 'blocked') {
+        socket.emit('gun_ledger_table_lock_blocked', { tableId, holder: result.holder });
+        return;
+      }
+      if (result.status === 'acquired') {
+        io.emit('gun_ledger_table_locked', result.holder);
+      } else {
+        // 同一用户多标签页：仅向本人确认，无需重复广播
+        socket.emit('gun_ledger_table_locked', result.holder);
+      }
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
+  });
+
+  // 焊枪编号台账：释放表级编辑锁（切换表 / 完成编辑 / 离开页面时触发）
+  socket.on('gun_ledger_unlock_table', (data) => {
+    try {
+      requireSocketAuth(socket);
+      if (!data?.tableId) {
+        socket.emit('error', { message: 'Missing tableId' });
+        return;
+      }
+      const tableId = String(data.tableId);
+      const released = gunTableLocks.unlock(tableId, socket.id);
+      if (released) io.emit('gun_ledger_table_unlocked', { tableId });
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
+  });
+
+  // 焊枪编号台账：表级锁心跳续期
+  socket.on('gun_ledger_table_heartbeat', (data) => {
+    try {
+      const authenticatedUser = requireSocketAuth(socket);
+      if (!data?.tableId) return;
+      gunTableLocks.heartbeat(String(data.tableId), authenticatedUser.id);
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
+  });
+
   socket.on('disconnect', () => {
     const removedSessions = removeSessions(session => session.socketId === socket.id);
     broadcastStoppedSessions(removedSessions, socket);
     const removedGunSessions = removeGunLedgerSessions(s => s.socketId === socket.id);
     broadcastGunLedgerStopped(removedGunSessions, socket);
+    // 释放该 socket 持有的表级编辑锁（引用归零才真正释放并广播）
+    const releasedTableIds = gunTableLocks.releaseSocket(socket.id);
+    releasedTableIds.forEach(tableId => {
+      io.emit('gun_ledger_table_unlocked', { tableId });
+    });
     console.log(`User disconnected: ${user.username} (${socket.id})`);
   });
 
@@ -341,6 +400,15 @@ io.on('connection', (socket) => {
     console.error(`Socket error for user ${user.username}:`, error);
   });
 });
+
+// 每 30 秒清理一次焊枪台账僵死表锁（心跳超时且无存活连接）
+const gunTableLockSweeper = setInterval(() => {
+  const staleTableIds = gunTableLocks.sweepStale(io);
+  staleTableIds.forEach(tableId => {
+    io.emit('gun_ledger_table_unlocked', { tableId });
+  });
+}, 30 * 1000);
+gunTableLockSweeper.unref();
 
 
 const handleShutdown = async (signal) => {
