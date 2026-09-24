@@ -2717,7 +2717,8 @@ const Dashboard = () => {
 
   return (
     <div className="h-screen overflow-hidden bg-[#f3f3f3] flex flex-col font-sans">
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+      {/* Toast（下移至标题栏下方，避免遮挡顶部标题栏） */}
+      <div className="fixed top-16 right-4 z-50 flex flex-col gap-2">
         {toasts.map(toast => (
           <div key={toast.id} className={`flex items-center gap-2 px-4 py-3 rounded shadow-lg text-white transition-all duration-300 ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
             {toast.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle size={18} />}

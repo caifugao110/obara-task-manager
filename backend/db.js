@@ -115,29 +115,63 @@ const buildDefaultGunLedger = () => {
 
 const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3'];
 
+// 焊枪名自动生成规则（台账初始化设置，超管可按表配置）
+const normalizeGunNameRule = (rule) => {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return undefined;
+  const start = Number(rule.start);
+  const padRaw = Number(rule.pad);
+  return {
+    enabled: Boolean(rule.enabled),
+    prefix: String(rule.prefix || '').slice(0, 20),
+    start: Number.isFinite(start) ? Math.max(0, Math.trunc(start)) : 0,
+    pad: Number.isFinite(padRaw) ? Math.min(10, Math.max(1, Math.trunc(padRaw))) : 4
+  };
+};
+
 const normalizeTableList = (list) => {
   if (!Array.isArray(list)) return [];
   return list.map(t => {
     if (typeof t === 'string') return { id: `gun-tbl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, name: t, rows: [] };
     if (!t || typeof t !== 'object') return null;
-    return {
+    const rows = Array.isArray(t.rows) ? t.rows.filter(r => r && typeof r === 'object').map(r => ({
+      id: r.id || `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      serialNumber: Number.isFinite(Number(r.serialNumber)) ? Number(r.serialNumber) : 0,
+      gunName: String(r.gunName || ''),
+      customer: String(r.customer || ''),
+      time: String(r.time || ''),
+      responsiblePerson: String(r.responsiblePerson || ''),
+      remarks: String(r.remarks || ''),
+      createdAt: r.createdAt || '',
+      createdBy: r.createdBy || null,
+      updatedAt: r.updatedAt || '',
+      updatedBy: r.updatedBy || null
+    })) : [];
+    // 序号严格按自然顺序连续排列：按序号升序后重新编号为 1..N，杜绝跳号（如 1 直接到 11）
+    rows.sort((a, b) => a.serialNumber - b.serialNumber);
+    rows.forEach((r, i) => { r.serialNumber = i + 1; });
+    const normalized = {
       id: t.id || `gun-tbl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       name: String(t.name || '未命名表'),
-      rows: Array.isArray(t.rows) ? t.rows.filter(r => r && typeof r === 'object').map(r => ({
-        id: r.id || `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        serialNumber: Number.isFinite(Number(r.serialNumber)) ? Number(r.serialNumber) : 0,
-        gunName: String(r.gunName || ''),
-        customer: String(r.customer || ''),
-        time: String(r.time || ''),
-        responsiblePerson: String(r.responsiblePerson || ''),
-        remarks: String(r.remarks || ''),
-        createdAt: r.createdAt || '',
-        createdBy: r.createdBy || null,
-        updatedAt: r.updatedAt || '',
-        updatedBy: r.updatedBy || null
-      })) : []
+      rows
     };
+    // 仅在显式配置过规则时携带该字段（未配置的表沿用前端内置默认规则）
+    const gunNameRule = normalizeGunNameRule(t.gunNameRule);
+    if (gunNameRule) normalized.gunNameRule = gunNameRule;
+    return normalized;
   }).filter(Boolean);
+};
+
+// 检测台账中是否存在序号跳号/乱序（启动时决定是否需要落库修复）
+const gunLedgerHasGaps = (gunLedger) => {
+  if (!gunLedger || !gunLedger.categories) return false;
+  for (const cat of Object.keys(gunLedger.categories)) {
+    const list = Array.isArray(gunLedger.categories[cat]) ? gunLedger.categories[cat] : [];
+    for (const t of list) {
+      const rows = Array.isArray(t?.rows) ? t.rows : [];
+      if (rows.some((r, i) => !r || Number(r.serialNumber) !== i + 1)) return true;
+    }
+  }
+  return false;
 };
 
 const normalizeGunLedger = (gunLedger) => {
@@ -387,11 +421,18 @@ const init = () => {
   if (_cache) return;
   openDatabase();
   const rows = _db.prepare('SELECT COUNT(*) as c FROM kv_store').get().c;
+  let gunSerialNeedPersist = false;
   if (rows === 0) {
     migrateFromLegacyJsonIfNeeded();
   } else {
     _cache = loadFromDb();
+    // 归一化前检测存量序号跳号/乱序（归一化会原地修复为连续序号）
+    gunSerialNeedPersist = gunLedgerHasGaps(_cache.gunLedger);
+    if (gunSerialNeedPersist) {
+      console.log('[db] 检测到焊枪台账序号跳号，启动时自动修复为连续自然序号');
+    }
     applySettingsDefaults(_cache);
+    if (gunSerialNeedPersist) persistCache();
   }
   // 启动时执行一次迁移归一化并持久化
   const migratedRes = migrateTasksIfNeeded(_cache);

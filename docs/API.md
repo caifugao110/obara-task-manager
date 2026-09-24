@@ -48,10 +48,17 @@ Authorization: Bearer <token>
 | 系统设置数据管理导入 | 否 | 否 | 否 | 是 |
 | 查看和修改组长规则 | 否 | 否 | 是 | 是 |
 | 重置组长规则为默认 | 否 | 否 | 否 | 是 |
+| 查看焊枪台账 | 否 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
+| 编辑焊枪台账（分类/表/行） | 否 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
+| 删除焊枪台账分类/表 | 否 | 否 | 否（按钮可见但拦截） | 是 |
+| 配置焊枪名规则/清空焊枪名/管理默认担当 | 否 | 否 | 否 | 是 |
+| 导入焊枪台账 | 否 | 否 | 否 | 是 |
 
 说明：
 
 - `settings.leaderboard`、`settings.workHours`、`settings.statusTracking` 控制对应页面是否允许 `admin` 和已登录 `user` 访问，未登录游客不能进入任务报表、工时管理和状态追踪页面。
+- `settings.gunLedger` 控制焊枪台账页面访问权限，`allowViewers` 后端强制为 `false`（普通用户与游客不能进入 `/gun-ledger`）。一般管理员可见删除分类/表按钮但点击被拦截（提示需超级管理员权限）。
+- `settings.designStandards` 控制设计标准页面（`/design-standards`）访问权限，规则同工时管理。
 - `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户和游客不能进入系统设置。
 - `authMiddleware` 只校验登录态；涉及写入任务、设计人员、状态追踪等接口还会继续校验角色。
 
@@ -883,6 +890,7 @@ Authorization: Bearer <token>
 - `leaderboard.allowViewers=true`、`workHours.allowViewers=true`、`statusTracking.allowViewers=true` 只允许普通用户访问对应页面；未登录游客始终不能进入 `/leaderboard`、`/work-hours` 和 `/status-tracking`。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问）。
 - 四个权限配置的 `GET` 接口（`/settings/leaderboard`、`/settings/work-hours`、`/settings/status-tracking`、`/settings/system-settings`）均使用 `guestViewMiddleware`：`allowGuestView` 开启时匿名可读，关闭后需携带有效 JWT；`PUT` 接口均仅 `superadmin`。
+- 焊枪台账（`/settings/gun-ledger`）和设计标准（`/settings/design-standards`）权限配置同样遵循上述规则；其中 `gunLedger.allowViewers` 后端强制为 `false`。
 
 ### 获取任务报表权限设置
 
@@ -913,6 +921,35 @@ Authorization: Bearer <token>
 `PUT /api/settings/status-tracking`
 
 权限：仅 `superadmin`
+
+### 获取焊枪台账权限设置
+
+`GET /api/settings/gun-ledger`
+
+### 更新焊枪台账权限设置
+
+`PUT /api/settings/gun-ledger`
+
+权限：仅 `superadmin`
+
+说明：
+
+- 用于控制一般管理员是否可以访问焊枪台账页面（`/gun-ledger`）。
+- `allowViewers` 字段被强制为 `false`（焊枪台账不允许普通用户和游客访问）。
+
+### 获取设计标准权限设置
+
+`GET /api/settings/design-standards`
+
+### 更新设计标准权限设置
+
+`PUT /api/settings/design-standards`
+
+权限：仅 `superadmin`
+
+说明：
+
+- 用于控制一般管理员/普通用户是否可以访问设计标准页面（`/design-standards`）。
 
 ### 获取系统设置权限设置
 
@@ -1371,6 +1408,308 @@ Authorization: Bearer <token>
 | `status_tracking_edit_stop` | 某用户停止编辑指定记录 | `{ itemId }` |
 | `status_tracking_updated` | 状态追踪记录更新 | `{ action, item, itemId }` |
 | `status_tracking_bulk` | 状态追踪批量更新 | `[所有记录列表]` |
+
+## 焊枪台账接口
+
+焊枪台账（`/gun-ledger`）采用**分类 → 表 → 行**三级结构。所有接口都受 `accessSettingsMiddleware('gunLedger')` 控制：需先满足 `settings.gunLedger` 权限配置，再满足各接口的角色要求。默认分类为 `X2C`、`X2C-V2`、`X2C-V3`。
+
+### 数据结构
+
+顶层 `gunLedger` 对象：
+
+```json
+{
+  "categories": {
+    "X2C": [ { "id": "gun-tbl-xxx", "name": "SRTC", "rows": [...], "gunNameRule": {...} } ],
+    "X2C-V2": [ ... ],
+    "X2C-V3": [ ... ]
+  },
+  "defaultResponsiblePersons": ["张啸", "张明", "陈青松", "陈大仪"]
+}
+```
+
+表（Table）对象：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 表唯一标识 |
+| `name` | 表名（1-50 字符，同一分类下唯一） |
+| `rows` | 行数组 |
+| `gunNameRule` | 可选，焊枪名自动生成规则（超级管理员按表配置） |
+
+行（Row）对象：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 行唯一标识 |
+| `serialNumber` | 序号，后端强制保证严格连续 `1..N`，无跳号 |
+| `gunName` | 焊枪名 |
+| `customer` | 客户 |
+| `time` | 时间 |
+| `responsiblePerson` | 担当 |
+| `remarks` | 备注 |
+| `createdAt` / `createdBy` | 创建时间 / 创建者 |
+| `updatedAt` / `updatedBy` | 最后修改时间 / 最后修改者 |
+
+焊枪名生成规则（`gunNameRule`）：
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | 是否启用自动取号 |
+| `prefix` | 前缀（最长 20 字符） |
+| `start` | 起始编号（0-99999999） |
+| `pad` | 编号补零位数（1-10） |
+
+焊枪名 = `prefix + String(start + serialNumber - 1).padStart(pad, '0')`。未配置规则的表使用前端内置默认规则（按分类+表名匹配），无匹配则不自动取号。
+
+### 获取全部台账数据
+
+`GET /api/gun-ledger`
+
+权限：需要登录，并取决于 `settings.gunLedger` 权限配置。
+
+响应：返回完整的 `gunLedger` 对象（含 `categories` 和 `defaultResponsiblePersons`）。
+
+### 获取分类摘要
+
+`GET /api/gun-ledger/summary`
+
+权限：需要登录，并取决于 `settings.gunLedger` 权限配置。
+
+响应：
+
+```json
+[
+  { "category": "X2C", "tables": 7, "rows": 120 },
+  { "category": "X2C-V2", "tables": 2, "rows": 30 }
+]
+```
+
+用于系统设置「焊枪编号台账」卡片展示分类列表。
+
+### 导出分类
+
+`GET /api/gun-ledger/export`
+
+权限：需要登录，并取决于 `settings.gunLedger` 权限配置。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `categories` | 是 | 分类名，逗号分隔，如 `X2C,X2C-V2` |
+
+响应：
+
+- 单个分类：直接下载 `.xls` 文件，文件名 `gun-ledger-<分类>-<时间戳>.xls`。
+- 多个分类：打包为 `.zip`，文件名 `gun-ledger-export-<时间戳>.zip`，内含每个分类一个独立 `.xls`。
+
+说明：
+
+- 每张表对应工作簿中的一个工作表，工作表名为表名（跨分类重名时自动加 `~n` 去重）。
+- 表头列为「序号/焊枪名/客户/时间/担当/备注」，蓝色表头、斑马纹、完整边框。
+- 分类不存在时返回 `400` 和 `分类不存在：xxx`。
+
+### 导出全部分类
+
+`GET /api/gun-ledger/export-all`
+
+权限：需要登录，并取决于 `settings.gunLedger` 权限配置。
+
+响应：单个 `.xls` 文件，文件名 `gun-ledger-all-<时间戳>.xls`，每个分类一个工作表（跨分类重名时使用「分类-表名」形式）。无数据时返回 `404`。
+
+### 导入台账
+
+`POST /api/gun-ledger/import`
+
+权限：仅 `superadmin`。
+
+请求类型：`multipart/form-data`
+
+字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `file` | 是 | `.xls` 或 `.xlsx` 文件 |
+| `category` | 是 | 目标分类名（1-30 字符，不含 `/`、`\`），不存在时自动新建 |
+
+说明：
+
+- 工作簿内的每个工作表会成为目标分类下的一张表（工作表名为表名），并**覆盖目标分类下全部表**。
+- 表名限 50 字符，同类下重名自动追加 `-n`。
+- 行序号自动重排为连续 `1..N`。
+- 上传文件经过文件类型、结构、恶意内容扫描（见 [文件上传安全验证](#文件上传安全验证)）。
+- 导入前会释放目标分类下所有旧表的编辑锁。
+
+响应：
+
+```json
+{
+  "message": "导入成功",
+  "category": "X2C",
+  "isNewCategory": false,
+  "importedTables": 7,
+  "importedRows": 120,
+  "warnings": []
+}
+```
+
+### 新增分类
+
+`POST /api/gun-ledger/categories`
+
+权限：`admin`、`superadmin`。
+
+请求：
+
+```json
+{ "name": "新分类名" }
+```
+
+说明：分类名 1-30 字符，不含 `/`、`\`；同名返回 `400`。
+
+### 删除分类
+
+`DELETE /api/gun-ledger/categories/:category`
+
+权限：仅 `superadmin`。
+
+说明：默认分类 `X2C`、`X2C-V2`、`X2C-V3` 不允许删除。删除会连同其下所有表一并删除，并释放所有表的编辑锁。
+
+### 分类排序
+
+`PATCH /api/gun-ledger/categories/order`
+
+权限：`admin`、`superadmin`。
+
+请求：
+
+```json
+{ "order": ["X2C", "X2C-V2", "X2C-V3", "自定义分类"] }
+```
+
+说明：`order` 必须与现有分类集合完全一致（防止越权增删）。
+
+### 新增表
+
+`POST /api/gun-ledger/categories/:category/tables`
+
+权限：`admin`、`superadmin`。
+
+请求：
+
+```json
+{ "name": "新表名" }
+```
+
+说明：同一分类下表名唯一。
+
+### 表排序
+
+`PATCH /api/gun-ledger/tables/order`
+
+权限：`admin`、`superadmin`。
+
+请求：
+
+```json
+{ "category": "X2C", "order": ["表1-id", "表2-id"] }
+```
+
+说明：`order` 必须与该分类下现有表 id 集合完全一致。
+
+### 重命名表
+
+`PATCH /api/gun-ledger/tables/:tableId`
+
+权限：`admin`、`superadmin`。
+
+请求：
+
+```json
+{ "name": "新表名" }
+```
+
+### 删除表
+
+`DELETE /api/gun-ledger/tables/:tableId`
+
+权限：仅 `superadmin`。
+
+说明：删除时释放该表的编辑锁。
+
+### 保存表的全部行
+
+`PUT /api/gun-ledger/tables/:tableId/rows`
+
+权限：`admin`、`superadmin`。
+
+请求：行数组（见行对象字段，`id` 为空时由后端生成）。
+
+说明：
+
+- **表级编辑锁保护**：该表正被他人编辑时返回 `409` 和 `该表正由「xxx」编辑，请等待其完成后再保存`。
+- 后端会保留已存在行的 `createdAt`/`createdBy`，新行补全创建者信息。
+- 行序号会被强制重排为严格连续 `1..N`（先按序号升序，再重新编号），杜绝跳号。
+- 所有行的 `updatedAt`/`updatedBy` 会更新为当前时间和当前用户。
+
+响应：返回保存后的行数组。
+
+### 配置焊枪名生成规则
+
+`PUT /api/gun-ledger/tables/:tableId/gun-name-rule`
+
+权限：仅 `superadmin`。
+
+请求：
+
+```json
+{ "enabled": true, "prefix": "SRTC-2C", "start": 15000, "pad": 5 }
+```
+
+说明：仅超级管理员可在「台账初始化」面板中按表配置；保存后通过 Socket.IO 广播 `gun_ledger_updated`（`action: 'gun_name_rule'`）。
+
+### 清空焊枪名
+
+`POST /api/gun-ledger/tables/:tableId/clear-gun-names`
+
+权限：仅 `superadmin`。
+
+说明：
+
+- 仅清空每行的 `gunName` 字段，**序号与客户/时间/担当/备注等列保留不变**。
+- 该表正被他人编辑时返回 `409`。
+- 清空后所有行的 `updatedAt`/`updatedBy` 更新。
+
+响应：
+
+```json
+{ "success": true, "rows": [...] }
+```
+
+### 获取默认担当人员
+
+`GET /api/gun-ledger/default-persons`
+
+权限：需要登录，并取决于 `settings.gunLedger` 权限配置。
+
+响应：字符串数组，如 `["张啸", "张明", "陈青松", "陈大仪"]`。
+
+### 修改默认担当人员
+
+`PUT /api/gun-ledger/default-persons`
+
+权限：仅 `superadmin`。
+
+请求：字符串数组，如 `["张啸", "张明", "陈青松", "陈大仪"]`。
+
+### 重置默认担当人员
+
+`POST /api/gun-ledger/default-persons/reset`
+
+权限：仅 `superadmin`。
+
+说明：重置为系统默认值 `["张啸", "张明", "陈青松", "陈大仪"]`。
 
 ## 系统设置接口
 
@@ -1841,8 +2180,11 @@ Authorization: Bearer <token>
     "enabled": true,
     "dailyBackupEnabled": true,
     "dailyTaskExportEnabled": true,
+    "dailyGunLedgerExportEnabled": true,
     "offlineBackupEnabled": true,
     "backupRetentionDays": 30,
+    "taskExportRetentionDays": 30,
+    "gunLedgerExportRetentionDays": 30,
     "offlineBackupRetentionDays": 7,
     "scheduleTime": "00:30",
     "yearlyCleanupEnabled": true,
@@ -1851,6 +2193,7 @@ Authorization: Bearer <token>
     "yearlyTaskRetentionYears": 1,
     "backupDir": "backups/database",
     "taskExportDir": "backups/task-exports",
+    "gunLedgerExportDir": "backups/gun-ledger-exports",
     "yearlyArchiveDir": "backups/yearly-archives",
     "offlineBackupDir": "backups/offline",
     "yearlyCleanupHistory": {}
@@ -1859,6 +2202,7 @@ Authorization: Bearer <token>
     "database": "D:\\project\\backend\\data.db",
     "backupDir": "D:\\project\\backend\\backups\\database",
     "taskExportDir": "D:\\project\\backend\\backups\\task-exports",
+    "gunLedgerExportDir": "D:\\project\\backend\\backups\\gun-ledger-exports",
     "yearlyArchiveDir": "D:\\project\\backend\\backups\\yearly-archives",
     "offlineBackupDir": "D:\\project\\backend\\backups\\offline"
   },
@@ -1874,6 +2218,7 @@ Authorization: Bearer <token>
   "files": {
     "backups": [...],
     "taskExports": [...],
+    "gunLedgerExports": [...],
     "yearlyArchives": [...],
     "offlineBackups": [...]
   },
@@ -1892,8 +2237,11 @@ Authorization: Bearer <token>
 | `settings.enabled` | 是否启用自动维护 |
 | `settings.dailyBackupEnabled` | 是否启用每日数据库备份 |
 | `settings.dailyTaskExportEnabled` | 是否启用每日任务数据导出 |
+| `settings.dailyGunLedgerExportEnabled` | 是否启用每日编号台账导出 |
 | `settings.offlineBackupEnabled` | 是否启用断网备份（服务关闭前自动备份） |
-| `settings.backupRetentionDays` | 备份保留天数 |
+| `settings.backupRetentionDays` | 数据库备份保留天数 |
+| `settings.taskExportRetentionDays` | 任务导出保留天数 |
+| `settings.gunLedgerExportRetentionDays` | 编号台账导出保留天数 |
 | `settings.offlineBackupRetentionDays` | 断网备份保留天数 |
 | `settings.scheduleTime` | 计划执行时间（HH:MM） |
 | `settings.yearlyCleanupEnabled` | 是否启用年度任务清理 |
@@ -1902,12 +2250,14 @@ Authorization: Bearer <token>
 | `settings.yearlyTaskRetentionYears` | 任务数据保留年限 |
 | `settings.backupDir` | 数据库备份目录 |
 | `settings.taskExportDir` | 任务导出目录 |
+| `settings.gunLedgerExportDir` | 编号台账导出目录 |
 | `settings.yearlyArchiveDir` | 年度归档目录 |
 | `settings.offlineBackupDir` | 断网备份目录 |
 | `settings.yearlyCleanupHistory` | 年度清理历史记录 |
 | `paths.database` | 数据库文件绝对路径 |
 | `paths.backupDir` | 备份目录绝对路径 |
 | `paths.taskExportDir` | 任务导出目录绝对路径 |
+| `paths.gunLedgerExportDir` | 编号台账导出目录绝对路径 |
 | `paths.yearlyArchiveDir` | 年度归档目录绝对路径 |
 | `paths.offlineBackupDir` | 断网备份目录绝对路径 |
 | `database.dbFileSize` | `data.db` 主文件大小（字节） |
@@ -1917,8 +2267,9 @@ Authorization: Bearer <token>
 | `database.tasksJsonSize` | `tasks` 集合 JSON 序列化后的逻辑大小（字节） |
 | `database.tasksCount` | 任务工作表数量 |
 | `database.taskItemsCount` | 任务条目总数 |
-| `files.backups` | 最近 5 个备份文件列表 |
+| `files.backups` | 最近 5 个数据库备份文件列表 |
 | `files.taskExports` | 最近 5 个任务导出文件列表 |
+| `files.gunLedgerExports` | 最近 5 个编号台账导出文件列表 |
 | `files.yearlyArchives` | 最近 5 个年度归档文件列表 |
 | `files.offlineBackups` | 最近 5 个断网备份文件列表 |
 | `scheduler.running` | 调度器是否正在运行 |
@@ -1938,7 +2289,10 @@ Authorization: Bearer <token>
   "enabled": true,
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
+  "dailyGunLedgerExportEnabled": true,
   "backupRetentionDays": 30,
+  "taskExportRetentionDays": 30,
+  "gunLedgerExportRetentionDays": 30,
   "scheduleTime": "00:30",
   "yearlyCleanupEnabled": true,
   "yearlyCleanupMonth": 1,
@@ -1946,6 +2300,7 @@ Authorization: Bearer <token>
   "yearlyTaskRetentionYears": 1,
   "backupDir": "backups/database",
   "taskExportDir": "backups/task-exports",
+  "gunLedgerExportDir": "backups/gun-ledger-exports",
   "yearlyArchiveDir": "backups/yearly-archives"
 }
 ```
@@ -1957,7 +2312,10 @@ Authorization: Bearer <token>
 | `enabled` | 是 | 是否启用自动维护 |
 | `dailyBackupEnabled` | 是 | 是否启用每日数据库备份 |
 | `dailyTaskExportEnabled` | 是 | 是否启用每日任务数据导出 |
-| `backupRetentionDays` | 是 | 备份保留天数（1-3650） |
+| `dailyGunLedgerExportEnabled` | 是 | 是否启用每日编号台账导出 |
+| `backupRetentionDays` | 是 | 数据库备份保留天数（1-3650） |
+| `taskExportRetentionDays` | 是 | 任务导出保留天数（1-3650） |
+| `gunLedgerExportRetentionDays` | 是 | 编号台账导出保留天数（1-3650） |
 | `scheduleTime` | 是 | 计划执行时间（格式 HH:MM） |
 | `yearlyCleanupEnabled` | 是 | 是否启用年度任务清理 |
 | `yearlyCleanupMonth` | 是 | 年度清理月份（1-12） |
@@ -1965,6 +2323,7 @@ Authorization: Bearer <token>
 | `yearlyTaskRetentionYears` | 是 | 任务数据保留年限（1-10） |
 | `backupDir` | 是 | 数据库备份目录（相对路径） |
 | `taskExportDir` | 是 | 任务导出目录（相对路径） |
+| `gunLedgerExportDir` | 是 | 编号台账导出目录（相对路径） |
 | `yearlyArchiveDir` | 是 | 年度归档目录（相对路径） |
 
 > 说明：断网备份相关字段（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）由后端默认值控制，本接口不接受修改，未知字段会被自动过滤。
@@ -2020,6 +2379,35 @@ Authorization: Bearer <token>
 
 - 导出内容为渲染后的任务表 `.xls`（与 `GET /api/system/export-xls` 相同的工作簿格式），而非 JSON 数据；每日定时自动导出的文件名为 `task-export-YYYYMMDD-HHmmss.xls`，`type` 为 `scheduled-task-export`。
 - 没有任何任务数据时返回 `404` 和 `没有可导出的数据`。
+
+### 手动导出编号台账
+
+`POST /api/system/maintenance/export-gun-ledger`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "message": "编号台账已导出",
+  "gunLedgerExport": {
+    "fileName": "gun-ledger-all-20260710-103000.xls",
+    "filePath": "D:\\project\\backend\\backups\\gun-ledger-exports\\gun-ledger-all-20260710-103000.xls",
+    "dir": "D:\\project\\backend\\backups\\gun-ledger-exports",
+    "size": 262144,
+    "categories": 3,
+    "tables": 11,
+    "rows": 150,
+    "type": "manual-gun-ledger-export"
+  }
+}
+```
+
+说明：
+
+- 导出内容为全部焊枪编号台账的单个 `.xls`（每分类一个工作表），与 `GET /api/gun-ledger/export-all` 格式相同；每日定时自动导出的 `type` 为 `scheduled-gun-ledger-export`。
+- 没有任何台账数据时返回 `404` 和 `没有可导出的编号台账数据`。
 
 ### 清理过期备份
 
@@ -2529,11 +2917,25 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
 - `Authentication error: Account disabled`：账号已禁用
 - `Authentication error: Session invalidated`：会话已失效（单设备登录限制）
 
-连接成功后，用户信息会附加到 `socket.data.user`，包含 `id`、`username`、`name`、`role` 字段。
+连接成功后，用户信息会附加到 `socket.data.user`，包含 `id`、`username`、`name`、`role` 字段。服务端会立即下发 `editing_state`（主页面编辑状态）、`gun_ledger_editing_state`（焊枪台账行编辑状态）和 `gun_ledger_table_locks_state`（焊枪台账表级锁快照）。
 
 ### 编辑状态管理
 
 后端使用 `designerId::date` 作为键管理编辑会话，同一用户同时只能编辑一个单元格，切换编辑时会自动释放之前的编辑状态。多人同时使用时，同一设计人员同一天只允许一个用户编辑，其他用户会看到红色"正在编辑"提示。
+
+### 焊枪台账编辑锁
+
+焊枪台账有两级编辑锁：
+
+1. **行锁（取号锁）**：后端使用 `tableId::serialNumber` 作为键管理行编辑会话，同一用户同时只持一把行锁，切换行时自动释放之前的行锁。用于焊枪名取号时的并发控制。
+2. **表级独占编辑锁**：每张表同一时刻只允许一名用户编辑（按 `userId` 判定，同一用户多标签页共享一把锁）。锁通过 Socket 生命周期 + 心跳维持：
+   - `gun_ledger_lock_table` 申请锁，被他人占用时返回 `gun_ledger_table_lock_blocked`。
+   - `gun_ledger_unlock_table` 释放锁（引用归零才真正释放）。
+   - `gun_ledger_table_heartbeat` 每 20 秒续期一次（服务端 TTL 60 秒）。
+   - 断开连接时移除该 socket 的锁引用，引用归零即释放锁。
+   - 后台每 30 秒清理心跳超时且无存活连接的僵死锁。
+   - `PUT /api/gun-ledger/tables/:tableId/rows` 和 `clear-gun-names` 接口会校验表锁，被他人持有时返回 `409`。
+   - 表被删除、分类被删除、导入覆盖时会强制释放该表的锁。
 
 ### 多设备登录踢下线机制
 
@@ -2554,6 +2956,11 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 |
 | `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数包含 `itemId` |
 | `status_tracking_stop_edit` | 通知停止编辑状态追踪记录，参数包含 `itemId` |
+| `gun_ledger_start_edit` | 通知开始编辑焊枪台账某行（取号），参数包含 `tableId`、`serialNumber` |
+| `gun_ledger_stop_edit` | 通知停止编辑焊枪台账某行，参数包含 `tableId`、`serialNumber` |
+| `gun_ledger_lock_table` | 申请焊枪台账表级独占编辑锁，参数包含 `tableId` |
+| `gun_ledger_unlock_table` | 释放焊枪台账表级编辑锁，参数包含 `tableId` |
+| `gun_ledger_table_heartbeat` | 焊枪台账表级锁心跳续期，参数包含 `tableId` |
 
 ### 服务端事件
 
@@ -2569,6 +2976,15 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` |
 | `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` |
 | `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 |
+| `gun_ledger_editing_state` | 当前焊枪台账行编辑状态，连接成功后下发 |
+| `gun_ledger_table_locks_state` | 当前焊枪台账表级锁快照，连接成功后下发 |
+| `gun_ledger_edit_start` | 某用户开始编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId, username, name }` |
+| `gun_ledger_edit_stop` | 某用户停止编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId }` |
+| `gun_ledger_edit_blocked` | 当前行已被其他用户编辑，参数为占用会话 |
+| `gun_ledger_table_locked` | 某表被锁定（表级独占编辑锁），参数 `{ tableId, userId, username, name, lockedAt }` |
+| `gun_ledger_table_unlocked` | 某表锁被释放，参数 `{ tableId }` |
+| `gun_ledger_table_lock_blocked` | 申请表级锁被他人占用，参数 `{ tableId, holder }` |
+| `gun_ledger_updated` | 焊枪台账数据变更，参数含 `action`（import/add_category/delete_category/add_table/rename_table/delete_table/reorder_tables/reorder_categories/update_rows/gun_name_rule/default_persons）及相关数据 |
 | `error` | 事件处理出错，参数 `{ message }`（如未认证、缺少必填字段） |
 
 ## 常见错误码
@@ -2690,4 +3106,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-09-22
+最后更新：2026-09-24

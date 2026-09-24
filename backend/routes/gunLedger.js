@@ -2,9 +2,16 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const gunTableLocks = require('../utils/gunTableLocks');
+const gunExport = require('../utils/gunLedgerExport');
+const { createZipBuffer } = require('../utils/simpleZip');
+const multer = require('multer');
+const XLSX = require('xlsx');
+const { validateFileType } = require('../utils/fileUploadSecurity');
 const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
 const Joi = require('joi');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // 分类名校称校验：1-30 字符，允许中文/英文/数字/连字符/下划线
 const categoryNameSchema = Joi.object({
@@ -32,6 +39,17 @@ const tableNameSchema = Joi.object({
 });
 
 const defaultPersonsSchema = Joi.array().items(Joi.string().min(1)).min(0);
+
+// 默认担当人员名单（系统初始值，可通过"重置为默认人员"恢复）
+const DEFAULT_RESPONSIBLE_PERSONS = ['张啸', '张明', '陈青松', '陈大仪'];
+
+// 焊枪名自动生成规则（台账初始化设置）
+const gunNameRuleSchema = Joi.object({
+  enabled: Joi.boolean().required(),
+  prefix: Joi.string().allow('').max(20).required(),
+  start: Joi.number().integer().min(0).max(99999999).required(),
+  pad: Joi.number().integer().min(1).max(10).required()
+});
 
 // 在 gunLedger.categories 中查找表，返回 { category, table, index }
 // 动态遍历所有分类（支持用户新增的分类）
@@ -65,9 +83,184 @@ const userMeta = (req) => req.user ? { id: req.user.id, username: req.user.usern
 // GET /api/gun-ledger —— 取全部数据
 router.get('/', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪'] };
+  const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
   res.json(gunLedger);
 }));
+
+// 下载文件名时间戳：YYYYMMDD-HHmmss
+const fileTimestamp = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+
+// 解析并校验查询参数中的分类名列表（逗号分隔，去重，忽略空项）
+const parseCategoryParam = (raw, validNames) => {
+  const names = String(raw || '')
+    .split(',')
+    .map(name => name.trim())
+    .filter(Boolean);
+  const unique = [...new Set(names)];
+  const invalid = unique.filter(name => !validNames.includes(name));
+  return { names: unique, invalid };
+};
+
+// GET /api/gun-ledger/summary —— 分类轻量摘要（供系统设置页面导出选择）
+router.get('/summary', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  res.json(gunExport.buildSummary(data.gunLedger));
+}));
+
+// GET /api/gun-ledger/export?categories=X2C,X2C-V2 —— 导出一个或多个分类
+// 单个分类直接下载 xls；多个分类打包为 zip（每个分类一个独立 xls）
+router.get('/export', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const gunLedger = data.gunLedger;
+  const validNames = gunExport.getCategories(gunLedger);
+  const { names, invalid } = parseCategoryParam(req.query.categories, validNames);
+
+  if (!names.length) {
+    return res.status(400).json({ message: '请至少选择一个分类' });
+  }
+  if (invalid.length) {
+    return res.status(400).json({ message: `分类不存在：${invalid.join('、')}` });
+  }
+
+  const timestamp = fileTimestamp();
+
+  if (names.length === 1) {
+    const category = names[0];
+    const buffer = gunExport.buildCategoryBuffer(gunLedger, category);
+    const filename = `gun-ledger-${gunExport.safeFilePart(category)}-${timestamp}.xls`;
+    res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(buffer);
+  }
+
+  const entries = names.map((category) => ({
+    name: `gun-ledger-${gunExport.safeFilePart(category)}-${timestamp}.xls`,
+    data: gunExport.buildCategoryBuffer(gunLedger, category)
+  }));
+  const zipBuffer = createZipBuffer(entries);
+  const zipName = `gun-ledger-export-${timestamp}.zip`;
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+  res.send(zipBuffer);
+}));
+
+// GET /api/gun-ledger/export-all —— 所有分类导出到一个大 xls（每分类一个工作表）
+router.get('/export-all', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const gunLedger = data.gunLedger;
+  if (!gunExport.getCategories(gunLedger).length) {
+    return res.status(404).json({ message: '没有可导出的数据' });
+  }
+  const buffer = gunExport.buildCombinedBuffer(gunLedger);
+  const filename = `gun-ledger-all-${fileTimestamp()}.xls`;
+  res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
+}));
+
+// POST /api/gun-ledger/import —— 导入台账工作簿
+// 每个工作表成为「目标分类」下的一张表（sheet 名为表名），导入将覆盖目标分类下的全部表。
+// 目标分类不存在时自动新建。仅超级管理员可操作。
+router.post('/import',
+  [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger'), upload.single('file')],
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ message: '请上传 xls/xlsx 文件' });
+    }
+    const fileTypeValidation = validateFileType(req.file.originalname, req.file.mimetype);
+    if (!fileTypeValidation.valid) {
+      return res.status(400).json({ message: fileTypeValidation.error });
+    }
+
+    const targetCategory = String(req.body.category || '').trim();
+    if (!isValidCategoryName(targetCategory)) {
+      return res.status(400).json({ message: '请选择或填写合法的目标分类（1-30 字符，不含 / 与 \\）' });
+    }
+
+    let workbook;
+    try {
+      workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellStyles: true });
+    } catch {
+      return res.status(400).json({ message: '无法解析文件，请检查格式' });
+    }
+
+    const { tables: parsedTables, warnings } = gunExport.parseImportedWorkbook(workbook);
+    if (!parsedTables.length) {
+      return res.status(400).json({ message: warnings.length ? warnings.join('；') : '文件中没有可导入的工作表' });
+    }
+
+    const data = db.readDb();
+    if (!data.gunLedger) {
+      data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+    }
+    if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] };
+
+    const isNewCategory = !Object.prototype.hasOwnProperty.call(data.gunLedger.categories, targetCategory);
+    const oldTables = isNewCategory ? [] : (data.gunLedger.categories[targetCategory] || []);
+    const oldTableIds = oldTables.map(t => t && t.id).filter(Boolean);
+
+    const usedTableNames = new Set();
+    const nowIso = new Date().toISOString();
+    const meta = userMeta(req);
+
+    const importedTables = parsedTables.map((parsed) => {
+      // 表名：取工作表名，限 50 字符，重名自动追加 -n
+      const baseName = String(parsed.name || '').trim().slice(0, 50) || '导入的表';
+      let tableName = baseName;
+      let seq = 1;
+      while (usedTableNames.has(tableName)) {
+        const suffix = `-${seq}`;
+        tableName = `${baseName.slice(0, 50 - suffix.length)}${suffix}`;
+        seq += 1;
+      }
+      usedTableNames.add(tableName);
+
+      const rows = parsed.rows
+        .map((draft, index) => ({
+          id: newId('gun-row'),
+          serialNumber: Number.isFinite(draft.serialNumber) && draft.serialNumber > 0 ? draft.serialNumber : index + 1,
+          gunName: draft.gunName,
+          customer: draft.customer,
+          time: draft.time,
+          responsiblePerson: draft.responsiblePerson,
+          remarks: draft.remarks,
+          createdAt: nowIso,
+          createdBy: meta,
+          updatedAt: nowIso,
+          updatedBy: meta
+        }))
+        .sort((a, b) => a.serialNumber - b.serialNumber)
+        .map((row, index) => ({ ...row, serialNumber: index + 1 }));
+
+      return { id: newId('gun-tbl'), name: tableName, rows };
+    });
+
+    // 释放旧表的编辑锁
+    oldTableIds.forEach(id => gunTableLocks.forceRelease(id));
+
+    data.gunLedger.categories[targetCategory] = importedTables;
+    await db.writeDb(data);
+
+    const io = req.app.get('io');
+    if (io) {
+      oldTableIds.forEach(id => io.emit('gun_ledger_table_unlocked', { tableId: id }));
+      io.emit('gun_ledger_updated', { action: 'import', category: targetCategory, isNewCategory, tables: importedTables });
+    }
+
+    const importedRows = importedTables.reduce((sum, table) => sum + table.rows.length, 0);
+    res.json({
+      message: '导入成功',
+      category: targetCategory,
+      isNewCategory,
+      importedTables: importedTables.length,
+      importedRows,
+      warnings
+    });
+  }));
 
 // POST /api/gun-ledger/categories —— 新增分类
 router.post('/categories', [authMiddleware, adminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
@@ -80,7 +273,7 @@ router.post('/categories', [authMiddleware, adminMiddleware, accessSettingsMiddl
     return res.status(400).json({ message: '分类名含非法字符' });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪'] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
   if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] };
 
   // 分类名唯一（大小写敏感）
@@ -141,7 +334,7 @@ router.post('/categories/:category/tables', [authMiddleware, adminMiddleware, ac
     return res.status(400).json({ message: '表名不能为空', details: error.details.map(d => d.message) });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪'] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
   if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] };
   if (!Array.isArray(data.gunLedger.categories[category])) data.gunLedger.categories[category] = [];
 
@@ -291,6 +484,9 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
       updatedBy: meta
     };
   });
+  // 序号严格按自然顺序连续排列：按序号升序重排为 1..N，杜绝跳号（如 1 直接到 11）
+  nextRows.sort((a, b) => a.serialNumber - b.serialNumber);
+  nextRows.forEach((r, i) => { r.serialNumber = i + 1; });
   found.table.rows = nextRows;
   await db.writeDb(data);
 
@@ -342,7 +538,7 @@ router.get('/default-persons', [authMiddleware, accessSettingsMiddleware('gunLed
   const data = db.readDb();
   const persons = (data.gunLedger && Array.isArray(data.gunLedger.defaultResponsiblePersons) && data.gunLedger.defaultResponsiblePersons.length)
     ? data.gunLedger.defaultResponsiblePersons
-    : ['张啸', '张明', '陈青松', '陈大仪'];
+    : DEFAULT_RESPONSIBLE_PERSONS;
   res.json(persons);
 }));
 
@@ -362,6 +558,72 @@ router.put('/default-persons', [authMiddleware, superAdminMiddleware], asyncHand
   if (io) io.emit('gun_ledger_updated', { action: 'default_persons', defaultResponsiblePersons: persons });
 
   res.json(persons);
+}));
+
+// POST /api/gun-ledger/default-persons/reset —— 重置为系统默认担当人员（超管）
+router.post('/default-persons/reset', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: [] };
+  data.gunLedger.defaultResponsiblePersons = [...DEFAULT_RESPONSIBLE_PERSONS];
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  if (io) io.emit('gun_ledger_updated', { action: 'default_persons', defaultResponsiblePersons: data.gunLedger.defaultResponsiblePersons });
+
+  res.json(data.gunLedger.defaultResponsiblePersons);
+}));
+
+// PUT /api/gun-ledger/tables/:tableId/gun-name-rule —— 配置该表焊枪名自动生成规则（台账初始化，超管）
+router.put('/tables/:tableId/gun-name-rule', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const { error, value } = gunNameRuleSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '焊枪名生成规则不合法', details: error.details.map(d => d.message) });
+  }
+  const data = db.readDb();
+  if (!data.gunLedger) return res.status(404).json({ message: '表未找到' });
+  const found = findTable(data.gunLedger, req.params.tableId);
+  if (!found) return res.status(404).json({ message: '表未找到' });
+
+  const rule = {
+    enabled: Boolean(value.enabled),
+    prefix: String(value.prefix || ''),
+    start: value.start,
+    pad: value.pad
+  };
+  found.table.gunNameRule = rule;
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  if (io) io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId: req.params.tableId, rule });
+
+  res.json(rule);
+}));
+
+// POST /api/gun-ledger/tables/:tableId/clear-gun-names —— 清空该表所有行的焊枪名（台账初始化，超管）
+// 仅清空焊枪名列，序号与客户/时间/担当/备注等数据保留；焊枪名允许后续重新手填或取号
+router.post('/tables/:tableId/clear-gun-names', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  if (!data.gunLedger) return res.status(404).json({ message: '表未找到' });
+  const found = findTable(data.gunLedger, req.params.tableId);
+  if (!found) return res.status(404).json({ message: '表未找到' });
+
+  // 表级编辑锁保护：他人正在编辑该表时拒绝清空
+  const holder = gunTableLocks.get(req.params.tableId);
+  if (holder && (!req.user || holder.userId !== req.user.id)) {
+    return res.status(409).json({ message: `该表正由「${holder.name || holder.username}」编辑，请等待其完成后再清除` });
+  }
+
+  const meta = userMeta(req);
+  const now = new Date().toISOString();
+  // 行顺序与序号保持不变（归一化保证序号连续），仅清空焊枪名
+  const nextRows = (found.table.rows || []).map(r => ({ ...r, gunName: '', updatedAt: now, updatedBy: meta }));
+  found.table.rows = nextRows;
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: nextRows });
+
+  res.json({ success: true, rows: nextRows });
 }));
 
 module.exports = router;

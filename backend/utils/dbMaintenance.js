@@ -5,6 +5,7 @@ const db = require('../db');
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
+const gunExport = require('./gunLedgerExport');
 
 // 备份最终化：rawDb.backup() 生成的备份文件继承源库的 WAL 模式，
 // 会在备份目录留下 .db-wal / .db-shm 伴随文件，导致前端列表出现多条记录。
@@ -28,9 +29,12 @@ const defaultMaintenanceSettings = {
   enabled: true,
   dailyBackupEnabled: true,
   dailyTaskExportEnabled: true,
+  dailyGunLedgerExportEnabled: true,
   offlineBackupEnabled: true,
   backupRetentionDays: 30,
   offlineBackupRetentionDays: 7,
+  taskExportRetentionDays: 30,
+  gunLedgerExportRetentionDays: 30,
   scheduleTime: '00:30',
   yearlyCleanupEnabled: true,
   yearlyCleanupMonth: 1,
@@ -38,6 +42,7 @@ const defaultMaintenanceSettings = {
   yearlyTaskRetentionYears: 1,
   backupDir: 'backups/database',
   taskExportDir: 'backups/task-exports',
+  gunLedgerExportDir: 'backups/gun-ledger-exports',
   yearlyArchiveDir: 'backups/yearly-archives',
   offlineBackupDir: 'backups/offline',
   yearlyCleanupHistory: {}
@@ -59,16 +64,20 @@ const normalizeMaintenanceSettings = (settings = {}) => ({
   enabled: settings.enabled ?? defaultMaintenanceSettings.enabled,
   dailyBackupEnabled: settings.dailyBackupEnabled ?? defaultMaintenanceSettings.dailyBackupEnabled,
   dailyTaskExportEnabled: settings.dailyTaskExportEnabled ?? defaultMaintenanceSettings.dailyTaskExportEnabled,
+  dailyGunLedgerExportEnabled: settings.dailyGunLedgerExportEnabled ?? defaultMaintenanceSettings.dailyGunLedgerExportEnabled,
   offlineBackupEnabled: settings.offlineBackupEnabled ?? defaultMaintenanceSettings.offlineBackupEnabled,
   yearlyCleanupEnabled: settings.yearlyCleanupEnabled ?? defaultMaintenanceSettings.yearlyCleanupEnabled,
   backupRetentionDays: Math.max(1, parseInt(settings.backupRetentionDays, 10) || defaultMaintenanceSettings.backupRetentionDays),
   offlineBackupRetentionDays: Math.max(1, parseInt(settings.offlineBackupRetentionDays, 10) || defaultMaintenanceSettings.offlineBackupRetentionDays),
+  taskExportRetentionDays: Math.max(1, parseInt(settings.taskExportRetentionDays, 10) || defaultMaintenanceSettings.taskExportRetentionDays),
+  gunLedgerExportRetentionDays: Math.max(1, parseInt(settings.gunLedgerExportRetentionDays, 10) || defaultMaintenanceSettings.gunLedgerExportRetentionDays),
   yearlyCleanupMonth: Math.min(12, Math.max(1, parseInt(settings.yearlyCleanupMonth, 10) || defaultMaintenanceSettings.yearlyCleanupMonth)),
   yearlyCleanupCheckDays: Math.min(31, Math.max(1, parseInt(settings.yearlyCleanupCheckDays, 10) || defaultMaintenanceSettings.yearlyCleanupCheckDays)),
   yearlyTaskRetentionYears: Math.max(1, parseInt(settings.yearlyTaskRetentionYears, 10) || defaultMaintenanceSettings.yearlyTaskRetentionYears),
   scheduleTime: /^\d{2}:\d{2}$/.test(String(settings.scheduleTime || '')) ? settings.scheduleTime : defaultMaintenanceSettings.scheduleTime,
   backupDir: String(settings.backupDir || defaultMaintenanceSettings.backupDir).trim(),
   taskExportDir: String(settings.taskExportDir || defaultMaintenanceSettings.taskExportDir).trim(),
+  gunLedgerExportDir: String(settings.gunLedgerExportDir || defaultMaintenanceSettings.gunLedgerExportDir).trim(),
   yearlyArchiveDir: String(settings.yearlyArchiveDir || defaultMaintenanceSettings.yearlyArchiveDir).trim(),
   offlineBackupDir: String(settings.offlineBackupDir || defaultMaintenanceSettings.offlineBackupDir).trim(),
   yearlyCleanupHistory: settings.yearlyCleanupHistory && typeof settings.yearlyCleanupHistory === 'object' && !Array.isArray(settings.yearlyCleanupHistory)
@@ -286,16 +295,51 @@ const exportTaskData = (options = {}) => {
   };
 };
 
+// 焊枪编号台账导出：所有分类的表导出到一个大 xls（每张表一个工作表）
+const exportGunLedgerData = (options = {}) => {
+  const { data, settings } = getMaintenanceSettings();
+  const exportDir = resolveManagedDir(options.dir || settings.gunLedgerExportDir);
+  ensureDir(exportDir);
+  const gunLedger = data.gunLedger;
+  const categories = gunExport.getCategories(gunLedger);
+
+  if (categories.length === 0) {
+    const result = { skipped: true, reason: 'no-data', categories: 0 };
+    if (options.requireData) {
+      const error = new Error('没有可导出的焊枪编号台账数据');
+      error.statusCode = 404;
+      error.result = result;
+      throw error;
+    }
+    return result;
+  }
+
+  const buffer = gunExport.buildCombinedBuffer(gunLedger);
+  const fileName = `gun-ledger-all-${toTimestamp()}.xls`;
+  const filePath = path.join(exportDir, fileName);
+  fs.writeFileSync(filePath, buffer);
+  return {
+    fileName,
+    filePath,
+    dir: exportDir,
+    size: fs.statSync(filePath).size,
+    categories: categories.length,
+    type: options.type || 'scheduled-gun-ledger-export'
+  };
+};
+
 const cleanupOldBackups = (options = {}) => {
   const { settings } = getMaintenanceSettings();
   const retentionDays = Math.max(1, parseInt(options.retentionDays, 10) || settings.backupRetentionDays);
   const offlineRetentionDays = Math.max(1, parseInt(options.offlineRetentionDays, 10) || settings.offlineBackupRetentionDays);
-  const cutoffTime = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  const offlineCutoffTime = Date.now() - offlineRetentionDays * 24 * 60 * 60 * 1000;
+  const taskRetentionDays = Math.max(1, parseInt(options.taskRetentionDays, 10) || settings.taskExportRetentionDays);
+  const gunLedgerRetentionDays = Math.max(1, parseInt(options.gunLedgerRetentionDays, 10) || settings.gunLedgerExportRetentionDays);
+  const dayMs = 24 * 60 * 60 * 1000;
   const dirs = [
-    { path: resolveManagedDir(settings.backupDir), cutoff: cutoffTime },
-    { path: resolveManagedDir(settings.taskExportDir), cutoff: cutoffTime },
-    { path: resolveManagedDir(settings.offlineBackupDir), cutoff: offlineCutoffTime }
+    { path: resolveManagedDir(settings.backupDir), cutoff: Date.now() - retentionDays * dayMs },
+    { path: resolveManagedDir(settings.taskExportDir), cutoff: Date.now() - taskRetentionDays * dayMs },
+    { path: resolveManagedDir(settings.gunLedgerExportDir), cutoff: Date.now() - gunLedgerRetentionDays * dayMs },
+    { path: resolveManagedDir(settings.offlineBackupDir), cutoff: Date.now() - offlineRetentionDays * dayMs }
   ];
   const removed = [];
 
@@ -306,7 +350,14 @@ const cleanupOldBackups = (options = {}) => {
     });
   });
 
-  return { retentionDays, offlineRetentionDays, removedCount: removed.length, removed };
+  return {
+    retentionDays,
+    offlineRetentionDays,
+    taskRetentionDays,
+    gunLedgerRetentionDays,
+    removedCount: removed.length,
+    removed
+  };
 };
 
 const createYearlyArchive = (archiveTasks, cutoffYear, settings) => {
@@ -389,7 +440,7 @@ const runScheduledMaintenance = async () => {
   if (schedulerRunning) return { skipped: true, reason: 'already-running' };
   schedulerRunning = true;
   const startedAt = new Date();
-  const result = { startedAt: startedAt.toISOString(), backup: null, taskExport: null, backupCleanup: null, yearlyCleanup: null, errors: [] };
+  const result = { startedAt: startedAt.toISOString(), backup: null, taskExport: null, gunLedgerExport: null, backupCleanup: null, yearlyCleanup: null, errors: [] };
 
   try {
     const { settings } = getMaintenanceSettings();
@@ -400,6 +451,7 @@ const runScheduledMaintenance = async () => {
     }
     if (settings.dailyBackupEnabled) result.backup = await createDatabaseBackup();
     if (settings.dailyTaskExportEnabled) result.taskExport = exportTaskData();
+    if (settings.dailyGunLedgerExportEnabled) result.gunLedgerExport = exportGunLedgerData();
     result.backupCleanup = cleanupOldBackups();
     result.yearlyCleanup = await runYearlyTaskCleanup();
     return result;
@@ -458,6 +510,7 @@ const getMaintenanceStatus = () => {
       database: dbPath,
       backupDir: resolveManagedDir(settings.backupDir),
       taskExportDir: resolveManagedDir(settings.taskExportDir),
+      gunLedgerExportDir: resolveManagedDir(settings.gunLedgerExportDir),
       yearlyArchiveDir: resolveManagedDir(settings.yearlyArchiveDir),
       offlineBackupDir: resolveManagedDir(settings.offlineBackupDir)
     },
@@ -473,6 +526,7 @@ const getMaintenanceStatus = () => {
     files: {
       backups: listManagedFiles(resolveManagedDir(settings.backupDir)).slice(0, 5),
       taskExports: listManagedFiles(resolveManagedDir(settings.taskExportDir)).slice(0, 5),
+      gunLedgerExports: listManagedFiles(resolveManagedDir(settings.gunLedgerExportDir)).slice(0, 5),
       yearlyArchives: listManagedFiles(resolveManagedDir(settings.yearlyArchiveDir)).slice(0, 5),
       offlineBackups: listManagedFiles(resolveManagedDir(settings.offlineBackupDir)).slice(0, 5)
     },
@@ -491,6 +545,7 @@ module.exports = {
   createDatabaseBackup,
   createOfflineBackup,
   exportTaskData,
+  exportGunLedgerData,
   cleanupOldBackups,
   runYearlyTaskCleanup,
   runScheduledMaintenance,

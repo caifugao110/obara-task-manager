@@ -43,9 +43,12 @@ interface MaintenanceSettings {
   enabled: boolean;
   dailyBackupEnabled: boolean;
   dailyTaskExportEnabled: boolean;
+  dailyGunLedgerExportEnabled: boolean;
   offlineBackupEnabled: boolean;
   backupRetentionDays: number;
   offlineBackupRetentionDays: number;
+  taskExportRetentionDays: number;
+  gunLedgerExportRetentionDays: number;
   scheduleTime: string;
   yearlyCleanupEnabled: boolean;
   yearlyCleanupMonth: number;
@@ -53,13 +56,14 @@ interface MaintenanceSettings {
   yearlyTaskRetentionYears: number;
   backupDir: string;
   taskExportDir: string;
+  gunLedgerExportDir: string;
   yearlyArchiveDir: string;
   offlineBackupDir: string;
 }
 
 interface MaintenanceStatus {
   settings: MaintenanceSettings;
-  paths: { database: string; backupDir: string; taskExportDir: string; yearlyArchiveDir: string; offlineBackupDir: string };
+  paths: { database: string; backupDir: string; taskExportDir: string; gunLedgerExportDir: string; yearlyArchiveDir: string; offlineBackupDir: string };
   database: {
     dbFileSize: number;
     walSize: number;
@@ -69,7 +73,7 @@ interface MaintenanceStatus {
     tasksCount: number;
     taskItemsCount: number;
   };
-  files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[]; offlineBackups: MaintenanceFile[] };
+  files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; gunLedgerExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[]; offlineBackups: MaintenanceFile[] };
   scheduler: { running: boolean; nextRunAt?: string; lastRun?: any };
 }
 
@@ -77,9 +81,12 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   enabled: true,
   dailyBackupEnabled: true,
   dailyTaskExportEnabled: true,
+  dailyGunLedgerExportEnabled: true,
   offlineBackupEnabled: true,
   backupRetentionDays: 30,
   offlineBackupRetentionDays: 7,
+  taskExportRetentionDays: 30,
+  gunLedgerExportRetentionDays: 30,
   scheduleTime: '00:30',
   yearlyCleanupEnabled: true,
   yearlyCleanupMonth: 1,
@@ -87,6 +94,7 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   yearlyTaskRetentionYears: 1,
   backupDir: 'backups/database',
   taskExportDir: 'backups/task-exports',
+  gunLedgerExportDir: 'backups/gun-ledger-exports',
   yearlyArchiveDir: 'backups/yearly-archives',
   offlineBackupDir: 'backups/offline'
 };
@@ -126,7 +134,18 @@ const SystemSettings = () => {
   const [cleanupStMode, setCleanupStMode] = useState<'production' | 'delivery'>('production');
   const [cleanupStBeforeMonth, setCleanupStBeforeMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [cleanupStProcessing, setCleanupStProcessing] = useState(false);
+  // 焊枪编号台账导出：分类摘要 / 已选分类 / 加载中
+  const [gunLedgerCats, setGunLedgerCats] = useState<{ category: string; tables: number; rows: number }[]>([]);
+  const [gunExportCats, setGunExportCats] = useState<string[]>([]);
+  const [gunCatsLoading, setGunCatsLoading] = useState(false);
+  // 焊枪编号台账导入：待导入文件 / 目标分类（现有）/ 是否导入到新分类 / 新分类名 / 已确认
+  const [gunPendingFile, setGunPendingFile] = useState<File | null>(null);
+  const [gunImportCategory, setGunImportCategory] = useState('');
+  const [gunImportAsNew, setGunImportAsNew] = useState(false);
+  const [gunImportNewName, setGunImportNewName] = useState('');
+  const [gunImportConfirmed, setGunImportConfirmed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const gunFileInputRef = useRef<HTMLInputElement>(null);
 
   const isSuperAdmin = user?.role === 'superadmin';
   const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
@@ -171,6 +190,27 @@ const SystemSettings = () => {
     }
   }, [isSuperAdmin, token]);
 
+  // 获取焊枪编号台账分类摘要（无权限时静默置空，卡片显示空态）
+  const fetchGunLedgerCats = useCallback(async () => {
+    if (!token) return;
+    setGunCatsLoading(true);
+    try {
+      const res = await axios.get('/api/gun-ledger/summary', authHeader);
+      const list: { category: string; tables: number; rows: number }[] = res.data;
+      setGunLedgerCats(list);
+      // 已选分类以最新摘要为准；首次加载默认全选
+      setGunExportCats(prev => {
+        const valid = prev.filter(name => list.some(item => item.category === name));
+        return valid.length ? valid : list.map(item => item.category);
+      });
+    } catch {
+      setGunLedgerCats([]);
+      setGunExportCats([]);
+    } finally {
+      setGunCatsLoading(false);
+    }
+  }, [token]);
+
 
 
   const fetchMaintenanceStatus = useCallback(async () => {
@@ -190,11 +230,11 @@ const SystemSettings = () => {
   useEffect(() => {
     const init = async () => {
       await Promise.all([fetchSettings(), fetchAccessSettings()]);
-      await Promise.all([fetchLoginLogs(), fetchMaintenanceStatus()]);
+      await Promise.all([fetchLoginLogs(), fetchMaintenanceStatus(), fetchGunLedgerCats()]);
       setLoading(false);
     };
     init();
-  }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchMaintenanceStatus]);
+  }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchMaintenanceStatus, fetchGunLedgerCats]);
 
   useEffect(() => {
     if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'maintenance' || activeTab === 'plan')) {
@@ -331,6 +371,105 @@ const SystemSettings = () => {
       }
     } finally {
       setExporting(false);
+    }
+  };
+
+  // 焊枪编号台账导出：单分类下载 xls；多分类打包 zip（每分类一个独立 xls）
+  const handleGunLedgerExport = async () => {
+    if (!token) return;
+    if (!gunExportCats.length) {
+      addToast('请至少选择一个分类', 'error');
+      return;
+    }
+    setExporting(true);
+    try {
+      const res = await axios.get('/api/gun-ledger/export', {
+        ...authHeader,
+        params: { categories: gunExportCats.join(',') },
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      const timestamp = format(new Date(), 'yyyyMMddHHmmss');
+      link.download = gunExportCats.length === 1
+        ? `gun-ledger-${gunExportCats[0]}-${timestamp}.xls`
+        : `gun-ledger-export-${timestamp}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      addToast('导出成功', 'success');
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        addToast('没有可导出的数据', 'error');
+      } else if (err.response?.status === 403) {
+        addToast('没有焊枪编号台账的访问权限', 'error');
+      } else {
+        addToast('导出失败', 'error');
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const toggleGunExportCat = (name: string) => {
+    setGunExportCats(prev => (prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]));
+  };
+
+  // 选择导入文件：记录待导入文件，默认目标分类取第一个现有分类
+  const handleGunLedgerImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !token) return;
+    setGunPendingFile(file);
+    setGunImportConfirmed(false);
+    setGunImportAsNew(false);
+    setGunImportNewName('');
+    setGunImportCategory(prev => prev || gunLedgerCats[0]?.category || '');
+    if (gunFileInputRef.current) gunFileInputRef.current.value = '';
+  };
+
+  const cancelGunLedgerImport = () => {
+    setGunPendingFile(null);
+    setGunImportConfirmed(false);
+    setGunImportAsNew(false);
+    setGunImportNewName('');
+  };
+
+  // 确认导入：上传工作簿，每个工作表成为目标分类下的一张表（覆盖目标分类）
+  const confirmGunLedgerImport = async () => {
+    if (!gunPendingFile || !token) return;
+
+    const targetCategory = (gunImportAsNew ? gunImportNewName : gunImportCategory).trim();
+    if (!targetCategory) {
+      addToast(gunImportAsNew ? '请填写新分类名称' : '请选择目标分类', 'error');
+      return;
+    }
+    if (targetCategory.length > 30 || /[/\\]/.test(targetCategory)) {
+      addToast('分类名需为 1-30 字符，且不能包含 / 与 \\', 'error');
+      return;
+    }
+    if (!gunImportConfirmed) {
+      addToast('请先确认导入格式与系统导出格式一致，并知悉导入会覆盖目标分类', 'error');
+      return;
+    }
+
+    setImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', gunPendingFile);
+      formData.append('category', targetCategory);
+      const res = await axios.post('/api/gun-ledger/import', formData, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+      });
+      const warnings = res.data.warnings?.length ? `；提示：${res.data.warnings.join('；')}` : '';
+      addToast(`导入成功：${res.data.isNewCategory ? '新建分类' : '覆盖分类'}「${res.data.category}」，${res.data.importedTables} 张表 / ${res.data.importedRows} 行${warnings}`, 'success');
+      cancelGunLedgerImport();
+      fetchGunLedgerCats();
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '导入失败', 'error');
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -947,6 +1086,129 @@ const SystemSettings = () => {
               </div>
             </div>
 
+            {/* 焊枪编号台账：按需选择分类导出（单分类 xls，多分类 zip） */}
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+              <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
+                <ClipboardList className="mr-2 text-emerald-600" size={22} />
+                焊枪编号台账
+              </h3>
+              <p className="text-sm text-gray-500 mb-5">按分类导入/导出焊枪编号台账。每个分类是一个 xls 工作簿，分类下的每张表对应一个工作表。导出时：选择 1 个分类下载单个 xls，选择多个分类时打包为 zip。导入时：工作簿内的每个工作表会成为目标分类下的一张表，并覆盖目标分类。</p>
+              {gunCatsLoading ? (
+                <div className="text-sm text-gray-400 flex items-center gap-2 py-2">
+                  <RefreshCw size={14} className="animate-spin" />正在加载分类...
+                </div>
+              ) : gunLedgerCats.length === 0 ? (
+                <div className="text-sm text-gray-400 bg-gray-50 rounded-xl border border-gray-100 p-4">暂无可导出的分类，或当前账号没有焊枪编号台账的访问权限。</div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-2 mb-5">
+                    {gunLedgerCats.map(item => {
+                      const checked = gunExportCats.includes(item.category);
+                      return (
+                        <label
+                          key={item.category}
+                          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border cursor-pointer text-sm font-bold transition ${checked ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 accent-emerald-600"
+                            checked={checked}
+                            onChange={() => toggleGunExportCat(item.category)}
+                          />
+                          {item.category}
+                          <span className="text-[10px] font-normal text-gray-400">{item.tables} 表 / {item.rows} 行</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-3 text-xs font-bold">
+                      <button className="text-emerald-600 hover:text-emerald-700 transition" onClick={() => setGunExportCats(gunLedgerCats.map(item => item.category))}>全选</button>
+                      <button className="text-gray-400 hover:text-gray-600 transition" onClick={() => setGunExportCats([])}>清空</button>
+                    </div>
+                    <button
+                      onClick={handleGunLedgerExport}
+                      disabled={exporting || importing || !gunExportCats.length}
+                      className="flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                    >
+                      {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                      导出焊枪编号台账
+                    </button>
+                    {isSuperAdmin && (
+                      <>
+                        <button
+                          onClick={() => gunFileInputRef.current?.click()}
+                          disabled={importing}
+                          className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                        >
+                          {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
+                          导入焊枪编号台账
+                        </button>
+                        <input
+                          ref={gunFileInputRef}
+                          type="file"
+                          accept=".xls,.xlsx"
+                          className="hidden"
+                          onChange={handleGunLedgerImportFile}
+                        />
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* 导入确认面板 */}
+              {gunPendingFile && (
+                <div className="mt-5 rounded-xl border-2 border-blue-200 bg-blue-50 p-5 space-y-4">
+                  <div className="font-bold text-gray-800 flex items-center gap-2">
+                    <Upload size={18} className="text-blue-600" />确认导入焊枪编号台账
+                  </div>
+                  <div className="text-sm text-gray-600">文件：<span className="font-bold text-gray-800 break-all">{gunPendingFile.name}</span></div>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-sm font-bold text-gray-700 cursor-pointer">
+                      <input type="radio" className="w-4 h-4 accent-blue-600" checked={!gunImportAsNew} onChange={() => setGunImportAsNew(false)} />
+                      导入到现有分类：
+                    </label>
+                    {!gunImportAsNew && (
+                      <select
+                        value={gunImportCategory}
+                        onChange={(e) => setGunImportCategory(e.target.value)}
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-200"
+                      >
+                        {gunLedgerCats.length === 0 && <option value="">（暂无现有分类，请改用新分类）</option>}
+                        {gunLedgerCats.map(item => <option key={item.category} value={item.category}>{item.category}（{item.tables} 表 / {item.rows} 行）</option>)}
+                      </select>
+                    )}
+                    <label className="flex items-center gap-2 text-sm font-bold text-gray-700 cursor-pointer pt-1">
+                      <input type="radio" className="w-4 h-4 accent-blue-600" checked={gunImportAsNew} onChange={() => setGunImportAsNew(true)} />
+                      导入到新分类：
+                    </label>
+                    {gunImportAsNew && (
+                      <input
+                        type="text"
+                        value={gunImportNewName}
+                        onChange={(e) => setGunImportNewName(e.target.value)}
+                        placeholder="请输入新分类名称（1-30 字符）"
+                        maxLength={30}
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-200"
+                      />
+                    )}
+                  </div>
+                  <label className="flex items-start gap-2 text-sm text-gray-700 font-bold cursor-pointer">
+                    <input type="checkbox" className="w-4 h-4 mt-0.5 accent-blue-600" checked={gunImportConfirmed} onChange={(e) => setGunImportConfirmed(e.target.checked)} />
+                    <span>已确认文件格式与系统导出格式一致（每张表一个工作表，含序号/焊枪名/客户/时间/担当/备注表头），并知悉导入将<span className="text-red-600">覆盖目标分类下的全部表格</span>。</span>
+                  </label>
+                  <div className="flex justify-end gap-2">
+                    <button onClick={cancelGunLedgerImport} disabled={importing} className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60">取消</button>
+                    <button onClick={confirmGunLedgerImport} disabled={importing} className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition disabled:opacity-60">
+                      {importing && <RefreshCw size={16} className="animate-spin" />}
+                      {importing ? '导入中...' : '确认导入'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {isSuperAdmin && (
               <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
                 <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
@@ -1007,6 +1269,7 @@ const SystemSettings = () => {
                   { label: '启用自动维护', key: 'enabled' as const },
                   { label: '每日数据库备份', key: 'dailyBackupEnabled' as const },
                   { label: '每日任务表格导出', key: 'dailyTaskExportEnabled' as const },
+                  { label: '每日编号台账导出', key: 'dailyGunLedgerExportEnabled' as const },
                   { label: '年度任务清理', key: 'yearlyCleanupEnabled' as const },
                   { label: '断网自动备份', key: 'offlineBackupEnabled' as const }
                 ].map(item => (
@@ -1021,14 +1284,17 @@ const SystemSettings = () => {
                 <label className="block"><span className="text-sm font-bold text-gray-700">每日执行时间</span><input type="time" value={maintenanceSettings.scheduleTime} onChange={(e) => updateMaintenanceField('scheduleTime', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">备份保留天数</span><input type="number" min={1} value={maintenanceSettings.backupRetentionDays} onChange={(e) => updateMaintenanceField('backupRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">断网备份保留天数</span><input type="number" min={1} value={maintenanceSettings.offlineBackupRetentionDays} onChange={(e) => updateMaintenanceField('offlineBackupRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">任务表格保留天数</span><input type="number" min={1} value={maintenanceSettings.taskExportRetentionDays} onChange={(e) => updateMaintenanceField('taskExportRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">编号台账保留天数</span><input type="number" min={1} value={maintenanceSettings.gunLedgerExportRetentionDays} onChange={(e) => updateMaintenanceField('gunLedgerExportRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">年度检测月份</span><input type="number" min={1} max={12} value={maintenanceSettings.yearlyCleanupMonth} onChange={(e) => updateMaintenanceField('yearlyCleanupMonth', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">月初检测天数</span><input type="number" min={1} max={31} value={maintenanceSettings.yearlyCleanupCheckDays} onChange={(e) => updateMaintenanceField('yearlyCleanupCheckDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">任务保留年数</span><input type="number" min={1} max={10} value={maintenanceSettings.yearlyTaskRetentionYears} onChange={(e) => updateMaintenanceField('yearlyTaskRetentionYears', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-5 mt-5">
+              <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-5 mt-5">
                 <label className="block"><span className="text-sm font-bold text-gray-700">数据库备份目录</span><input value={maintenanceSettings.backupDir} onChange={(e) => updateMaintenanceField('backupDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">任务导出目录</span><input value={maintenanceSettings.taskExportDir} onChange={(e) => updateMaintenanceField('taskExportDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+                <label className="block"><span className="text-sm font-bold text-gray-700">编号台账目录</span><input value={maintenanceSettings.gunLedgerExportDir} onChange={(e) => updateMaintenanceField('gunLedgerExportDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">年度永久归档目录</span><input value={maintenanceSettings.yearlyArchiveDir} onChange={(e) => updateMaintenanceField('yearlyArchiveDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
                 <label className="block"><span className="text-sm font-bold text-gray-700">断网备份目录</span><input value={maintenanceSettings.offlineBackupDir} onChange={(e) => updateMaintenanceField('offlineBackupDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
               </div>
@@ -1040,6 +1306,7 @@ const SystemSettings = () => {
                 <div className="grid grid-cols-1 gap-3">
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/backup', '数据库备份已完成')} disabled={maintenanceLoading} className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即备份数据库</button>
                   <button onClick={handleManualTaskExport} disabled={maintenanceLoading || exporting} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
+                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/export-gun-ledger', '编号台账已导出')} disabled={maintenanceLoading} className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出编号台账</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/cleanup-backups', '过期备份已清理')} disabled={maintenanceLoading} className="px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清理过期备份</button>
                   <button onClick={() => runMaintenanceAction('/api/system/maintenance/yearly-cleanup', '年度任务清理检测已完成', { force: true })} disabled={maintenanceLoading} className="px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition">执行年度清理检测</button>
                   <button onClick={handleClearLogs} disabled={maintenanceLoading} className="px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清空所有日志</button>
@@ -1065,6 +1332,7 @@ const SystemSettings = () => {
                   </div>
                   <div><span className="font-bold text-gray-700">备份目录：</span><span className="break-all">{maintenanceStatus?.paths?.backupDir || '-'}</span></div>
                   <div><span className="font-bold text-gray-700">任务导出：</span><span className="break-all">{maintenanceStatus?.paths?.taskExportDir || '-'}</span></div>
+                  <div><span className="font-bold text-gray-700">编号台账目录：</span><span className="break-all">{maintenanceStatus?.paths?.gunLedgerExportDir || '-'}</span></div>
                   <div><span className="font-bold text-gray-700">年度归档：</span><span className="break-all">{maintenanceStatus?.paths?.yearlyArchiveDir || '-'}</span></div>
                   <div><span className="font-bold text-gray-700">断网备份：</span><span className="break-all">{maintenanceStatus?.paths?.offlineBackupDir || '-'}</span></div>
                   <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-amber-800">年度清理会先永久归档将删除的数据；例如 2027 年 1 月会删除 2026 年 1 月之前的任务数据。断网备份在服务器关闭时（Ctrl+C、SIGTERM）自动触发。</div>
@@ -1072,10 +1340,11 @@ const SystemSettings = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
               {[
                 { title: '最近数据库备份', files: maintenanceStatus?.files?.backups || [] },
                 { title: '最近任务导出', files: maintenanceStatus?.files?.taskExports || [] },
+                { title: '最近编号台账导出', files: maintenanceStatus?.files?.gunLedgerExports || [] },
                 { title: '年度永久归档', files: maintenanceStatus?.files?.yearlyArchives || [] },
                 { title: '最近断网备份', files: maintenanceStatus?.files?.offlineBackups || [] }
               ].map(group => (

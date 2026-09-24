@@ -324,9 +324,12 @@ GITEE_REPO_NAME=obara-task-manager
 | `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 2000 条 |
 | `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
 | `statusTrackingItems` | 状态追踪记录 |
+| `gunLedger` | 焊枪编号台账，包含 `categories`（分类→表→行三级结构）和 `defaultResponsiblePersons`（默认担当人员） |
 | `settings.leaderboard` | 任务报表访问权限 |
 | `settings.workHours` | 工时管理访问权限 |
 | `settings.statusTracking` | 状态追踪访问权限 |
+| `settings.gunLedger` | 焊枪台账访问权限（`allowViewers` 始终为 `false`） |
+| `settings.designStandards` | 设计标准页面访问权限 |
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
@@ -359,6 +362,8 @@ GITEE_REPO_NAME=obara-task-manager
 - `allowViewers=true` 时，`allowAdmins` 必须为 `true`。
 - 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于普通用户。
 - 任务报表、工时管理、状态追踪页面均要求登录；`leaderboard.allowViewers`、`workHours.allowViewers`、`statusTracking.allowViewers` 只表示允许普通用户访问。
+- 焊枪台账（`gunLedger`）要求登录，`allowViewers` 后端强制为 `false`（普通用户与游客不能进入 `/gun-ledger`）；一般管理员可编辑但不能删除分类/表。
+- 设计标准（`designStandards`）规则同工时管理。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问），一般管理员仅可查看数据管理模块的导出功能，不能导入。
 
 ## 备份与恢复
@@ -641,7 +646,8 @@ node --check backend\routes\settings.js
 |------|------|----------|
 | 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照 | 启用 |
 | 任务数据导出 | 导出渲染后的任务表为 `.xls` 文件（`task-export-YYYYMMDD-HHmmss.xls`） | 启用 |
-| 过期备份清理 | 删除超过保留天数的旧备份（数据库备份/任务导出按备份保留天数，断网备份按断网保留天数） | 自动执行 |
+| 编号台账导出 | 导出全部焊枪编号台账为单个 `.xls`（每分类一个工作表），文件名 `gun-ledger-all-YYYYMMDD-HHmmss.xls` | 启用 |
+| 过期备份清理 | 删除超过保留天数的旧备份（数据库备份/任务导出/编号台账导出按各自保留天数，断网备份按断网保留天数） | 自动执行 |
 | 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
 
 ### 维护目录结构
@@ -651,6 +657,7 @@ backend/
 ├── backups/
 │   ├── database/          # 数据库备份
 │   ├── task-exports/      # 任务数据导出
+│   ├── gun-ledger-exports/ # 焊枪编号台账导出
 │   ├── yearly-archives/   # 年度归档
 │   └── offline/           # 断网备份（关闭前自动备份）
 ```
@@ -677,8 +684,11 @@ backend/
   "enabled": true,
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
+  "dailyGunLedgerExportEnabled": true,
   "offlineBackupEnabled": true,
   "backupRetentionDays": 30,
+  "taskExportRetentionDays": 30,
+  "gunLedgerExportRetentionDays": 30,
   "offlineBackupRetentionDays": 7,
   "scheduleTime": "00:30",
   "yearlyCleanupEnabled": true,
@@ -687,13 +697,14 @@ backend/
   "yearlyTaskRetentionYears": 1,
   "backupDir": "backups/database",
   "taskExportDir": "backups/task-exports",
+  "gunLedgerExportDir": "backups/gun-ledger-exports",
   "yearlyArchiveDir": "backups/yearly-archives",
   "offlineBackupDir": "backups/offline",
   "yearlyCleanupHistory": {}
 }
 ```
 
-> 说明：`PUT /api/system/maintenance` 接口仅接受核心字段，断网备份相关字段（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）由后端默认值控制，无法通过 API 修改。
+> 说明：`PUT /api/system/maintenance` 接口仅接受核心字段（含 `dailyGunLedgerExportEnabled`、`taskExportRetentionDays`、`gunLedgerExportRetentionDays`、`gunLedgerExportDir`），断网备份相关字段（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）由后端默认值控制，无法通过 API 修改。
 
 ### 维护 API
 
@@ -704,6 +715,7 @@ backend/
 | `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份 |
 | `/api/system/maintenance/offline-backup` | POST | **无需登录** | 手动触发断网备份 |
 | `/api/system/maintenance/export-tasks` | POST | 超级管理员 | 手动导出任务数据 |
+| `/api/system/maintenance/export-gun-ledger` | POST | 超级管理员 | 手动导出全部焊枪编号台账为单个 `.xls` |
 | `/api/system/maintenance/cleanup-backups` | POST | 超级管理员 | 清理过期备份 |
 | `/api/system/maintenance/yearly-cleanup` | POST | 超级管理员 | 手动执行年度清理；请求体传 `{"force": true}` 可跳过时间检查强制执行 |
 | `/api/system/maintenance/clear-logs` | POST | 超级管理员 | 同时清空登录日志和操作日志 |
@@ -743,4 +755,4 @@ backend/
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-09-23
+最后更新：2026-09-24

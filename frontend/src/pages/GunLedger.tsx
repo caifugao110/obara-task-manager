@@ -19,13 +19,16 @@ import {
   Users,
   ArrowUp,
   ArrowDown,
+  Settings2,
+  Eraser,
+  Download,
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { useDebounce } from '../utils/debounce';
 
-interface Toast { message: string; type: 'success' | 'error'; id: number; }
+interface Toast { message: string; type: 'success' | 'error'; id: number; center?: boolean }
 
 interface UserMeta { id: string; username: string; name: string; }
 
@@ -43,7 +46,15 @@ interface GunRow {
   updatedBy?: UserMeta | null;
 }
 
-interface GunTable { id: string; name: string; rows: GunRow[]; }
+// 焊枪名自动生成规则（台账初始化设置，超管按表配置）
+interface GunNameRule {
+  enabled: boolean;
+  prefix: string;
+  start: number;
+  pad: number;
+}
+
+interface GunTable { id: string; name: string; rows: GunRow[]; gunNameRule?: GunNameRule | null; }
 
 interface SpecInfoResponse {
   success: boolean;
@@ -104,14 +115,45 @@ const GUN_NAME_PATTERNS: Record<string, Record<string, { prefix: string; start: 
   },
 };
 
-// 根据分类+表名+序号生成焊枪名，无规则时返回空串
-const generateGunName = (category: string, tableName: string, serialNumber: number): string => {
-  const tablePatterns = GUN_NAME_PATTERNS[category];
-  if (!tablePatterns) return '';
-  const pattern = tablePatterns[tableName];
-  if (!pattern) return '';
-  const num = pattern.start + (serialNumber - 1);
-  return pattern.prefix + String(num).padStart(pattern.pad, '0');
+// 表的生效焊枪名规则：优先使用超管在「台账初始化」中保存的表级规则；
+// 未配置过的表沿用内置默认规则（按 分类+表名 匹配），无匹配则不自动取号
+const getEffectiveGunNameRule = (category: string, table: GunTable): GunNameRule | null => {
+  if (table.gunNameRule) {
+    return table.gunNameRule.enabled ? table.gunNameRule : null;
+  }
+  const pattern = GUN_NAME_PATTERNS[category]?.[table.name];
+  return pattern ? { enabled: true, prefix: pattern.prefix, start: pattern.start, pad: pattern.pad } : null;
+};
+
+// 根据规则+序号生成焊枪名，无规则（未启用）时返回空串
+const buildGunName = (rule: GunNameRule | null, serialNumber: number): string => {
+  if (!rule || !rule.enabled) return '';
+  const num = rule.start + (serialNumber - 1);
+  return rule.prefix + String(num).padStart(rule.pad, '0');
+};
+
+// 打开「台账初始化」弹窗时某张表的规则草稿：已配置的取已配置值，否则预填内置默认
+const buildRuleDraft = (category: string, table: GunTable): GunNameRule => {
+  if (table.gunNameRule) return { ...table.gunNameRule };
+  const pattern = GUN_NAME_PATTERNS[category]?.[table.name];
+  return pattern
+    ? { enabled: true, prefix: pattern.prefix, start: pattern.start, pad: pattern.pad }
+    : { enabled: false, prefix: '', start: 1, pad: 4 };
+};
+
+// 行序号严格按自然顺序连续排列：升序后重新编号为 1..N，杜绝跳号（如 1 直接到 11）
+const renumberRows = (rows: GunRow[]): GunRow[] =>
+  [...rows]
+    .sort((a, b) => a.serialNumber - b.serialNumber)
+    .map((r, i) => ({ ...r, serialNumber: i + 1 }));
+
+// 归一化整份台账：所有表的行序号连续
+const normalizeLedgerSerials = (data: GunLedgerData): GunLedgerData => {
+  const categories: GunLedgerData['categories'] = {};
+  for (const cat of Object.keys(data.categories || {})) {
+    categories[cat] = (data.categories[cat] || []).map(t => ({ ...t, rows: renumberRows(t.rows || []) }));
+  }
+  return { ...data, categories };
 };
 const todayStr = () => {
   const d = new Date();
@@ -148,16 +190,30 @@ const GunLedger: React.FC = () => {
   const [renamingTableId, setRenamingTableId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [newPersonInput, setNewPersonInput] = useState('');
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resettingPersons, setResettingPersons] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [online, setOnline] = useState(true);
+  // 离线状态：综合浏览器 online/offline 事件与 socket 连接状态判定
+  const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
   const [showPersonPanel, setShowPersonPanel] = useState(false);
   const [showAccessPanel, setShowAccessPanel] = useState(false);
+  // 台账初始化弹窗：每张表的焊枪名生成规则草稿 / 保存中 / 清除中 / 清除二次确认
+  const [showInitPanel, setShowInitPanel] = useState(false);
+  const [ruleDrafts, setRuleDrafts] = useState<Record<string, GunNameRule>>({});
+  const [ruleSavingId, setRuleSavingId] = useState<string | null>(null);
+  const [clearingTableId, setClearingTableId] = useState<string | null>(null);
+  const [confirmClearId, setConfirmClearId] = useState<string | null>(null);
   const [specLookupLoading, setSpecLookupLoading] = useState(false);
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
   const [addCategoryValue, setAddCategoryValue] = useState('');
   const [addTableOpen, setAddTableOpen] = useState(false);
   const [addTableValue, setAddTableValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // 分类导出弹窗：选中的分类 / 导出请求中
+  const [showExportPanel, setShowExportPanel] = useState(false);
+  const [exportCats, setExportCats] = useState<string[]>([]);
+  const [exporting, setExporting] = useState(false);
 
   // 删除确认弹窗状态
   const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<{ name: string; tableCount: number } | null>(null);
@@ -175,16 +231,25 @@ const GunLedger: React.FC = () => {
   const prevActiveTableRef = useRef<string | null>(null);
   const isAdminRef = useRef(isAdmin);
   const userRef = useRef(user);
+  const onlineRef = useRef(online);
   isAdminRef.current = isAdmin;
   userRef.current = user;
+  onlineRef.current = online;
 
   const authHeader = useMemo(() => (token ? { headers: { Authorization: `Bearer ${token}` } } : {}), [token]);
 
-  const addToast = useCallback((message: string, type: 'success' | 'error') => {
+  const addToast = useCallback((message: string, type: 'success' | 'error', center = false) => {
     const id = Date.now() + Math.random();
-    setToasts(prev => [...prev, { message, type, id }]);
+    setToasts(prev => [...prev, { message, type, id, center }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   }, []);
+
+  // 离线时统一拦截写操作：与主页面一致提示「当前离线，禁止编辑」
+  const warnIfOffline = useCallback(() => {
+    if (onlineRef.current) return false;
+    addToast('当前离线，禁止编辑', 'error');
+    return true;
+  }, [addToast]);
 
   // 仕样号 → 客户名查询
   const fetchSpecInfo = useCallback(async (specNumber: string): Promise<SpecInfoResponse> => {
@@ -210,20 +275,30 @@ const GunLedger: React.FC = () => {
     try {
       const res = await axiosInstance.get('/settings/gun-ledger');
       setAccessSettings(res.data || defaultAccessSettings);
-    } catch {
-      addToast('无法加载焊枪编号台账权限设置', 'error');
+    } catch (err: any) {
+      // 离线/网络不可达时静默处理（离线提示条已说明状态），其他错误才提示
+      if (typeof navigator !== 'undefined' && (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error')) {
+        setOnline(false);
+      } else {
+        addToast('无法加载焊枪编号台账权限设置', 'error');
+      }
     } finally {
       setAccessLoaded(true);
     }
   }, [addToast]);
 
-  // 加载数据
+  // 加载数据（同时归一化序号，保证 1..N 严格连续）
   const fetchLedger = useCallback(async () => {
     try {
       const res = await axiosInstance.get('/gun-ledger', authHeader);
-      setLedger(res.data);
-    } catch {
-      addToast('无法加载焊枪编号台账数据', 'error');
+      setLedger(normalizeLedgerSerials(res.data));
+    } catch (err: any) {
+      // 网络不可达视为离线（与主页面一致），页面已有数据时继续只读展示
+      if (typeof navigator !== 'undefined' && (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error')) {
+        setOnline(false);
+      } else {
+        addToast('无法加载焊枪编号台账数据', 'error');
+      }
     } finally {
       setLedgerLoaded(true);
     }
@@ -261,17 +336,24 @@ const GunLedger: React.FC = () => {
     return null;
   }, [ledger, activeTableId]);
 
-  // 计算展示行：真行 + 10 个预填焊枪名的占位行
+  // 表底部状态条：无任何提示内容时不渲染，使台账区白底与底部 footer 无缝衔接（与左侧表列表一致）
+  const tableEditingSessions = activeTable
+    ? Object.values(editingSessions).filter(s => s.tableId === activeTable.id)
+    : [];
+  const showTableStatusBar = !online || !isAdmin || tableEditingSessions.length > 0;
+
+  // 计算展示行：真行（序号严格 1..N 连续）+ 10 个按规则预填焊枪名的占位行
   const displayRows = useMemo(() => {
     if (!activeTable) return [];
-    const real = [...(activeTable.rows || [])].sort((a, b) => a.serialNumber - b.serialNumber);
-    const maxSerial = real.length ? Math.max(...real.map(r => r.serialNumber)) : 0;
+    const real = renumberRows(activeTable.rows || []);
+    const maxSerial = real.length;
+    const rule = getEffectiveGunNameRule(activeCategory, activeTable);
     const placeholders = Array.from({ length: PLACEHOLDER_COUNT }, (_, i) => {
       const serialNumber = maxSerial + 1 + i;
       return {
         id: `__placeholder__${serialNumber}`,
         serialNumber,
-        gunName: generateGunName(activeCategory, activeTable.name, serialNumber),
+        gunName: buildGunName(rule, serialNumber),
         customer: '',
         time: '',
         responsiblePerson: '',
@@ -341,7 +423,7 @@ const GunLedger: React.FC = () => {
     return s;
   }, [tableLocks]);
 
-  // 点击左侧表名：他人编辑中则禁止打开并提示
+  // 点击左侧表名：他人编辑中则禁止打开并提示；离线时仅只读打开（不申请表锁，重连后自动续锁）
   const handleSelectTable = useCallback((t: GunTable) => {
     const holder = getTableHolder(t.id);
     if (holder) {
@@ -350,7 +432,7 @@ const GunLedger: React.FC = () => {
     }
     if (activeTableIdRef.current && activeTableIdRef.current !== t.id) stopRowLock();
     setActiveTableId(t.id);
-    if (isAdminRef.current) requestTableLock(t.id);
+    if (isAdminRef.current && onlineRef.current) requestTableLock(t.id);
   }, [getTableHolder, addToast, stopRowLock, requestTableLock]);
 
   // 完成编辑：释放锁并关闭当前表
@@ -370,8 +452,8 @@ const GunLedger: React.FC = () => {
     setActiveCategory(cat);
   }, [activeCategory, stopRowLock]);
 
-  // 更新本地某表的行
-  const patchTableRows = useCallback((tableId: string, updater: (rows: GunRow[]) => GunRow[]) => {
+  // 更新本地某张表（跨分类查找）
+  const patchTable = useCallback((tableId: string, updater: (t: GunTable) => GunTable) => {
     setLedger(prev => {
       if (!prev) return prev;
       const categories = { ...prev.categories };
@@ -380,7 +462,7 @@ const GunLedger: React.FC = () => {
         const idx = list.findIndex(t => t.id === tableId);
         if (idx !== -1) {
           const newList = [...list];
-          newList[idx] = { ...newList[idx], rows: updater(newList[idx].rows || []) };
+          newList[idx] = updater(newList[idx]);
           categories[cat] = newList;
           return { ...prev, categories };
         }
@@ -388,6 +470,11 @@ const GunLedger: React.FC = () => {
       return prev;
     });
   }, []);
+
+  // 更新本地某表的行
+  const patchTableRows = useCallback((tableId: string, updater: (rows: GunRow[]) => GunRow[]) => {
+    patchTable(tableId, t => ({ ...t, rows: updater(t.rows || []) }));
+  }, [patchTable]);
 
   // 客户列输入仕样号时自动查询客户名
   const scheduleCustomerSpecLookup = useCallback((tableId: string, serialNumber: number, value: string) => {
@@ -445,7 +532,7 @@ const GunLedger: React.FC = () => {
 
   // 单元格变更
   const handleCellChange = useCallback((row: GunRow, field: keyof GunRow, value: string) => {
-    if (!activeTable || !isAdmin) return;
+    if (!activeTable || !isAdmin || !online) return;
     const { id, serialNumber } = row;
     const isPlaceholder = String(id).startsWith('__placeholder__');
 
@@ -466,12 +553,13 @@ const GunLedger: React.FC = () => {
           updatedAt: new Date().toISOString(),
           updatedBy: user ? { id: user.id, username: user.username, name: user.name } : null,
         };
-        (promoted as any)[field] = value;
-        // 有预填焊枪名时自动填时间与担当（无论哪个字段触发升级）
+        // 有预填焊枪名时自动填时间与担当（无论哪个字段触发升级）；
+        // 先自动填充再应用本次手动输入，保证手动选择的担当不被覆盖
         if (promoted.gunName.trim() !== '') {
           promoted.time = todayStr();
           promoted.responsiblePerson = user?.name || '';
         }
+        (promoted as any)[field] = value;
         dirtyRowIdsRef.current.add(promoted.id);
         const next = [...rows, promoted];
         return next;
@@ -498,13 +586,13 @@ const GunLedger: React.FC = () => {
     if (field === 'customer') {
       scheduleCustomerSpecLookup(activeTable.id, serialNumber, value);
     }
-  }, [activeTable, isAdmin, patchTableRows, user, debouncedSave, scheduleCustomerSpecLookup]);
+  }, [activeTable, isAdmin, online, patchTableRows, user, debouncedSave, scheduleCustomerSpecLookup]);
 
   // 单元格聚焦：取行锁
   const handleCellFocus = useCallback((tableId: string, serialNumber: number) => {
-    if (!isAdmin) return;
+    if (!isAdmin || !online) return;
     startRowLock(tableId, serialNumber);
-  }, [isAdmin, startRowLock]);
+  }, [isAdmin, online, startRowLock]);
 
   const handleCellBlur = useCallback(() => {
     if (!isAdmin) return;
@@ -527,6 +615,7 @@ const GunLedger: React.FC = () => {
 
   // 新增表
   const handleAddTable = useCallback(async (rawName: string) => {
+    if (warnIfOffline()) return;
     const name = String(rawName || '').trim();
     if (!name || !ledger) return;
     try {
@@ -545,10 +634,11 @@ const GunLedger: React.FC = () => {
     } catch (err: any) {
       addToast(err?.response?.data?.message || '新增表失败', 'error');
     }
-  }, [ledger, activeCategory, authHeader, addToast, requestTableLock]);
+  }, [ledger, activeCategory, authHeader, addToast, requestTableLock, warnIfOffline]);
 
   // 新增分类
   const handleAddCategory = useCallback(async (rawName: string) => {
+    if (warnIfOffline()) return;
     const name = String(rawName || '').trim();
     if (!name || !ledger) return;
     if (name.length > 30) { addToast('分类名不超过 30 字符', 'error'); return; }
@@ -563,19 +653,26 @@ const GunLedger: React.FC = () => {
     } catch (err: any) {
       addToast(err?.response?.data?.message || '新增分类失败', 'error');
     }
-  }, [ledger, authHeader, addToast]);
+  }, [ledger, authHeader, addToast, warnIfOffline]);
 
   // 打开删除分类确认弹窗
   const openDeleteCategoryModal = useCallback((category: string) => {
+    if (warnIfOffline()) return;
     if (!ledger) return;
+    // 删除分类属于高风险操作，仅超级管理员可执行；一般管理员可见按钮但点击时提示
+    if (!isSuperAdmin) {
+      addToast('删除分类属于高风险操作，需要超级管理员权限，请联系超级管理员删除', 'error', true);
+      return;
+    }
     if (DEFAULT_CATEGORIES.includes(category)) { addToast('默认分类不允许删除', 'error'); return; }
     const tableCount = (ledger.categories[category] || []).length;
     setDeleteCategoryTarget({ name: category, tableCount });
-  }, [ledger, addToast]);
+  }, [ledger, addToast, isSuperAdmin, warnIfOffline]);
 
   // 确认删除分类（实际执行）
   const confirmDeleteCategory = useCallback(async () => {
     if (!deleteCategoryTarget) return;
+    if (warnIfOffline()) return;
     setDeleting(true);
     try {
       await axiosInstance.delete(`/gun-ledger/categories/${encodeURIComponent(deleteCategoryTarget.name)}`, authHeader);
@@ -596,10 +693,11 @@ const GunLedger: React.FC = () => {
     } finally {
       setDeleting(false);
     }
-  }, [deleteCategoryTarget, authHeader, addToast, activeCategory]);
+  }, [deleteCategoryTarget, authHeader, addToast, activeCategory, warnIfOffline]);
 
   // 重命名表
   const handleRenameTable = useCallback(async (tableId: string) => {
+    if (warnIfOffline()) { setRenamingTableId(null); return; }
     const name = renameValue.trim();
     if (!name) { setRenamingTableId(null); return; }
     try {
@@ -626,16 +724,23 @@ const GunLedger: React.FC = () => {
       setRenamingTableId(null);
       setRenameValue('');
     }
-  }, [renameValue, authHeader, addToast]);
+  }, [renameValue, authHeader, addToast, warnIfOffline]);
 
   // 打开删除表确认弹窗
   const openDeleteTableModal = useCallback((tableId: string, name: string) => {
+    if (warnIfOffline()) return;
+    // 删除表格属于高风险操作，仅超级管理员可执行；一般管理员可见按钮但点击时提示
+    if (!isSuperAdmin) {
+      addToast('删除表格属于高风险操作，需要超级管理员权限，请联系超级管理员删除', 'error', true);
+      return;
+    }
     setDeleteTableTarget({ id: tableId, name });
-  }, []);
+  }, [isSuperAdmin, addToast, warnIfOffline]);
 
   // 确认删除表（实际执行）
   const confirmDeleteTable = useCallback(async () => {
     if (!deleteTableTarget) return;
+    if (warnIfOffline()) return;
     setDeleting(true);
     try {
       await axiosInstance.delete(`/gun-ledger/tables/${deleteTableTarget.id}`, authHeader);
@@ -655,10 +760,11 @@ const GunLedger: React.FC = () => {
     } finally {
       setDeleting(false);
     }
-  }, [deleteTableTarget, authHeader, addToast, activeTableId]);
+  }, [deleteTableTarget, authHeader, addToast, activeTableId, warnIfOffline]);
 
   // 权限设置保存
   const updateAccessSettings = useCallback(async (next: Partial<typeof defaultAccessSettings>) => {
+    if (warnIfOffline()) return;
     const updated = { ...accessSettings, ...next };
     if (next.enabled === false) { updated.allowAdmins = false; }
     if (updated.allowAdmins === false && accessSettings.allowAdmins) {
@@ -672,10 +778,72 @@ const GunLedger: React.FC = () => {
     } catch {
       addToast('保存权限设置失败', 'error');
     }
-  }, [accessSettings, isSuperAdmin, authHeader, addToast]);
+  }, [accessSettings, isSuperAdmin, authHeader, addToast, warnIfOffline]);
+
+  // ===== 台账初始化：按表配置焊枪名生成规则、清除初始焊枪名 =====
+  // 打开弹窗：为每张表生成规则草稿（已配置取已配置值，否则预填内置默认）
+  const openInitPanel = useCallback(() => {
+    if (warnIfOffline()) return;
+    if (!ledger) return;
+    const drafts: Record<string, GunNameRule> = {};
+    for (const cat of Object.keys(ledger.categories)) {
+      (ledger.categories[cat] || []).forEach(t => { drafts[t.id] = buildRuleDraft(cat, t); });
+    }
+    setRuleDrafts(drafts);
+    setConfirmClearId(null);
+    setShowInitPanel(true);
+  }, [ledger, warnIfOffline]);
+
+  const updateRuleDraft = useCallback((tableId: string, patch: Partial<GunNameRule>) => {
+    setRuleDrafts(prev => prev[tableId] ? { ...prev, [tableId]: { ...prev[tableId], ...patch } } : prev);
+  }, []);
+
+  // 保存某张表的焊枪名生成规则
+  const saveGunNameRule = useCallback(async (tableId: string) => {
+    if (warnIfOffline()) return;
+    const rule = ruleDrafts[tableId];
+    if (!rule || !ledger) return;
+    let tableName = '';
+    for (const cat of Object.keys(ledger.categories)) {
+      const found = (ledger.categories[cat] || []).find(t => t.id === tableId);
+      if (found) { tableName = found.name; break; }
+    }
+    setRuleSavingId(tableId);
+    try {
+      await axiosInstance.put(`/gun-ledger/tables/${tableId}/gun-name-rule`, rule, authHeader);
+      patchTable(tableId, t => ({ ...t, gunNameRule: rule }));
+      addToast(`表「${tableName}」初始化设置已保存`, 'success');
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '初始化设置保存失败', 'error');
+    } finally {
+      setRuleSavingId(null);
+    }
+  }, [ruleDrafts, ledger, authHeader, patchTable, addToast, warnIfOffline]);
+
+  // 清除某张表全部行的焊枪名（序号与其他列保留）
+  const clearGunNames = useCallback(async (tableId: string) => {
+    if (warnIfOffline()) return;
+    setClearingTableId(tableId);
+    try {
+      // 请求体必须发送 {} 而非 null：后端 body-parser 严格模式会将 "null" 视为非法 JSON 拒绝（400）
+      await axiosInstance.post(`/gun-ledger/tables/${tableId}/clear-gun-names`, {}, authHeader);
+      addToast('已清除该表全部焊枪名（序号与其他数据保留）', 'success');
+      setConfirmClearId(null);
+      // update_rows 广播会刷新所有客户端的行数据
+    } catch (err: any) {
+      if (err?.response?.status === 409) {
+        addToast(err?.response?.data?.message || '该表正被他人编辑，暂时无法清除', 'error');
+      } else {
+        addToast(err?.response?.data?.message || '清除焊枪名失败', 'error');
+      }
+    } finally {
+      setClearingTableId(null);
+    }
+  }, [authHeader, addToast, warnIfOffline]);
 
   // 默认担当人员管理
   const handleAddPerson = useCallback(async (person: string) => {
+    if (warnIfOffline()) return;
     const p = person.trim();
     if (!p || !ledger) return;
     const list = Array.from(new Set([...(ledger.defaultResponsiblePersons || []), p]));
@@ -683,13 +851,14 @@ const GunLedger: React.FC = () => {
       await axiosInstance.put('/gun-ledger/default-persons', list, authHeader);
       setLedger(prev => prev ? { ...prev, defaultResponsiblePersons: list } : prev);
       setNewPersonInput('');
-      addToast('已添加默认担当人员', 'success');
+      addToast('已添加担当人员', 'success');
     } catch {
       addToast('添加失败', 'error');
     }
-  }, [ledger, authHeader, addToast]);
+  }, [ledger, authHeader, addToast, warnIfOffline]);
 
   const handleRemovePerson = useCallback(async (person: string) => {
+    if (warnIfOffline()) return;
     if (!ledger) return;
     const list = (ledger.defaultResponsiblePersons || []).filter(p => p !== person);
     try {
@@ -699,10 +868,28 @@ const GunLedger: React.FC = () => {
     } catch {
       addToast('移除失败', 'error');
     }
-  }, [ledger, authHeader, addToast]);
+  }, [ledger, authHeader, addToast, warnIfOffline]);
+
+  // 重置为系统默认担当人员（确认后执行）
+  const handleResetPersons = useCallback(async () => {
+    if (warnIfOffline()) return;
+    setResettingPersons(true);
+    try {
+      const res = await axiosInstance.post('/gun-ledger/default-persons/reset', {}, authHeader);
+      const list = Array.isArray(res.data) ? res.data : [];
+      setLedger(prev => prev ? { ...prev, defaultResponsiblePersons: list } : prev);
+      setShowResetConfirm(false);
+      addToast('已重置为默认人员', 'success');
+    } catch {
+      addToast('重置失败', 'error');
+    } finally {
+      setResettingPersons(false);
+    }
+  }, [authHeader, addToast, warnIfOffline]);
 
   // 重排分类（上移/下移）：乐观更新 + 持久化 + 广播
   const handleMoveCategory = useCallback((category: string, direction: 'up' | 'down') => {
+    if (warnIfOffline()) return;
     if (!ledger) return;
     const keys = Object.keys(ledger.categories);
     const idx = keys.indexOf(category);
@@ -720,10 +907,11 @@ const GunLedger: React.FC = () => {
     });
     axiosInstance.patch('/gun-ledger/categories/order', { order: nextOrder }, authHeader)
       .catch(() => addToast('分类顺序保存失败', 'error'));
-  }, [ledger, authHeader, addToast]);
+  }, [ledger, authHeader, addToast, warnIfOffline]);
 
   // 重排表格（上移/下移）：乐观更新 + 持久化 + 广播
   const handleMoveTable = useCallback((tableId: string, direction: 'up' | 'down') => {
+    if (warnIfOffline()) return;
     if (!ledger) return;
     const list = ledger.categories[activeCategory] || [];
     const idx = list.findIndex(t => t.id === tableId);
@@ -743,17 +931,87 @@ const GunLedger: React.FC = () => {
     });
     axiosInstance.patch('/gun-ledger/tables/order', { category: activeCategory, order: nextOrder }, authHeader)
       .catch(() => addToast('表格顺序保存失败', 'error'));
-  }, [ledger, activeCategory, authHeader, addToast]);
+  }, [ledger, activeCategory, authHeader, addToast, warnIfOffline]);
+
+  // 打开分类导出弹窗：默认勾选当前分类
+  const openExportPanel = useCallback(() => {
+    if (warnIfOffline()) return;
+    setExportCats([activeCategory]);
+    setShowExportPanel(true);
+  }, [warnIfOffline, activeCategory]);
+
+  // 从响应头解析下载文件名
+  const parseDownloadName = (disposition: string, fallback: string) => {
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match) return decodeURIComponent(utf8Match[1]);
+    const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+    if (asciiMatch) return asciiMatch[1];
+    return fallback;
+  };
+
+  // 触发浏览器下载
+  const triggerBlobDownload = (data: BlobPart, fileName: string) => {
+    const url = window.URL.createObjectURL(new Blob([data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
+  // 确认导出：单分类下载一个 xls；多分类打包 zip（每个分类一个独立 xls）
+  const handleExportCategories = useCallback(async () => {
+    if (!exportCats.length) {
+      addToast('请至少选择一个分类', 'error');
+      return;
+    }
+    setExporting(true);
+    try {
+      const response = await axiosInstance.get('/gun-ledger/export', {
+        params: { categories: exportCats.join(',') },
+        responseType: 'blob',
+        ...authHeader
+      });
+      const fallback = exportCats.length === 1 ? `${exportCats[0]}.xls` : '焊枪编号台账导出.zip';
+      const fileName = parseDownloadName(response.headers['content-disposition'] || '', fallback);
+      triggerBlobDownload(response.data, fileName);
+      setShowExportPanel(false);
+      addToast('导出成功', 'success');
+    } catch (error: any) {
+      // 错误体是 blob（JSON），尝试读取具体提示
+      let message = '导出失败';
+      const errData = error?.response?.data;
+      if (errData instanceof Blob && errData.type.includes('json')) {
+        try {
+          const text = await errData.text();
+          message = JSON.parse(text)?.message || message;
+        } catch { /* 忽略解析失败 */ }
+      }
+      addToast(message, 'error');
+    } finally {
+      setExporting(false);
+    }
+  }, [exportCats, authHeader, addToast]);
+
+  // 导出弹窗中的分类勾选切换
+  const toggleExportCat = useCallback((name: string) => {
+    setExportCats(prev => (prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]));
+  }, []);
 
   // Socket 连接
   useEffect(() => {
     if (!token || !canAccess) return;
     const socket = io('/', { path: '/socket.io', reconnection: true, reconnectionAttempts: 10, reconnectionDelay: 3000, timeout: 10000, auth: { token } });
     socketRef.current = socket;
+    let hasConnectedOnce = false;
 
     socket.on('connect', () => {
       setOnline(true);
-      // 断线重连后重新申请表级锁；若期间锁被他人取得，会收到 blocked 事件并自动关闭
+      // 断线重连后：刷新台账数据并重新申请表级锁；若期间锁被他人取得，会收到 blocked 事件并自动关闭
+      if (hasConnectedOnce) fetchLedger();
+      hasConnectedOnce = true;
       const tid = activeTableIdRef.current;
       if (tid && isAdminRef.current) socket.emit('gun_ledger_lock_table', { tableId: tid });
     });
@@ -809,7 +1067,7 @@ const GunLedger: React.FC = () => {
     socket.on('gun_ledger_edit_blocked', (s: EditingSession) => {
       addToast(`${s.name || s.username} 正在编辑该行`, 'error');
     });
-    socket.on('gun_ledger_updated', (data: { action: string; tableId?: string; rows?: GunRow[]; category?: string; table?: GunTable; name?: string; defaultResponsiblePersons?: string[]; order?: string[] }) => {
+    socket.on('gun_ledger_updated', (data: { action: string; tableId?: string; rows?: GunRow[]; category?: string; table?: GunTable; name?: string; defaultResponsiblePersons?: string[]; order?: string[]; rule?: GunNameRule }) => {
       if (!data) return;
       if (data.action === 'add_category' && data.category) {
         setLedger(prev => prev && !(data.category! in prev.categories) ? { ...prev, categories: { ...prev.categories, [data.category!]: [] } } : prev);
@@ -841,8 +1099,9 @@ const GunLedger: React.FC = () => {
                 const ld = localDirty.find(d => d.id === r.id);
                 return ld || r;
               }).concat(localDirty.filter(r => !serverIds.has(r.id)));
+              // 服务端为序号权威来源：合并后同样保证序号 1..N 连续
               const newList = [...list];
-              newList[idx] = { ...newList[idx], rows: merged };
+              newList[idx] = { ...newList[idx], rows: renumberRows(merged) };
               categories[cat] = newList;
               return { ...prev, categories };
             }
@@ -899,6 +1158,23 @@ const GunLedger: React.FC = () => {
           categories[data.category!] = (data.order as string[]).map(id => byId.get(id)).filter(Boolean) as GunTable[];
           return { ...prev, categories };
         });
+      } else if (data.action === 'gun_name_rule' && data.tableId && data.rule) {
+        const rule = data.rule;
+        setLedger(prev => {
+          if (!prev) return prev;
+          const categories = { ...prev.categories };
+          for (const cat of Object.keys(categories)) {
+            const list = categories[cat] || [];
+            const idx = list.findIndex(t => t.id === data.tableId);
+            if (idx !== -1) {
+              const newList = [...list];
+              newList[idx] = { ...newList[idx], gunNameRule: rule };
+              categories[cat] = newList;
+              return { ...prev, categories };
+            }
+          }
+          return prev;
+        });
       } else {
         fetchLedger();
       }
@@ -922,6 +1198,35 @@ const GunLedger: React.FC = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, canAccess]);
+
+  // 浏览器网络在线/离线事件（拔网线等场景比 socket 探测更即时）
+  useEffect(() => {
+    const handleOnline = () => {
+      setOnline(true);
+      fetchLedger();
+    };
+    const handleOffline = () => setOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [fetchLedger]);
+
+  // 进入离线状态：关闭所有管理类弹窗与重命名输入，避免离线期间产生无法保存的操作
+  useEffect(() => {
+    if (online) return;
+    setRenamingTableId(null);
+    setShowPersonPanel(false);
+    setShowAccessPanel(false);
+    setShowInitPanel(false);
+    setAddCategoryOpen(false);
+    setAddTableOpen(false);
+    setDeleteCategoryTarget(null);
+    setDeleteTableTarget(null);
+    setConfirmClearId(null);
+  }, [online]);
 
   // 切换表时：释放上一张表的表级锁与行锁，并同步 ref
   useEffect(() => {
@@ -952,18 +1257,21 @@ const GunLedger: React.FC = () => {
 
   // Esc 关闭弹窗
   useEffect(() => {
-    if (!addCategoryOpen && !addTableOpen && !deleteCategoryTarget && !deleteTableTarget && !showPersonPanel && !showAccessPanel) return;
+    if (!addCategoryOpen && !addTableOpen && !deleteCategoryTarget && !deleteTableTarget && !showPersonPanel && !showAccessPanel && !showInitPanel && !showExportPanel) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (!submitting) { setAddCategoryOpen(false); setAddTableOpen(false); }
         if (!deleting) { setDeleteCategoryTarget(null); setDeleteTableTarget(null); }
         setShowPersonPanel(false);
         setShowAccessPanel(false);
+        setShowInitPanel(false);
+        setConfirmClearId(null);
+        if (!exporting) setShowExportPanel(false);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget, showPersonPanel, showAccessPanel, submitting, deleting]);
+  }, [addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget, showPersonPanel, showAccessPanel, showInitPanel, showExportPanel, submitting, deleting, exporting]);
 
   const closeAddModals = () => {
     if (!submitting) {
@@ -1007,6 +1315,28 @@ const GunLedger: React.FC = () => {
     }
   };
 
+  // 底部实时连接状态（与状态跟踪页底部样式一致）
+  const isRealtimeSyncAvailable = Boolean(token);
+  const syncDotClass = !isRealtimeSyncAvailable
+    ? 'bg-amber-500'
+    : online
+      ? 'bg-green-500'
+      : 'bg-red-500';
+  const syncFooterIntro = !isRealtimeSyncAvailable
+    ? '未登录时需手动刷新页面获取最新状态'
+    : '数据同步至服务器';
+  const syncFooterLabel = !isRealtimeSyncAvailable ? '更新方式:' : '同步状态:';
+  const syncFooterText = !isRealtimeSyncAvailable
+    ? '手动刷新'
+    : online
+      ? '已连接'
+      : '未连接';
+  const syncFooterTextClass = !isRealtimeSyncAvailable
+    ? 'text-amber-600'
+    : online
+      ? 'text-green-600'
+      : 'text-red-600';
+
   // ===== 渲染 =====
   if (!accessLoaded) {
     return (
@@ -1044,14 +1374,26 @@ const GunLedger: React.FC = () => {
 
   return (
     <div className="h-screen overflow-hidden bg-[#f3f3f3] flex flex-col font-sans">
-      {/* Toast */}
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
-        {toasts.map(t => (
+      {/* Toast（紧贴标题栏下方，避免遮挡顶部标题栏） */}
+      <div className="fixed top-12 right-4 z-50 flex flex-col gap-2">
+        {toasts.filter(t => !t.center).map(t => (
           <div key={t.id} className={`flex items-center gap-2 px-4 py-3 rounded shadow-lg text-white transition-all duration-300 ${t.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
             {t.type === 'error' ? <AlertCircle size={18} /> : <Check size={18} />}
             <span className="text-sm font-medium">{t.message}</span>
           </div>
         ))}
+      </div>
+
+      {/* 居中高风险操作提示弹窗（不拦截鼠标事件，3 秒自动消失） */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+        <div className="flex flex-col items-center gap-2">
+          {toasts.filter(t => t.center).map(t => (
+            <div key={t.id} className={`flex items-center gap-2 px-6 py-4 rounded-lg shadow-2xl text-white transition-all duration-300 max-w-[90vw] ${t.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
+              {t.type === 'error' ? <AlertCircle size={22} className="shrink-0" /> : <Check size={22} className="shrink-0" />}
+              <span className="text-base font-semibold">{t.message}</span>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* 顶部导航 */}
@@ -1065,6 +1407,14 @@ const GunLedger: React.FC = () => {
             <ClipboardList className="text-emerald-200 mr-2" size={22} />
             焊枪编号台账
           </h2>
+          {/* 分类导出：一个分类一个工作簿，每张表一个工作表；多分类打包 zip */}
+          <button
+            onClick={openExportPanel}
+            className="ml-2 flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/15 hover:bg-white/25 text-xs font-semibold transition"
+            title="按分类导出：一个分类一个工作簿，每张表一个工作表"
+          >
+            <Download size={14} /><span>分类导出</span>
+          </button>
           {!online && (
             <span className="ml-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500 text-white">
               <AlertCircle size={12} />离线
@@ -1078,10 +1428,20 @@ const GunLedger: React.FC = () => {
         </div>
         {user && (
           <div className="flex items-center space-x-4">
+            {/* 台账初始化：按表配置焊枪名生成规则、清除初始焊枪名 */}
+            {isSuperAdmin && (
+              <button
+                onClick={openInitPanel}
+                className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
+                title="台账初始化：设置每张表的焊枪名生成规则、清除初始焊枪名"
+              >
+                <Settings2 size={18} /><span>台账初始化</span>
+              </button>
+            )}
             {/* 焊枪编号台账查看权限设置 */}
             {isSuperAdmin && (
               <button
-                onClick={() => { setShowAccessPanel(true); setShowPersonPanel(false); }}
+                onClick={() => { if (warnIfOffline()) return; setShowAccessPanel(true); setShowPersonPanel(false); }}
                 className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
                 title="焊枪编号台账查看权限设置"
               >
@@ -1091,20 +1451,28 @@ const GunLedger: React.FC = () => {
             {/* 默认担当人员管理 */}
             {isSuperAdmin && (
               <button
-                onClick={() => { setShowPersonPanel(true); setShowAccessPanel(false); }}
+                onClick={() => { if (warnIfOffline()) return; setShowPersonPanel(true); setShowAccessPanel(false); }}
                 className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
-                title="管理默认担当人员"
+                title="管理担当人员"
               >
                 <UserPlus size={18} /><span>担当人员</span>
               </button>
             )}
-            <span className="text-sm font-bold text-amber-200">{user.name}</span>
+            <span className="text-sm font-bold text-red-500">{user.name}</span>
             <button onClick={logout} className="flex items-center space-x-1.5 text-white hover:text-red-300 text-sm font-semibold transition">
               <LogOut size={18} /><span>退出</span>
             </button>
           </div>
         )}
       </header>
+
+      {/* 离线禁止编辑提示条（与主页面样式一致） */}
+      {!online && (
+        <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
+        </div>
+      )}
 
       {/* 主体 */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
@@ -1116,7 +1484,7 @@ const GunLedger: React.FC = () => {
               <span>分类</span>
               {isAdmin && (
                 <button
-                  onClick={() => { setAddCategoryValue(''); setAddCategoryOpen(true); }}
+                  onClick={() => { if (warnIfOffline()) return; setAddCategoryValue(''); setAddCategoryOpen(true); }}
                   className="text-emerald-600 hover:text-emerald-700"
                   title="新增分类"
                 >
@@ -1160,7 +1528,7 @@ const GunLedger: React.FC = () => {
                         </button>
                       </div>
                     )}
-                    {isSuperAdmin && !DEFAULT_CATEGORIES.includes(cat) && (
+                    {isAdmin && !DEFAULT_CATEGORIES.includes(cat) && (
                       <button
                         onClick={() => openDeleteCategoryModal(cat)}
                         className={`px-2 py-2 opacity-0 group-hover:opacity-100 transition ${activeCategory === cat ? 'text-white hover:text-red-200' : 'text-gray-400 hover:text-red-600'}`}
@@ -1179,7 +1547,7 @@ const GunLedger: React.FC = () => {
             <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide flex items-center justify-between">
               <span>表格列表</span>
               {isAdmin && (
-                <button onClick={() => { setAddTableValue(''); setAddTableOpen(true); }} className="text-emerald-600 hover:text-emerald-700" title="新增表">
+                <button onClick={() => { if (warnIfOffline()) return; setAddTableValue(''); setAddTableOpen(true); }} className="text-emerald-600 hover:text-emerald-700" title="新增表">
                   <Plus size={16} />
                 </button>
               )}
@@ -1204,10 +1572,11 @@ const GunLedger: React.FC = () => {
                         <input
                           autoFocus
                           value={renameValue}
+                          disabled={!online}
                           onChange={e => setRenameValue(e.target.value)}
                           onBlur={() => handleRenameTable(t.id)}
                           onKeyDown={e => { if (e.key === 'Enter') handleRenameTable(t.id); if (e.key === 'Escape') { setRenamingTableId(null); setRenameValue(''); } }}
-                          className="w-full px-1 py-0 text-sm border border-emerald-400 rounded outline-none"
+                          className="w-full px-1 py-0 text-sm border border-emerald-400 rounded outline-none disabled:bg-gray-100"
                         />
                       ) : (
                         <span className="flex items-center gap-2 min-w-0">
@@ -1226,8 +1595,8 @@ const GunLedger: React.FC = () => {
                       <div className="hidden group-hover:flex pr-1 gap-0.5">
                         <button onClick={() => handleMoveTable(t.id, 'up')} disabled={!canMoveUp} className={`p-1 text-gray-400 hover:text-emerald-600 ${!canMoveUp ? 'opacity-30 cursor-not-allowed' : ''}`} title="上移"><ArrowUp size={13} /></button>
                         <button onClick={() => handleMoveTable(t.id, 'down')} disabled={!canMoveDown} className={`p-1 text-gray-400 hover:text-emerald-600 ${!canMoveDown ? 'opacity-30 cursor-not-allowed' : ''}`} title="下移"><ArrowDown size={13} /></button>
-                        {isAdmin && <button onClick={() => { setRenamingTableId(t.id); setRenameValue(t.name); }} className="p-1 text-gray-400 hover:text-blue-600" title="重命名"><Pencil size={13} /></button>}
-                        {isSuperAdmin && <button onClick={() => openDeleteTableModal(t.id, t.name)} className="p-1 text-gray-400 hover:text-red-600" title="删除"><Trash2 size={13} /></button>}
+                        {isAdmin && <button onClick={() => { if (warnIfOffline()) return; setRenamingTableId(t.id); setRenameValue(t.name); }} className="p-1 text-gray-400 hover:text-blue-600" title="重命名"><Pencil size={13} /></button>}
+                        <button onClick={() => openDeleteTableModal(t.id, t.name)} className="p-1 text-gray-400 hover:text-red-600" title="删除"><Trash2 size={13} /></button>
                       </div>
                     )}
                   </div>
@@ -1253,9 +1622,14 @@ const GunLedger: React.FC = () => {
                 <h3 className="font-bold text-gray-800 flex items-center gap-2">
                   <ClipboardList size={18} className="text-emerald-600" />
                   {activeTable.name}
-                  {isAdmin && Boolean(tableLocks[activeTable.id]) && (
+                  {isAdmin && online && Boolean(tableLocks[activeTable.id]) && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700 border border-emerald-200" title="编辑期间其他人员无法打开该表">
                       <Lock size={11} />编辑中 · 其他人暂无法打开
+                    </span>
+                  )}
+                  {!online && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200" title="网络恢复后自动重新进入编辑状态">
+                      <AlertCircle size={11} />离线 · 只读禁止编辑
                     </span>
                   )}
                   <span className="text-xs font-normal text-gray-400 ml-2">序号自动递增 · 预留 {PLACEHOLDER_COUNT} 个未取号行</span>
@@ -1272,8 +1646,6 @@ const GunLedger: React.FC = () => {
                           <Unlock size={13} />完成编辑
                         </button>
                       )}
-                      {isAdmin && <button onClick={() => { setRenamingTableId(activeTable.id); setRenameValue(activeTable.name); }} className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded" title="重命名表"><Pencil size={15} /></button>}
-                      {isSuperAdmin && <button onClick={() => openDeleteTableModal(activeTable.id, activeTable.name)} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" title="删除表"><Trash2 size={15} /></button>}
                     </>
                   )}
                 </div>
@@ -1302,22 +1674,32 @@ const GunLedger: React.FC = () => {
                             const refKey = `${row.serialNumber}-${field}`;
                             const isResponsible = field === 'responsiblePerson';
                             const value = isPlaceholder ? (field === 'gunName' ? row.gunName : '') : (row[field] as string || '');
-                            const disabled = !isAdmin || Boolean(blocking);
+                            const disabled = !isAdmin || !online || Boolean(blocking);
                             return (
                               <td key={field} className={`border border-gray-300 p-0 relative ${field === 'gunName' ? 'min-w-[7rem]' : ''}`}>
                                 {isResponsible ? (
-                                  <input
-                                    ref={el => { inputRefs.current[refKey] = el; }}
-                                    type="text"
-                                    list="responsible-person-options"
-                                    value={value}
-                                    disabled={disabled}
-                                    onChange={e => handleCellChange(row, field, e.target.value)}
-                                    onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
-                                    onBlur={handleCellBlur}
-                                    onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                    className={`w-full px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
-                                  />
+                                  (() => {
+                                    // 已有值不在默认名单中（如他人填写）时追加为选项，避免 select 显示空白
+                                    const options = value && !responsibleOptions.includes(value)
+                                      ? [value, ...responsibleOptions]
+                                      : responsibleOptions;
+                                    return (
+                                      <select
+                                        ref={el => { inputRefs.current[refKey] = el; }}
+                                        value={value}
+                                        disabled={disabled}
+                                        onChange={e => handleCellChange(row, field, e.target.value)}
+                                        onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
+                                        onBlur={handleCellBlur}
+                                        onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
+                                        // appearance-none：不显示下拉按钮，点击整格即弹出完整名单（同状态跟踪页）
+                                        className={`w-full px-2 py-1.5 bg-transparent outline-none appearance-none text-center ${disabled ? 'cursor-not-allowed bg-gray-100' : 'cursor-pointer hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                      >
+                                        <option value="">请选择</option>
+                                        {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                      </select>
+                                    );
+                                  })()
                                 ) : (
                                   <input
                                     ref={el => { inputRefs.current[refKey] = el; }}
@@ -1340,34 +1722,46 @@ const GunLedger: React.FC = () => {
                     })}
                   </tbody>
                 </table>
-                <datalist id="responsible-person-options">
-                  {responsibleOptions.map(opt => <option key={opt} value={opt} />)}
-                </datalist>
               </div>
 
-              {/* 表底部状态条 */}
-              <div className="shrink-0 px-4 py-1.5 border-t border-gray-200 bg-[#f8f9fa] flex items-center justify-between text-xs text-gray-500">
-                <div>已取号 {activeTable.rows?.length || 0} 行 · 占位 {PLACEHOLDER_COUNT} 行</div>
-                <div className="flex items-center gap-3">
-                  {isAdmin && Boolean(tableLocks[activeTable.id]) && (
-                    <span className="flex items-center gap-1 text-emerald-600 font-medium">
-                      <Lock size={12} />
-                      你正在编辑（其他人员无法打开此表）
-                    </span>
-                  )}
-                  {Object.values(editingSessions).filter(s => s.tableId === activeTable.id).length > 0 && (
-                    <span className="flex items-center gap-1 text-amber-600">
-                      <Lock size={12} />
-                      {Object.values(editingSessions).filter(s => s.tableId === activeTable.id && (!user || s.userId !== user.id)).length} 行被他人编辑
-                    </span>
-                  )}
-                  {!isAdmin && <span className="text-gray-400">仅查看（需管理员权限编辑）</span>}
+              {/* 表底部状态条：仅在离线 / 有他人编辑行 / 只读时有内容，否则不渲染（与底部 footer 无缝衔接） */}
+              {showTableStatusBar && (
+                <div className="shrink-0 px-4 py-1.5 border-t border-gray-200 bg-[#f8f9fa] flex items-center justify-end text-xs text-gray-500">
+                  <div className="flex items-center gap-3">
+                    {!online && (
+                      <span className="flex items-center gap-1 text-amber-600 font-medium">
+                        <AlertCircle size={12} />
+                        当前离线，禁止编辑，网络恢复后自动同步
+                      </span>
+                    )}
+                    {online && tableEditingSessions.length > 0 && (
+                      <span className="flex items-center gap-1 text-amber-600">
+                        <Lock size={12} />
+                        {tableEditingSessions.filter(s => !user || s.userId !== user.id).length} 行被他人编辑
+                      </span>
+                    )}
+                    {!isAdmin && <span className="text-gray-400">仅查看（需管理员权限编辑）</span>}
+                  </div>
                 </div>
-              </div>
+              )}
             </>
           )}
         </main>
       </div>
+
+      {/* 底部实时连接状态（与状态跟踪页底部一致） */}
+      <footer className="shrink-0 bg-white border-t border-gray-200 px-6 py-3">
+        <div className="max-w-7xl mx-auto flex justify-between items-center text-sm text-gray-500">
+          <div>{syncFooterIntro}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{syncFooterLabel}</span>
+            <span className={`flex items-center ${syncFooterTextClass}`}>
+              <span className={`w-2 h-2 rounded-full ${syncDotClass}`}></span>
+              {syncFooterText}
+            </span>
+          </div>
+        </div>
+      </footer>
 
       {/* 新增分类弹窗 */}
       {addCategoryOpen && (
@@ -1419,6 +1813,88 @@ const GunLedger: React.FC = () => {
                 {submitting && <RefreshCw size={14} className="animate-spin" />}
                 {submitting ? '提交中...' : '创建'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 分类导出弹窗 */}
+      {showExportPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!exporting) setShowExportPanel(false); }} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[480px] max-w-[92vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <Download size={20} />
+                按分类导出台账
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowExportPanel(false)} disabled={exporting}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-3 overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <span className="text-gray-500 text-[10px] font-black uppercase tracking-widest ml-1">选择需要导出的分类</span>
+                <div className="flex items-center gap-3 text-xs font-bold">
+                  <button
+                    className="text-emerald-600 hover:text-emerald-700 transition"
+                    onClick={() => setExportCats(Object.keys(ledger?.categories || {}))}
+                  >
+                    全选
+                  </button>
+                  <button
+                    className="text-gray-400 hover:text-gray-600 transition"
+                    onClick={() => setExportCats([])}
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {Object.keys(ledger?.categories || {}).map(name => {
+                  const tables = ledger?.categories[name] || [];
+                  const rowCount = tables.reduce((sum, t) => sum + (t.rows?.length || 0), 0);
+                  const checked = exportCats.includes(name);
+                  return (
+                    <label
+                      key={name}
+                      className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition ${checked ? 'border-emerald-400 bg-emerald-50' : 'border-gray-200 bg-gray-50 hover:bg-gray-100'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-emerald-600"
+                        checked={checked}
+                        onChange={() => toggleExportCat(name)}
+                      />
+                      <span className="font-bold text-gray-800 text-sm min-w-[90px]">{name}</span>
+                      <span className="text-xs text-gray-400 ml-auto">{tables.length} 张表 / {rowCount} 行</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="text-[11px] text-gray-400 bg-gray-50 rounded-lg p-2.5 border border-gray-100">
+                每个分类是一个 xls 工作簿，分类下的每张表对应一个工作表。选择 1 个分类直接下载 xls；选择多个分类时打包为 zip（每个分类一个 xls）。
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-400">已选 {exportCats.length} 个分类</span>
+              <div className="flex items-center gap-2">
+                <button
+                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                  onClick={() => setShowExportPanel(false)}
+                  disabled={exporting}
+                >
+                  取消
+                </button>
+                <button
+                  className="px-5 py-2 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  onClick={handleExportCategories}
+                  disabled={exporting || !exportCats.length}
+                >
+                  {exporting && <RefreshCw size={14} className="animate-spin" />}
+                  {exporting ? '导出中...' : '导出 xls'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1584,6 +2060,160 @@ const GunLedger: React.FC = () => {
         </div>
       )}
 
+      {/* 台账初始化弹窗：按表设置焊枪名生成规则、清除初始焊枪名 */}
+      {showInitPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowInitPanel(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[840px] max-w-[94vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <Settings2 size={20} />
+                台账初始化
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowInitPanel(false)}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 overflow-auto">
+              <p className="text-xs text-gray-400 leading-relaxed mb-4">
+                按表设置初始化状态：配置预留行的焊枪名自动生成规则（前缀 + 起始编号 + 编号位数）；「清除焊枪名」仅清空该表已有行的焊枪名列（焊枪名允许为空），序号与客户、时间、担当、备注等数据均保留。
+              </p>
+              <div className="space-y-5">
+                {Object.keys(ledger?.categories || {}).map(cat => {
+                  const list = ledger?.categories[cat] || [];
+                  return (
+                    <section key={cat}>
+                      <h4 className="text-xs font-black uppercase tracking-widest text-gray-500 mb-2 flex items-center gap-2">
+                        <span>{cat}</span>
+                        <span className="text-gray-300 font-bold">({list.length} 张表)</span>
+                      </h4>
+                      {list.length === 0 && <div className="text-xs text-gray-400 pl-1">该分类下暂无表格</div>}
+                      <div className="space-y-2">
+                        {list.map(t => {
+                          const draft = ruleDrafts[t.id];
+                          if (!draft) return null;
+                          const previewName = draft.enabled
+                            ? buildGunName(draft, 1) + (t.rows && t.rows.length ? `（下一序号 ${t.rows.length + 1}：${buildGunName(draft, t.rows.length + 1)}）` : ' 起')
+                            : '未启用自动取号，预留行焊枪名为空';
+                          return (
+                            <div key={t.id} className="rounded-xl border border-gray-200 bg-gray-50/70 p-3">
+                              <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <ClipboardList size={15} className="text-emerald-600 shrink-0" />
+                                  <span className="font-bold text-gray-800 text-sm truncate">{t.name}</span>
+                                  <span className="text-xs text-gray-400 shrink-0">{t.rows?.length || 0} 行已取号</span>
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0">
+                                  {/* 启用/停用自动取号 */}
+                                  <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 cursor-pointer select-none">
+                                    <span>自动取号</span>
+                                    <div className="relative inline-block w-10 h-5 align-middle select-none">
+                                      <input
+                                        type="checkbox"
+                                        checked={draft.enabled}
+                                        onChange={e => updateRuleDraft(t.id, { enabled: e.target.checked })}
+                                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                                      />
+                                      <label className={`toggle-label block overflow-hidden h-5 rounded-full cursor-pointer ${draft.enabled ? 'bg-emerald-500' : 'bg-gray-300'}`}></label>
+                                    </div>
+                                  </label>
+                                  {/* 清除焊枪名（二次确认） */}
+                                  {confirmClearId === t.id ? (
+                                    <span className="flex items-center gap-1.5">
+                                      <span className="text-xs font-bold text-red-600">确认清空全部焊枪名？</span>
+                                      <button
+                                        onClick={() => clearGunNames(t.id)}
+                                        disabled={clearingTableId === t.id}
+                                        className="px-2 py-1 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded transition disabled:opacity-50"
+                                      >
+                                        {clearingTableId === t.id ? '清除中...' : '确认'}
+                                      </button>
+                                      <button
+                                        onClick={() => setConfirmClearId(null)}
+                                        disabled={clearingTableId === t.id}
+                                        className="px-2 py-1 text-xs font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 rounded transition disabled:opacity-50"
+                                      >
+                                        取消
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      onClick={() => setConfirmClearId(t.id)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-red-600 hover:text-white bg-red-50 hover:bg-red-500 border border-red-200 hover:border-red-500 rounded transition"
+                                      title="清空该表所有行的焊枪名（序号与其他数据保留）"
+                                    >
+                                      <Eraser size={13} />清除焊枪名
+                                    </button>
+                                  )}
+                                  {/* 保存规则 */}
+                                  <button
+                                    onClick={() => saveGunNameRule(t.id)}
+                                    disabled={ruleSavingId === t.id}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded transition disabled:opacity-50"
+                                  >
+                                    {ruleSavingId === t.id ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
+                                    保存设置
+                                  </button>
+                                </div>
+                              </div>
+                              {draft.enabled && (
+                                <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                                  <label className="flex items-center gap-1 text-xs text-gray-500">
+                                    <span>前缀</span>
+                                    <input
+                                      type="text"
+                                      value={draft.prefix}
+                                      maxLength={20}
+                                      onChange={e => updateRuleDraft(t.id, { prefix: e.target.value })}
+                                      className="w-28 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+                                      placeholder="如 SDZC-C"
+                                    />
+                                  </label>
+                                  <label className="flex items-center gap-1 text-xs text-gray-500">
+                                    <span>起始编号</span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      value={draft.start}
+                                      onChange={e => updateRuleDraft(t.id, { start: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })}
+                                      className="w-24 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+                                    />
+                                  </label>
+                                  <label className="flex items-center gap-1 text-xs text-gray-500">
+                                    <span>编号位数</span>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      max={10}
+                                      value={draft.pad}
+                                      onChange={e => updateRuleDraft(t.id, { pad: Math.min(10, Math.max(1, Math.trunc(Number(e.target.value) || 1))) })}
+                                      className="w-16 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+                                    />
+                                  </label>
+                                  <span className="text-xs text-gray-400 font-mono truncate">预览：{previewName}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end shrink-0">
+              <button
+                className="px-5 py-2 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition"
+                onClick={() => setShowInitPanel(false)}
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 权限设置弹窗 */}
       {showAccessPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -1641,7 +2271,16 @@ const GunLedger: React.FC = () => {
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
                 <Users size={20} />
-                默认担当人员
+                担当人员
+                <button
+                  onClick={() => { if (warnIfOffline()) return; setShowResetConfirm(true); }}
+                  disabled={resettingPersons}
+                  className="ml-2 flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-white/15 hover:bg-white/25 rounded-md border border-white/25 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="恢复为系统默认担当人员名单"
+                >
+                  <RefreshCw size={13} className={resettingPersons ? 'animate-spin' : ''} />
+                  重置为默认人员
+                </button>
               </div>
               <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowPersonPanel(false)}>
                 <X size={20} />
@@ -1682,7 +2321,7 @@ const GunLedger: React.FC = () => {
                   {(ledger?.defaultResponsiblePersons || []).length === 0 && (
                     <div className="flex flex-col items-center justify-center py-8 text-gray-300">
                       <Users size={32} className="mb-2" />
-                      <span className="text-xs text-gray-400">暂无默认担当人员，请在上方添加</span>
+                      <span className="text-xs text-gray-400">暂无担当人员，请在上方添加</span>
                     </div>
                   )}
                   {(ledger?.defaultResponsiblePersons || []).map(p => (
@@ -1711,6 +2350,50 @@ const GunLedger: React.FC = () => {
                 onClick={() => setShowPersonPanel(false)}
               >
                 完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 重置为默认人员确认弹窗 */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !resettingPersons && setShowResetConfirm(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <AlertCircle size={20} />
+                重置为默认人员
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => !resettingPersons && setShowResetConfirm(false)} disabled={resettingPersons}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <AlertCircle size={22} className="text-amber-500 shrink-0 mt-0.5" />
+                <div className="text-sm text-gray-700 leading-relaxed">
+                  <div className="font-bold text-amber-700 mb-1">此操作将覆盖当前名单</div>
+                  <div>确定要将担当人员名单重置为系统默认人员吗？当前已添加/移除的人员将全部丢失。</div>
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                onClick={() => setShowResetConfirm(false)}
+                disabled={resettingPersons}
+              >
+                取消
+              </button>
+              <button
+                className="px-5 py-2 rounded-lg bg-amber-600 text-white font-bold hover:bg-amber-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                onClick={handleResetPersons}
+                disabled={resettingPersons}
+              >
+                {resettingPersons && <RefreshCw size={14} className="animate-spin" />}
+                {resettingPersons ? '重置中...' : '确认重置'}
               </button>
             </div>
           </div>

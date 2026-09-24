@@ -50,7 +50,10 @@ const maintenanceSettingsSchema = Joi.object({
   enabled: Joi.boolean().required(),
   dailyBackupEnabled: Joi.boolean().required(),
   dailyTaskExportEnabled: Joi.boolean().required(),
+  dailyGunLedgerExportEnabled: Joi.boolean().required(),
   backupRetentionDays: Joi.number().integer().min(1).max(3650).required(),
+  taskExportRetentionDays: Joi.number().integer().min(1).max(3650).required(),
+  gunLedgerExportRetentionDays: Joi.number().integer().min(1).max(3650).required(),
   scheduleTime: Joi.string().pattern(/^\d{2}:\d{2}$/).required(),
   yearlyCleanupEnabled: Joi.boolean().required(),
   yearlyCleanupMonth: Joi.number().integer().min(1).max(12).required(),
@@ -58,6 +61,7 @@ const maintenanceSettingsSchema = Joi.object({
   yearlyTaskRetentionYears: Joi.number().integer().min(1).max(10).required(),
   backupDir: Joi.string().trim().min(1).max(200).required(),
   taskExportDir: Joi.string().trim().min(1).max(200).required(),
+  gunLedgerExportDir: Joi.string().trim().min(1).max(200).required(),
   yearlyArchiveDir: Joi.string().trim().min(1).max(200).required()
 });
 
@@ -1046,6 +1050,18 @@ router.post('/maintenance/export-tasks', [authMiddleware, superAdminMiddleware],
   } catch (error) {
     if (error.statusCode === 404) {
       return res.status(404).json({ message: error.message || '\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684\u6570\u636e' });
+    }
+    throw error;
+  }
+}));
+
+router.post('/maintenance/export-gun-ledger', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  try {
+    const gunLedgerExport = maintenance.exportGunLedgerData({ type: 'manual-gun-ledger-export', requireData: true });
+    res.json({ message: '\u7f16\u53f7\u53f0\u8d26\u5df2\u5bfc\u51fa', gunLedgerExport });
+  } catch (error) {
+    if (error.statusCode === 404) {
+      return res.status(404).json({ message: error.message || '\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684\u7f16\u53f7\u53f0\u8d26\u6570\u636e' });
     }
     throw error;
   }
