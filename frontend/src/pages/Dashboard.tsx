@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
@@ -437,6 +437,7 @@ const Dashboard = () => {
   const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
   const [statusTrackingAccess, setStatusTrackingAccess] = useState(defaultAccessSettings);
+  const [designStandardsAccess, setDesignStandardsAccess] = useState(defaultAccessSettings);
   const [systemSettingsAccess, setSystemSettingsAccess] = useState(defaultAccessSettings);
   const [workdayOverrides, setWorkdayOverrides] = useState<WorkdayOverrides>({});
   const [updatingWorkdayOverrideDate, setUpdatingWorkdayOverrideDate] = useState<string | null>(null);
@@ -1780,9 +1781,10 @@ const Dashboard = () => {
       axiosInstance.get('/settings/leaderboard'),
       axiosInstance.get('/settings/work-hours'),
       axiosInstance.get('/settings/status-tracking'),
-      axiosInstance.get('/settings/system-settings')
+      axiosInstance.get('/settings/system-settings'),
+      axiosInstance.get('/settings/design-standards')
     ])
-      .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes]) => {
+      .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes, designStandardsRes]) => {
         const guestAllowed = systemRes.data.allowGuestView ?? true;
         setAllowGuestView(guestAllowed);
         setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? true);
@@ -1790,6 +1792,7 @@ const Dashboard = () => {
         setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
         setStatusTrackingAccess(statusTrackingRes.data || defaultAccessSettings);
         setSystemSettingsAccess(systemSettingsRes.data || defaultAccessSettings);
+        setDesignStandardsAccess(designStandardsRes.data || defaultAccessSettings);
         if (!guestAllowed && !user) setLoading(false);
       })
       .catch(() => setAllowGuestView(true))
@@ -2796,15 +2799,18 @@ const Dashboard = () => {
                 <span>状态跟踪表</span>
               </Link>
           )}
-          {canShowSystemSettingsLink() && (
+          {canShowAccessLink(designStandardsAccess) && (
             <Link
-              to="/system-settings"
+              to="/design-standards"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
             >
-              <Settings size={16} className="text-purple-200" />
-              <span>系统设置</span>
+              <BookOpen size={16} className="text-emerald-200" />
+              <span>设计规范与标准</span>
+              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-400 text-amber-900">
+                待开发
+              </span>
             </Link>
           )}
         </div>
@@ -2818,8 +2824,13 @@ const Dashboard = () => {
           {user ? (
             <>
               <div className="flex flex-col items-end">
-                <span className="text-sm font-bold">{user.name}</span>
+                <span className="text-sm font-bold text-red-500">{user.name}</span>
               </div>
+              {canShowSystemSettingsLink() && (
+                <Link to="/system-settings" target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-[#1a5c38] rounded transition" title="系统设置">
+                  <Settings size={20} className="text-purple-200" />
+                </Link>
+              )}
               <div className="h-6 w-[1px] bg-white/20"></div>
               {isAdmin && (
                 <Link to="/admin" target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-[#1a5c38] rounded transition" title="用户管理">

@@ -1007,7 +1007,7 @@ const StatusTracking = () => {
     const isClosed = !settings.enabled;
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
-        <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
+        <header className="bg-white shadow-sm px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
             <span>返回工作台</span>
@@ -1044,7 +1044,7 @@ const StatusTracking = () => {
         ))}
       </div>
 
-      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
+      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
@@ -1060,7 +1060,7 @@ const StatusTracking = () => {
               placeholder="搜索客户、仕样号、营业担当..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="pl-10 pr-4 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <label className="flex items-center cursor-pointer">
@@ -1091,7 +1091,7 @@ const StatusTracking = () => {
           {isAdmin && (
             <button
               onClick={() => setShowModal(true)}
-              className="px-6 py-2.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold rounded-full shadow-md hover:shadow-lg transition-all duration-200 text-base tracking-wide"
+              className="px-6 py-1.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-bold rounded-full shadow-md hover:shadow-lg transition-all duration-200 tracking-wide"
             >
               添加记录
             </button>
@@ -1100,7 +1100,7 @@ const StatusTracking = () => {
             <button
               onClick={handleExport}
               disabled={exporting}
-              className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-lg transition"
+              className="flex items-center gap-2 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white text-sm font-bold rounded-lg transition"
             >
               {exporting ? <RefreshCw size={16} className="animate-spin" /> : <Download size={16} />}
               导出显示结果
@@ -1110,7 +1110,7 @@ const StatusTracking = () => {
             <select
               value={factoryFilter}
               onChange={(e) => setFactoryFilter(e.target.value)}
-              className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+              className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
             >
               <option value="">全部工厂</option>
               {factoryOptions.map(option => (
@@ -1124,7 +1124,7 @@ const StatusTracking = () => {
             <button
               type="button"
               onClick={() => setMonthFilterMode('production')}
-              className={`px-3 py-2 text-sm font-medium transition ${
+              className={`px-3 py-1.5 text-sm font-medium transition ${
                 monthFilterMode === 'production'
                   ? 'bg-blue-600 text-white'
                   : 'bg-white text-gray-600 hover:bg-gray-50'
@@ -1135,7 +1135,7 @@ const StatusTracking = () => {
             <button
               type="button"
               onClick={() => setMonthFilterMode('delivery')}
-              className={`px-3 py-2 text-sm font-medium border-l border-gray-300 transition ${
+              className={`px-3 py-1.5 text-sm font-medium border-l border-gray-300 transition ${
                 monthFilterMode === 'delivery'
                   ? 'bg-blue-600 text-white'
                   : 'bg-white text-gray-600 hover:bg-gray-50'
@@ -1151,7 +1151,7 @@ const StatusTracking = () => {
                 value={currentMonth}
                 onChange={(e) => setCurrentMonth(e.target.value)}
                 disabled={monthFilterMode !== 'production'}
-                className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
               >
                 {generateMonthOptions(allItems).map(option => (
                   <option key={option.value} value={option.value}>{option.label}</option>
@@ -1167,7 +1167,7 @@ const StatusTracking = () => {
                 value={deliveryMonth}
                 onChange={(e) => setDeliveryMonth(e.target.value)}
                 disabled={monthFilterMode !== 'delivery'}
-                className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
               >
                 {generateDeliveryMonthOptions(allItems).map(option => (
                   <option key={option.value} value={option.value}>{option.label}</option>
@@ -1180,7 +1180,7 @@ const StatusTracking = () => {
           {isAdmin && (
             <button
               onClick={() => setShowLeaderRulesModal(true)}
-              className="flex items-center space-x-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg transition"
+              className="flex items-center space-x-2 px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold rounded-lg transition"
             >
               <Users size={18} />
               <span>组长规则</span>
@@ -1189,10 +1189,7 @@ const StatusTracking = () => {
 
           {user && (
             <div className="flex items-center space-x-4">
-              <div className="flex flex-col items-end">
-                <span className="text-xs text-gray-400">当前用户</span>
-                <span className="text-sm font-bold text-gray-700">{user.name}</span>
-              </div>
+              <span className="text-sm font-bold text-red-600">{user.name}</span>
               <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
                 <LogOut size={18} />
                 <span>退出</span>

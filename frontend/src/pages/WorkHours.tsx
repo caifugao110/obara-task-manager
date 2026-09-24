@@ -330,7 +330,7 @@ const WorkHours = () => {
     const isClosed = !settings.enabled;
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
-        <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
+        <header className="bg-white shadow-sm px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
             <span>返回工作台</span>
@@ -358,7 +358,7 @@ const WorkHours = () => {
   if (designers.length === 0) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
-        <header className="bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
+        <header className="bg-white shadow-sm px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
             <span>返回工作台</span>
@@ -397,7 +397,7 @@ const WorkHours = () => {
         ))}
       </div>
 
-      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
+      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
@@ -411,10 +411,10 @@ const WorkHours = () => {
         </div>
 
         <div className="flex items-center space-x-4">
-          <div className="flex items-center bg-gray-100 rounded-lg p-1">
+          <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
             <button
               onClick={() => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
-              className="p-2 hover:bg-white rounded-lg transition shadow-sm"
+              className="p-1 hover:bg-white rounded-lg transition shadow-sm"
             >
               <ChevronLeft size={18} />
             </button>
@@ -434,7 +434,7 @@ const WorkHours = () => {
             </span>
             <button
               onClick={() => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
-              className="p-2 hover:bg-white rounded-lg transition shadow-sm"
+              className="p-1 hover:bg-white rounded-lg transition shadow-sm"
             >
               <ChevronLeft size={18} className="rotate-180" />
             </button>
@@ -450,10 +450,7 @@ const WorkHours = () => {
 
         {user && (
           <div className="flex items-center space-x-4">
-            <div className="flex flex-col items-end">
-              <span className="text-xs text-gray-400">当前用户</span>
-              <span className="text-sm font-bold text-gray-700">{user.name}</span>
-            </div>
+            <span className="text-sm font-bold text-red-600">{user.name}</span>
             <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
               <LogOut size={18} />
               <span>退出</span>

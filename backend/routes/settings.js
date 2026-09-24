@@ -66,6 +66,9 @@ router.put('/work-hours', updateAccessSettings('workHours'));
 router.get('/status-tracking', guestViewMiddleware, getAccessSettings('statusTracking'));
 router.put('/status-tracking', updateAccessSettings('statusTracking'));
 
+router.get('/design-standards', guestViewMiddleware, getAccessSettings('designStandards'));
+router.put('/design-standards', updateAccessSettings('designStandards'));
+
 router.get('/system-settings', guestViewMiddleware, getAccessSettings('systemSettings'));
 router.put('/system-settings', updateAccessSettings('systemSettings'));
 

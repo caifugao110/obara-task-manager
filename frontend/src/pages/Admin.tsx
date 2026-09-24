@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
-import { UserPlus, Trash2, Shield, User, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download, Settings } from 'lucide-react';
+import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download, Settings } from 'lucide-react';
 import { format } from 'date-fns';
 import {
   DndContext,
@@ -986,21 +986,21 @@ const Admin = () => {
       )}
 
       {/* Header */}
-      <header className="sticky top-0 z-40 bg-white shadow-sm px-6 py-4 flex items-center justify-between border-b border-gray-200">
+      <header className="sticky top-0 z-40 bg-white shadow-sm px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
             <span>返回工作台</span>
           </Link>
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
-          <h1 className="text-xl font-bold text-gray-800 tracking-tight">用户管理中心</h1>
+          <h1 className="text-xl font-bold text-blue-600 flex items-center">
+            <Users className="text-blue-500 mr-2" size={24} />
+            用户管理中心
+          </h1>
         </div>
         
         <div className="flex items-center space-x-6">
-          <div className="flex flex-col items-end">
-            <span className="text-xs text-gray-400">当前管理员</span>
-            <span className="text-sm font-bold text-gray-700">{currentUser?.name}</span>
-          </div>
+          <span className="text-sm font-bold text-red-600">{currentUser?.name}</span>
           <button 
             onClick={logout}
             className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition"
@@ -1015,7 +1015,7 @@ const Admin = () => {
         {/* Designers Management (Task Table Members) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
-            <div className="sticky top-[56px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+            <div className="sticky top-[48px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
               <button
                 type="button"
                 onClick={() => {
@@ -1120,7 +1120,7 @@ const Admin = () => {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[56px] lg:self-start">
+          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[48px] lg:self-start">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <UserPlus size={20} className="mr-2 text-blue-600" /> 添加设计人员
@@ -1161,7 +1161,7 @@ const Admin = () => {
         {/* Login Users Management (Admins) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-8 border-t border-gray-200">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
-            <div className="sticky top-[56px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+            <div className="sticky top-[48px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
               <button
                 type="button"
                 onClick={() => {
@@ -1305,7 +1305,7 @@ const Admin = () => {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[56px] lg:self-start">
+          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[48px] lg:self-start">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <Shield size={20} className="mr-2 text-purple-600" /> 新增登录用户

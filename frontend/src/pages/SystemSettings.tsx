@@ -514,7 +514,7 @@ const SystemSettings = () => {
         ))}
       </div>
 
-      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
+      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
           <Link to="/" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
             <ChevronLeft size={20} />
@@ -529,10 +529,7 @@ const SystemSettings = () => {
 
         {user && (
           <div className="flex items-center space-x-4">
-            <div className="flex flex-col items-end">
-              <span className="text-xs text-gray-400">当前用户</span>
-              <span className="text-sm font-bold text-gray-700">{user.name}</span>
-            </div>
+            <span className="text-sm font-bold text-red-600">{user.name}</span>
             <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
               <LogOut size={18} />
               <span>退出</span>
@@ -541,7 +538,7 @@ const SystemSettings = () => {
         )}
       </header>
 
-      <div className="sticky top-[73px] z-30 bg-white border-b border-gray-200">
+      <div className="sticky top-[48px] z-30 bg-white border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-8 flex space-x-1">
           <button
             onClick={() => setActiveTab('data')}

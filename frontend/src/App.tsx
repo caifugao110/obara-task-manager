@@ -11,6 +11,7 @@ import WorkHours from './pages/WorkHours';
 import StatusTracking from './pages/StatusTracking';
 import SystemSettings from './pages/SystemSettings';
 import SystemLogs from './pages/SystemLogs';
+import DesignStandards from './pages/DesignStandards';
 
 const ProtectedRoute = ({
   children,
@@ -107,6 +108,14 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <SystemSettings />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/design-standards"
+        element={
+          <ProtectedRoute>
+            <DesignStandards />
           </ProtectedRoute>
         }
       />
