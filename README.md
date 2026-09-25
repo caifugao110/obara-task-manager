@@ -104,7 +104,7 @@ npm run dev
 | 操作日志 | `/system-logs` | 所有用户的操作日志明细和筛选 |
 | 状态追踪 | `/status-tracking` | 任务状态追踪与批量导入导出 |
 | 焊枪台账 | `/gun-ledger` | 焊枪编号台账：分类/表/行三级管理、焊枪名自动取号、表级独占编辑锁、分类导出与导入 |
-| 设计规范知识库 | `/design-standards` | 设计规范知识库（预留页面，后续接入本地知识库） |
+| 设计规范知识库 | `/design-standards` | 基于本地 WeKnora 的规范检索与智能问答（带引用），含知识库文档管理 |
 
 ## 当前功能
 
@@ -258,7 +258,13 @@ npm run dev
 
 ### 设计规范知识库
 
-设计规范知识库页面（`/design-standards`）为预留界面，用于后续接入本地知识库（WeKnora）。当前仅展示占位内容与权限设置，查看权限与工时管理页面一致，超级管理员可在页面底部配置一般管理员/普通用户的访问权限。
+设计规范知识库页面（`/design-standards`）基于本地 Docker 部署的 [Tencent/WeKnora](https://github.com/Tencent/WeKnora) 知识库（问答走 DeepSeek API、向量化走智谱 API），提供三个功能标签：
+
+- **规范检索**：关键词检索知识库中的规范条款，显示命中方式与相关度得分；
+- **智能问答**：基于检索结果流式生成回答（SSE），并附带引用出处；
+- **知识库管理**（一般管理员及以上）：查看/上传/删除知识库文档，默认知识库为《电极使用规范.pdf》。
+
+WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`），前端统一经 `/api/design-standards/*` 代理访问。部署物料与文档全部内置在仓库 `weknora/` 目录（详见 [weknora/README.md](weknora/README.md) 与 DEPLOYMENT.md）。查看权限与工时管理页面一致，超级管理员可在页面底部配置一般管理员/普通用户的访问权限。
 
 ### 系统设置
 

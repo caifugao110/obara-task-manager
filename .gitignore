@@ -51,6 +51,7 @@ backend/*.db
 # Backup files
 backend/backups/
 backups/
+frontend/src/pages/DesignStandards.tsx.bak-original
 
 # Logs
 logs/

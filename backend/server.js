@@ -56,6 +56,7 @@ const specRoutes = require('./routes/spec');
 const statusTrackingRoutes = require('./routes/statusTracking');
 const workHoursRoutes = require('./routes/workHours');
 const gunLedgerRoutes = require('./routes/gunLedger');
+const designStandardsRoutes = require('./routes/designStandards');
 
 app.use(auditLogMiddleware);
 
@@ -69,6 +70,7 @@ app.use('/api/spec', specRoutes);
 app.use('/api/status-tracking', statusTrackingRoutes);
 app.use('/api/work-hours', workHoursRoutes);
 app.use('/api/gun-ledger', gunLedgerRoutes);
+app.use('/api/design-standards', designStandardsRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {

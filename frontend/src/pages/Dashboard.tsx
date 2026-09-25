@@ -2818,9 +2818,6 @@ const Dashboard = () => {
             >
               <BookOpen size={16} className="text-emerald-200" />
               <span>设计规范知识库</span>
-              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-400 text-amber-900">
-                待开发
-              </span>
             </Link>
           )}
           {canShowGunLedgerLink() && (
@@ -2832,9 +2829,6 @@ const Dashboard = () => {
             >
               <ClipboardList size={16} className="text-emerald-200" />
               <span>焊枪编号台账</span>
-              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-green-500 text-white">
-                开发中
-              </span>
             </Link>
           )}
         </div>

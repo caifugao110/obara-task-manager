@@ -268,6 +268,26 @@ RATE_LIMIT_MAX=20
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径（生产环境使用） |
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite，迁移完成后可删除 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；当前登录/改密限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
+| `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入，部署 WeKnora 后设为 `true` |
+| `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
+| `WEKNORA_API_KEY` | - | WeKnora 空间 API Key，由 `weknora/scripts/setup.js` 自动创建并写入 |
+| `WEKNORA_KNOWLEDGE_BASE_IDS` | - | 默认检索的知识库 ID，多个用英文逗号分隔 |
+| `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
+
+## 设计规范知识库（WeKnora）
+
+「设计规范知识库」页面（`/design-standards`）基于本地 Docker 部署的 [Tencent/WeKnora](https://github.com/Tencent/WeKnora)，提供规范检索与带引用的智能问答（模型走 DeepSeek + 智谱云端 API）。
+
+**部署所需的一切都在仓库 `weknora/` 目录内**（精简 compose、初始化脚本、默认知识库文件《电极使用规范.pdf》、完整文档），无需单独克隆 WeKnora 源码。一键部署：
+
+```bat
+set DEEPSEEK_API_KEY=sk-xxx
+set BIGMODEL_API_KEY=xxx.yyy
+cd weknora
+start.bat
+```
+
+详细步骤、迁移方法、踩坑记录见 **[weknora/README.md](weknora/README.md)**。注意：`backend/.env` 中 `WEKNORA_*` 变更后需重启后端才生效。
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被限流器使用 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
