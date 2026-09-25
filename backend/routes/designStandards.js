@@ -228,6 +228,14 @@ router.post(
       return res.status(503).json({ message: '知识库服务未配置，请检查后端 WEKNORA_* 环境变量' });
     }
 
+    // 问答会话是工作空间级资源，所选知识库必须同属一个工作空间。
+    // 在写 SSE 响应头之前校验，这样错误可以普通 JSON 返回给前端。
+    try {
+      await weknora.assertSameTenant(kbIds);
+    } catch (err) {
+      return handleError(res, err, '知识库选择无效');
+    }
+
     // SSE 响应头
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');

@@ -26,6 +26,10 @@ import {
   Wifi,
   WifiOff,
   Settings2,
+  Plus,
+  X,
+  FolderPlus,
+  ChevronDown,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -56,6 +60,15 @@ interface KnowledgeBase {
   name: string;
   description: string;
   knowledgeCount: number | null;
+  tenantId?: number | null;
+  tenantName?: string | null;
+}
+
+interface TenantStatus {
+  tenantId: number | null;
+  tenantName: string | null;
+  reachable: boolean;
+  message?: string;
 }
 
 interface DocumentItem {
@@ -84,6 +97,7 @@ interface WeknoraStatus {
   code?: string;
   defaultKnowledgeBaseIds: string[];
   knowledgeBases: KnowledgeBase[];
+  tenants?: TenantStatus[];
 }
 
 type TabKey = 'search' | 'chat' | 'manage';
@@ -122,6 +136,125 @@ const parseStatusStyle = (status: string) => {
     return { cls: 'bg-red-100 text-red-700 border-red-200', label: '解析失败' };
   }
   return { cls: 'bg-gray-100 text-gray-600 border-gray-200', label: status || '未知' };
+};
+
+/**
+ * 知识库范围多选下拉框（规范检索 / 智能问答共用）
+ *
+ * 选中的知识库 ID 会随检索、问答请求传给后端（knowledgeBaseIds），
+ * 后端不再使用 .env 中的默认 WEKNORA_KNOWLEDGE_BASE_IDS。
+ */
+const KbScopeSelect: React.FC<{
+  knowledgeBases: KnowledgeBase[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  disabled?: boolean;
+}> = ({ knowledgeBases, selectedIds, onChange, disabled }) => {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  const toggleId = (id: string) => {
+    onChange(
+      selectedIds.includes(id) ? selectedIds.filter(x => x !== id) : [...selectedIds, id]
+    );
+  };
+
+  const tenantNames = [...new Set(knowledgeBases.map(kb => kb.tenantName).filter(Boolean))] as string[];
+  const multiTenant = tenantNames.length > 1;
+
+  const label =
+    selectedIds.length === 0
+      ? '选择知识库'
+      : selectedIds.length === 1
+      ? knowledgeBases.find(kb => kb.id === selectedIds[0])?.name || '1 个知识库'
+      : `已选 ${selectedIds.length} 个知识库`;
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(o => !o)}
+        className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm font-medium transition max-w-[260px] ${
+          selectedIds.length
+            ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+            : 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100'
+        } disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        <Database size={14} className="shrink-0" />
+        <span className="truncate">{label}</span>
+        <ChevronDown
+          size={14}
+          className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute z-50 mt-1 w-80 max-h-80 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl p-2">
+          <div className="px-2 py-1.5 text-xs text-gray-400 flex items-center justify-between">
+            <span>选择知识库（可多选）</span>
+            <button
+              type="button"
+              className="text-blue-600 hover:text-blue-700 font-medium"
+              onClick={() => onChange(knowledgeBases.map(kb => kb.id))}
+            >
+              全选
+            </button>
+          </div>
+          {knowledgeBases.length === 0 ? (
+            <div className="px-2 py-6 text-center text-xs text-gray-400">暂无知识库</div>
+          ) : (
+            knowledgeBases.map(kb => {
+              const checked = selectedIds.includes(kb.id);
+              return (
+                <label
+                  key={kb.id}
+                  className="flex items-start gap-2.5 px-2 py-2 rounded-lg hover:bg-blue-50 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleId(kb.id)}
+                    className="mt-0.5 h-4 w-4 accent-blue-600"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-sm text-gray-700 truncate">{kb.name}</span>
+                      {multiTenant && kb.tenantName && (
+                        <span
+                          className="text-[10px] px-1.5 py-px rounded bg-purple-50 text-purple-600 border border-purple-100 shrink-0"
+                          title={`所属工作空间：${kb.tenantName}`}
+                        >
+                          {kb.tenantName}
+                        </span>
+                      )}
+                      {kb.knowledgeCount !== null && kb.knowledgeCount !== undefined && (
+                        <span className="text-[10px] text-gray-400 shrink-0">
+                          {kb.knowledgeCount} 篇
+                        </span>
+                      )}
+                    </span>
+                    {kb.description && (
+                      <span className="block text-xs text-gray-400 truncate">{kb.description}</span>
+                    )}
+                  </span>
+                </label>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
 };
 
 /**
@@ -165,6 +298,16 @@ const DesignStandards: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // 新增知识库弹窗
+  const [showCreateKb, setShowCreateKb] = useState(false);
+  const [newKbName, setNewKbName] = useState('');
+  const [newKbDesc, setNewKbDesc] = useState('');
+  const [creatingKb, setCreatingKb] = useState(false);
+
+  // 规范检索 / 智能问答使用的知识库范围；首次加载时默认勾选后端 .env 配置的知识库
+  const [searchKbIds, setSearchKbIds] = useState<string[]>([]);
+  const [chatKbIds, setChatKbIds] = useState<string[]>([]);
+
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || isSuperAdmin;
 
@@ -189,6 +332,29 @@ const DesignStandards: React.FC = () => {
   }, [isSuperAdmin, settings, user]);
 
   const online = !!status?.reachable;
+
+  /**
+   * 问答选择的知识库是否跨越了多个 WeKnora 工作空间。
+   * WeKnora 的会话是工作空间级资源，跨空间的知识库无法在同一会话中问答；
+   * 纯检索不受此限制（后端会分组扇出后合并结果）。
+   */
+  const chatCrossTenant = useMemo(() => {
+    const ids = new Set(
+      chatKbIds
+        .map(id => status?.knowledgeBases.find(kb => kb.id === id)?.tenantId)
+        .filter(t => t !== undefined && t !== null)
+    );
+    return ids.size > 1;
+  }, [chatKbIds, status]);
+
+  const chatTenantNames = useMemo(() => {
+    const names = new Set(
+      chatKbIds
+        .map(id => status?.knowledgeBases.find(kb => kb.id === id)?.tenantName)
+        .filter((n): n is string => !!n)
+    );
+    return [...names];
+  }, [chatKbIds, status]);
 
   /* ==================== 数据获取 ==================== */
 
@@ -230,6 +396,20 @@ const DesignStandards: React.FC = () => {
     if (settingsLoaded && canViewDesignStandards) fetchStatus();
   }, [settingsLoaded, canViewDesignStandards, fetchStatus]);
 
+  // 知识库列表到达后，默认勾选后端 .env 配置的默认知识库（仅初始化，不覆盖用户手动选择）
+  useEffect(() => {
+    if (!status?.reachable || !status.knowledgeBases?.length) return;
+    const pickDefaults = (prev: string[]) => {
+      if (prev.length) return prev;
+      const validDefaults = (status.defaultKnowledgeBaseIds || []).filter(id =>
+        status.knowledgeBases.some(kb => kb.id === id)
+      );
+      return validDefaults.length ? validDefaults : [status.knowledgeBases[0].id];
+    };
+    setSearchKbIds(pickDefaults);
+    setChatKbIds(pickDefaults);
+  }, [status]);
+
   useEffect(() => {
     if (chatEndRef.current) {
       chatEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -264,10 +444,18 @@ const DesignStandards: React.FC = () => {
       addToast('请输入检索内容', 'error');
       return;
     }
+    if (!searchKbIds.length) {
+      addToast('请先选择要检索的知识库', 'error');
+      return;
+    }
     setSearching(true);
     setSearched(true);
     try {
-      const res = await axios.post('/api/design-standards/search', { query: q }, authHeader);
+      const res = await axios.post(
+        '/api/design-standards/search',
+        { query: q, knowledgeBaseIds: searchKbIds },
+        authHeader
+      );
       setHits(res.data.results || []);
     } catch (err: any) {
       setHits([]);
@@ -282,6 +470,14 @@ const DesignStandards: React.FC = () => {
   const handleChat = async () => {
     const q = chatInput.trim();
     if (!q || streaming) return;
+    if (!chatKbIds.length) {
+      addToast('请先选择问答使用的知识库', 'error');
+      return;
+    }
+    if (chatCrossTenant) {
+      addToast('智能问答不支持跨工作空间选择知识库，请只保留同一工作空间下的知识库', 'error');
+      return;
+    }
 
     setChatInput('');
     setMessages(prev => [...prev, { role: 'user', content: q }]);
@@ -308,7 +504,11 @@ const DesignStandards: React.FC = () => {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ query: q, sessionId: sessionId || undefined }),
+        body: JSON.stringify({
+          query: q,
+          sessionId: sessionId || undefined,
+          knowledgeBaseIds: chatKbIds,
+        }),
       });
 
       if (!res.ok || !res.body) {
@@ -376,6 +576,36 @@ const DesignStandards: React.FC = () => {
   };
 
   /* ==================== 知识库管理 ==================== */
+
+  const handleCreateKb = async () => {
+    const name = newKbName.trim();
+    if (!name) {
+      addToast('请输入知识库名称', 'error');
+      return;
+    }
+    setCreatingKb(true);
+    try {
+      const res = await axios.post(
+        '/api/design-standards/knowledge-bases',
+        { name, description: newKbDesc.trim() },
+        authHeader
+      );
+      const kb = res.data?.knowledgeBase;
+      addToast(`知识库「${name}」创建成功`, 'success');
+      setShowCreateKb(false);
+      setNewKbName('');
+      setNewKbDesc('');
+      await fetchStatus();
+      if (kb?.id) {
+        setSelectedKb(kb.id);
+        fetchDocuments(kb.id);
+      }
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '创建知识库失败', 'error');
+    } finally {
+      setCreatingKb(false);
+    }
+  };
 
   const handleUpload = async (file: File) => {
     if (!selectedKb) {
@@ -577,6 +807,20 @@ const DesignStandards: React.FC = () => {
                 </div>
               )}
 
+              {online && !statusLoading && status?.tenants?.some(t => !t.reachable) && (
+                <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                  <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+                  <div className="text-xs text-amber-700 leading-relaxed">
+                    <span className="font-semibold">部分工作空间无法访问：</span>
+                    {status.tenants
+                      .filter(t => !t.reachable)
+                      .map(t => t.tenantName || `工作空间 ${t.tenantId ?? '?'}`)
+                      .join('、')}
+                    ，该空间下的知识库暂不可检索，请检查对应 API Key 是否有效
+                  </div>
+                </div>
+              )}
+
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 <a
                   href="https://github.com/Tencent/WeKnora"
@@ -648,6 +892,18 @@ const DesignStandards: React.FC = () => {
         {/* ========== 规范检索 ========== */}
         {tab === 'search' && (
           <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs font-semibold text-gray-400">检索范围</span>
+              <KbScopeSelect
+                knowledgeBases={status?.knowledgeBases || []}
+                selectedIds={searchKbIds}
+                onChange={setSearchKbIds}
+                disabled={!online}
+              />
+              {online && searchKbIds.length === 0 && (
+                <span className="text-xs text-red-400">请至少选择一个知识库</span>
+              )}
+            </div>
             <div className="flex items-center gap-3">
               <div className="flex-1 relative">
                 <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -662,7 +918,7 @@ const DesignStandards: React.FC = () => {
               </div>
               <button
                 onClick={handleSearch}
-                disabled={searching || !online}
+                disabled={searching || !online || !searchKbIds.length}
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {searching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
@@ -732,6 +988,30 @@ const DesignStandards: React.FC = () => {
         {/* ========== 智能问答 ========== */}
         {tab === 'chat' && (
           <section className="bg-white rounded-2xl shadow-sm border border-gray-200 flex flex-col">
+            <div className="border-b border-gray-100 px-6 py-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-gray-400">问答知识库</span>
+                <KbScopeSelect
+                  knowledgeBases={status?.knowledgeBases || []}
+                  selectedIds={chatKbIds}
+                  onChange={ids => {
+                    setChatKbIds(ids);
+                    // 切换知识库范围后开启新会话，避免继续沿用旧会话的检索范围
+                    if (ids.join(',') !== chatKbIds.join(',')) setSessionId('');
+                  }}
+                  disabled={!online}
+                />
+                {online && chatKbIds.length === 0 && (
+                  <span className="text-xs text-red-400">请至少选择一个知识库</span>
+                )}
+                {online && chatCrossTenant && (
+                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700">
+                    <AlertCircle size={12} className="shrink-0" />
+                    问答不支持跨工作空间（已选：{chatTenantNames.join('、')}），请只保留同一工作空间
+                  </span>
+                )}
+              </div>
+            </div>
             <div className="overflow-y-auto px-6 py-5 space-y-5" style={{ maxHeight: '560px', minHeight: '420px' }}>
               {messages.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center text-center text-gray-400 py-16">
@@ -813,7 +1093,13 @@ const DesignStandards: React.FC = () => {
                 />
                 <button
                   onClick={handleChat}
-                  disabled={!online || streaming || !chatInput.trim()}
+                  disabled={
+                    !online ||
+                    streaming ||
+                    !chatInput.trim() ||
+                    !chatKbIds.length ||
+                    chatCrossTenant
+                  }
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {streaming ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
@@ -864,6 +1150,16 @@ const DesignStandards: React.FC = () => {
                 ))}
               </select>
 
+              <button
+                onClick={() => setShowCreateKb(true)}
+                disabled={!online}
+                title={online ? '新增知识库' : '知识库未连接'}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-600 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Plus size={15} />
+                新增知识库
+              </button>
+
               <div className="flex-1" />
 
               <input
@@ -894,7 +1190,7 @@ const DesignStandards: React.FC = () => {
             ) : !selectedKb ? (
               <div className="text-sm text-gray-400 text-center py-8">
                 {(status?.knowledgeBases || []).length === 0
-                  ? '尚未创建知识库，请先到 WeKnora 控制台创建'
+                  ? '尚未创建知识库，点击上方「新增知识库」创建'
                   : '请选择一个知识库'}
               </div>
             ) : docsLoading ? (
@@ -961,6 +1257,81 @@ const DesignStandards: React.FC = () => {
                 更多管理能力（分块查看、标签、FAQ 等）请到 WeKnora 控制台操作。
               </p>
             </div>
+
+            {/* 新增知识库弹窗 */}
+            {showCreateKb && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+                onClick={() => !creatingKb && setShowCreateKb(false)}
+              >
+                <div
+                  className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6"
+                  onClick={e => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                      <FolderPlus size={20} className="text-blue-500" />
+                      新增知识库
+                    </h3>
+                    <button
+                      onClick={() => setShowCreateKb(false)}
+                      disabled={creatingKb}
+                      className="text-gray-400 hover:text-gray-600 transition disabled:opacity-50"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-600 mb-1">
+                        名称 <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        value={newKbName}
+                        onChange={e => setNewKbName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && !creatingKb && newKbName.trim()) handleCreateKb();
+                        }}
+                        disabled={creatingKb}
+                        autoFocus
+                        maxLength={100}
+                        placeholder="例如：X2C-V4 设计规范"
+                        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:border-blue-400 outline-none disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-600 mb-1">描述</label>
+                      <textarea
+                        value={newKbDesc}
+                        onChange={e => setNewKbDesc(e.target.value)}
+                        disabled={creatingKb}
+                        rows={3}
+                        maxLength={500}
+                        placeholder="可选，简单说明该知识库的用途"
+                        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:border-blue-400 outline-none resize-none disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-3 mt-6">
+                    <button
+                      onClick={() => setShowCreateKb(false)}
+                      disabled={creatingKb}
+                      className="px-4 py-2 rounded-lg border border-gray-200 text-gray-600 text-sm font-semibold hover:bg-gray-50 transition disabled:opacity-50"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleCreateKb}
+                      disabled={creatingKb || !newKbName.trim()}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {creatingKb ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+                      {creatingKb ? '创建中…' : '创建'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
         )}
 
