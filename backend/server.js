@@ -11,6 +11,12 @@ const securityConfig = require('./config/security');
 const { socketAuthMiddleware, requireSocketAuth } = require('./middleware/socketAuth');
 
 const app = express();
+
+// 信任第一跳代理（本地 Vite 开发代理 / 生产 nginx）。
+// 必需：经代理转发的请求带 X-Forwarded-For 头，express-rate-limit v8 在
+// trust proxy 未开启时会抛 ERR_ERL_UNEXPECTED_X_FORWARDED_FOR 并使进程崩溃；
+// 开启后 req.ip 取真实客户端 IP，登录限流按用户而非按代理地址计数。
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {

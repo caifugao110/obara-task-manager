@@ -14,8 +14,12 @@
  *
  * 用法：
  *   node scripts/setup.js --deepseek-key sk-xxx --zhipu-key xxx.yyy
- *   # 或用环境变量 DEEPSEEK_API_KEY / BIGMODEL_API_KEY
- *   # 两者都缺且处于交互终端时，脚本会提示输入
+ *
+ * 模型 API Key 取值优先级（只有全部缺失且处于交互终端时才提示输入）：
+ *   1. 命令行参数 --deepseek-key / --zhipu-key
+ *   2. 环境变量 DEEPSEEK_API_KEY / BIGMODEL_API_KEY
+ *   3. 配置文件 weknora/.env 中的同名项（推荐：写一次，免除输入）
+ *   4. 交互式询问
  *
  * 可选参数：
  *   --base-url <url>        WeKnora API 根地址（默认 http://127.0.0.1:8080/api/v1）
@@ -50,12 +54,31 @@ const args = parseArgs();
 const DIR = path.join(__dirname, '..'); // weknora/
 const PROJECT_ROOT = path.join(DIR, '..'); // obara-task-manager/
 
+/** 解析 weknora/.env（KEY=VALUE，忽略注释与空行），作为配置的兜底来源 */
+function loadEnvFile(file) {
+  const out = {};
+  if (!fs.existsSync(file)) return out;
+  for (const raw of fs.readFileSync(file, 'utf-8').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (m) out[m[1]] = m[2].trim();
+  }
+  return out;
+}
+
+const fileEnv = loadEnvFile(path.join(DIR, '.env'));
+
+/** 取值优先级：--命令行参数 > 进程环境变量 > weknora/.env > 默认值 */
+const cfg = (argKey, envKey, fileKey, dft) =>
+  args[argKey] || process.env[envKey] || fileEnv[fileKey || envKey] || dft;
+
 const BASE = (args['base-url'] || process.env.WEKNORA_BASE_URL || 'http://127.0.0.1:8080/api/v1').replace(/\/+$/, '');
 const BACKEND_ENV = path.resolve(args['backend-env'] || path.join(PROJECT_ROOT, 'backend', '.env'));
 
-const ADMIN_USERNAME = args.username || process.env.WEKNORA_ADMIN_USERNAME || 'admin';
-const ADMIN_EMAIL = args.email || process.env.WEKNORA_ADMIN_EMAIL || 'admin@obara.local';
-const ADMIN_PASSWORD = args.password || process.env.WEKNORA_ADMIN_PASSWORD || 'Obara@WeKnora2026';
+const ADMIN_USERNAME = cfg('username', 'WEKNORA_ADMIN_USERNAME', null, 'admin');
+const ADMIN_EMAIL = cfg('email', 'WEKNORA_ADMIN_EMAIL', null, 'admin@obara.local');
+const ADMIN_PASSWORD = cfg('password', 'WEKNORA_ADMIN_PASSWORD', null, 'Obara@WeKnora2026');
 
 const DEEPSEEK_MODEL = args['deepseek-model'] || 'deepseek-flash';
 const EMBEDDING_MODEL = args['embedding-model'] || 'embedding-3';
@@ -166,8 +189,8 @@ async function main() {
     fail(`无法连接 WeKnora（${BASE}）。请先启动容器：cd weknora && docker compose up -d`);
   }
 
-  let DEEPSEEK_KEY = args['deepseek-key'] || process.env.DEEPSEEK_API_KEY || '';
-  let ZHIPU_KEY = args['zhipu-key'] || process.env.BIGMODEL_API_KEY || '';
+  let DEEPSEEK_KEY = args['deepseek-key'] || process.env.DEEPSEEK_API_KEY || fileEnv.DEEPSEEK_API_KEY || '';
+  let ZHIPU_KEY = args['zhipu-key'] || process.env.BIGMODEL_API_KEY || fileEnv.BIGMODEL_API_KEY || '';
 
   // ---------- 1. 注册 / 登录 ----------
   log('\n[1/6] 准备管理员账号...');
@@ -207,8 +230,8 @@ async function main() {
   if (qaModel) {
     log(`  · 已存在对话模型（${qaModel.name}），复用`);
   } else {
-    if (!DEEPSEEK_KEY) DEEPSEEK_KEY = await promptSecret('请输入 DeepSeek API Key（sk-...）: ');
-    if (!DEEPSEEK_KEY) fail('缺少 DeepSeek API Key（--deepseek-key 或 DEEPSEEK_API_KEY）');
+    if (!DEEPSEEK_KEY) DEEPSEEK_KEY = await promptSecret('请输入 DeepSeek API Key（sk-...，可写入 weknora/.env 的 DEEPSEEK_API_KEY 免除输入）: ');
+    if (!DEEPSEEK_KEY) fail('缺少 DeepSeek API Key（--deepseek-key / DEEPSEEK_API_KEY 环境变量 / weknora/.env 均可）');
     const r = await api('/models', {
       method: 'POST',
       token,
@@ -233,8 +256,8 @@ async function main() {
   if (embedModel) {
     log(`  · 已存在向量模型（${embedModel.name}），复用`);
   } else {
-    if (!ZHIPU_KEY) ZHIPU_KEY = await promptSecret('请输入智谱 BigModel API Key: ');
-    if (!ZHIPU_KEY) fail('缺少智谱 API Key（--zhipu-key 或 BIGMODEL_API_KEY）');
+    if (!ZHIPU_KEY) ZHIPU_KEY = await promptSecret('请输入智谱 BigModel API Key（可写入 weknora/.env 的 BIGMODEL_API_KEY 免除输入）: ');
+    if (!ZHIPU_KEY) fail('缺少智谱 API Key（--zhipu-key / BIGMODEL_API_KEY 环境变量 / weknora/.env 均可）');
     const r = await api('/models', {
       method: 'POST',
       token,

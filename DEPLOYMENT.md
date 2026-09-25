@@ -278,11 +278,9 @@ RATE_LIMIT_MAX=20
 
 「设计规范知识库」页面（`/design-standards`）基于本地 Docker 部署的 [Tencent/WeKnora](https://github.com/Tencent/WeKnora)，提供规范检索与带引用的智能问答（模型走 DeepSeek + 智谱云端 API）。
 
-**部署所需的一切都在仓库 `weknora/` 目录内**（精简 compose、初始化脚本、默认知识库文件《电极使用规范.pdf》、完整文档），无需单独克隆 WeKnora 源码。一键部署：
+**部署所需的一切都在仓库 `weknora/` 目录内**（精简 compose、初始化脚本、默认知识库文件《电极使用规范.pdf》、完整文档），无需单独克隆 WeKnora 源码。部署前先把模型 Key 写入 `weknora/.env`（`DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`，该文件已 gitignore），然后一键部署：
 
 ```bat
-set DEEPSEEK_API_KEY=sk-xxx
-set BIGMODEL_API_KEY=xxx.yyy
 cd weknora
 start.bat
 ```
@@ -451,6 +449,18 @@ copy backend\data.db backups\db-before-upgrade-20260705.db
 - 注意: 仕样书共享路径可在 `backend/.env` 中通过 `SPEC_SHARE_PATH` 修改，修改后需重启后端。
 
 ## 常见问题
+
+### 后端崩溃：ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+
+现象：经 Vite 代理（或 nginx）访问登录接口后，后端进程直接退出，错误日志为
+`ValidationError: The 'X-Forwarded-For' header is set but the Express 'trust proxy' setting is false`。
+
+原因：代理转发的请求带 `X-Forwarded-For` 头，express-rate-limit v8 在未开启
+`trust proxy` 时会校验失败并抛异常（该异常会击穿进程）。
+
+修复：`backend/server.js` 已设置 `app.set('trust proxy', 1)`（信任第一跳代理）。
+**自行升级/替换 server.js 时必须保留这一行**，否则该崩溃会复现。多层代理（如
+nginx 前面还有一层网关）时把 `1` 调整为实际跳数。
 
 ### 端口被占用
 

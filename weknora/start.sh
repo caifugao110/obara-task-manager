@@ -7,9 +7,10 @@
 #   2. docker compose up -d 启动 5 个容器并等待健康
 #   3. 运行 scripts/setup.js 完成初始化（账号/模型/知识库/API Key/默认文档/写 backend/.env）
 #
-# 模型 API Key 通过环境变量传入，否则 setup.js 会交互式询问：
-#   export DEEPSEEK_API_KEY=sk-xxx
-#   export BIGMODEL_API_KEY=xxx.yyy
+# 模型 API Key 三选一（setup.js 按此优先级读取，全缺才交互询问）：
+#   1. 写入 weknora/.env 的 DEEPSEEK_API_KEY / BIGMODEL_API_KEY（推荐，一次配置永久生效）
+#   2. 环境变量：export DEEPSEEK_API_KEY=sk-xxx ; export BIGMODEL_API_KEY=xxx.yyy
+#   3. 运行时按提示输入
 # =============================================================================
 set -e
 cd "$(dirname "$0")"

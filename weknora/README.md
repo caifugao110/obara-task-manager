@@ -36,20 +36,25 @@ WeKnora 的地址与 API Key 只保存在 `backend/.env`，**不下发到浏览�
 
 磁盘：首次拉取镜像约 2~3GB；内存建议 ≥ 4GB。
 
+**模型 Key 的配置方式**（`setup.js` 按以下优先级读取，全部缺失才交互询问）：
+
+1. **写入 `weknora/.env`**（推荐）：`DEEPSEEK_API_KEY=sk-xxx`、`BIGMODEL_API_KEY=xxx.yyy`，一次配置永久生效（该文件已 gitignore，不会泄露）；
+2. 环境变量：`DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`；
+3. 命令行参数：`--deepseek-key` / `--zhipu-key`；
+4. 都没有时运行中提示输入。
+
+> 模型创建后即加密存入 WeKnora 数据库，此后重复执行 `setup.js` 不再需要 Key。
+
 ## 3. 一键部署（推荐）
 
 ```bat
-rem Windows
-set DEEPSEEK_API_KEY=sk-xxx
-set BIGMODEL_API_KEY=xxx.yyy
+rem Windows：先把 Key 写入 weknora\.env（或 set 环境变量），然后
 cd weknora
 start.bat
 ```
 
 ```bash
-# Linux / macOS
-export DEEPSEEK_API_KEY=sk-xxx
-export BIGMODEL_API_KEY=xxx.yyy
+# Linux / macOS：先把 Key 写入 weknora/.env（或 export 环境变量），然后
 cd weknora && bash start.sh
 ```
 
