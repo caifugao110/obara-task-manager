@@ -329,7 +329,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workHours` | 工时管理访问权限 |
 | `settings.statusTracking` | 状态追踪访问权限 |
 | `settings.gunLedger` | 焊枪台账访问权限（`allowViewers` 始终为 `false`） |
-| `settings.designStandards` | 设计标准页面访问权限 |
+| `settings.designStandards` | 设计规范知识库页面访问权限 |
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
@@ -363,7 +363,7 @@ GITEE_REPO_NAME=obara-task-manager
 - 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于普通用户。
 - 任务报表、工时管理、状态追踪页面均要求登录；`leaderboard.allowViewers`、`workHours.allowViewers`、`statusTracking.allowViewers` 只表示允许普通用户访问。
 - 焊枪台账（`gunLedger`）要求登录，`allowViewers` 后端强制为 `false`（普通用户与游客不能进入 `/gun-ledger`）；一般管理员可编辑但不能删除分类/表。
-- 设计标准（`designStandards`）规则同工时管理。
+- 设计规范知识库（`designStandards`）规则同工时管理。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问），一般管理员仅可查看数据管理模块的导出功能，不能导入。
 
 ## 备份与恢复
@@ -673,7 +673,7 @@ backend/
   - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
   - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
 - 可通过 `POST /api/system/maintenance/offline-backup` 主动触发，**该接口无需鉴权**，便于在前端检测到离线状态时自动调用。
-- 默认保留 7 天（`offlineBackupRetentionDays`），超过自动清理。
+- 默认保留 7 天（`offlineBackupRetentionDays`），超过自动清理；断网备份开关、保留天数与目录均可在系统设置「数据库维护」中配置（`PUT /api/system/maintenance`）。
 
 ### 维护配置
 
@@ -704,7 +704,7 @@ backend/
 }
 ```
 
-> 说明：`PUT /api/system/maintenance` 接口仅接受核心字段（含 `dailyGunLedgerExportEnabled`、`taskExportRetentionDays`、`gunLedgerExportRetentionDays`、`gunLedgerExportDir`），断网备份相关字段（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）由后端默认值控制，无法通过 API 修改。
+> 说明：`PUT /api/system/maintenance` 接口接受上表全部字段，**包括断网备份开关、保留天数与目录**（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`），保存后立即生效；所有字段均为必填（前端提交完整配置对象），`yearlyCleanupHistory` 由后端维护不可修改，其余未声明字段会被 Joi 自动过滤（`stripUnknown`）。
 
 ### 维护 API
 
@@ -755,4 +755,4 @@ backend/
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-09-24
+最后更新：2026-09-25

@@ -237,7 +237,77 @@ const routeActionDescriptions: Record<string, { label: string; description: stri
   'POST sync': { label: '同步数据', description: '同步数据到服务器' },
   'POST import/check': { label: '检查导入文件', description: '检查导入文件格式' },
   'POST import': { label: '导入数据', description: '导入数据表格' },
-  'POST ': { label: '添加记录', description: '新增数据记录' }
+  'POST ': { label: '添加记录', description: '新增数据记录' },
+
+  // 焊枪编号台账
+  'GET gun-ledger': { label: '查看焊枪编号台账', description: '查看焊枪编号台账数据' },
+  'GET gun-ledger/summary': { label: '查看台账概览', description: '查看焊枪台账分类与表格概览信息' },
+  'GET gun-ledger/export': { label: '导出焊枪编号台账', description: '导出指定分类的焊枪编号台账' },
+  'GET gun-ledger/export-all': { label: '导出全部焊枪编号台账', description: '导出全部分类的焊枪编号台账' },
+  'POST gun-ledger/import': { label: '导入焊枪编号台账', description: '导入焊枪编号台账文件' },
+  'POST gun-ledger/categories': { label: '新增台账分类', description: '新增焊枪编号台账分类' },
+  'DELETE gun-ledger/categories/:category': { label: '删除台账分类', description: '删除指定的焊枪编号台账分类' },
+  'POST gun-ledger/categories/:category/tables': { label: '新增台账表格', description: '在指定分类下新增焊枪编号台账表格' },
+  'PATCH gun-ledger/categories/order': { label: '调整分类排序', description: '调整焊枪编号台账分类的排列顺序' },
+  'POST gun-ledger/categories/:category/initialize-all': { label: '批量初始化焊枪名', description: '初始化指定分类下所有台账表格的焊枪名' },
+  'POST gun-ledger/initialize-all': { label: '一键初始化全部焊枪名', description: '初始化所有台账表格的焊枪名' },
+  'PATCH gun-ledger/tables/order': { label: '调整表格排序', description: '调整焊枪编号台账表格的排列顺序' },
+  'PATCH gun-ledger/tables/:tableId': { label: '修改台账表格', description: '修改焊枪编号台账表格信息（如表格名称）' },
+  'DELETE gun-ledger/tables/:tableId': { label: '删除台账表格', description: '删除指定的焊枪编号台账表格' },
+  'PUT gun-ledger/tables/:tableId/rows': { label: '保存台账数据', description: '保存焊枪编号、责任人等台账行数据' },
+  'PUT gun-ledger/tables/:tableId/gun-name-rule': { label: '更新焊枪名生成规则', description: '修改该表格的焊枪名自动生成规则' },
+  'POST gun-ledger/tables/:tableId/initialize-gun-names': { label: '焊枪名初始化', description: '清空表格并按规则重新生成焊枪名' },
+  'POST gun-ledger/tables/:tableId/clear-gun-names': { label: '清空焊枪名', description: '清空指定表格的焊枪名（旧版操作）' },
+  'GET gun-ledger/default-persons': { label: '查看默认责任人', description: '查看焊枪编号台账默认责任人配置' },
+  'PUT gun-ledger/default-persons': { label: '更新默认责任人', description: '修改焊枪编号台账默认责任人配置' },
+  'POST gun-ledger/default-persons/reset': { label: '重置默认责任人', description: '恢复焊枪编号台账默认责任人配置' },
+
+  // 页面访问设置补充
+  'GET settings/design-standards': { label: '查看设计规范知识库设置', description: '查看设计规范知识库页面的访问设置' },
+  'PUT settings/design-standards': { label: '更新设计规范知识库设置', description: '修改设计规范知识库页面的访问设置' },
+  'GET settings/gun-ledger': { label: '查看焊枪台账设置', description: '查看焊枪编号台账页面的访问设置' },
+  'PUT settings/gun-ledger': { label: '更新焊枪台账设置', description: '修改焊枪编号台账页面的访问设置' },
+
+  // 系统维护补充
+  'POST system/maintenance/export-gun-ledger': { label: '导出焊枪编号台账', description: '手动导出焊枪编号台账文件' },
+  'POST system/maintenance/offline-backup': { label: '执行离线数据库备份', description: '执行离线场景下的数据库备份' }
+};
+
+// 依据请求方法生成通用中文动作（用于未收录路由的兜底，避免出现英文）
+const getGenericActionByMethod = (method = '') => {
+  const m = String(method || '').toUpperCase();
+  if (m === 'GET') return '查看数据';
+  if (m === 'POST') return '提交操作';
+  if (m === 'PUT' || m === 'PATCH') return '更新数据';
+  if (m === 'DELETE') return '删除数据';
+  return '未知操作';
+};
+
+// 将路由键（含 :param 占位）编译为正则，并按静态段数量排序，实现参数化匹配
+const paramRoutePatterns = Object.keys(routeActionDescriptions)
+  .filter(key => key.includes(':'))
+  .map(key => {
+    const spaceIndex = key.indexOf(' ');
+    const method = key.slice(0, spaceIndex);
+    const routeSegments = key.slice(spaceIndex + 1).split('/');
+    const staticCount = routeSegments.filter(seg => !seg.startsWith(':')).length;
+    const pattern = new RegExp(`^${routeSegments.map(seg =>
+      seg.startsWith(':') ? '[^/]+' : seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    ).join('/')}$`);
+    return { key, method, pattern, segmentCount: routeSegments.length, staticCount };
+  })
+  .sort((a, b) => b.staticCount - a.staticCount || b.segmentCount - a.segmentCount);
+
+const matchParamRoute = (method: string, normalizedPath: string) => {
+  const segments = normalizedPath.split('/');
+  for (const candidate of paramRoutePatterns) {
+    if (candidate.method !== method) continue;
+    if (candidate.segmentCount !== segments.length) continue;
+    if (candidate.pattern.test(normalizedPath)) {
+      return routeActionDescriptions[candidate.key];
+    }
+  }
+  return null;
 };
 
 const getRouteActionLabel = (method?: string, path?: string) => {
@@ -245,6 +315,10 @@ const getRouteActionLabel = (method?: string, path?: string) => {
   const normalizedPath = normalizeAuditPath(path || '');
   const exact = routeActionDescriptions[`${normalizedMethod} ${normalizedPath}`];
   if (exact) return exact;
+
+  // 参数化匹配（如 gun-ledger/tables/:tableId/rows）
+  const paramLabel = matchParamRoute(normalizedMethod, normalizedPath);
+  if (paramLabel) return paramLabel;
 
   const pathParts = normalizedPath.split('/');
   if (pathParts.length > 1) {
@@ -272,6 +346,13 @@ export const getActionTypeLabel = (actionOrLog: string | ActionLog) => {
   if (actionRouteMatch) {
     const actionRouteLabel = getRouteActionLabel(actionRouteMatch[1], actionRouteMatch[2]);
     if (actionRouteLabel) return actionRouteLabel;
+
+    // 未收录的“方法 + 路径”类操作：使用通用中文动作，避免直接展示英文
+    const genericLabel = getGenericActionByMethod(actionRouteMatch[1]);
+    return {
+      label: genericLabel,
+      description: `${genericLabel}（${actionRouteMatch[1].toUpperCase()} ${actionRouteMatch[2]}）`
+    };
   }
 
   const actionDescriptions: Record<string, { label: string; description: string }> = {
@@ -362,5 +443,12 @@ export const getActionTypeLabel = (actionOrLog: string | ActionLog) => {
     '添加记录': { label: '添加记录', description: '新增数据记录' },
     '删除记录': { label: '删除记录', description: '删除数据记录' }
   };
-  return actionDescriptions[action] || { label: action.replace(/^GET\s+\/|^POST\s+\/|^PUT\s+\/|^DELETE\s+\/|^PATCH\s+\/|^GET\s|^POST\s|^PUT\s|^DELETE\s|^PATCH\s/g, ''), description: action };
+  const matched = actionDescriptions[action];
+  if (matched) return matched;
+
+  // 未收录的字符串：本身作为标签展示，说明缺失时给出统一提示，保证不出现英文兜底
+  return {
+    label: action || '未知操作',
+    description: action ? action : '未识别的操作记录'
+  };
 };

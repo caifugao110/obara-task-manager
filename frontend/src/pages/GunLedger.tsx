@@ -22,6 +22,10 @@ import {
   Settings2,
   Eraser,
   Download,
+  ChevronRight,
+  Zap,
+  FolderOpen,
+  Clock,
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -69,6 +73,9 @@ interface GunLedgerData {
   categories: Record<string, GunTable[]>;
   defaultResponsiblePersons: string[];
 }
+
+// 台账初始化面板中的一键初始化目标：全部表格，或某一分类下的全部表格
+type BatchInitTarget = { scope: 'all' } | { scope: 'category'; category: string };
 
 interface EditingSession {
   tableId: string;
@@ -161,13 +168,14 @@ const todayStr = () => {
   return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())}`;
 };
 
-const COLUMNS: { key: keyof GunRow | 'serialNumber'; label: string; width: string }[] = [
+const COLUMNS: { key: keyof GunRow | 'serialNumber' | 'clear'; label: string; width: string }[] = [
   { key: 'serialNumber', label: '序号', width: 'w-16 min-w-[4rem]' },
   { key: 'gunName', label: '焊枪名', width: 'w-28 min-w-[7rem]' },
   { key: 'customer', label: '客户', width: 'w-96 min-w-[24rem]' },
-  { key: 'time', label: '时间', width: 'w-24 min-w-[6rem]' },
+  { key: 'time', label: '时间', width: 'w-28 min-w-[7rem]' },
   { key: 'responsiblePerson', label: '担当', width: 'w-24 min-w-[6rem]' },
   { key: 'remarks', label: '备注', width: 'w-48 min-w-[12rem]' },
+  { key: 'clear', label: '操作', width: 'w-14 min-w-[3.5rem]' },
 ];
 const EDITABLE_COLS = ['gunName', 'customer', 'time', 'responsiblePerson', 'remarks'] as const;
 
@@ -197,12 +205,17 @@ const GunLedger: React.FC = () => {
   const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
   const [showPersonPanel, setShowPersonPanel] = useState(false);
   const [showAccessPanel, setShowAccessPanel] = useState(false);
-  // 台账初始化弹窗：每张表的焊枪名生成规则草稿 / 保存中 / 清除中 / 清除二次确认
+  // 台账初始化弹窗：分类选择 → 分类详情两级视图；每张表的焊枪名生成规则草稿 / 保存中 / 清除中 / 清除二次确认
   const [showInitPanel, setShowInitPanel] = useState(false);
+  // 初始化面板内当前进入的分类：null = 分类选择界面
+  const [initPanelCategory, setInitPanelCategory] = useState<string | null>(null);
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, GunNameRule>>({});
   const [ruleSavingId, setRuleSavingId] = useState<string | null>(null);
   const [clearingTableId, setClearingTableId] = useState<string | null>(null);
   const [confirmClearId, setConfirmClearId] = useState<string | null>(null);
+  // 一键初始化（全部 / 某分类）：进行中标记 + 二次确认目标
+  const [batchInitializing, setBatchInitializing] = useState(false);
+  const [confirmBatch, setConfirmBatch] = useState<BatchInitTarget | null>(null);
   const [specLookupLoading, setSpecLookupLoading] = useState(false);
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
   const [addCategoryValue, setAddCategoryValue] = useState('');
@@ -340,7 +353,7 @@ const GunLedger: React.FC = () => {
   const tableEditingSessions = activeTable
     ? Object.values(editingSessions).filter(s => s.tableId === activeTable.id)
     : [];
-  const showTableStatusBar = !online || !isAdmin || tableEditingSessions.length > 0;
+  const showTableStatusBar = !isAdmin || tableEditingSessions.length > 0;
 
   // 计算展示行：真行（序号严格 1..N 连续）+ 10 个按规则预填焊枪名的占位行
   const displayRows = useMemo(() => {
@@ -599,6 +612,18 @@ const GunLedger: React.FC = () => {
     scheduleStop();
   }, [isAdmin, scheduleStop]);
 
+  // 清除行内容：保留焊枪名与序号，清空客户/时间/担当/备注（占位行无内容可清，按钮不渲染）
+  const handleClearRow = useCallback((row: GunRow) => {
+    if (!activeTable || !isAdmin || !online) return;
+    if (String(row.id).startsWith('__placeholder__')) return;
+    patchTableRows(activeTable.id, rows => rows.map(r => r.id === row.id
+      ? { ...r, customer: '', time: '', responsiblePerson: '', remarks: '', updatedAt: new Date().toISOString(), updatedBy: user ? { id: user.id, username: user.username, name: user.name } : null }
+      : r));
+    dirtyRowIdsRef.current.add(row.id);
+    setSaving(true);
+    debouncedSave(activeTable.id);
+  }, [activeTable, isAdmin, online, patchTableRows, user, debouncedSave]);
+
   // 键盘导航：Enter 下移
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>, rowIdx: number, colIdx: number) => {
     if (e.key === 'Enter') {
@@ -791,6 +816,8 @@ const GunLedger: React.FC = () => {
     }
     setRuleDrafts(drafts);
     setConfirmClearId(null);
+    setConfirmBatch(null);
+    setInitPanelCategory(null);
     setShowInitPanel(true);
   }, [ledger, warnIfOffline]);
 
@@ -820,24 +847,57 @@ const GunLedger: React.FC = () => {
     }
   }, [ruleDrafts, ledger, authHeader, patchTable, addToast, warnIfOffline]);
 
-  // 清除某张表全部行的焊枪名（序号与其他列保留）
-  const clearGunNames = useCallback(async (tableId: string) => {
+  // 焊枪名初始化：删除该表全部真实行，表恢复为全新状态——页面只显示 10 个预留行，
+  // 预留行按生效规则（表级规则 → 内置默认模式）展示该表的 10 个原始焊枪名
+  const initGunNames = useCallback(async (tableId: string) => {
     if (warnIfOffline()) return;
     setClearingTableId(tableId);
     try {
       // 请求体必须发送 {} 而非 null：后端 body-parser 严格模式会将 "null" 视为非法 JSON 拒绝（400）
-      await axiosInstance.post(`/gun-ledger/tables/${tableId}/clear-gun-names`, {}, authHeader);
-      addToast('已清除该表全部焊枪名（序号与其他数据保留）', 'success');
+      await axiosInstance.post(`/gun-ledger/tables/${tableId}/initialize-gun-names`, {}, authHeader);
+      addToast('已初始化：该表已恢复为 10 个原始焊枪名', 'success');
       setConfirmClearId(null);
       // update_rows 广播会刷新所有客户端的行数据
     } catch (err: any) {
       if (err?.response?.status === 409) {
-        addToast(err?.response?.data?.message || '该表正被他人编辑，暂时无法清除', 'error');
+        addToast(err?.response?.data?.message || '该表正被他人编辑，暂时无法初始化', 'error');
       } else {
-        addToast(err?.response?.data?.message || '清除焊枪名失败', 'error');
+        addToast(err?.response?.data?.message || '焊枪名初始化失败', 'error');
       }
     } finally {
       setClearingTableId(null);
+    }
+  }, [authHeader, addToast, warnIfOffline]);
+
+  // 一键初始化：scope='all' 清空所有分类下的全部表格；scope='category' 仅清空指定分类。
+  // 后端在任意一张表被他人编辑时整体返回 409（不做部分初始化），update_rows 广播会刷新各客户端。
+  const executeBatchInitialize = useCallback(async (target: BatchInitTarget) => {
+    if (warnIfOffline()) return;
+    setBatchInitializing(true);
+    try {
+      const url = target.scope === 'all'
+        ? '/gun-ledger/initialize-all'
+        : `/gun-ledger/categories/${encodeURIComponent(target.category)}/initialize-all`;
+      // 同单表初始化：请求体必须为 {} 而非 null，避免后端严格 JSON 解析报 400
+      const res = await axiosInstance.post(url, {}, authHeader);
+      const info = res.data || {};
+      const tableCount = Number(info.initializedTables) || 0;
+      const rowCount = Number(info.clearedRows) || 0;
+      addToast(
+        target.scope === 'all'
+          ? `已一键初始化全部表格（${tableCount} 张表，清除 ${rowCount} 行内容）`
+          : `分类「${target.category}」已初始化（${tableCount} 张表，清除 ${rowCount} 行内容）`,
+        'success'
+      );
+      setConfirmBatch(null);
+    } catch (err: any) {
+      if (err?.response?.status === 409) {
+        addToast(err?.response?.data?.message || '有表格正被他人编辑，暂时无法初始化', 'error', true);
+      } else {
+        addToast(err?.response?.data?.message || '批量初始化失败', 'error');
+      }
+    } finally {
+      setBatchInitializing(false);
     }
   }, [authHeader, addToast, warnIfOffline]);
 
@@ -1226,6 +1286,7 @@ const GunLedger: React.FC = () => {
     setDeleteCategoryTarget(null);
     setDeleteTableTarget(null);
     setConfirmClearId(null);
+    setConfirmBatch(null);
   }, [online]);
 
   // 切换表时：释放上一张表的表级锁与行锁，并同步 ref
@@ -1266,6 +1327,7 @@ const GunLedger: React.FC = () => {
         setShowAccessPanel(false);
         setShowInitPanel(false);
         setConfirmClearId(null);
+        setConfirmBatch(null);
         if (!exporting) setShowExportPanel(false);
       }
     };
@@ -1336,6 +1398,135 @@ const GunLedger: React.FC = () => {
     : online
       ? 'text-green-600'
       : 'text-red-600';
+
+  // ===== 台账初始化面板派生数据 =====
+  // 分类选择界面：分类顺序与台账一致，统计每个分类的表数/已取号行数
+  const initCategoryNames = useMemo(() => Object.keys(ledger?.categories || {}), [ledger]);
+  const initCategoryStats = useMemo(() => {
+    const stats: Record<string, { tables: number; rows: number }> = {};
+    initCategoryNames.forEach(cat => {
+      const list = ledger?.categories[cat] || [];
+      stats[cat] = {
+        tables: list.length,
+        rows: list.reduce((sum, t) => sum + (t.rows?.length || 0), 0),
+      };
+    });
+    return stats;
+  }, [ledger, initCategoryNames]);
+  const initTotalTables = initCategoryNames.reduce((sum, cat) => sum + initCategoryStats[cat].tables, 0);
+  const initTotalRows = initCategoryNames.reduce((sum, cat) => sum + initCategoryStats[cat].rows, 0);
+  // 详情界面：仅当分类仍存在时进入，否则留在分类选择界面
+  const initDetailCategory = initPanelCategory && ledger?.categories[initPanelCategory] ? initPanelCategory : null;
+  const initDetailTables = initDetailCategory ? (ledger?.categories[initDetailCategory] || []) : [];
+
+  // 台账初始化详情中的单表卡片（规则开关/前缀/起始/位数/保存/单表初始化）
+  const renderInitTableCard = (t: GunTable) => {
+    const draft = ruleDrafts[t.id];
+    if (!draft) return null;
+    const previewName = draft.enabled
+      ? buildGunName(draft, 1) + (t.rows && t.rows.length ? `（下一序号 ${t.rows.length + 1}：${buildGunName(draft, t.rows.length + 1)}）` : ' 起')
+      : '未启用自动取号，预留行焊枪名为空';
+    return (
+      <div key={t.id} className="rounded-xl border border-gray-200 bg-gray-50/70 p-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 min-w-0">
+            <ClipboardList size={15} className="text-emerald-600 shrink-0" />
+            <span className="font-bold text-gray-800 text-sm truncate">{t.name}</span>
+            <span className="text-xs text-gray-400 shrink-0">{t.rows?.length || 0} 行已取号</span>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            {/* 启用/停用自动取号 */}
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 cursor-pointer select-none">
+              <span>自动取号</span>
+              <div className="relative inline-block w-10 h-5 align-middle select-none">
+                <input
+                  type="checkbox"
+                  checked={draft.enabled}
+                  onChange={e => updateRuleDraft(t.id, { enabled: e.target.checked })}
+                  className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                />
+                <label className={`toggle-label block overflow-hidden h-5 rounded-full cursor-pointer ${draft.enabled ? 'bg-emerald-500' : 'bg-gray-300'}`}></label>
+              </div>
+            </label>
+            {/* 焊枪名初始化（二次确认） */}
+            {confirmClearId === t.id ? (
+              <span className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-red-600">确认初始化？将删除全部现有内容</span>
+                <button
+                  onClick={() => initGunNames(t.id)}
+                  disabled={clearingTableId === t.id}
+                  className="px-2 py-1 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded transition disabled:opacity-50"
+                >
+                  {clearingTableId === t.id ? '初始化中...' : '确认'}
+                </button>
+                <button
+                  onClick={() => setConfirmClearId(null)}
+                  disabled={clearingTableId === t.id}
+                  className="px-2 py-1 text-xs font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 rounded transition disabled:opacity-50"
+                >
+                  取消
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setConfirmClearId(t.id)}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-red-600 hover:text-white bg-red-50 hover:bg-red-500 border border-red-200 hover:border-red-500 rounded transition"
+                title="删除全部内容，重置为序号 1-10 的 10 个原始焊枪名"
+              >
+                <Eraser size={13} />焊枪名初始化
+              </button>
+            )}
+            {/* 保存规则 */}
+            <button
+              onClick={() => saveGunNameRule(t.id)}
+              disabled={ruleSavingId === t.id}
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded transition disabled:opacity-50"
+            >
+              {ruleSavingId === t.id ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
+              保存设置
+            </button>
+          </div>
+        </div>
+        {draft.enabled && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-xs text-gray-500">
+              <span>前缀</span>
+              <input
+                type="text"
+                value={draft.prefix}
+                maxLength={20}
+                onChange={e => updateRuleDraft(t.id, { prefix: e.target.value })}
+                className="w-28 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+                placeholder="如 SDZC-C"
+              />
+            </label>
+            <label className="flex items-center gap-1 text-xs text-gray-500">
+              <span>起始编号</span>
+              <input
+                type="number"
+                min={0}
+                value={draft.start}
+                onChange={e => updateRuleDraft(t.id, { start: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })}
+                className="w-24 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+              />
+            </label>
+            <label className="flex items-center gap-1 text-xs text-gray-500">
+              <span>编号位数</span>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={draft.pad}
+                onChange={e => updateRuleDraft(t.id, { pad: Math.min(10, Math.max(1, Math.trunc(Number(e.target.value) || 1))) })}
+                className="w-16 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+              />
+            </label>
+            <span className="text-xs text-gray-400 font-mono truncate">预览：{previewName}</span>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // ===== 渲染 =====
   if (!accessLoaded) {
@@ -1428,12 +1619,12 @@ const GunLedger: React.FC = () => {
         </div>
         {user && (
           <div className="flex items-center space-x-4">
-            {/* 台账初始化：按表配置焊枪名生成规则、清除初始焊枪名 */}
+            {/* 台账初始化：按表配置焊枪名生成规则、焊枪名初始化 */}
             {isSuperAdmin && (
               <button
                 onClick={openInitPanel}
                 className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
-                title="台账初始化：设置每张表的焊枪名生成规则、清除初始焊枪名"
+                title="台账初始化：设置每张表的焊枪名生成规则、焊枪名初始化"
               >
                 <Settings2 size={18} /><span>台账初始化</span>
               </button>
@@ -1640,8 +1831,13 @@ const GunLedger: React.FC = () => {
                       {isAdmin && (
                         <button
                           onClick={handleFinishEditing}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-amber-700 hover:text-white bg-amber-50 hover:bg-amber-500 border border-amber-200 hover:border-amber-500 rounded transition"
-                          title="释放编辑锁，关闭本表，其他人员即可打开"
+                          disabled={!online}
+                          className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded border transition ${
+                            !online
+                              ? 'text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed'
+                              : 'text-amber-700 hover:text-white bg-amber-50 hover:bg-amber-500 border-amber-200 hover:border-amber-500'
+                          }`}
+                          title={!online ? '当前离线，无法结束编辑，请在网络恢复后操作' : '释放编辑锁，关闭本表，其他人员即可打开'}
                         >
                           <Unlock size={13} />完成编辑
                         </button>
@@ -1700,6 +1896,32 @@ const GunLedger: React.FC = () => {
                                       </select>
                                     );
                                   })()
+                                ) : field === 'time' ? (
+                                  <>
+                                    <input
+                                      ref={el => { inputRefs.current[refKey] = el; }}
+                                      type="text"
+                                      value={value}
+                                      disabled={disabled}
+                                      onChange={e => handleCellChange(row, field, e.target.value)}
+                                      onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
+                                      onBlur={handleCellBlur}
+                                      onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
+                                      className={`w-full px-2 pr-7 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                    />
+                                    {/* 一键获取当前时间：格式与焊枪名自动补时间一致（YYYY.MM.DD）；权限/离线/行锁禁用态与输入框一致 */}
+                                    <button
+                                      type="button"
+                                      tabIndex={-1}
+                                      disabled={disabled}
+                                      title="一键填入当前日期"
+                                      onMouseDown={e => e.preventDefault()}
+                                      onClick={() => handleCellChange(row, 'time', todayStr())}
+                                      className={`absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded transition ${disabled ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-100'}`}
+                                    >
+                                      <Clock size={13} />
+                                    </button>
+                                  </>
                                 ) : (
                                   <input
                                     ref={el => { inputRefs.current[refKey] = el; }}
@@ -1717,6 +1939,17 @@ const GunLedger: React.FC = () => {
                               </td>
                             );
                           })}
+                          {/* 操作列：清除该行除焊枪名外的所有内容（每行都有；占位行本无可清内容，点击为无操作） */}
+                          <td className="border border-gray-300 px-1 py-1 text-center">
+                            <button
+                              onClick={() => handleClearRow(row)}
+                              disabled={!isAdmin || !online || Boolean(blocking)}
+                              title="清除该行除焊枪名外的所有内容"
+                              className={`p-1 rounded ${!isAdmin || !online || Boolean(blocking) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
+                            >
+                              <Eraser size={14} />
+                            </button>
+                          </td>
                         </tr>
                       );
                     })}
@@ -1724,16 +1957,10 @@ const GunLedger: React.FC = () => {
                 </table>
               </div>
 
-              {/* 表底部状态条：仅在离线 / 有他人编辑行 / 只读时有内容，否则不渲染（与底部 footer 无缝衔接） */}
+              {/* 表底部状态条：仅在有他人编辑行 / 只读时有内容，否则不渲染（与底部 footer 无缝衔接） */}
               {showTableStatusBar && (
                 <div className="shrink-0 px-4 py-1.5 border-t border-gray-200 bg-[#f8f9fa] flex items-center justify-end text-xs text-gray-500">
                   <div className="flex items-center gap-3">
-                    {!online && (
-                      <span className="flex items-center gap-1 text-amber-600 font-medium">
-                        <AlertCircle size={12} />
-                        当前离线，禁止编辑，网络恢复后自动同步
-                      </span>
-                    )}
                     {online && tableEditingSessions.length > 0 && (
                       <span className="flex items-center gap-1 text-amber-600">
                         <Lock size={12} />
@@ -2060,154 +2287,191 @@ const GunLedger: React.FC = () => {
         </div>
       )}
 
-      {/* 台账初始化弹窗：按表设置焊枪名生成规则、清除初始焊枪名 */}
+      {/* 台账初始化弹窗：先选分类，再进入该分类逐表设置；分类选择界面支持一键初始化全部表格 */}
       {showInitPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowInitPanel(false)} />
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!batchInitializing) setShowInitPanel(false); }} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[840px] max-w-[94vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2 font-bold text-lg">
-                <Settings2 size={20} />
-                台账初始化
+              <div className="flex items-center gap-2 font-bold text-lg min-w-0">
+                {initDetailCategory ? (
+                  <button
+                    onClick={() => setInitPanelCategory(null)}
+                    className="p-1 rounded hover:bg-white/20 transition -ml-1"
+                    title="返回分类选择"
+                  >
+                    <ChevronLeft size={20} />
+                  </button>
+                ) : (
+                  <Settings2 size={20} />
+                )}
+                <span className="truncate">台账初始化{initDetailCategory ? ` · ${initDetailCategory}` : ''}</span>
               </div>
-              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowInitPanel(false)}>
+              <button className="p-1 rounded hover:bg-white/20 transition shrink-0" onClick={() => setShowInitPanel(false)} disabled={batchInitializing}>
                 <X size={20} />
               </button>
             </div>
-            <div className="p-5 overflow-auto">
-              <p className="text-xs text-gray-400 leading-relaxed mb-4">
-                按表设置初始化状态：配置预留行的焊枪名自动生成规则（前缀 + 起始编号 + 编号位数）；「清除焊枪名」仅清空该表已有行的焊枪名列（焊枪名允许为空），序号与客户、时间、担当、备注等数据均保留。
-              </p>
-              <div className="space-y-5">
-                {Object.keys(ledger?.categories || {}).map(cat => {
-                  const list = ledger?.categories[cat] || [];
-                  return (
-                    <section key={cat}>
-                      <h4 className="text-xs font-black uppercase tracking-widest text-gray-500 mb-2 flex items-center gap-2">
-                        <span>{cat}</span>
-                        <span className="text-gray-300 font-bold">({list.length} 张表)</span>
-                      </h4>
-                      {list.length === 0 && <div className="text-xs text-gray-400 pl-1">该分类下暂无表格</div>}
-                      <div className="space-y-2">
-                        {list.map(t => {
-                          const draft = ruleDrafts[t.id];
-                          if (!draft) return null;
-                          const previewName = draft.enabled
-                            ? buildGunName(draft, 1) + (t.rows && t.rows.length ? `（下一序号 ${t.rows.length + 1}：${buildGunName(draft, t.rows.length + 1)}）` : ' 起')
-                            : '未启用自动取号，预留行焊枪名为空';
-                          return (
-                            <div key={t.id} className="rounded-xl border border-gray-200 bg-gray-50/70 p-3">
-                              <div className="flex items-center justify-between gap-3 flex-wrap">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <ClipboardList size={15} className="text-emerald-600 shrink-0" />
-                                  <span className="font-bold text-gray-800 text-sm truncate">{t.name}</span>
-                                  <span className="text-xs text-gray-400 shrink-0">{t.rows?.length || 0} 行已取号</span>
-                                </div>
-                                <div className="flex items-center gap-3 shrink-0">
-                                  {/* 启用/停用自动取号 */}
-                                  <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 cursor-pointer select-none">
-                                    <span>自动取号</span>
-                                    <div className="relative inline-block w-10 h-5 align-middle select-none">
-                                      <input
-                                        type="checkbox"
-                                        checked={draft.enabled}
-                                        onChange={e => updateRuleDraft(t.id, { enabled: e.target.checked })}
-                                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                                      />
-                                      <label className={`toggle-label block overflow-hidden h-5 rounded-full cursor-pointer ${draft.enabled ? 'bg-emerald-500' : 'bg-gray-300'}`}></label>
-                                    </div>
-                                  </label>
-                                  {/* 清除焊枪名（二次确认） */}
-                                  {confirmClearId === t.id ? (
-                                    <span className="flex items-center gap-1.5">
-                                      <span className="text-xs font-bold text-red-600">确认清空全部焊枪名？</span>
-                                      <button
-                                        onClick={() => clearGunNames(t.id)}
-                                        disabled={clearingTableId === t.id}
-                                        className="px-2 py-1 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded transition disabled:opacity-50"
-                                      >
-                                        {clearingTableId === t.id ? '清除中...' : '确认'}
-                                      </button>
-                                      <button
-                                        onClick={() => setConfirmClearId(null)}
-                                        disabled={clearingTableId === t.id}
-                                        className="px-2 py-1 text-xs font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 rounded transition disabled:opacity-50"
-                                      >
-                                        取消
-                                      </button>
-                                    </span>
-                                  ) : (
-                                    <button
-                                      onClick={() => setConfirmClearId(t.id)}
-                                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-red-600 hover:text-white bg-red-50 hover:bg-red-500 border border-red-200 hover:border-red-500 rounded transition"
-                                      title="清空该表所有行的焊枪名（序号与其他数据保留）"
-                                    >
-                                      <Eraser size={13} />清除焊枪名
-                                    </button>
-                                  )}
-                                  {/* 保存规则 */}
-                                  <button
-                                    onClick={() => saveGunNameRule(t.id)}
-                                    disabled={ruleSavingId === t.id}
-                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded transition disabled:opacity-50"
-                                  >
-                                    {ruleSavingId === t.id ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
-                                    保存设置
-                                  </button>
-                                </div>
-                              </div>
-                              {draft.enabled && (
-                                <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                                  <label className="flex items-center gap-1 text-xs text-gray-500">
-                                    <span>前缀</span>
-                                    <input
-                                      type="text"
-                                      value={draft.prefix}
-                                      maxLength={20}
-                                      onChange={e => updateRuleDraft(t.id, { prefix: e.target.value })}
-                                      className="w-28 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
-                                      placeholder="如 SDZC-C"
-                                    />
-                                  </label>
-                                  <label className="flex items-center gap-1 text-xs text-gray-500">
-                                    <span>起始编号</span>
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      value={draft.start}
-                                      onChange={e => updateRuleDraft(t.id, { start: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })}
-                                      className="w-24 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
-                                    />
-                                  </label>
-                                  <label className="flex items-center gap-1 text-xs text-gray-500">
-                                    <span>编号位数</span>
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      max={10}
-                                      value={draft.pad}
-                                      onChange={e => updateRuleDraft(t.id, { pad: Math.min(10, Math.max(1, Math.trunc(Number(e.target.value) || 1))) })}
-                                      className="w-16 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
-                                    />
-                                  </label>
-                                  <span className="text-xs text-gray-400 font-mono truncate">预览：{previewName}</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
+
+            {initDetailCategory === null ? (
+              /* ===== 分类选择界面 ===== */
+              <div className="p-5 overflow-auto">
+                <p className="text-xs text-gray-400 leading-relaxed mb-4">
+                  按分类进入后逐表配置焊枪名自动生成规则（前缀 + 起始编号 + 编号位数）并初始化；也可直接一键初始化全部表格。「初始化」会删除范围内所有表的已取号行及客户、时间、担当、备注数据，各表恢复为全新状态，仅显示按规则生成的 10 个原始焊枪名预留行，操作不可恢复。
+                </p>
+
+                {/* 一键初始化全部表格 */}
+                <button
+                  onClick={() => setConfirmBatch({ scope: 'all' })}
+                  disabled={batchInitializing || initTotalTables === 0}
+                  className="w-full mb-5 flex items-center justify-between gap-3 p-4 rounded-xl border-2 border-red-200 bg-red-50 hover:bg-red-100 hover:border-red-300 transition text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <span className="flex items-center gap-3 min-w-0">
+                    <span className="w-10 h-10 rounded-full bg-red-600 text-white flex items-center justify-center shrink-0">
+                      {batchInitializing ? <RefreshCw size={20} className="animate-spin" /> : <Zap size={20} />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block font-bold text-red-700 text-sm">一键初始化全部表格</span>
+                      <span className="block text-xs text-red-500/90 mt-0.5">清空所有分类下全部表格的已取号内容，各表恢复为 10 个原始焊枪名预留行</span>
+                    </span>
+                  </span>
+                  <span className="text-xs font-bold text-red-600 bg-white px-3 py-1.5 rounded-lg border border-red-200 shrink-0">
+                    {initCategoryNames.length} 个分类 · {initTotalTables} 张表 · {initTotalRows} 行
+                  </span>
+                </button>
+
+                <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 ml-1">选择分类进入初始化设置</div>
+                {initCategoryNames.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">暂无分类</div>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {initCategoryNames.map(cat => {
+                    const stat = initCategoryStats[cat] || { tables: 0, rows: 0 };
+                    return (
+                      <div key={cat} className="group rounded-xl border border-gray-200 bg-gray-50/70 hover:border-emerald-300 hover:bg-emerald-50/60 transition overflow-hidden">
+                        <button
+                          onClick={() => setInitPanelCategory(cat)}
+                          className="w-full p-4 flex items-center gap-3 text-left"
+                        >
+                          <span className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                            <FolderOpen size={18} />
+                          </span>
+                          <span className="flex-1 min-w-0">
+                            <span className="block font-bold text-gray-800 text-sm truncate">{cat}</span>
+                            <span className="block text-xs text-gray-400 mt-0.5">{stat.tables} 张表 · {stat.rows} 行已取号</span>
+                          </span>
+                          <ChevronRight size={18} className="text-gray-300 group-hover:text-emerald-600 transition shrink-0" />
+                        </button>
+                        <div className="border-t border-gray-200/70 px-3 py-2 flex items-center justify-end bg-white/50">
+                          <button
+                            onClick={() => setConfirmBatch({ scope: 'category', category: cat })}
+                            disabled={batchInitializing || stat.tables === 0}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-red-600 hover:text-white bg-red-50 hover:bg-red-500 border border-red-200 hover:border-red-500 rounded transition disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={`初始化分类「${cat}」下的全部表格`}
+                          >
+                            <Eraser size={12} />初始化本分类
+                          </button>
+                        </div>
                       </div>
-                    </section>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            ) : (
+              /* ===== 分类详情：逐表规则设置 + 本分类一键初始化 ===== */
+              <div className="p-5 overflow-auto">
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                  <span className="text-xs text-gray-400">
+                    共 {initDetailTables.length} 张表 · 合计 {initCategoryStats[initDetailCategory].rows} 行已取号
+                  </span>
+                  <button
+                    onClick={() => setConfirmBatch({ scope: 'category', category: initDetailCategory })}
+                    disabled={batchInitializing || initDetailTables.length === 0}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={`初始化分类「${initDetailCategory}」下的全部表格`}
+                  >
+                    {batchInitializing ? <RefreshCw size={13} className="animate-spin" /> : <Zap size={13} />}
+                    一键初始化本分类全部表格（{initDetailTables.length}）
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-4">
+                  配置预留行的焊枪名自动生成规则（前缀 + 起始编号 + 编号位数），初始化前请先「保存设置」使最新规则生效；「焊枪名初始化」删除该表所有原有内容，表恢复为仅显示 10 个原始焊枪名预留行的全新状态。
+                </p>
+                {initDetailTables.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">该分类下暂无表格</div>}
+                <div className="space-y-2">
+                  {initDetailTables.map(t => renderInitTableCard(t))}
+                </div>
+              </div>
+            )}
+
             <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end shrink-0">
+              {initDetailCategory ? (
+                <button
+                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition mr-2"
+                  onClick={() => setInitPanelCategory(null)}
+                >
+                  返回分类选择
+                </button>
+              ) : null}
               <button
                 className="px-5 py-2 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition"
                 onClick={() => setShowInitPanel(false)}
               >
                 完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 一键初始化二次确认弹窗（全部 / 某分类） */}
+      {confirmBatch && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!batchInitializing) setConfirmBatch(null); }} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <AlertCircle size={20} />
+                {confirmBatch.scope === 'all' ? '一键初始化全部表格' : `初始化分类「${confirmBatch.category}」`}
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setConfirmBatch(null)} disabled={batchInitializing}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                <AlertCircle size={22} className="text-red-500 shrink-0 mt-0.5" />
+                <div className="text-sm text-gray-700 leading-relaxed">
+                  <div className="font-bold text-red-700 mb-1">此操作不可恢复</div>
+                  {confirmBatch.scope === 'all' ? (
+                    <div>
+                      即将清空 <span className="font-bold text-gray-900">{initCategoryNames.length}</span> 个分类下共
+                      <span className="font-bold text-red-600"> {initTotalTables} </span>张表的全部已取号内容（合计
+                      <span className="font-bold text-red-600"> {initTotalRows} </span>行客户、时间、担当、备注数据）。
+                    </div>
+                  ) : (
+                    <div>
+                      即将清空分类「<span className="font-bold text-gray-900">{confirmBatch.category}</span>」下共
+                      <span className="font-bold text-red-600"> {initCategoryStats[confirmBatch.category]?.tables || 0} </span>张表的全部已取号内容（合计
+                      <span className="font-bold text-red-600"> {initCategoryStats[confirmBatch.category]?.rows || 0} </span>行）。
+                    </div>
+                  )}
+                  <div className="mt-1">每张表将恢复为全新状态，仅显示按各自焊枪名规则生成的 10 个原始焊枪名预留行。若有人员正在编辑相关表格，操作会被阻止并提示。</div>
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                onClick={() => setConfirmBatch(null)}
+                disabled={batchInitializing}
+              >
+                取消
+              </button>
+              <button
+                className="px-5 py-2 rounded-lg bg-red-600 text-white font-bold hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                onClick={() => executeBatchInitialize(confirmBatch)}
+                disabled={batchInitializing}
+              >
+                {batchInitializing && <RefreshCw size={14} className="animate-spin" />}
+                {batchInitializing ? '初始化中...' : '确认初始化'}
               </button>
             </div>
           </div>

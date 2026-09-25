@@ -29,7 +29,7 @@ interface Toast {
 const defaultSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 /**
- * 设计规范与标准页面
+ * 设计规范知识库页面
  *
  * 该页面为预留界面，用于后续接入 WeKnora 本地知识库。
  * - GitHub 仓库: https://github.com/Tencent/WeKnora
@@ -68,7 +68,7 @@ const DesignStandards: React.FC = () => {
       setSettings(res.data);
     } catch (err) {
       console.error('Error fetching design-standards settings:', err);
-      addToast('无法加载设计规范与标准权限设置', 'error');
+      addToast('无法加载设计规范知识库权限设置', 'error');
     } finally {
       setSettingsLoaded(true);
     }
@@ -101,7 +101,7 @@ const DesignStandards: React.FC = () => {
       addToast('权限设置已保存', 'success');
     } catch (err) {
       console.error('Error saving design-standards settings:', err);
-      addToast('保存设计规范与标准权限设置失败', 'error');
+      addToast('保存设计规范知识库权限设置失败', 'error');
     }
   };
 
@@ -143,7 +143,7 @@ const DesignStandards: React.FC = () => {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-slate-100">
         <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
-        <div className="text-gray-600 font-medium">正在加载设计规范与标准...</div>
+        <div className="text-gray-600 font-medium">正在加载设计规范知识库...</div>
       </div>
     );
   }
@@ -168,7 +168,7 @@ const DesignStandards: React.FC = () => {
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <BookOpen size={64} className="mx-auto text-gray-300 mb-4" />
-            <h2 className="text-xl font-bold text-gray-600">{isClosed ? '设计规范与标准已关闭' : '暂无权限访问设计规范与标准'}</h2>
+            <h2 className="text-xl font-bold text-gray-600">{isClosed ? '设计规范知识库已关闭' : '暂无权限访问设计规范知识库'}</h2>
             <p className="text-gray-400 mt-2">
               {isClosed ? '请联系超级管理员开启此功能' : '请联系超级管理员开启对应权限'}
             </p>
@@ -205,7 +205,7 @@ const DesignStandards: React.FC = () => {
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
           <h2 className="text-xl font-bold text-blue-600 flex items-center">
             <BookOpen className="text-blue-500 mr-2" size={24} />
-            设计规范与标准
+            设计规范知识库
             <span className="ml-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-300">
               <Construction size={12} />
               待开发
@@ -236,7 +236,7 @@ const DesignStandards: React.FC = () => {
               <BookOpen className="text-white" size={28} />
             </div>
             <div className="flex-1">
-              <h1 className="text-2xl font-bold text-gray-800 mb-2">设计规范与标准知识库</h1>
+              <h1 className="text-2xl font-bold text-gray-800 mb-2">设计规范知识库</h1>
               <p className="text-gray-600 leading-relaxed">
                 本模块用于管理项目所引用的设计规范、技术标准与历史设计依据，后续将接入本地部署的
                 <span className="mx-1 font-semibold text-blue-600">WeKnora</span>
@@ -351,11 +351,11 @@ const DesignStandards: React.FC = () => {
           <section className="mt-10 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
             <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
               <Shield className="mr-2 text-purple-600" size={22} />
-              设计规范与标准查看权限设置
+              设计规范知识库查看权限设置
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {[
-                { label: '启用设计规范与标准', detail: 'Global Toggle', key: 'enabled' as const },
+                { label: '启用设计规范知识库', detail: 'Global Toggle', key: 'enabled' as const },
                 { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
                 { label: '普通用户', detail: 'User Access', key: 'allowViewers' as const },
               ].map(item => (

@@ -4,21 +4,24 @@ import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import {
   AlertCircle,
+  Archive,
   CheckCircle,
   ChevronLeft,
+  Database,
   Download,
+  FileSpreadsheet,
   LogOut,
+  PlayCircle,
+  Power,
   RefreshCw,
   Settings,
   Shield,
+  Trash2,
   Upload,
   History,
   Search,
-  Database,
   Clock,
-  FileSpreadsheet,
   ClipboardList,
-  Trash2,
   X,
   CalendarDays
 } from 'lucide-react';
@@ -37,6 +40,15 @@ interface MaintenanceFile {
   path: string;
   size: number;
   mtime: string;
+}
+
+interface YearlyCleanupRecord {
+  completedAt: string;
+  cutoffYear: number;
+  archivedSheets: number;
+  removedSheets: number;
+  removedTaskItems?: number;
+  archiveFile: string | null;
 }
 
 interface MaintenanceSettings {
@@ -59,6 +71,28 @@ interface MaintenanceSettings {
   gunLedgerExportDir: string;
   yearlyArchiveDir: string;
   offlineBackupDir: string;
+  yearlyCleanupHistory?: Record<string, YearlyCleanupRecord>;
+}
+
+interface MaintenanceLastRun {
+  startedAt?: string;
+  finishedAt?: string;
+  skipped?: boolean;
+  reason?: string;
+  backup?: { fileName: string; size: number } | null;
+  taskExport?: { fileName?: string; taskSheets?: number; taskItems?: number; skipped?: boolean; reason?: string } | null;
+  gunLedgerExport?: { fileName?: string; categories?: number; skipped?: boolean; reason?: string } | null;
+  backupCleanup?: { removedCount: number } | null;
+  yearlyCleanup?: {
+    skipped?: boolean;
+    reason?: string;
+    cutoffYear?: number;
+    archivedSheets?: number;
+    removedSheets?: number;
+    removedTaskItems?: number;
+    archive?: { fileName: string } | null;
+  } | null;
+  errors?: string[];
 }
 
 interface MaintenanceStatus {
@@ -74,7 +108,7 @@ interface MaintenanceStatus {
     taskItemsCount: number;
   };
   files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; gunLedgerExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[]; offlineBackups: MaintenanceFile[] };
-  scheduler: { running: boolean; nextRunAt?: string; lastRun?: any };
+  scheduler: { running: boolean; nextRunAt?: string; lastRun?: MaintenanceLastRun | null };
 }
 
 const defaultMaintenanceSettings: MaintenanceSettings = {
@@ -221,7 +255,7 @@ const SystemSettings = () => {
       setMaintenanceStatus(res.data);
       setMaintenanceSettings({ ...defaultMaintenanceSettings, ...res.data.settings });
     } catch {
-      addToast('\u6743\u9650\u8bbe\u7f6e\u52a0\u8f7d\u5931\u8d25', 'error');
+      addToast('数据库维护状态加载失败', 'error');
     } finally {
       setMaintenanceLoading(false);
     }
@@ -492,22 +526,62 @@ const SystemSettings = () => {
     }
   };
 
-  const runMaintenanceAction = async (url: string, successMessage: string, body: any = {}) => {
-    if (!token) return;
+  // 执行维护操作并刷新状态，返回接口 JSON 供调用方展示具体结果
+  const runMaintenanceAction = async (url: string, body: any = {}) => {
+    if (!token) return null;
     setMaintenanceLoading(true);
     try {
-      await axios.post(url, body, authHeader);
-      addToast(successMessage, 'success');
+      const res = await axios.post(url, body, authHeader);
       await fetchMaintenanceStatus();
+      return res.data;
     } catch (err: any) {
       addToast(err.response?.data?.message || '操作失败', 'error');
+      return null;
     } finally {
       setMaintenanceLoading(false);
     }
   };
 
+  const handleBackupNow = async () => {
+    const data = await runMaintenanceAction('/api/system/maintenance/backup');
+    if (data) addToast(`数据库备份已完成：${data.backup.fileName}（${formatFileSize(data.backup.size)}）`, 'success');
+  };
+
+  const handleManualGunLedgerExport = async () => {
+    const data = await runMaintenanceAction('/api/system/maintenance/export-gun-ledger');
+    if (data) addToast(`编号台账已导出：共 ${data.gunLedgerExport.categories} 个分类合并为一个工作簿`, 'success');
+  };
+
+  const handleCleanupBackupsNow = async () => {
+    if (!window.confirm('将按各项保留天数，清理数据库备份、任务表格导出、编号台账导出、关机备份四个目录中的过期文件。是否继续？')) return;
+    const data = await runMaintenanceAction('/api/system/maintenance/cleanup-backups');
+    if (data) addToast(`过期文件清理完成，共删除 ${data.cleanup.removedCount} 个文件`, 'success');
+  };
+
+  const yearlySkipReasonText: Record<string, string> = {
+    disabled: '年度清理未启用',
+    'outside-cleanup-month': '当前不在检测月份',
+    'outside-check-window': '已超过月初检测窗口',
+    'already-completed': '本年度清理已完成'
+  };
+
+  const handleYearlyCleanupNow = async () => {
+    if (!window.confirm('将忽略检测月份、月初检测窗口及"每年仅执行一次"的限制，立即按当前保留年数执行清理检测：早于临界年份的任务工作表会先永久归档为 JSON，再从数据库删除，此操作不可恢复。是否继续？')) return;
+    const data = await runMaintenanceAction('/api/system/maintenance/yearly-cleanup', { force: true });
+    if (!data) return;
+    const result = data.yearlyCleanup;
+    if (result.skipped) {
+      addToast(`年度清理检测已跳过：${yearlySkipReasonText[result.reason || ''] || result.reason}`, 'success');
+    } else if (!result.removedSheets) {
+      addToast('年度清理检测完成：没有需要归档清理的任务数据', 'success');
+    } else {
+      addToast(`年度清理完成：归档并删除 ${result.removedSheets} 个工作表（${result.removedTaskItems || 0} 条任务记录）`, 'success');
+    }
+  };
+
   const handleManualTaskExport = async () => {
-    await runMaintenanceAction('/api/system/maintenance/export-tasks', '\u4efb\u52a1\u8868\u683c\u5df2\u5bfc\u51fa');
+    const data = await runMaintenanceAction('/api/system/maintenance/export-tasks');
+    if (data) addToast(`任务表格已导出：${data.taskExport.taskSheets} 个工作表、${data.taskExport.taskItems} 条任务记录`, 'success');
   };
 
   const handleClearLogs = async () => {
@@ -574,6 +648,10 @@ const SystemSettings = () => {
     if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`;
     return `${(size / 1024).toFixed(1)} KB`;
   };
+
+  // 年度清理历史按年份倒序，取最近一次执行记录
+  const latestYearlyHistory = Object.entries(maintenanceSettings.yearlyCleanupHistory || {})
+    .sort((a, b) => b[0].localeCompare(a[0]))[0]?.[1] as YearlyCleanupRecord | undefined;
 
   const handleTaskImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1252,7 +1330,7 @@ const SystemSettings = () => {
                     <Database className="mr-2 text-blue-600" size={22} />
                     数据库维护
                   </h3>
-                  <p className="text-sm text-gray-500 mt-1">默认每天 00:30 备份数据库、导出任务数据，并清理 30 天前的普通备份。</p>
+                  <p className="text-sm text-gray-500 mt-1">每日 {maintenanceSettings.scheduleTime} 自动执行已开启的备份与导出任务、清理过期文件，并在年度检测窗口内执行任务归档清理。</p>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={fetchMaintenanceStatus} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 font-bold rounded-lg transition">
@@ -1264,102 +1342,330 @@ const SystemSettings = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                {[
-                  { label: '启用自动维护', key: 'enabled' as const },
-                  { label: '每日数据库备份', key: 'dailyBackupEnabled' as const },
-                  { label: '每日任务表格导出', key: 'dailyTaskExportEnabled' as const },
-                  { label: '每日编号台账导出', key: 'dailyGunLedgerExportEnabled' as const },
-                  { label: '年度任务清理', key: 'yearlyCleanupEnabled' as const },
-                  { label: '断网自动备份', key: 'offlineBackupEnabled' as const }
-                ].map(item => (
-                  <label key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 font-bold text-gray-700">
-                    {item.label}
-                    <input type="checkbox" checked={Boolean(maintenanceSettings[item.key])} onChange={(e) => updateMaintenanceField(item.key, e.target.checked as any)} className="w-5 h-5 accent-blue-600" />
+              {!maintenanceSettings.enabled && (
+                <div className="mb-5 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+                  自动维护已停用，每日计划任务不会执行；仍可使用下方的手动维护操作。
+                </div>
+              )}
+
+              {/* 总开关与执行时间 */}
+              <div className="rounded-xl border border-gray-200 bg-gray-50/70 p-4 mb-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="flex items-center justify-between font-bold text-gray-700">
+                    <span className="flex items-center gap-2"><Clock size={18} className="text-blue-600" />启用自动维护</span>
+                    <input type="checkbox" checked={maintenanceSettings.enabled} onChange={(e) => updateMaintenanceField('enabled', e.target.checked)} className="w-5 h-5 accent-blue-600" />
                   </label>
-                ))}
+                  <label className="flex items-center justify-between md:justify-end gap-3 font-bold text-gray-700">
+                    <span>每日执行时间</span>
+                    <input type="time" value={maintenanceSettings.scheduleTime} onChange={(e) => updateMaintenanceField('scheduleTime', e.target.value)} className="w-40 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
+                  </label>
+                </div>
+                <p className="text-xs text-gray-400 mt-3 leading-relaxed">到达执行时间后，按下方开关备份数据库、导出任务表格与编号台账，并按各项保留天数清理四个目录中的过期文件；总开关停用后所有计划任务跳过。</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-6 gap-5">
-                <label className="block"><span className="text-sm font-bold text-gray-700">每日执行时间</span><input type="time" value={maintenanceSettings.scheduleTime} onChange={(e) => updateMaintenanceField('scheduleTime', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">备份保留天数</span><input type="number" min={1} value={maintenanceSettings.backupRetentionDays} onChange={(e) => updateMaintenanceField('backupRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">断网备份保留天数</span><input type="number" min={1} value={maintenanceSettings.offlineBackupRetentionDays} onChange={(e) => updateMaintenanceField('offlineBackupRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">任务表格保留天数</span><input type="number" min={1} value={maintenanceSettings.taskExportRetentionDays} onChange={(e) => updateMaintenanceField('taskExportRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">编号台账保留天数</span><input type="number" min={1} value={maintenanceSettings.gunLedgerExportRetentionDays} onChange={(e) => updateMaintenanceField('gunLedgerExportRetentionDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">年度检测月份</span><input type="number" min={1} max={12} value={maintenanceSettings.yearlyCleanupMonth} onChange={(e) => updateMaintenanceField('yearlyCleanupMonth', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">月初检测天数</span><input type="number" min={1} max={31} value={maintenanceSettings.yearlyCleanupCheckDays} onChange={(e) => updateMaintenanceField('yearlyCleanupCheckDays', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">任务保留年数</span><input type="number" min={1} max={10} value={maintenanceSettings.yearlyTaskRetentionYears} onChange={(e) => updateMaintenanceField('yearlyTaskRetentionYears', Number(e.target.value))} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+              {/* 每日自动任务：开关、保留天数、存放目录集中在同一张卡片 */}
+              <div className="text-sm font-bold text-gray-700 mb-3">每日自动任务</div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className={`rounded-xl border border-blue-200 bg-blue-50/40 p-4 ${maintenanceSettings.dailyBackupEnabled ? '' : 'opacity-60'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 font-bold text-gray-800"><Database size={17} className="text-blue-600" />数据库备份</div>
+                    <input type="checkbox" checked={maintenanceSettings.dailyBackupEnabled} onChange={(e) => updateMaintenanceField('dailyBackupEnabled', e.target.checked)} className="w-5 h-5 accent-blue-600" />
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-3 min-h-[48px]">使用 SQLite 在线备份 API 生成一致性快照，即使正在写入也安全；备份合并 WAL 后为单个 .db 文件。</p>
+                  <label className="block mb-2">
+                    <span className="text-xs font-bold text-gray-600">备份保留天数</span>
+                    <input type="number" min={1} max={3650} value={maintenanceSettings.backupRetentionDays} onChange={(e) => updateMaintenanceField('backupRetentionDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400" />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-bold text-gray-600">备份存放目录（相对后端）</span>
+                    <input value={maintenanceSettings.backupDir} onChange={(e) => updateMaintenanceField('backupDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400" />
+                  </label>
+                </div>
+
+                <div className={`rounded-xl border border-green-200 bg-green-50/40 p-4 ${maintenanceSettings.dailyTaskExportEnabled ? '' : 'opacity-60'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 font-bold text-gray-800"><FileSpreadsheet size={17} className="text-green-600" />任务表格导出</div>
+                    <input type="checkbox" checked={maintenanceSettings.dailyTaskExportEnabled} onChange={(e) => updateMaintenanceField('dailyTaskExportEnabled', e.target.checked)} className="w-5 h-5 accent-green-600" />
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-3 min-h-[48px]">将所有月份含有数据的任务工作表导出为单个 xls，每个月份对应一个工作表。</p>
+                  <label className="block mb-2">
+                    <span className="text-xs font-bold text-gray-600">导出文件保留天数</span>
+                    <input type="number" min={1} max={3650} value={maintenanceSettings.taskExportRetentionDays} onChange={(e) => updateMaintenanceField('taskExportRetentionDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-green-200 focus:border-green-400" />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-bold text-gray-600">导出存放目录（相对后端）</span>
+                    <input value={maintenanceSettings.taskExportDir} onChange={(e) => updateMaintenanceField('taskExportDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-green-200 focus:border-green-400" />
+                  </label>
+                </div>
+
+                <div className={`rounded-xl border border-emerald-200 bg-emerald-50/40 p-4 ${maintenanceSettings.dailyGunLedgerExportEnabled ? '' : 'opacity-60'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 font-bold text-gray-800"><ClipboardList size={17} className="text-emerald-600" />编号台账导出</div>
+                    <input type="checkbox" checked={maintenanceSettings.dailyGunLedgerExportEnabled} onChange={(e) => updateMaintenanceField('dailyGunLedgerExportEnabled', e.target.checked)} className="w-5 h-5 accent-emerald-600" />
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-3 min-h-[48px]">所有焊枪编号台账分类合并导出为一个 xls，每张台账表对应一个工作表。</p>
+                  <label className="block mb-2">
+                    <span className="text-xs font-bold text-gray-600">导出文件保留天数</span>
+                    <input type="number" min={1} max={3650} value={maintenanceSettings.gunLedgerExportRetentionDays} onChange={(e) => updateMaintenanceField('gunLedgerExportRetentionDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-400" />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-bold text-gray-600">导出存放目录（相对后端）</span>
+                    <input value={maintenanceSettings.gunLedgerExportDir} onChange={(e) => updateMaintenanceField('gunLedgerExportDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-400" />
+                  </label>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-5 mt-5">
-                <label className="block"><span className="text-sm font-bold text-gray-700">数据库备份目录</span><input value={maintenanceSettings.backupDir} onChange={(e) => updateMaintenanceField('backupDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">任务导出目录</span><input value={maintenanceSettings.taskExportDir} onChange={(e) => updateMaintenanceField('taskExportDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">编号台账目录</span><input value={maintenanceSettings.gunLedgerExportDir} onChange={(e) => updateMaintenanceField('gunLedgerExportDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">年度永久归档目录</span><input value={maintenanceSettings.yearlyArchiveDir} onChange={(e) => updateMaintenanceField('yearlyArchiveDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
-                <label className="block"><span className="text-sm font-bold text-gray-700">断网备份目录</span><input value={maintenanceSettings.offlineBackupDir} onChange={(e) => updateMaintenanceField('offlineBackupDir', e.target.value)} className="mt-2 w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 outline-none" /></label>
+              {/* 年度清理与关机备份 */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className={`rounded-xl border border-red-200 bg-red-50/40 p-4 ${maintenanceSettings.yearlyCleanupEnabled ? '' : 'opacity-70'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 font-bold text-gray-800"><Archive size={17} className="text-red-600" />年度任务清理</div>
+                    <input type="checkbox" checked={maintenanceSettings.yearlyCleanupEnabled} onChange={(e) => updateMaintenanceField('yearlyCleanupEnabled', e.target.checked)} className="w-5 h-5 accent-red-600" />
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-3">
+                    每年在检测月份的前 N 天自动检测一次（每年仅执行一次）；将年份早于「当前年份 − 保留年数」的任务工作表先永久归档为 JSON，再从数据库删除。例如 2027 年 1 月、保留 1 年时，删除 2026 年 1 月之前的数据。
+                  </p>
+                  <div className="grid grid-cols-3 gap-2 mb-2">
+                    <label className="block">
+                      <span className="text-xs font-bold text-gray-600">检测月份（1-12）</span>
+                      <input type="number" min={1} max={12} value={maintenanceSettings.yearlyCleanupMonth} onChange={(e) => updateMaintenanceField('yearlyCleanupMonth', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400" />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-bold text-gray-600">月初检测天数</span>
+                      <input type="number" min={1} max={31} value={maintenanceSettings.yearlyCleanupCheckDays} onChange={(e) => updateMaintenanceField('yearlyCleanupCheckDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400" />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-bold text-gray-600">任务保留年数</span>
+                      <input type="number" min={1} max={10} value={maintenanceSettings.yearlyTaskRetentionYears} onChange={(e) => updateMaintenanceField('yearlyTaskRetentionYears', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400" />
+                    </label>
+                  </div>
+                  <label className="block mb-3">
+                    <span className="text-xs font-bold text-gray-600">永久归档目录（相对后端）</span>
+                    <input value={maintenanceSettings.yearlyArchiveDir} onChange={(e) => updateMaintenanceField('yearlyArchiveDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400" />
+                  </label>
+                  <div className="rounded-lg bg-white/80 border border-red-100 px-3 py-2 text-xs text-gray-600">
+                    {latestYearlyHistory ? (
+                      <>
+                        最近一次执行：{format(new Date(latestYearlyHistory.completedAt), 'yyyy-MM-dd')}，临界年份 {latestYearlyHistory.cutoffYear}，
+                        {latestYearlyHistory.removedSheets > 0
+                          ? <>归档并删除 {latestYearlyHistory.removedSheets} 个工作表（{latestYearlyHistory.removedTaskItems || 0} 条记录）{latestYearlyHistory.archiveFile ? `，归档文件 ${latestYearlyHistory.archiveFile.split(/[\\/]/).pop()}` : ''}</>
+                          : '无符合条件的任务数据'}
+                      </>
+                    ) : '暂无年度清理执行记录'}
+                  </div>
+                </div>
+
+                <div className={`rounded-xl border border-amber-200 bg-amber-50/40 p-4 ${maintenanceSettings.offlineBackupEnabled ? '' : 'opacity-70'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 font-bold text-gray-800"><Power size={17} className="text-amber-600" />关机自动备份</div>
+                    <input type="checkbox" checked={maintenanceSettings.offlineBackupEnabled} onChange={(e) => updateMaintenanceField('offlineBackupEnabled', e.target.checked)} className="w-5 h-5 accent-amber-600" />
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-3">
+                    服务器进程关闭时（Ctrl+C、关闭服务控制台、收到 SIGTERM）自动执行一次数据库一致性备份；5 分钟内重复关闭仅备份一次，与每日备份分开存放。
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                    <label className="block">
+                      <span className="text-xs font-bold text-gray-600">备份保留天数</span>
+                      <input type="number" min={1} max={3650} value={maintenanceSettings.offlineBackupRetentionDays} onChange={(e) => updateMaintenanceField('offlineBackupRetentionDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400" />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-bold text-gray-600">备份存放目录（相对后端）</span>
+                      <input value={maintenanceSettings.offlineBackupDir} onChange={(e) => updateMaintenanceField('offlineBackupDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400" />
+                    </label>
+                  </div>
+                  <div className="rounded-lg bg-white/80 border border-amber-100 px-3 py-2 text-xs text-gray-500">
+                    适用于服务意外停止前的最后保障；每日计划执行时也会按上面的保留天数一并清理本目录的过期备份。
+                  </div>
+                </div>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-                <h3 className="font-bold text-gray-800 mb-4">手动维护</h3>
-                <div className="grid grid-cols-1 gap-3">
-                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/backup', '数据库备份已完成')} disabled={maintenanceLoading} className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即备份数据库</button>
-                  <button onClick={handleManualTaskExport} disabled={maintenanceLoading || exporting} className="px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出任务数据</button>
-                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/export-gun-ledger', '编号台账已导出')} disabled={maintenanceLoading} className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition">立即导出编号台账</button>
-                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/cleanup-backups', '过期备份已清理')} disabled={maintenanceLoading} className="px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清理过期备份</button>
-                  <button onClick={() => runMaintenanceAction('/api/system/maintenance/yearly-cleanup', '年度任务清理检测已完成', { force: true })} disabled={maintenanceLoading} className="px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition">执行年度清理检测</button>
-                  <button onClick={handleClearLogs} disabled={maintenanceLoading} className="px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition">清空所有日志</button>
+                <h3 className="font-bold text-gray-800 mb-1 flex items-center gap-2">
+                  <PlayCircle size={18} className="text-blue-600" />手动维护
+                </h3>
+                <p className="text-xs text-gray-400 mb-4">立即在服务器上执行一次，不影响每日计划；执行后状态自动刷新。</p>
+
+                <div className="text-xs font-bold text-gray-500 mb-2">常规操作</div>
+                <div className="grid grid-cols-1 gap-2.5 mb-5">
+                  <button onClick={handleBackupNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <Database size={17} />立即备份数据库
+                  </button>
+                  <button onClick={handleManualTaskExport} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <FileSpreadsheet size={17} />立即导出任务数据
+                  </button>
+                  <button onClick={handleManualGunLedgerExport} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <ClipboardList size={17} />立即导出编号台账
+                  </button>
+                  <button onClick={handleCleanupBackupsNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <Trash2 size={17} />清理过期文件
+                    <span className="ml-auto text-[11px] font-normal opacity-90 text-right">备份 / 任务导出 / 台账导出 / 关机备份</span>
+                  </button>
+                </div>
+
+                <div className="text-xs font-bold text-red-500 mb-2 flex items-center gap-1"><AlertCircle size={13} />危险操作（不可恢复）</div>
+                <div className="grid grid-cols-1 gap-2.5 rounded-xl bg-red-50/60 border border-red-100 p-3">
+                  <button onClick={handleYearlyCleanupNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <Archive size={17} />立即执行年度清理检测
+                  </button>
+                  <button onClick={handleClearLogs} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <History size={17} />清空所有登录与操作日志
+                  </button>
                 </div>
               </div>
 
               <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
                 <h3 className="font-bold text-gray-800 mb-4">运行状态</h3>
-                <div className="space-y-3 text-sm text-gray-600">
-                  <div><span className="font-bold text-gray-700">下次执行：</span>{maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-'}</div>
-                  <div><span className="font-bold text-gray-700">数据库文件：</span><span className="break-all">{maintenanceStatus?.paths?.database || '-'}</span></div>
-                  <div><span className="font-bold text-gray-700">数据库大小：</span>
-                    <span className="text-blue-600 font-bold">{maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.totalDiskSize) : '-'}</span>
-                    {maintenanceStatus?.database && maintenanceStatus.database.walSize > 0 && (
-                      <span className="text-gray-400 text-xs ml-2">（主文件 {formatFileSize(maintenanceStatus.database.dbFileSize)} + WAL {formatFileSize(maintenanceStatus.database.walSize)}）</span>
-                    )}
+                <div className="space-y-4 text-sm text-gray-600">
+                  {/* 调度器状态 */}
+                  <div className="rounded-xl border border-gray-200 p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-gray-700">调度器</span>
+                      {(() => {
+                        const badge = !maintenanceSettings.enabled
+                          ? { dot: 'bg-gray-400', text: '已停用', cls: 'bg-gray-100 text-gray-600' }
+                          : maintenanceStatus?.scheduler?.running
+                            ? { dot: 'bg-blue-500 animate-pulse', text: '正在执行', cls: 'bg-blue-50 text-blue-700' }
+                            : { dot: 'bg-green-500', text: '计划中', cls: 'bg-green-50 text-green-700' };
+                        return (
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${badge.cls}`}>
+                            <span className={`w-2 h-2 rounded-full ${badge.dot}`} />{badge.text}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <div className="mt-2 space-y-1 text-xs">
+                      <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">下次执行</span><span className="text-gray-700">{maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-'}</span></div>
+                      <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">上次执行</span><span className="text-gray-700">{maintenanceStatus?.scheduler?.lastRun?.finishedAt ? format(new Date(maintenanceStatus.scheduler.lastRun.finishedAt), 'yyyy-MM-dd HH:mm:ss') : '尚无自动执行记录'}</span></div>
+                    </div>
+
+                    {/* 上次计划执行的逐项结果 */}
+                    {maintenanceStatus?.scheduler?.lastRun?.finishedAt && (() => {
+                      const lr = maintenanceStatus.scheduler.lastRun as MaintenanceLastRun;
+                      if (lr.skipped) {
+                        return <div className="mt-2 rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-500">本次计划执行已跳过：{lr.reason === 'disabled' ? '自动维护已停用' : lr.reason}</div>;
+                      }
+                      type Tone = 'ok' | 'off' | 'muted' | 'warn';
+                      const toneCls: Record<Tone, string> = {
+                        ok: 'text-green-700 bg-green-50',
+                        off: 'text-gray-400 bg-gray-50',
+                        muted: 'text-gray-500 bg-gray-50',
+                        warn: 'text-amber-700 bg-amber-50'
+                      };
+                      const steps: { label: string; tone: Tone; text: string }[] = [];
+                      steps.push(!maintenanceSettings.dailyBackupEnabled
+                        ? { label: '数据库备份', tone: 'off', text: '未启用' }
+                        : lr.backup ? { label: '数据库备份', tone: 'ok', text: lr.backup.fileName } : { label: '数据库备份', tone: 'muted', text: '未生成' });
+                      const te = lr.taskExport;
+                      steps.push(!maintenanceSettings.dailyTaskExportEnabled
+                        ? { label: '任务表格', tone: 'off', text: '未启用' }
+                        : te?.skipped ? { label: '任务表格', tone: 'muted', text: '无任务数据，跳过' }
+                        : te ? { label: '任务表格', tone: 'ok', text: `${te.taskSheets} 个工作表 / ${te.taskItems} 条记录` }
+                        : { label: '任务表格', tone: 'muted', text: '未生成' });
+                      const ge = lr.gunLedgerExport;
+                      steps.push(!maintenanceSettings.dailyGunLedgerExportEnabled
+                        ? { label: '编号台账', tone: 'off', text: '未启用' }
+                        : ge?.skipped ? { label: '编号台账', tone: 'muted', text: '无台账数据，跳过' }
+                        : ge ? { label: '编号台账', tone: 'ok', text: `${ge.categories} 个分类已导出` }
+                        : { label: '编号台账', tone: 'muted', text: '未生成' });
+                      steps.push(lr.backupCleanup
+                        ? { label: '过期清理', tone: 'ok', text: `删除 ${lr.backupCleanup.removedCount} 个过期文件` }
+                        : { label: '过期清理', tone: 'muted', text: '-' });
+                      const yc = lr.yearlyCleanup;
+                      steps.push(!maintenanceSettings.yearlyCleanupEnabled
+                        ? { label: '年度清理', tone: 'off', text: '未启用' }
+                        : !yc ? { label: '年度清理', tone: 'muted', text: '-' }
+                        : yc.skipped ? { label: '年度清理', tone: 'muted', text: yearlySkipReasonText[yc.reason || ''] || yc.reason || '已跳过' }
+                        : yc.removedSheets ? { label: '年度清理', tone: 'warn', text: `归档删除 ${yc.removedSheets} 个工作表（${yc.removedTaskItems || 0} 条记录）` }
+                        : { label: '年度清理', tone: 'ok', text: '无需要清理的数据' });
+                      return (
+                        <div className="mt-2 space-y-1.5">
+                          {steps.map(step => (
+                            <div key={step.label} className="flex items-start gap-2 text-xs">
+                              <span className="w-16 shrink-0 font-bold text-gray-400 pt-0.5">{step.label}</span>
+                              <span className={`px-2 py-0.5 rounded break-all ${toneCls[step.tone]}`}>{step.text}</span>
+                            </div>
+                          ))}
+                          {lr.errors?.length ? (
+                            <div className="rounded-lg bg-red-50 border border-red-200 px-2 py-2 text-xs text-red-700">执行错误：{lr.errors.join('；')}</div>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                   </div>
-                  <div><span className="font-bold text-gray-700">tasks 集合大小：</span>
-                    <span className="text-green-600 font-bold">{maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.tasksJsonSize) : '-'}</span>
-                    {maintenanceStatus?.database && (
-                      <span className="text-gray-400 text-xs ml-2">（{maintenanceStatus.database.tasksCount} 个工作表，{maintenanceStatus.database.taskItemsCount} 条任务记录）</span>
-                    )}
+
+                  {/* 数据库占用 */}
+                  <div className="rounded-xl border border-gray-200 p-3 space-y-2">
+                    <div className="font-bold text-gray-700 text-xs">数据库占用</div>
+                    <div className="text-xs">
+                      <span className="font-bold text-blue-600">{maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.totalDiskSize) : '-'}</span>
+                      {maintenanceStatus?.database && (
+                        <span className="text-gray-400 ml-2">
+                          （主文件 {formatFileSize(maintenanceStatus.database.dbFileSize)}
+                          {maintenanceStatus.database.walSize > 0 ? ` + WAL ${formatFileSize(maintenanceStatus.database.walSize)}` : ''}
+                          {maintenanceStatus.database.shmSize > 0 ? ` + SHM ${formatFileSize(maintenanceStatus.database.shmSize)}` : ''}）
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs">
+                      <span className="font-bold text-green-600">tasks 集合 {maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.tasksJsonSize) : '-'}</span>
+                      {maintenanceStatus?.database && (
+                        <span className="text-gray-400 ml-2">（{maintenanceStatus.database.tasksCount} 个工作表，{maintenanceStatus.database.taskItemsCount} 条任务记录）</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500">数据文件：<span className="break-all text-gray-600">{maintenanceStatus?.paths?.database || '-'}</span></div>
                   </div>
-                  <div><span className="font-bold text-gray-700">备份目录：</span><span className="break-all">{maintenanceStatus?.paths?.backupDir || '-'}</span></div>
-                  <div><span className="font-bold text-gray-700">任务导出：</span><span className="break-all">{maintenanceStatus?.paths?.taskExportDir || '-'}</span></div>
-                  <div><span className="font-bold text-gray-700">编号台账目录：</span><span className="break-all">{maintenanceStatus?.paths?.gunLedgerExportDir || '-'}</span></div>
-                  <div><span className="font-bold text-gray-700">年度归档：</span><span className="break-all">{maintenanceStatus?.paths?.yearlyArchiveDir || '-'}</span></div>
-                  <div><span className="font-bold text-gray-700">断网备份：</span><span className="break-all">{maintenanceStatus?.paths?.offlineBackupDir || '-'}</span></div>
-                  <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-amber-800">年度清理会先永久归档将删除的数据；例如 2027 年 1 月会删除 2026 年 1 月之前的任务数据。断网备份在服务器关闭时（Ctrl+C、SIGTERM）自动触发。</div>
+
+                  {/* 存储目录绝对路径 */}
+                  <div className="rounded-xl border border-gray-200 p-3">
+                    <div className="font-bold text-gray-700 text-xs mb-1.5">存储目录（服务器绝对路径）</div>
+                    <div className="space-y-1 text-xs">
+                      {[
+                        { label: '数据库备份', path: maintenanceStatus?.paths?.backupDir },
+                        { label: '任务表格导出', path: maintenanceStatus?.paths?.taskExportDir },
+                        { label: '编号台账导出', path: maintenanceStatus?.paths?.gunLedgerExportDir },
+                        { label: '年度归档', path: maintenanceStatus?.paths?.yearlyArchiveDir },
+                        { label: '关机备份', path: maintenanceStatus?.paths?.offlineBackupDir }
+                      ].map(item => (
+                        <div key={item.label} className="flex gap-2">
+                          <span className="w-20 shrink-0 text-gray-400 font-bold">{item.label}</span>
+                          <span className="break-all text-gray-600">{item.path || '-'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-              {[
-                { title: '最近数据库备份', files: maintenanceStatus?.files?.backups || [] },
-                { title: '最近任务导出', files: maintenanceStatus?.files?.taskExports || [] },
-                { title: '最近编号台账导出', files: maintenanceStatus?.files?.gunLedgerExports || [] },
-                { title: '年度永久归档', files: maintenanceStatus?.files?.yearlyArchives || [] },
-                { title: '最近断网备份', files: maintenanceStatus?.files?.offlineBackups || [] }
-              ].map(group => (
-                <div key={group.title} className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-                  <h3 className="font-bold text-gray-800 mb-4">{group.title}</h3>
-                  <div className="space-y-3">
-                    {group.files.length === 0 ? <div className="text-sm text-gray-400">暂无文件</div> : group.files.map(file => (
-                      <div key={file.path} className="rounded-lg bg-gray-50 border border-gray-100 p-3">
-                        <div className="text-sm font-bold text-gray-700 break-all">{file.name}</div>
-                        <div className="text-xs text-gray-400 mt-1">{formatFileSize(file.size)} · {format(new Date(file.mtime), 'yyyy-MM-dd HH:mm')}</div>
-                      </div>
-                    ))}
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+              <h3 className="font-bold text-gray-800 mb-4">最近生成的文件</h3>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                {[
+                  { title: '数据库备份', icon: <Database size={14} className="text-blue-600" />, files: maintenanceStatus?.files?.backups || [] },
+                  { title: '任务表格导出', icon: <FileSpreadsheet size={14} className="text-green-600" />, files: maintenanceStatus?.files?.taskExports || [] },
+                  { title: '编号台账导出', icon: <ClipboardList size={14} className="text-emerald-600" />, files: maintenanceStatus?.files?.gunLedgerExports || [] },
+                  { title: '年度归档', icon: <Archive size={14} className="text-amber-600" />, files: maintenanceStatus?.files?.yearlyArchives || [] },
+                  { title: '关机备份', icon: <Power size={14} className="text-rose-500" />, files: maintenanceStatus?.files?.offlineBackups || [] }
+                ].map(group => (
+                  <div key={group.title} className="rounded-xl border border-gray-100 bg-gray-50/50 p-3">
+                    <h4 className="font-bold text-gray-700 mb-2 flex items-center gap-1.5 text-xs">
+                      {group.icon}{group.title}
+                      <span className="ml-auto text-[10px] font-normal text-gray-400">{group.files.length}/5</span>
+                    </h4>
+                    <div className="space-y-2">
+                      {group.files.length === 0 ? <div className="text-[11px] text-gray-400 py-1">暂无文件</div> : group.files.map(file => (
+                        <div key={file.path} className="rounded-lg bg-white border border-gray-100 p-2">
+                          <div className="text-[11px] font-bold text-gray-700 break-all leading-snug">{file.name}</div>
+                          <div className="text-[10px] text-gray-400 mt-1">{formatFileSize(file.size)} · {format(new Date(file.mtime), 'MM-dd HH:mm')}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-3">各目录仅展示最近 5 个文件；过期文件由每日计划或「清理过期文件」按钮按各项保留天数删除。</p>
             </div>
           </div>
         )}

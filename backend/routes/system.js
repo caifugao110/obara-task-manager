@@ -51,7 +51,9 @@ const maintenanceSettingsSchema = Joi.object({
   dailyBackupEnabled: Joi.boolean().required(),
   dailyTaskExportEnabled: Joi.boolean().required(),
   dailyGunLedgerExportEnabled: Joi.boolean().required(),
+  offlineBackupEnabled: Joi.boolean().required(),
   backupRetentionDays: Joi.number().integer().min(1).max(3650).required(),
+  offlineBackupRetentionDays: Joi.number().integer().min(1).max(3650).required(),
   taskExportRetentionDays: Joi.number().integer().min(1).max(3650).required(),
   gunLedgerExportRetentionDays: Joi.number().integer().min(1).max(3650).required(),
   scheduleTime: Joi.string().pattern(/^\d{2}:\d{2}$/).required(),
@@ -62,7 +64,8 @@ const maintenanceSettingsSchema = Joi.object({
   backupDir: Joi.string().trim().min(1).max(200).required(),
   taskExportDir: Joi.string().trim().min(1).max(200).required(),
   gunLedgerExportDir: Joi.string().trim().min(1).max(200).required(),
-  yearlyArchiveDir: Joi.string().trim().min(1).max(200).required()
+  yearlyArchiveDir: Joi.string().trim().min(1).max(200).required(),
+  offlineBackupDir: Joi.string().trim().min(1).max(200).required()
 });
 
 const normalizeSystemSettings = (settings = {}) => {

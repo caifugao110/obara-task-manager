@@ -51,14 +51,14 @@ Authorization: Bearer <token>
 | 查看焊枪台账 | 否 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
 | 编辑焊枪台账（分类/表/行） | 否 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
 | 删除焊枪台账分类/表 | 否 | 否 | 否（按钮可见但拦截） | 是 |
-| 配置焊枪名规则/清空焊枪名/管理默认担当 | 否 | 否 | 否 | 是 |
+| 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当 | 否 | 否 | 否 | 是 |
 | 导入焊枪台账 | 否 | 否 | 否 | 是 |
 
 说明：
 
 - `settings.leaderboard`、`settings.workHours`、`settings.statusTracking` 控制对应页面是否允许 `admin` 和已登录 `user` 访问，未登录游客不能进入任务报表、工时管理和状态追踪页面。
 - `settings.gunLedger` 控制焊枪台账页面访问权限，`allowViewers` 后端强制为 `false`（普通用户与游客不能进入 `/gun-ledger`）。一般管理员可见删除分类/表按钮但点击被拦截（提示需超级管理员权限）。
-- `settings.designStandards` 控制设计标准页面（`/design-standards`）访问权限，规则同工时管理。
+- `settings.designStandards` 控制设计规范知识库页面（`/design-standards`）访问权限，规则同工时管理。
 - `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户和游客不能进入系统设置。
 - `authMiddleware` 只校验登录态；涉及写入任务、设计人员、状态追踪等接口还会继续校验角色。
 
@@ -890,7 +890,7 @@ Authorization: Bearer <token>
 - `leaderboard.allowViewers=true`、`workHours.allowViewers=true`、`statusTracking.allowViewers=true` 只允许普通用户访问对应页面；未登录游客始终不能进入 `/leaderboard`、`/work-hours` 和 `/status-tracking`。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问）。
 - 四个权限配置的 `GET` 接口（`/settings/leaderboard`、`/settings/work-hours`、`/settings/status-tracking`、`/settings/system-settings`）均使用 `guestViewMiddleware`：`allowGuestView` 开启时匿名可读，关闭后需携带有效 JWT；`PUT` 接口均仅 `superadmin`。
-- 焊枪台账（`/settings/gun-ledger`）和设计标准（`/settings/design-standards`）权限配置同样遵循上述规则；其中 `gunLedger.allowViewers` 后端强制为 `false`。
+- 焊枪台账（`/settings/gun-ledger`）和设计规范知识库（`/settings/design-standards`）权限配置同样遵循上述规则；其中 `gunLedger.allowViewers` 后端强制为 `false`。
 
 ### 获取任务报表权限设置
 
@@ -937,11 +937,11 @@ Authorization: Bearer <token>
 - 用于控制一般管理员是否可以访问焊枪台账页面（`/gun-ledger`）。
 - `allowViewers` 字段被强制为 `false`（焊枪台账不允许普通用户和游客访问）。
 
-### 获取设计标准权限设置
+### 获取设计规范知识库权限设置
 
 `GET /api/settings/design-standards`
 
-### 更新设计标准权限设置
+### 更新设计规范知识库权限设置
 
 `PUT /api/settings/design-standards`
 
@@ -949,7 +949,7 @@ Authorization: Bearer <token>
 
 说明：
 
-- 用于控制一般管理员/普通用户是否可以访问设计标准页面（`/design-standards`）。
+- 用于控制一般管理员/普通用户是否可以访问设计规范知识库页面（`/design-standards`）。
 
 ### 获取系统设置权限设置
 
@@ -1669,22 +1669,47 @@ Authorization: Bearer <token>
 
 说明：仅超级管理员可在「台账初始化」面板中按表配置；保存后通过 Socket.IO 广播 `gun_ledger_updated`（`action: 'gun_name_rule'`）。
 
-### 清空焊枪名
+### 焊枪名初始化
 
-`POST /api/gun-ledger/tables/:tableId/clear-gun-names`
+`POST /api/gun-ledger/tables/:tableId/initialize-gun-names`
 
 权限：仅 `superadmin`。
 
+请求体：无（发送 `{}`）。
+
 说明：
 
-- 仅清空每行的 `gunName` 字段，**序号与客户/时间/担当/备注等列保留不变**。
+- 删除该表**全部真实行**（`rows` 置空），表恢复为全新状态。
+- 初始化后前端只渲染 10 个预留行，预留行的焊枪名按生效规则（表级 `gunNameRule` → 内置默认模式）自动展示，即该表的 **10 个原始焊枪名**；未启用自动取号时预留行枪名为空。
 - 该表正被他人编辑时返回 `409`。
-- 清空后所有行的 `updatedAt`/`updatedBy` 更新。
+- 初始化后通过 Socket.IO 广播 `gun_ledger_updated`（`action: 'update_rows'`，`rows: []`）。
 
 响应：
 
 ```json
-{ "success": true, "rows": [...] }
+{ "success": true, "rows": [] }
+```
+
+### 一键初始化某分类下全部表格
+
+`POST /api/gun-ledger/categories/:category/initialize-all`
+
+权限：仅 `superadmin`。请求体：无（发送 `{}`）。
+
+说明：将该分类下所有表的 `rows` 置空，并逐表广播 `update_rows`（`rows: []`）。任意一张表正被他人编辑时整体返回 `409`（`locked` 数组列出被占用的表与持有人），不做部分初始化。
+
+### 一键初始化全部表格
+
+`POST /api/gun-ledger/initialize-all`
+
+权限：仅 `superadmin`。请求体：无（发送 `{}`）。
+
+说明：跨全部分类批量清空所有表的真实行，语义与按分类初始化一致；任一张表被他人编辑即整体拒绝（`409`）。
+
+响应（成功）：
+
+```json
+{ "success": true, "initializedCategories": 3, "initializedTables": 11, "clearedRows": 0 }
 ```
 
 ### 获取默认担当人员
@@ -2290,7 +2315,9 @@ Authorization: Bearer <token>
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
   "dailyGunLedgerExportEnabled": true,
+  "offlineBackupEnabled": true,
   "backupRetentionDays": 30,
+  "offlineBackupRetentionDays": 7,
   "taskExportRetentionDays": 30,
   "gunLedgerExportRetentionDays": 30,
   "scheduleTime": "00:30",
@@ -2301,11 +2328,12 @@ Authorization: Bearer <token>
   "backupDir": "backups/database",
   "taskExportDir": "backups/task-exports",
   "gunLedgerExportDir": "backups/gun-ledger-exports",
-  "yearlyArchiveDir": "backups/yearly-archives"
+  "yearlyArchiveDir": "backups/yearly-archives",
+  "offlineBackupDir": "backups/offline"
 }
 ```
 
-字段说明：
+字段说明（下表所有字段均为 **必填**，Joi 校验缺少任一字段返回 `400`；前端始终提交完整配置对象）：
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
@@ -2313,7 +2341,9 @@ Authorization: Bearer <token>
 | `dailyBackupEnabled` | 是 | 是否启用每日数据库备份 |
 | `dailyTaskExportEnabled` | 是 | 是否启用每日任务数据导出 |
 | `dailyGunLedgerExportEnabled` | 是 | 是否启用每日编号台账导出 |
+| `offlineBackupEnabled` | 是 | 是否启用断网备份（服务关闭前自动备份） |
 | `backupRetentionDays` | 是 | 数据库备份保留天数（1-3650） |
+| `offlineBackupRetentionDays` | 是 | 断网备份保留天数（1-3650） |
 | `taskExportRetentionDays` | 是 | 任务导出保留天数（1-3650） |
 | `gunLedgerExportRetentionDays` | 是 | 编号台账导出保留天数（1-3650） |
 | `scheduleTime` | 是 | 计划执行时间（格式 HH:MM） |
@@ -2321,12 +2351,13 @@ Authorization: Bearer <token>
 | `yearlyCleanupMonth` | 是 | 年度清理月份（1-12） |
 | `yearlyCleanupCheckDays` | 是 | 年度清理检查窗口天数（1-31） |
 | `yearlyTaskRetentionYears` | 是 | 任务数据保留年限（1-10） |
-| `backupDir` | 是 | 数据库备份目录（相对路径） |
-| `taskExportDir` | 是 | 任务导出目录（相对路径） |
-| `gunLedgerExportDir` | 是 | 编号台账导出目录（相对路径） |
-| `yearlyArchiveDir` | 是 | 年度归档目录（相对路径） |
+| `backupDir` | 是 | 数据库备份目录（相对路径，1-200 字符） |
+| `taskExportDir` | 是 | 任务导出目录（相对路径，1-200 字符） |
+| `gunLedgerExportDir` | 是 | 编号台账导出目录（相对路径，1-200 字符） |
+| `yearlyArchiveDir` | 是 | 年度归档目录（相对路径，1-200 字符） |
+| `offlineBackupDir` | 是 | 断网备份目录（相对路径，1-200 字符） |
 
-> 说明：断网备份相关字段（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）由后端默认值控制，本接口不接受修改，未知字段会被自动过滤。
+> 说明：断网备份开关与目录（`offlineBackupEnabled`、`offlineBackupRetentionDays`、`offlineBackupDir`）同样通过本接口保存，立即生效。`yearlyCleanupHistory`（年度清理历史）由后端维护，不在接受字段范围内；其余未声明字段会被 Joi 自动过滤（`stripUnknown`）。
 
 响应：返回更新后的维护状态，结构同 `GET /api/system/maintenance`。
 
@@ -2934,7 +2965,7 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
    - `gun_ledger_table_heartbeat` 每 20 秒续期一次（服务端 TTL 60 秒）。
    - 断开连接时移除该 socket 的锁引用，引用归零即释放锁。
    - 后台每 30 秒清理心跳超时且无存活连接的僵死锁。
-   - `PUT /api/gun-ledger/tables/:tableId/rows` 和 `clear-gun-names` 接口会校验表锁，被他人持有时返回 `409`。
+   - `PUT /api/gun-ledger/tables/:tableId/rows` 和 `initialize-gun-names` 接口会校验表锁，被他人持有时返回 `409`。
    - 表被删除、分类被删除、导入覆盖时会强制释放该表的锁。
 
 ### 多设备登录踢下线机制
@@ -3106,4 +3137,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-09-24
+最后更新：2026-09-25

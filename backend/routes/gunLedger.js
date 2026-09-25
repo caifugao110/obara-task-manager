@@ -599,31 +599,108 @@ router.put('/tables/:tableId/gun-name-rule', [authMiddleware, superAdminMiddlewa
   res.json(rule);
 }));
 
-// POST /api/gun-ledger/tables/:tableId/clear-gun-names —— 清空该表所有行的焊枪名（台账初始化，超管）
-// 仅清空焊枪名列，序号与客户/时间/担当/备注等数据保留；焊枪名允许后续重新手填或取号
-router.post('/tables/:tableId/clear-gun-names', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+// POST /api/gun-ledger/tables/:tableId/initialize-gun-names —— 焊枪名初始化（台账初始化，超管）
+// 删除该表全部真实行（rows 置空），表恢复为全新状态：前端随后只渲染 10 个预留行，
+// 预留行的焊枪名按生效规则（表级 gunNameRule → 内置默认模式）自动展示为该表的 10 个原始枪名
+router.post('/tables/:tableId/initialize-gun-names', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   if (!data.gunLedger) return res.status(404).json({ message: '表未找到' });
   const found = findTable(data.gunLedger, req.params.tableId);
   if (!found) return res.status(404).json({ message: '表未找到' });
 
-  // 表级编辑锁保护：他人正在编辑该表时拒绝清空
+  // 表级编辑锁保护：他人正在编辑该表时拒绝初始化
   const holder = gunTableLocks.get(req.params.tableId);
   if (holder && (!req.user || holder.userId !== req.user.id)) {
-    return res.status(409).json({ message: `该表正由「${holder.name || holder.username}」编辑，请等待其完成后再清除` });
+    return res.status(409).json({ message: `该表正由「${holder.name || holder.username}」编辑，请等待其完成后再初始化` });
   }
 
-  const meta = userMeta(req);
-  const now = new Date().toISOString();
-  // 行顺序与序号保持不变（归一化保证序号连续），仅清空焊枪名
-  const nextRows = (found.table.rows || []).map(r => ({ ...r, gunName: '', updatedAt: now, updatedBy: meta }));
-  found.table.rows = nextRows;
+  // 全部原有内容删除：真实行全部丢弃；10 个原始枪名由前端预留行按规则呈现
+  found.table.rows = [];
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: nextRows });
+  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: [] });
 
-  res.json({ success: true, rows: nextRows });
+  res.json({ success: true, rows: [] });
+}));
+
+// 批量初始化公共逻辑：清空给定表引用的全部真实行（rows 置空），逐表广播 update_rows。
+// 锁保护：任意一张表正被他人编辑时整体拒绝（409），由调用方返回锁定明细，避免部分初始化。
+const collectBlockedTables = (tableRefs, req) => tableRefs
+  .map(ref => ({ ref, holder: gunTableLocks.get(ref.table.id) }))
+  .filter(({ holder }) => holder && (!req.user || holder.userId !== req.user.id))
+  .map(({ ref, holder }) => ({ tableId: ref.table.id, tableName: ref.table.name, holderName: holder.name || holder.username }));
+
+const applyBatchInitialize = async (req, res, data, tableRefs) => {
+  const blocked = collectBlockedTables(tableRefs, req);
+  if (blocked.length) {
+    const detail = blocked.map(b => `「${b.tableName}」（${b.holderName} 编辑中）`).join('、');
+    res.status(409).json({
+      message: `以下表格正被他人编辑，请等待其完成编辑后再初始化：${detail}`,
+      locked: blocked
+    });
+    return false;
+  }
+
+  let clearedRows = 0;
+  tableRefs.forEach(ref => {
+    clearedRows += (ref.table.rows || []).length;
+    ref.table.rows = [];
+  });
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  tableRefs.forEach(ref => {
+    if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: ref.table.id, rows: [] });
+  });
+
+  res.json({
+    success: true,
+    initializedCategories: new Set(tableRefs.map(ref => ref.category)).size,
+    initializedTables: tableRefs.length,
+    clearedRows
+  });
+  return true;
+};
+
+// POST /api/gun-ledger/categories/:category/initialize-all —— 一键初始化某分类下全部表格（台账初始化，超管）
+router.post('/categories/:category/initialize-all', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const category = decodeURIComponent(req.params.category);
+  if (!isValidCategoryName(category)) {
+    return res.status(400).json({ message: '分类名含非法字符' });
+  }
+  const data = db.readDb();
+  const list = data.gunLedger && Array.isArray(data.gunLedger.categories[category]) ? data.gunLedger.categories[category] : null;
+  if (!list) return res.status(404).json({ message: '分类未找到' });
+
+  const tableRefs = list
+    .filter(t => t && t.id)
+    .map(t => ({ category, table: t }));
+  if (!tableRefs.length) {
+    return res.status(400).json({ message: '该分类下没有可初始化的表格' });
+  }
+
+  await applyBatchInitialize(req, res, data, tableRefs);
+}));
+
+// POST /api/gun-ledger/initialize-all —— 一键初始化全部分类的全部表格（台账初始化，超管）
+router.post('/initialize-all', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  if (!data.gunLedger || !data.gunLedger.categories) {
+    return res.status(404).json({ message: '台账数据未找到' });
+  }
+  const categories = data.gunLedger.categories;
+  const tableRefs = [];
+  Object.keys(categories).forEach(cat => {
+    (categories[cat] || []).forEach(t => {
+      if (t && t.id) tableRefs.push({ category: cat, table: t });
+    });
+  });
+  if (!tableRefs.length) {
+    return res.status(400).json({ message: '当前没有任何可初始化的表格' });
+  }
+
+  await applyBatchInitialize(req, res, data, tableRefs);
 }));
 
 module.exports = router;

@@ -158,7 +158,7 @@ const SystemLogs = () => {
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `audit-logs-${format(new Date(), 'yyyyMMddHHmmss')}.xls`;
+      link.download = `操作日志-${format(new Date(), 'yyyyMMddHHmmss')}.xls`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -210,7 +210,7 @@ const SystemLogs = () => {
                 <FileText className="mr-2 text-gray-500" size={20} />
                 所有操作记录
               </h3>
-              <p className="text-xs text-gray-400 mt-1">包含所有用户的所有操作信息，按时间倒序排列</p>
+              <p className="text-xs text-gray-400 mt-1">记录所有用户的操作行为，按操作时间由新到旧排列</p>
             </div>
             <div className="flex items-center gap-3">
               <button
@@ -263,12 +263,12 @@ const SystemLogs = () => {
                 >
                   <option value="">全部</option>
                   {filterOptions.actions.map(act => (
-                    <option key={act} value={act}>{act}</option>
+                    <option key={act} value={act}>{getActionTypeLabel(act).label}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">HTTP方法</label>
+                <label className="block text-xs font-bold text-gray-500 mb-1">请求方法</label>
                 <select
                   value={filters.method}
                   onChange={(e) => handleFilterChange('method', e.target.value)}
@@ -278,6 +278,7 @@ const SystemLogs = () => {
                   <option value="GET">GET</option>
                   <option value="POST">POST</option>
                   <option value="PUT">PUT</option>
+                  <option value="PATCH">PATCH</option>
                   <option value="DELETE">DELETE</option>
                 </select>
               </div>
@@ -287,7 +288,7 @@ const SystemLogs = () => {
                   type="text"
                   value={filters.ip}
                   onChange={(e) => handleFilterChange('ip', e.target.value)}
-                  placeholder="搜索IP"
+                  placeholder="请输入IP地址"
                   className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
                 />
               </div>
@@ -334,8 +335,8 @@ const SystemLogs = () => {
                   <th className="px-4 py-3 font-bold">时间</th>
                   <th className="px-4 py-3 font-bold">用户</th>
                   <th className="px-4 py-3 font-bold">操作说明</th>
-                  <th className="px-4 py-3 font-bold">方法</th>
-                  <th className="px-4 py-3 font-bold">IP</th>
+                  <th className="px-4 py-3 font-bold">请求方法</th>
+                  <th className="px-4 py-3 font-bold">IP地址</th>
                   <th className="px-4 py-3 font-bold">状态码</th>
                   <th className="px-4 py-3 font-bold">耗时</th>
                   <th className="px-4 py-3 font-bold">浏览器信息</th>

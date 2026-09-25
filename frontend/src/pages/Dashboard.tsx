@@ -2817,7 +2817,7 @@ const Dashboard = () => {
               className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
             >
               <BookOpen size={16} className="text-emerald-200" />
-              <span>设计规范与标准</span>
+              <span>设计规范知识库</span>
               <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-400 text-amber-900">
                 待开发
               </span>

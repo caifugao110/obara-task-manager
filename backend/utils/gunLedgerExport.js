@@ -241,10 +241,16 @@ const patchCellsAndRows = (xml, sheetInfoMap) => {
   });
 };
 
+// 首行冻结：向每个工作表注入 SpreadsheetML 冻结窗格设置（冻结顶部 1 行）
+const FREEZE_PANES_XML = '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane></WorksheetOptions>';
+
+const patchFreezePanes = (xml) => xml.replace(/<\/Worksheet>/g, `${FREEZE_PANES_XML}</Worksheet>`);
+
 const writeWorkbook = (sheetInfoMap, workbook) => {
   let xml = XLSX.write(workbook, { type: 'string', bookType: 'xlml' });
   xml = patchStyles(xml);
   xml = patchCellsAndRows(xml, sheetInfoMap);
+  xml = patchFreezePanes(xml);
   return Buffer.from(xml, 'utf8');
 };
 
