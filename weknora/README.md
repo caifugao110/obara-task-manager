@@ -103,12 +103,22 @@ weknora/
 ├── .env.example            # 环境变量模板（含密钥生成说明）
 ├── .env                    # 实际配置（gen-env.js 生成，已 gitignore）
 ├── config/config.yaml      # WeKnora app 配置（分块/检索阈值等，来自官方 v0.8.2）
+├── knowledge/              # 知识库源数据与提示词模板
+│   ├── X2C-C-knowledge.xlsx        # C 枪焊枪选型数据表（X2C 系列）
+│   ├── X2C-X-knowledge.xlsx        # X 枪焊枪选型数据表（X2C 系列）
+│   ├── X2C-V2-C-knowledge.xlsx     # C 枪焊枪选型数据表（X2C-V2 系列）
+│   ├── X2C-V2-X-knowledge.xlsx     # X 枪焊枪选型数据表（X2C-V2 系列）
+│   ├── X2C-V3-C-knowledge.xlsx     # C 枪焊枪选型数据表（X2C-V3 系列）
+│   ├── X2C-V3-X-knowledge.xlsx     # X 枪焊枪选型数据表（X2C-V3 系列）
+│   └── 焊枪选型规范答复约束提示词.md # 焊枪选型问答的答复约束提示词模板
 ├── scripts/
 │   ├── gen-env.js          # 生成 .env（随机密钥，幂等）
 │   └── setup.js            # 一键初始化（幂等）
 ├── start.bat               # Windows 一键启动
 └── start.sh                # Linux/macOS 一键启动
 ```
+
+> `knowledge/` 下的 6 份 `.xlsx` 是焊枪选型知识库的原始数据，需要在 WeKnora 控制台（http://localhost/platform/knowledge-bases）手动上传到对应知识库；提示词模板 `.md` 则复制粘贴到本系统「设计规范知识库」页面底部的「答复约束提示词」面板（详见第 6 节）。
 
 ## 6. 日常运维
 

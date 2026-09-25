@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20跨平台-lightgrey) ![Socket.IO](https://img.shields.io/badge/实时协作-Socket.IO-010101?logo=socket.io&logoColor=white)
 
-Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管理工具，支持多人协作、任务录入、报表查询、工时管理、权限控制和数据导入导出。
+Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管理工具，集成任务录入、工时统计、状态追踪、焊枪台账、设计规范知识库检索与问答、报表查询、权限控制与数据导入导出等能力，支持多人实时协作、离线浏览与操作审计。
 
 ## 文档导航
 
@@ -11,6 +11,7 @@ Obara 任务管理系统是一个本地部署的 Excel 风格任务与工时管�
 | 本文档 | 使用者、维护者 | 功能概览、快速启动、页面说明、权限模型、数据结构和常用命令 |
 | [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
 | [Windows 部署指南](DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
+| [WeKnora 知识库部署指南](weknora/README.md) | 部署和维护人员 | 设计规范知识库（WeKnora）的 Docker 部署、初始化与故障处理 |
 
 ## 目录
 
@@ -285,6 +286,7 @@ npm run dev
 #### 答复约束提示词（仅超级管理员）
 
 - 超级管理员可在页面底部「答复约束提示词」面板中按知识库配置系统提示词（支持 Markdown，可直接粘贴整篇 `.md` 或从文件导入，单条最长 20000 字符）。
+- 仓库内置一份焊枪选型提示词模板 [`weknora/knowledge/焊枪选型规范答复约束提示词.md`](weknora/knowledge/焊枪选型规范答复约束提示词.md)，可直接复制粘贴到对应知识库的提示词输入框使用。
 - 保存后后端在该知识库所属工作空间创建/更新一个绑定 KnowledgeQA 模型的**自定义智能体**，问答由该智能体承载，提示词完全替换 WeKnora 默认提示词；引用出处仍由系统单独渲染，不受影响。
 - 一次问答选中多个知识库时，取所选范围内第一个已配置提示词的库生效；清空提示词会同步删除对应智能体；未配置提示词的知识库保持默认行为。
 
@@ -573,6 +575,7 @@ obara-task-manager/
 │   ├── routes/
 │   │   ├── auth.js
 │   │   ├── designers.js
+│   │   ├── designStandards.js
 │   │   ├── gunLedger.js
 │   │   ├── settings.js
 │   │   ├── spec.js
@@ -665,7 +668,20 @@ obara-task-manager/
 │           ├── axios.ts
 │           ├── debounce.ts
 │           ├── loginLogs.ts
+│           ├── redirect.ts
 │           └── workdayOverrides.ts
+├── weknora/                      # WeKnora 知识库服务（Docker Compose 本地部署）
+│   ├── .env.example              # 环境变量模板（真实 .env 由脚本生成，不入库）
+│   ├── README.md                 # WeKnora 部署与初始化说明
+│   ├── config/
+│   │   └── config.yaml
+│   ├── knowledge/                # 知识库源数据（X2C 系列焊枪数据表 6 份 .xlsx + 焊枪选型答复约束提示词模板）
+│   ├── scripts/
+│   │   ├── gen-env.js            # 生成 .env 的辅助脚本
+│   │   └── setup.js              # 一键初始化部署脚本
+│   ├── docker-compose.yml
+│   ├── start.bat
+│   └── start.sh
 ├── .gitignore
 ├── DEPLOYMENT.md
 ├── LICENSE
@@ -696,6 +712,7 @@ obara-task-manager/
 | 工作日工具 | `backend/utils/workday.js` | 工作日覆盖规则、周末判断等工具函数 |
 | 安全配置 | `backend/config/security.js` | JWT、CORS、Gitee API、数据库路径等安全配置 |
 | WeKnora 客户端 | `backend/utils/weknora.js` | 多工作空间 API Key 注册表、知识库关联解析、跨空间检索扇出合并、SSE 流式问答、答复约束智能体管理 |
+| WeKnora 部署物料 | `weknora/` | Docker Compose 编排、初始化脚本、知识库源数据与答复约束提示词 |
 | 服务控制台 | `control/ObaraServiceController.csproj` | .NET Framework 4.8 WinForms 程序，用于在 Windows 上控制服务启停、监控端口与一键打开浏览器界面 |
 | 路径解析 | `control/Utils/PathResolver.cs` | 从 EXE 目录向上查找 `backend/` 与 `frontend/`，绑定运行路径，不硬编码绝对路径 |
 | 端口检测 | `control/Utils/PortChecker.cs` | 实时探测前后端端口状态与延迟，用于状态卡片刷新 |

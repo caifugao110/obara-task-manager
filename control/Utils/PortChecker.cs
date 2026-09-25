@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 
 namespace ObaraServiceController.Utils
@@ -102,6 +103,56 @@ namespace ObaraServiceController.Utils
             catch
             {
                 return -1;
+            }
+        }
+
+        /// <summary>
+        /// 对 HTTP 服务发起 GET 健康探测（如 WeKnora 的 /health）。
+        /// 只要服务端返回了任何 HTTP 响应（含 4xx/5xx）都认为进程存活，
+        /// 仅在连接失败/超时时返回 false；同时输出往返延迟（毫秒）。
+        /// </summary>
+        public static bool CheckHttpHealth(string url, int timeoutMs, out int latencyMs)
+        {
+            latencyMs = -1;
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var request = (HttpWebRequest)WebRequest.Create(url);
+                request.Method = "GET";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.AllowAutoRedirect = false;
+                request.KeepAlive = false;
+                request.UserAgent = "ObaraServiceController/1.0";
+
+                try
+                {
+                    using (var response = (HttpWebResponse)request.GetResponse())
+                    {
+                        sw.Stop();
+                        latencyMs = (int)sw.ElapsedMilliseconds;
+                        return true;
+                    }
+                }
+                catch (WebException ex)
+                {
+                    // 能收到 HTTP 错误响应（401/404/500 等）同样说明 HTTP 服务在线，
+                    // 只有连接被拒绝/DNS 失败/超时才视为不可用。
+                    using (var response = ex.Response as HttpWebResponse)
+                    {
+                        if (response != null)
+                        {
+                            sw.Stop();
+                            latencyMs = (int)sw.ElapsedMilliseconds;
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }
+            catch
+            {
+                return false;
             }
         }
     }

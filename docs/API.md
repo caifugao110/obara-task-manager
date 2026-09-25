@@ -1920,6 +1920,26 @@ Authorization: Bearer <token>
 | `/api/settings/design-standards-prompt` | GET | 仅 `superadmin` | 返回 `{ enabled, knowledgeBases }` |
 | `/api/settings/design-standards-prompt` | PUT | 仅 `superadmin` | 保存配置并同步 WeKnora 自定义智能体 |
 
+GET 响应示例：
+
+```json
+{
+  "enabled": true,
+  "knowledgeBases": {
+    "kb-id-1": {
+      "prompt": "# 角色\n你是……（Markdown 全文）",
+      "agentId": "agent-xxx",
+      "updatedAt": "2026-09-25T10:00:00.000Z"
+    }
+  }
+}
+```
+
+说明：
+
+- `knowledgeBases` 的键为知识库 ID，值包含 `prompt`（提示词全文）、`agentId`（WeKnora 受管智能体 ID）、`updatedAt`（最后同步时间）。
+- 未配置提示词的知识库不会出现在 `knowledgeBases` 中。
+
 PUT 请求：
 
 ```json

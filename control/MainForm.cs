@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -26,8 +27,13 @@ namespace ObaraServiceController
 
         private ServiceStatus _backendStatus;
         private ServiceStatus _frontendStatus;
+        private ServiceStatus _kbStatus;
         private int _backendLatency;
         private int _frontendLatency;
+        private int _kbLatency;
+        // 知识库服务（WeKnora / Docker）不在本控制台进程树内，没有可跟踪的
+        // Process 对象；PID 在状态翻转为运行中时通过 netstat 解析一次并缓存。
+        private int _kbPid;
         private int _animationFrame;
 
         private bool _isDragging;
@@ -117,6 +123,22 @@ namespace ObaraServiceController
         private Button _frontendToggleBtn;
         private Button _frontendRestartBtn;
 
+        // Knowledge-base (WeKnora / Docker) card controls — detection only.
+        private const int KindBackend = 0;
+        private const int KindFrontend = 1;
+        private const int KindKb = 2;
+
+        private Panel _kbCard;
+        private Panel _kbStatusDot;
+        private Label _kbTitleLabel;
+        private Label _kbSubtitleLabel;
+        private Label _kbStatusLabel;
+        private Label _kbPidLabel;
+        private Label _kbLatencyLabel;
+        private Label _kbUrlLabel;
+        private TextBox _kbPortBox;
+        private Button _kbConsoleBtn;
+
         // Action buttons
         private Panel _actionPanel;
         private Button _startAllBtn;
@@ -162,8 +184,10 @@ namespace ObaraServiceController
             _config = new ServiceConfig();
             _backendStatus = ServiceStatus.Stopped;
             _frontendStatus = ServiceStatus.Stopped;
+            _kbStatus = ServiceStatus.Stopped;
             _backendLatency = -1;
             _frontendLatency = -1;
+            _kbLatency = -1;
             _hoverButton = -1;
 
             LoadConfig();
@@ -232,6 +256,8 @@ namespace ObaraServiceController
                 _backendStatusDot.Invalidate();
             if (_frontendStatusDot != null && _frontendStatusDot.IsHandleCreated)
                 _frontendStatusDot.Invalidate();
+            if (_kbStatusDot != null && _kbStatusDot.IsHandleCreated)
+                _kbStatusDot.Invalidate();
             if (_statusDot != null && _statusDot.IsHandleCreated)
                 _statusDot.Invalidate();
         }
@@ -242,6 +268,7 @@ namespace ObaraServiceController
             LogMessage("系统", string.Format("运行路径: {0}", PathResolver.RootPath));
             LogMessage("系统", string.Format("后端目录: {0}  前端目录: {1}",
                 PathResolver.BackendPath, PathResolver.FrontendPath));
+            LogMessage("系统", string.Format("知识库服务(WeKnora/Docker)健康检查: http://127.0.0.1:{0}/health", _config.KbApiPort));
             CheckNodeEnvironment();
             UpdateAllStatusAsync();
         }
@@ -253,6 +280,8 @@ namespace ObaraServiceController
                 string backendPort = System.Configuration.ConfigurationManager.AppSettings["BackendPort"];
                 string frontendPort = System.Configuration.ConfigurationManager.AppSettings["FrontendPort"];
                 string monitorInterval = System.Configuration.ConfigurationManager.AppSettings["MonitorInterval"];
+                string kbApiPort = System.Configuration.ConfigurationManager.AppSettings["KbApiPort"];
+                string kbConsolePort = System.Configuration.ConfigurationManager.AppSettings["KbConsolePort"];
 
                 int bp;
                 if (int.TryParse(backendPort, out bp)) _config.BackendPort = bp;
@@ -260,6 +289,10 @@ namespace ObaraServiceController
                 if (int.TryParse(frontendPort, out fp)) _config.FrontendPort = fp;
                 int mi;
                 if (int.TryParse(monitorInterval, out mi) && mi >= 500) _config.MonitorInterval = mi;
+                int kap;
+                if (int.TryParse(kbApiPort, out kap) && kap >= 1 && kap <= 65535) _config.KbApiPort = kap;
+                int kcp;
+                if (int.TryParse(kbConsolePort, out kcp) && kcp >= 1 && kcp <= 65535) _config.KbConsolePort = kcp;
             }
             catch { }
         }
@@ -279,6 +312,8 @@ namespace ObaraServiceController
                         SetAppSetting(doc, settings, "BackendPort", _config.BackendPort.ToString());
                         SetAppSetting(doc, settings, "FrontendPort", _config.FrontendPort.ToString());
                         SetAppSetting(doc, settings, "MonitorInterval", _config.MonitorInterval.ToString());
+                        SetAppSetting(doc, settings, "KbApiPort", _config.KbApiPort.ToString());
+                        SetAppSetting(doc, settings, "KbConsolePort", _config.KbConsolePort.ToString());
                         doc.Save(configPath);
                     }
                 }
@@ -482,6 +517,14 @@ namespace ObaraServiceController
             RelayoutActionPanel();
             RelayoutLogArea();
 
+            // Push the initial (all-stopped) state into every card/button so
+            // 重启 / 停止全部服务 / 打开浏览器 start disabled instead of
+            // looking clickable for the first two seconds before the monitor
+            // timer tick arrives.
+            UpdateCardDisplay(KindBackend);
+            UpdateCardDisplay(KindFrontend);
+            UpdateCardDisplay(KindKb);
+
             ResumeLayout(false);
         }
 
@@ -528,7 +571,7 @@ namespace ObaraServiceController
             if (_mainPanel.Width <= 0) return;
 
             int availWidth = _mainPanel.Width - MainPadding * 2;
-            int cardWidth = (availWidth - CardGap) / 2;
+            int cardWidth = (availWidth - CardGap * 2) / 3;
             if (cardWidth <= 0) return;
 
             _backendCard.Width = cardWidth;
@@ -537,20 +580,42 @@ namespace ObaraServiceController
             _frontendCard.Width = cardWidth;
             _frontendCard.Location = new Point(MainPadding + cardWidth + CardGap, CardTop);
 
-            RepositionCardInternals(_backendCard, cardWidth, _backendStatusDot, _backendStatusLabel, _backendUrlLabel);
-            RepositionCardInternals(_frontendCard, cardWidth, _frontendStatusDot, _frontendStatusLabel, _frontendUrlLabel);
+            if (_kbCard != null)
+            {
+                _kbCard.Width = cardWidth;
+                _kbCard.Location = new Point(MainPadding + (cardWidth + CardGap) * 2, CardTop);
+            }
+
+            RepositionCardInternals(_backendCard, cardWidth, _backendStatusDot, _backendStatusLabel, _backendTitleLabel, _backendUrlLabel, null);
+            RepositionCardInternals(_frontendCard, cardWidth, _frontendStatusDot, _frontendStatusLabel, _frontendTitleLabel, _frontendUrlLabel, null);
+            if (_kbCard != null)
+                RepositionCardInternals(_kbCard, cardWidth, _kbStatusDot, _kbStatusLabel, _kbTitleLabel, _kbUrlLabel, _kbConsoleBtn);
         }
 
-        private void RepositionCardInternals(Panel card, int cardWidth, Panel statusDot, Label statusLabel, Label urlLabel)
+        // Right-aligned status region geometry shared by create + relayout.
+        private const int StatusLabelWidth = 58;
+        private const int StatusLabelRightMargin = 16;
+        private const int TitleStatusGap = 120;
+        private const int CardTitleMinWidth = 84;
+
+        private void RepositionCardInternals(Panel card, int cardWidth, Panel statusDot, Label statusLabel,
+            Label titleLabel, Label urlLabel, Button stretchBtn)
         {
-            // Keep the status area far enough from the title label area that
-            // CJK text can never overlap (fixes the "文字被遮盖" bug when the
-            // window is resized to its minimum width or DPI is scaled up).
-            int statusAreaX = Math.Max(cardWidth - 110, StatusAreaMinX);
-            if (statusDot != null)
-                statusDot.Location = new Point(statusAreaX, 22);
+            // Title may grow with the card, but always leave room for the
+            // right-aligned status dot + text (3-column layout makes cards
+            // noticeably narrower than the old 2-column design).
+            if (titleLabel != null)
+                titleLabel.Width = Math.Max(CardTitleMinWidth, Math.Min(TitleMaxWidth, cardWidth - TitleStatusGap));
+
+            int statusLabelX = cardWidth - StatusLabelRightMargin - StatusLabelWidth;
             if (statusLabel != null)
-                statusLabel.Location = new Point(statusAreaX + 18, 18);
+            {
+                statusLabel.Location = new Point(statusLabelX, 18);
+                statusLabel.Width = StatusLabelWidth;
+            }
+            if (statusDot != null)
+                statusDot.Location = new Point(statusLabelX - 18, 22);
+
             if (urlLabel != null)
             {
                 // Resize the containing URL box and keep the label inside it so
@@ -559,6 +624,18 @@ namespace ObaraServiceController
                 if (urlBox != null)
                     urlBox.Width = cardWidth - 40;
                 urlLabel.Width = Math.Max(60, cardWidth - 76);
+            }
+
+            // Knowledge-base card's single wide action button spans the area
+            // used by the 启动/重启 pair on the other cards.
+            if (stretchBtn != null)
+                stretchBtn.Width = cardWidth - 40;
+
+            // Stretch the two gradient separators to the card width.
+            foreach (Control c in card.Controls)
+            {
+                if (string.Equals(c.Tag as string, "cardsplit", StringComparison.Ordinal))
+                    c.Width = cardWidth - 40;
             }
         }
 
@@ -601,27 +678,36 @@ namespace ObaraServiceController
         {
             int availWidth = _mainPanel.Width - MainPadding * 2;
             if (availWidth <= 0) availWidth = 900;
-            int cardWidth = (availWidth - CardGap) / 2;
-            if (cardWidth <= 0) cardWidth = 400;
+            int cardWidth = (availWidth - CardGap * 2) / 3;
+            if (cardWidth <= 0) cardWidth = 280;
 
-            _backendCard = CreateServiceCard("后端服务", "Backend Server · Node.js", _config.BackendPort, true, cardWidth);
+            _backendCard = CreateServiceCard("后端服务", "Backend Server · Node.js", _config.BackendPort, KindBackend, cardWidth);
             _backendCard.Location = new Point(MainPadding, CardTop);
 
-            _frontendCard = CreateServiceCard("前端服务", "Frontend Server · Vite", _config.FrontendPort, false, cardWidth);
+            _frontendCard = CreateServiceCard("前端服务", "Frontend Server · Vite", _config.FrontendPort, KindFrontend, cardWidth);
             _frontendCard.Location = new Point(MainPadding + cardWidth + CardGap, CardTop);
+
+            _kbCard = CreateServiceCard("知识库服务", "Knowledge Base · Docker", _config.KbApiPort, KindKb, cardWidth);
+            _kbCard.Location = new Point(MainPadding + (cardWidth + CardGap) * 2, CardTop);
 
             _mainPanel.Controls.Add(_backendCard);
             _mainPanel.Controls.Add(_frontendCard);
+            _mainPanel.Controls.Add(_kbCard);
         }
 
         // Maximum width reserved for the title label (Chinese + fallback font
         // glyphs are wider than Segoe UI, so using a fixed width avoids CJK
         // font-fallback AutoSize miscalculations covering the status label).
         private const int TitleMaxWidth = 240;
-        // Minimum X offset at which the right-side status area may begin.
-        // Keeps status (dot + text) separated from the title even on narrow
-        // cards, so CJK titles never overlap with CJK status text.
-        private const int StatusAreaMinX = TitleMaxWidth + 40;
+
+        // Fixed metric-column X offsets designed to fit the narrowest card
+        // (window at minimum width → ~240 px cards in the 3-column layout).
+        private const int MetricPidX = 104;
+        private const int MetricLatencyX = 184;
+        private const int PortBoxWidth = 72;
+        private const int ToggleBtnWidth = 92;
+        private const int RestartBtnX = 116;
+        private const int RestartBtnWidth = 84;
 
         private static Font CreateUiFont(float size, FontStyle style)
         {
@@ -638,7 +724,7 @@ namespace ObaraServiceController
             catch { try { return new Font("Microsoft YaHei", size, style); } catch { return new Font("Segoe UI", size, style); } }
         }
 
-        private Panel CreateServiceCard(string title, string subtitle, int port, bool isBackend, int cardWidth)
+        private Panel CreateServiceCard(string title, string subtitle, int port, int kind, int cardWidth)
         {
             var card = new Panel();
             card.Height = CardHeight;
@@ -653,7 +739,7 @@ namespace ObaraServiceController
             titleLabel.Font = CreateUiFont(13F, FontStyle.Bold);
             titleLabel.ForeColor = ThemeColors.TextPrimary;
             titleLabel.AutoSize = false;
-            titleLabel.Size = new Size(TitleMaxWidth, 28);
+            titleLabel.Size = new Size(Math.Max(CardTitleMinWidth, Math.Min(TitleMaxWidth, cardWidth - TitleStatusGap)), 28);
             titleLabel.Location = new Point(20, 14);
             titleLabel.BackColor = ThemeColors.CardBackground;
             titleLabel.TextAlign = ContentAlignment.MiddleLeft;
@@ -669,29 +755,28 @@ namespace ObaraServiceController
             subtitleLabel.BackColor = ThemeColors.CardBackground;
             card.Controls.Add(subtitleLabel);
 
-            // Compute the right-edge X for the status area. Ensure it never
-            // collides with the title label area, even on very narrow cards.
-            int statusAreaX = Math.Max(cardWidth - 110, StatusAreaMinX);
+            // Right-aligned status area (geometry shared with RelayoutCards).
+            int statusLabelX = cardWidth - StatusLabelRightMargin - StatusLabelWidth;
 
             // --- Status dot (animated, painted) ---
             var statusDot = new Panel();
             statusDot.Size = new Size(12, 12);
-            statusDot.Location = new Point(statusAreaX, 22);
+            statusDot.Location = new Point(statusLabelX - 18, 22);
             statusDot.Paint += StatusDot_Paint;
-            statusDot.Tag = isBackend;
+            statusDot.Tag = kind;
             statusDot.BackColor = ThemeColors.CardBackground;
             card.Controls.Add(statusDot);
 
             // --- Status text ---
-            // Fixed width with right-align so a growing "已停止"/"运行中" label
-            // extends leftwards only, never covering the title.
+            // Fixed width at the card's right edge so a growing
+            // "已停止"/"运行中" label never covers the title.
             var statusLabel = new Label();
             statusLabel.Text = "已停止";
             statusLabel.Font = CreateUiFont(9.5F, FontStyle.Bold);
             statusLabel.ForeColor = ThemeColors.Error;
             statusLabel.AutoSize = false;
-            statusLabel.Size = new Size(80, 20);
-            statusLabel.Location = new Point(statusAreaX + 18, 18);
+            statusLabel.Size = new Size(StatusLabelWidth, 20);
+            statusLabel.Location = new Point(statusLabelX, 18);
             statusLabel.BackColor = ThemeColors.CardBackground;
             statusLabel.TextAlign = ContentAlignment.MiddleLeft;
             card.Controls.Add(statusLabel);
@@ -702,6 +787,7 @@ namespace ObaraServiceController
             sepPanel.Location = new Point(20, 66);
             sepPanel.Paint += Separator_Paint;
             sepPanel.BackColor = ThemeColors.CardBackground;
+            sepPanel.Tag = "cardsplit";
             card.Controls.Add(sepPanel);
 
             // --- Metrics section labels ---
@@ -719,7 +805,7 @@ namespace ObaraServiceController
             pidTitleLabel.Font = CreateUiFont(8F, FontStyle.Regular);
             pidTitleLabel.ForeColor = ThemeColors.TextSecondary;
             pidTitleLabel.AutoSize = true;
-            pidTitleLabel.Location = new Point(120, 78);
+            pidTitleLabel.Location = new Point(MetricPidX, 78);
             pidTitleLabel.BackColor = ThemeColors.CardBackground;
             card.Controls.Add(pidTitleLabel);
 
@@ -728,24 +814,35 @@ namespace ObaraServiceController
             latencyTitleLabel.Font = CreateUiFont(8F, FontStyle.Regular);
             latencyTitleLabel.ForeColor = ThemeColors.TextSecondary;
             latencyTitleLabel.AutoSize = true;
-            latencyTitleLabel.Location = new Point(220, 78);
+            latencyTitleLabel.Location = new Point(MetricLatencyX, 78);
             latencyTitleLabel.BackColor = ThemeColors.CardBackground;
             card.Controls.Add(latencyTitleLabel);
 
             // --- Port TextBox ---
+            // The knowledge-base card's port is display-only: WeKnora runs in
+            // Docker and is not started/stopped from this console, so its port
+            // cannot be remapped here.
             var portBox = new TextBox();
             portBox.Text = port.ToString();
             portBox.Font = new Font("Consolas", 11F, FontStyle.Bold);
-            portBox.ForeColor = ThemeColors.Accent;
+            portBox.ForeColor = kind == KindKb ? ThemeColors.TextMuted : ThemeColors.Accent;
             portBox.BackColor = ThemeColors.Background;
             portBox.BorderStyle = BorderStyle.FixedSingle;
-            portBox.Width = 76;
+            portBox.Width = PortBoxWidth;
             portBox.Location = new Point(20, 96);
             portBox.TextAlign = HorizontalAlignment.Center;
-            portBox.GotFocus += PortBox_GotFocus;
-            portBox.KeyPress += PortBox_KeyPress;
-            portBox.TextChanged += PortBox_TextChanged;
-            portBox.Tag = isBackend;
+            portBox.Tag = kind;
+            if (kind != KindKb)
+            {
+                portBox.GotFocus += PortBox_GotFocus;
+                portBox.KeyPress += PortBox_KeyPress;
+                portBox.TextChanged += PortBox_TextChanged;
+            }
+            else
+            {
+                portBox.ReadOnly = true;
+                portBox.Cursor = Cursors.Default;
+            }
             card.Controls.Add(portBox);
 
             // --- PID value ---
@@ -754,7 +851,7 @@ namespace ObaraServiceController
             pidLabel.Font = new Font("Consolas", 11F, FontStyle.Bold);
             pidLabel.ForeColor = ThemeColors.TextMuted;
             pidLabel.AutoSize = true;
-            pidLabel.Location = new Point(120, 98);
+            pidLabel.Location = new Point(MetricPidX, 98);
             pidLabel.BackColor = ThemeColors.CardBackground;
             card.Controls.Add(pidLabel);
 
@@ -764,7 +861,7 @@ namespace ObaraServiceController
             latencyLabel.Font = new Font("Consolas", 11F, FontStyle.Bold);
             latencyLabel.ForeColor = ThemeColors.TextMuted;
             latencyLabel.AutoSize = true;
-            latencyLabel.Location = new Point(220, 98);
+            latencyLabel.Location = new Point(MetricLatencyX, 98);
             latencyLabel.BackColor = ThemeColors.CardBackground;
             card.Controls.Add(latencyLabel);
 
@@ -798,47 +895,77 @@ namespace ObaraServiceController
             actionSep.Location = new Point(20, 162);
             actionSep.Paint += Separator_Paint;
             actionSep.BackColor = ThemeColors.CardBackground;
+            actionSep.Tag = "cardsplit";
             card.Controls.Add(actionSep);
 
             // --- Action buttons ---
-            var toggleBtn = CreateStyledButton("启动", ThemeColors.Success, new Size(96, 32), "▶");
-            toggleBtn.Location = new Point(20, 178);
-            toggleBtn.Click += ToggleBtn_Click;
-            toggleBtn.Tag = isBackend;
-            card.Controls.Add(toggleBtn);
+            Button toggleBtn = null;
+            Button restartBtn = null;
+            Button consoleBtn = null;
 
-            var restartBtn = CreateStyledButton("重启", ThemeColors.SecondaryAccent, new Size(86, 32), "↻");
-            restartBtn.Location = new Point(124, 178);
-            restartBtn.Click += RestartBtn_Click;
-            restartBtn.Tag = isBackend;
-            card.Controls.Add(restartBtn);
-
-            // --- Save references ---
-            if (isBackend)
+            if (kind == KindKb)
             {
-                _backendStatusDot = statusDot;
-                _backendTitleLabel = titleLabel;
-                _backendSubtitleLabel = subtitleLabel;
-                _backendStatusLabel = statusLabel;
-                _backendPidLabel = pidLabel;
-                _backendLatencyLabel = latencyLabel;
-                _backendUrlLabel = urlLabel;
-                _backendPortBox = portBox;
-                _backendToggleBtn = toggleBtn;
-                _backendRestartBtn = restartBtn;
+                // Knowledge base is a Docker Compose stack: this console only
+                // monitors it.  The single action opens the WeKnora admin
+                // console (http://localhost), and stays disabled while down.
+                consoleBtn = CreateStyledButton("打开管理台", ThemeColors.Accent, new Size(cardWidth - 40, 32), "◎");
+                consoleBtn.Location = new Point(20, 178);
+                consoleBtn.Click += KbConsoleBtn_Click;
+                card.Controls.Add(consoleBtn);
             }
             else
             {
-                _frontendStatusDot = statusDot;
-                _frontendTitleLabel = titleLabel;
-                _frontendSubtitleLabel = subtitleLabel;
-                _frontendStatusLabel = statusLabel;
-                _frontendPidLabel = pidLabel;
-                _frontendLatencyLabel = latencyLabel;
-                _frontendUrlLabel = urlLabel;
-                _frontendPortBox = portBox;
-                _frontendToggleBtn = toggleBtn;
-                _frontendRestartBtn = restartBtn;
+                toggleBtn = CreateStyledButton("启动", ThemeColors.Success, new Size(ToggleBtnWidth, 32), "▶");
+                toggleBtn.Location = new Point(20, 178);
+                toggleBtn.Click += ToggleBtn_Click;
+                toggleBtn.Tag = kind;
+                card.Controls.Add(toggleBtn);
+
+                restartBtn = CreateStyledButton("重启", ThemeColors.SecondaryAccent, new Size(RestartBtnWidth, 32), "↻");
+                restartBtn.Location = new Point(RestartBtnX, 178);
+                restartBtn.Click += RestartBtn_Click;
+                restartBtn.Tag = kind;
+                card.Controls.Add(restartBtn);
+            }
+
+            // --- Save references ---
+            switch (kind)
+            {
+                case KindBackend:
+                    _backendStatusDot = statusDot;
+                    _backendTitleLabel = titleLabel;
+                    _backendSubtitleLabel = subtitleLabel;
+                    _backendStatusLabel = statusLabel;
+                    _backendPidLabel = pidLabel;
+                    _backendLatencyLabel = latencyLabel;
+                    _backendUrlLabel = urlLabel;
+                    _backendPortBox = portBox;
+                    _backendToggleBtn = toggleBtn;
+                    _backendRestartBtn = restartBtn;
+                    break;
+                case KindFrontend:
+                    _frontendStatusDot = statusDot;
+                    _frontendTitleLabel = titleLabel;
+                    _frontendSubtitleLabel = subtitleLabel;
+                    _frontendStatusLabel = statusLabel;
+                    _frontendPidLabel = pidLabel;
+                    _frontendLatencyLabel = latencyLabel;
+                    _frontendUrlLabel = urlLabel;
+                    _frontendPortBox = portBox;
+                    _frontendToggleBtn = toggleBtn;
+                    _frontendRestartBtn = restartBtn;
+                    break;
+                default:
+                    _kbStatusDot = statusDot;
+                    _kbTitleLabel = titleLabel;
+                    _kbSubtitleLabel = subtitleLabel;
+                    _kbStatusLabel = statusLabel;
+                    _kbPidLabel = pidLabel;
+                    _kbLatencyLabel = latencyLabel;
+                    _kbUrlLabel = urlLabel;
+                    _kbPortBox = portBox;
+                    _kbConsoleBtn = consoleBtn;
+                    break;
             }
 
             return card;
@@ -885,6 +1012,22 @@ namespace ObaraServiceController
 
         private void OpenUrl(int port)
         {
+            // Only open when the corresponding service is actually accepting
+            // connections, otherwise the browser shows a confusing error page.
+            string notRunning = null;
+            if (port == _config.BackendPort && _backendStatus != ServiceStatus.Running)
+                notRunning = "后端";
+            else if (port == _config.FrontendPort && _frontendStatus != ServiceStatus.Running)
+                notRunning = "前端";
+            else if (port == _config.KbApiPort && _kbStatus != ServiceStatus.Running)
+                notRunning = "知识库";
+
+            if (notRunning != null)
+            {
+                LogMessage("系统", string.Format("{0}服务未运行，无法打开链接", notRunning));
+                return;
+            }
+
             try
             {
                 Process.Start(new ProcessStartInfo
@@ -894,6 +1037,31 @@ namespace ObaraServiceController
                 });
             }
             catch { }
+        }
+
+        private void OpenKbConsole()
+        {
+            if (_kbStatus != ServiceStatus.Running)
+            {
+                LogMessage("知识库", "知识库服务未运行，无法打开管理台");
+                return;
+            }
+            try
+            {
+                string url = _config.KbConsolePort == 80
+                    ? "http://localhost"
+                    : string.Format("http://localhost:{0}", _config.KbConsolePort);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+                LogMessage("知识库", string.Format("已打开知识库管理台: {0}", url));
+            }
+            catch (Exception ex)
+            {
+                LogMessage("错误", string.Format("无法打开知识库管理台: {0}", ex.Message));
+            }
         }
 
         private void Card_Paint(object sender, PaintEventArgs e)
@@ -958,8 +1126,11 @@ namespace ObaraServiceController
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
-            bool isBackend = panel.Tag is bool && (bool)panel.Tag;
-            ServiceStatus status = isBackend ? _backendStatus : _frontendStatus;
+            int kind = panel.Tag is int ? (int)panel.Tag : KindBackend;
+            ServiceStatus status;
+            if (kind == KindBackend) status = _backendStatus;
+            else if (kind == KindFrontend) status = _frontendStatus;
+            else status = _kbStatus;
             Color color = StatusToColor(status);
             int size = panel.Width;
 
@@ -1000,18 +1171,18 @@ namespace ObaraServiceController
         private void PortBox_TextChanged(object sender, EventArgs e)
         {
             var box = sender as TextBox;
-            bool isBackend = (bool)box.Tag;
+            int kind = box.Tag is int ? (int)box.Tag : KindBackend;
             int p;
             if (int.TryParse(box.Text, out p) && p >= 1 && p <= 65535)
             {
-                if (isBackend)
+                if (kind == KindBackend)
                 {
                     _config.BackendPort = p;
                     ProcessManager.BackendCleanupPort = p;
                     if (_backendUrlLabel != null)
                         _backendUrlLabel.Text = string.Format("http://localhost:{0}", p);
                 }
-                else
+                else if (kind == KindFrontend)
                 {
                     _config.FrontendPort = p;
                     ProcessManager.FrontendCleanupPort = p;
@@ -1024,17 +1195,22 @@ namespace ObaraServiceController
         private void ToggleBtn_Click(object sender, EventArgs e)
         {
             var btn = sender as Button;
-            bool isBackend = (bool)btn.Tag;
-            if (isBackend) ToggleBackend();
-            else ToggleFrontend();
+            int kind = btn.Tag is int ? (int)btn.Tag : KindBackend;
+            if (kind == KindBackend) ToggleBackend();
+            else if (kind == KindFrontend) ToggleFrontend();
         }
 
         private void RestartBtn_Click(object sender, EventArgs e)
         {
             var btn = sender as Button;
-            bool isBackend = (bool)btn.Tag;
-            if (isBackend) RestartBackend();
-            else RestartFrontend();
+            int kind = btn.Tag is int ? (int)btn.Tag : KindBackend;
+            if (kind == KindBackend) RestartBackend();
+            else if (kind == KindFrontend) RestartFrontend();
+        }
+
+        private void KbConsoleBtn_Click(object sender, EventArgs e)
+        {
+            OpenKbConsole();
         }
 
         // ==================================================================
@@ -1180,6 +1356,43 @@ namespace ObaraServiceController
             btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(45, 50, 85);
             btn.FlatAppearance.MouseDownBackColor = Color.FromArgb(20, 24, 50);
             return btn;
+        }
+
+        /// <summary>
+        /// 统一的深色主题按钮启用/禁用样式：禁用时背景与边框变暗，
+        /// 且 Button.Enabled=false 保证点击事件完全不会触发。
+        /// </summary>
+        private void SetButtonEnabled(Button btn, bool enabled, Color accentWhenEnabled)
+        {
+            if (btn == null) return;
+            btn.Enabled = enabled;
+            btn.BackColor = enabled ? Color.FromArgb(28, 32, 58) : Color.FromArgb(20, 22, 38);
+            btn.FlatAppearance.BorderColor = enabled
+                ? Color.FromArgb(100, accentWhenEnabled)
+                : Color.FromArgb(45, 52, 80);
+            if (enabled) btn.ForeColor = accentWhenEnabled;
+        }
+
+        /// <summary>
+        /// 根据三个服务的聚合状态刷新底部全局按钮：
+        /// 后端+前端都在运行/启动中时“启动全部服务”不可点击；
+        /// 没有任何受管服务在运行时“停止全部服务”不可点击；
+        /// 前端未运行时“打开浏览器”不可点击。
+        /// 知识库服务为 Docker 外部托管，不参与全部启动/停止。
+        /// </summary>
+        private void UpdateActionButtons()
+        {
+            if (_startAllBtn == null || _stopAllBtn == null || _openBrowserBtn == null) return;
+            if (IsDisposed || Disposing) return;
+
+            bool backendActive = _backendStatus == ServiceStatus.Running
+                              || _backendStatus == ServiceStatus.Starting;
+            bool frontendActive = _frontendStatus == ServiceStatus.Running
+                               || _frontendStatus == ServiceStatus.Starting;
+
+            SetButtonEnabled(_startAllBtn, !backendActive || !frontendActive, ThemeColors.Success);
+            SetButtonEnabled(_stopAllBtn, backendActive || frontendActive, ThemeColors.Error);
+            SetButtonEnabled(_openBrowserBtn, _frontendStatus == ServiceStatus.Running, ThemeColors.Accent);
         }
 
         private GraphicsPath RoundedRect(Rectangle rect, int radius)
@@ -1787,6 +2000,11 @@ namespace ObaraServiceController
 
         private void OpenBrowser()
         {
+            if (_frontendStatus != ServiceStatus.Running)
+            {
+                LogMessage("系统", "前端服务未运行，无法打开浏览器");
+                return;
+            }
             try
             {
                 Process.Start(new ProcessStartInfo
@@ -1819,15 +2037,25 @@ namespace ObaraServiceController
             _isMonitoring = true;
             try
             {
-                // Run the blocking TCP probes on thread-pool threads so the UI
+                // Run the blocking probes on thread-pool threads so the UI
                 // thread never freezes while waiting for connect timeouts.
+                // Backend/frontend are plain TCP probes; the knowledge-base
+                // service is an HTTP GET against WeKnora's /health endpoint.
                 Task<bool> backendProbe = Task.Run(() => PortChecker.IsPortListening(_config.BackendPort));
                 Task<bool> frontendProbe = Task.Run(() => PortChecker.IsPortListening(_config.FrontendPort));
-                await Task.WhenAll(backendProbe, frontendProbe);
+                Task<KeyValuePair<bool, int>> kbProbe = Task.Run(delegate
+                {
+                    int latency;
+                    bool ok = PortChecker.CheckHttpHealth(
+                        string.Format("http://127.0.0.1:{0}/health", _config.KbApiPort), 2000, out latency);
+                    return new KeyValuePair<bool, int>(ok, latency);
+                });
+                await Task.WhenAll(backendProbe, frontendProbe, kbProbe);
                 if (IsDisposed || Disposing) return;
 
                 bool backendListening = backendProbe.Result;
                 bool frontendListening = frontendProbe.Result;
+                bool kbHealthy = kbProbe.Result.Key;
 
                 // Measure latency only for listening ports, off the UI thread.
                 Task<int> backendLatency = backendListening
@@ -1839,8 +2067,10 @@ namespace ObaraServiceController
                 await Task.WhenAll(backendLatency, frontendLatency);
                 if (IsDisposed || Disposing) return;
 
-                ApplyStatusResult(true, backendListening, backendLatency.Result);
-                ApplyStatusResult(false, frontendListening, frontendLatency.Result);
+                ApplyStatusResult(KindBackend, backendListening, backendLatency.Result);
+                ApplyStatusResult(KindFrontend, frontendListening, frontendLatency.Result);
+                // The HTTP health probe already measured roundtrip latency.
+                ApplyStatusResult(KindKb, kbHealthy, kbProbe.Result.Value);
             }
             catch { }
             finally
@@ -1849,41 +2079,76 @@ namespace ObaraServiceController
             }
         }
 
-        private void ApplyStatusResult(bool isBackend, bool portListening, int latency)
+        private void ApplyStatusResult(int kind, bool healthy, int latency)
         {
-            if (isBackend)
+            if (kind == KindBackend)
             {
                 _backendLatency = latency;
-                if (portListening && _backendStatus != ServiceStatus.Running)
+                if (healthy && _backendStatus != ServiceStatus.Running)
                 {
                     _backendStatus = ServiceStatus.Running;
                     LogMessage("后端", string.Format("服务已在端口 {0} 上响应", _config.BackendPort));
                 }
-                else if (!portListening && _backendStatus == ServiceStatus.Running)
+                else if (!healthy && _backendStatus == ServiceStatus.Running)
                 {
                     _backendStatus = ServiceStatus.Stopped;
                     LogMessage("后端", string.Format("端口 {0} 无响应", _config.BackendPort));
                 }
             }
-            else
+            else if (kind == KindFrontend)
             {
                 _frontendLatency = latency;
-                if (portListening && _frontendStatus != ServiceStatus.Running)
+                if (healthy && _frontendStatus != ServiceStatus.Running)
                 {
                     _frontendStatus = ServiceStatus.Running;
                     LogMessage("前端", string.Format("服务已在端口 {0} 上响应", _config.FrontendPort));
                 }
-                else if (!portListening && _frontendStatus == ServiceStatus.Running)
+                else if (!healthy && _frontendStatus == ServiceStatus.Running)
                 {
                     _frontendStatus = ServiceStatus.Stopped;
                     LogMessage("前端", string.Format("端口 {0} 无响应", _config.FrontendPort));
                 }
             }
+            else
+            {
+                _kbLatency = latency;
+                if (healthy && _kbStatus != ServiceStatus.Running)
+                {
+                    _kbStatus = ServiceStatus.Running;
+                    LogMessage("知识库", string.Format("知识库服务已在端口 {0} 上响应 (/health)", _config.KbApiPort));
+                    // WeKnora lives outside our process tree: resolve the port
+                    // owner PID once per up-transition instead of spawning
+                    // netstat on every monitor tick.
+                    ResolveKbPidAsync();
+                }
+                else if (!healthy && _kbStatus == ServiceStatus.Running)
+                {
+                    _kbStatus = ServiceStatus.Stopped;
+                    _kbPid = 0;
+                    LogMessage("知识库", string.Format("知识库服务端口 {0} 无响应", _config.KbApiPort));
+                }
+            }
 
-            UpdateCardDisplay(isBackend);
+            UpdateCardDisplay(kind);
         }
 
-        private void UpdateCardDisplay(bool isBackend)
+        private async void ResolveKbPidAsync()
+        {
+            int port = _config.KbApiPort;
+            try
+            {
+                int pid = await Task.Run(() => PortChecker.GetProcessIdByPort(port));
+                if (IsDisposed || Disposing) return;
+                if (_kbStatus == ServiceStatus.Running && _config.KbApiPort == port)
+                {
+                    _kbPid = pid;
+                    UpdateCardDisplay(KindKb);
+                }
+            }
+            catch { }
+        }
+
+        private void UpdateCardDisplay(int kind)
         {
             try
             {
@@ -1891,23 +2156,65 @@ namespace ObaraServiceController
 
                 if (InvokeRequired)
                 {
-                    Invoke(new MethodInvoker(delegate { UpdateCardDisplay(isBackend); }));
+                    Invoke(new MethodInvoker(delegate { UpdateCardDisplay(kind); }));
                     return;
                 }
             }
             catch { return; }
 
-            ServiceStatus status = isBackend ? _backendStatus : _frontendStatus;
+            ServiceStatus status;
+            int pid;
+            int latency;
+            Button toggleBtn;
+            Button restartBtn;
+            Panel statusDot;
+            Label statusLabel;
+            Label pidLabel;
+            Label latencyLabel;
+            TextBox portBox;
+
+            if (kind == KindBackend)
+            {
+                status = _backendStatus;
+                pid = _processManager.BackendPid;
+                latency = _backendLatency;
+                toggleBtn = _backendToggleBtn;
+                restartBtn = _backendRestartBtn;
+                statusDot = _backendStatusDot;
+                statusLabel = _backendStatusLabel;
+                pidLabel = _backendPidLabel;
+                latencyLabel = _backendLatencyLabel;
+                portBox = _backendPortBox;
+            }
+            else if (kind == KindFrontend)
+            {
+                status = _frontendStatus;
+                pid = _processManager.FrontendPid;
+                latency = _frontendLatency;
+                toggleBtn = _frontendToggleBtn;
+                restartBtn = _frontendRestartBtn;
+                statusDot = _frontendStatusDot;
+                statusLabel = _frontendStatusLabel;
+                pidLabel = _frontendPidLabel;
+                latencyLabel = _frontendLatencyLabel;
+                portBox = _frontendPortBox;
+            }
+            else
+            {
+                status = _kbStatus;
+                pid = _kbPid;
+                latency = _kbLatency;
+                toggleBtn = null;
+                restartBtn = null;
+                statusDot = _kbStatusDot;
+                statusLabel = _kbStatusLabel;
+                pidLabel = _kbPidLabel;
+                latencyLabel = _kbLatencyLabel;
+                portBox = _kbPortBox;
+            }
+
             string statusText = StatusToText(status);
             Color statusColor = StatusToColor(status);
-            int pid = isBackend ? _processManager.BackendPid : _processManager.FrontendPid;
-            int latency = isBackend ? _backendLatency : _frontendLatency;
-            Button toggleBtn = isBackend ? _backendToggleBtn : _frontendToggleBtn;
-            Panel statusDot = isBackend ? _backendStatusDot : _frontendStatusDot;
-
-            Label statusLabel = isBackend ? _backendStatusLabel : _frontendStatusLabel;
-            Label pidLabel = isBackend ? _backendPidLabel : _frontendPidLabel;
-            Label latencyLabel = isBackend ? _backendLatencyLabel : _frontendLatencyLabel;
 
             if (statusLabel != null)
             {
@@ -1929,22 +2236,40 @@ namespace ObaraServiceController
 
             if (toggleBtn != null)
             {
-                if (status == ServiceStatus.Running || status == ServiceStatus.Starting)
-                {
-                    toggleBtn.Text = "■  停止";
-                    toggleBtn.ForeColor = ThemeColors.Error;
-                    toggleBtn.FlatAppearance.BorderColor = Color.FromArgb(100, ThemeColors.Error);
-                }
-                else
-                {
-                    toggleBtn.Text = "▶  启动";
-                    toggleBtn.ForeColor = ThemeColors.Success;
-                    toggleBtn.FlatAppearance.BorderColor = Color.FromArgb(100, ThemeColors.Success);
-                }
+                bool activeLike = status == ServiceStatus.Running || status == ServiceStatus.Starting;
+                Color toggleAccent = activeLike ? ThemeColors.Error : ThemeColors.Success;
+                toggleBtn.Text = activeLike ? "■  停止" : "▶  启动";
+                // Block double clicks during start/stop transitions.
+                SetButtonEnabled(toggleBtn,
+                    status != ServiceStatus.Starting && status != ServiceStatus.Stopping,
+                    toggleAccent);
+            }
+
+            if (restartBtn != null)
+            {
+                // Nothing to restart while the service isn't up.
+                SetButtonEnabled(restartBtn, status == ServiceStatus.Running, ThemeColors.SecondaryAccent);
+            }
+
+            if (kind == KindKb)
+            {
+                SetButtonEnabled(_kbConsoleBtn, status == ServiceStatus.Running, ThemeColors.Accent);
+            }
+            else if (portBox != null)
+            {
+                // Editing the port of a running service would orphan the old
+                // process (stop would target the new port), so lock the box
+                // until the service is stopped.
+                portBox.Enabled = status != ServiceStatus.Running
+                               && status != ServiceStatus.Starting
+                               && status != ServiceStatus.Stopping;
             }
 
             if (statusDot != null && statusDot.IsHandleCreated)
                 statusDot.Invalidate();
+
+            // Global action buttons follow the aggregate service state.
+            UpdateActionButtons();
         }
 
         // ==================================================================
@@ -1968,7 +2293,7 @@ namespace ObaraServiceController
                 if (e.Message == "stopped") _frontendStatus = ServiceStatus.Stopped;
                 else if (e.Message == "starting") _frontendStatus = ServiceStatus.Starting;
             }
-            UpdateCardDisplay(e.ServiceType == ServiceType.Backend);
+            UpdateCardDisplay(e.ServiceType == ServiceType.Backend ? KindBackend : KindFrontend);
         }
 
         private void LogMessage(string category, string message)
@@ -2032,6 +2357,7 @@ namespace ObaraServiceController
                     Color color = ThemeColors.TextSecondary;
                     if (line.Contains("[后端]") || line.Contains("[Backend]")) color = ThemeColors.Success;
                     else if (line.Contains("[前端]") || line.Contains("[Frontend]")) color = ThemeColors.Accent;
+                    else if (line.Contains("[知识库]")) color = ThemeColors.SecondaryAccent;
                     else if (line.Contains("[警告]") || line.Contains("[WARN]") || line.Contains("[warn]")) color = ThemeColors.Warning;
                     else if (line.Contains("[错误]") || line.Contains("[ERROR]") || line.Contains("[ERROR]")) color = ThemeColors.Error;
 

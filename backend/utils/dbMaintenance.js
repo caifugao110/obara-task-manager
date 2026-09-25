@@ -524,7 +524,7 @@ const getMaintenanceStatus = () => {
       taskItemsCount
     },
     files: {
-      backups: listManagedFiles(resolveManagedDir(settings.backupDir)).slice(0, 5),
+      backups: listManagedFiles(resolveManagedDir(settings.backupDir), file => !/\.db-(shm|wal)$/i.test(file.name)).slice(0, 5),
       taskExports: listManagedFiles(resolveManagedDir(settings.taskExportDir)).slice(0, 5),
       gunLedgerExports: listManagedFiles(resolveManagedDir(settings.gunLedgerExportDir)).slice(0, 5),
       yearlyArchives: listManagedFiles(resolveManagedDir(settings.yearlyArchiveDir)).slice(0, 5),
