@@ -4,6 +4,7 @@ const db = require('../db');
 const { authMiddleware, superAdminMiddleware, adminMiddleware, guestViewMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
+const weknora = require('../utils/weknora');
 const {
   OVERRIDE_WORKDAY,
   OVERRIDE_WEEKEND,
@@ -68,6 +69,101 @@ router.put('/status-tracking', updateAccessSettings('statusTracking'));
 
 router.get('/design-standards', guestViewMiddleware, getAccessSettings('designStandards'));
 router.put('/design-standards', updateAccessSettings('designStandards'));
+
+/* ==================== 设计规范「答复约束提示词」（仅超级管理员） ====================
+ *
+ * WeKnora 的问答接口不接受自定义提示词，约束通过「自定义智能体」实现：
+ * 每个知识库对应一个受管智能体，其 system_prompt 即管理员填写的约束内容。
+ * 保存时由后端同步创建/更新/删除该智能体，并把 agentId 回写到配置里。
+ */
+
+const designStandardsPromptSchema = Joi.object({
+  enabled: Joi.boolean().required(),
+  knowledgeBases: Joi.object()
+    .pattern(
+      Joi.string().max(200),
+      Joi.object({
+        // 允许把整篇 Markdown 文档作为提示词粘贴进来
+        prompt: Joi.string().allow('').max(20000).required()
+      }).unknown(true)
+    )
+    .required()
+});
+
+router.get(
+  '/design-standards-prompt',
+  [authMiddleware, superAdminMiddleware],
+  asyncHandler(async (req, res) => {
+    const data = db.readDb();
+    const stored = data.settings?.designStandardsPrompt;
+    res.json({
+      enabled: Boolean(stored?.enabled),
+      knowledgeBases: stored?.knowledgeBases && typeof stored.knowledgeBases === 'object'
+        ? stored.knowledgeBases
+        : {}
+    });
+  })
+);
+
+router.put(
+  '/design-standards-prompt',
+  [authMiddleware, superAdminMiddleware],
+  asyncHandler(async (req, res) => {
+    const { error, value } = designStandardsPromptSchema.validate(req.body, { stripUnknown: true });
+    if (error) {
+      return res.status(400).json({ message: '输入格式不正确', details: error.details });
+    }
+
+    const data = db.readDb();
+    if (!data.settings) data.settings = {};
+    const previous = data.settings.designStandardsPrompt || { enabled: false, knowledgeBases: {} };
+    const prevKbs = previous.knowledgeBases && typeof previous.knowledgeBases === 'object'
+      ? previous.knowledgeBases
+      : {};
+    const nextKbs = value.knowledgeBases || {};
+
+    const nextState = { enabled: Boolean(value.enabled), knowledgeBases: {} };
+    const syncErrors = [];
+
+    // 1) 处理新增 / 修改：非空提示词 -> 同步到 WeKnora 智能体
+    for (const [kbId, entry] of Object.entries(nextKbs)) {
+      const prompt = String(entry?.prompt || '');
+      if (!prompt.trim()) continue; // 空提示词等同于未配置
+
+      const prevAgentId = prevKbs[kbId]?.agentId || '';
+      try {
+        const { id } = await weknora.ensureAgent({ kbId, prompt });
+        nextState.knowledgeBases[kbId] = {
+          prompt,
+          agentId: id,
+          updatedAt: new Date().toISOString()
+        };
+      } catch (err) {
+        syncErrors.push({ kbId, message: err?.message || '同步智能体失败' });
+        // 同步失败：保留原有记录（若原本就有），避免把可用配置丢掉
+        if (prevAgentId) nextState.knowledgeBases[kbId] = { ...prevKbs[kbId], prompt };
+      }
+    }
+
+    // 2) 处理移除 / 清空：删掉对应智能体
+    for (const [kbId, entry] of Object.entries(prevKbs)) {
+      const stillPresent = Boolean(String(nextKbs[kbId]?.prompt || '').trim());
+      if (stillPresent) continue;
+      const agentId = entry?.agentId;
+      if (!agentId) continue;
+      try {
+        await weknora.deleteAgent(agentId);
+      } catch (err) {
+        syncErrors.push({ kbId, message: `删除旧智能体失败：${err?.message || err}` });
+      }
+    }
+
+    data.settings.designStandardsPrompt = nextState;
+    await db.writeDb(data);
+
+    res.json({ ...nextState, syncErrors });
+  })
+);
 
 router.get('/system-settings', guestViewMiddleware, getAccessSettings('systemSettings'));
 router.put('/system-settings', updateAccessSettings('systemSettings'));

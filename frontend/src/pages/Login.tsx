@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { LogIn, User, Lock, AlertCircle, Eye, EyeOff } from 'lucide-react';
+import { sanitizeRedirect } from '../utils/redirect';
 
 const Login = () => {
   const [username, setUsername] = useState('');
@@ -12,6 +13,8 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const redirectTarget = sanitizeRedirect(searchParams.get('redirect'));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,9 +24,9 @@ const Login = () => {
       const response = await axios.post('/api/auth/login', { username, password });
       login(response.data.token, response.data.user, response.data.forcePasswordChange);
       if (response.data.forcePasswordChange) {
-        navigate('/change-password');
+        navigate(`/change-password?redirect=${encodeURIComponent(redirectTarget)}`, { replace: true });
       } else {
-        navigate('/');
+        navigate(redirectTarget, { replace: true });
       }
     } catch (err: any) {
       setError(err.response?.data?.message || '登录失败，请检查网络连接');

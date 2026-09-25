@@ -18,8 +18,10 @@
  *   WEKNORA_BASE_URL             WeKnora 后端 API 根地址，默认 http://127.0.0.1:8080/api/v1
  *   WEKNORA_API_KEY              主工作空间 API Key（建库等写操作也使用该 Key）
  *   WEKNORA_EXTRA_API_KEYS       其他工作空间的 API Key，多个用英文逗号分隔
- *   WEKNORA_KNOWLEDGE_BASE_IDS   默认检索的知识库 ID，多个用英文逗号分隔
  *   WEKNORA_TIMEOUT_MS           普通请求超时（毫秒），默认 60000
+ *
+ * 注：知识库通过「知识库 ID」在前端页面显式关联（保存在项目数据库中），
+ * 不再使用 WEKNORA_KNOWLEDGE_BASE_IDS 作为默认检索库。
  */
 
 const BASE_URL = (process.env.WEKNORA_BASE_URL || 'http://127.0.0.1:8080/api/v1').replace(/\/+$/, '');
@@ -49,6 +51,7 @@ function getClients() {
     identityChecked: false,
     lastError: null,
     kbIndex: new Map(),
+    qaModelId: undefined, // KnowledgeQA 模型 ID 缓存（用于创建约束智能体）
   }));
   return clients;
 }
@@ -216,7 +219,10 @@ async function getStatus() {
   if (!cs.length) {
     return { enabled: true, configured: false, reachable: false, message: '未配置 API Key' };
   }
-  await Promise.all(cs.map((c) => ensureIdentity(c)));
+  // 强制重新探测：身份检查结果只在进程内缓存一次，若沿用缓存，
+  // WeKnora 容器在后端启动之后停止 / 重启时，这里会永远返回过期状态。
+  // /auth/me 是轻量本机请求，每次健康检查实时探测的开销可忽略。
+  await Promise.all(cs.map((c) => ensureIdentity(c, true)));
   const tenants = cs.map((c) => ({
     tenantId: c.tenantId,
     tenantName: c.tenantName,
@@ -309,6 +315,33 @@ async function resolveClient(kbId) {
     }
   }
   return null;
+}
+
+/**
+ * 按 ID 获取单个知识库的详情（自动解析所属工作空间的 Key）。
+ * 用于「通过知识库 ID 关联」时校验该库是否存在并可取回名称等信息。
+ */
+async function getKnowledgeBase(kbId) {
+  const client = await resolveClient(kbId);
+  if (!client) {
+    throw new WeKnoraError(
+      `知识库 ${kbId} 无法访问：请确认它存在，且已为其所属工作空间配置 API Key`,
+      { code: 'WEKNORA_KB_FORBIDDEN', status: 403 }
+    );
+  }
+  const data = await request(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
+    apiKey: client.key,
+  });
+  const kb = (data && (data.data || data)) || {};
+  return {
+    id: kb.id ?? kbId,
+    name: pick(kb, 'name', 'title') || '(未命名知识库)',
+    description: kb.description || '',
+    knowledgeCount: pick(kb, 'knowledge_count', 'knowledgeCount', 'file_count') ?? null,
+    createdAt: kb.created_at || kb.createdAt || null,
+    tenantId: client.tenantId,
+    tenantName: client.tenantName,
+  };
 }
 
 /**
@@ -519,8 +552,9 @@ async function createSession({ title = '', knowledgeBaseIds = [] } = {}) {
  * @param {string[]} knowledgeBaseIds
  * @param {(evt: object) => void} onEvent
  * @param {AbortSignal} [signal]
+ * @param {{ agentId?: string }} [options] 传入 agentId 时启用自定义智能体（答复约束提示词）
  */
-async function streamChat(sessionId, query, knowledgeBaseIds = defaultKnowledgeBaseIds(), onEvent, signal) {
+async function streamChat(sessionId, query, knowledgeBaseIds = defaultKnowledgeBaseIds(), onEvent, signal, options = {}) {
   if (!isConfigured()) {
     throw new WeKnoraError('WeKnora 未配置（需要 WEKNORA_ENABLED=true 与至少一个 API Key）', {
       code: 'WEKNORA_NOT_CONFIGURED',
@@ -529,6 +563,7 @@ async function streamChat(sessionId, query, knowledgeBaseIds = defaultKnowledgeB
   }
 
   const { client } = await assertSameTenant(knowledgeBaseIds);
+  const agentId = String(options.agentId || '').trim();
 
   const res = await request(`/knowledge-chat/${encodeURIComponent(sessionId)}`, {
     method: 'POST',
@@ -537,6 +572,10 @@ async function streamChat(sessionId, query, knowledgeBaseIds = defaultKnowledgeB
       knowledge_base_ids: knowledgeBaseIds,
       channel: 'api',
       disable_title: true,
+      // 启用自定义智能体后，其 system_prompt 会作为答复约束生效。
+      // 注意：上游要求该智能体必须绑定 model_id，否则会返回
+      // "chat model is not configured" 错误事件。
+      ...(agentId ? { agent_enabled: true, agent_id: agentId } : {}),
     },
     signal,
     raw: true,
@@ -555,8 +594,11 @@ async function streamChat(sessionId, query, knowledgeBaseIds = defaultKnowledgeB
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   const reader = res.body.getReader();
+  // 上游在智能体配置有误时会发出 error 事件，但**不会关闭 SSE 连接**。
+  // 若不主动收尾，调用方的流会一直挂住直到超时，因此这里收到 error 就立即结束读取。
+  let stopRequested = false;
 
-  while (true) {
+  while (!stopRequested) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -582,7 +624,20 @@ async function streamChat(sessionId, query, knowledgeBaseIds = defaultKnowledgeB
       } catch {
         continue;
       }
-      onEvent(normalizeStreamEvent(parsed));
+      const normalized = normalizeStreamEvent(parsed);
+      onEvent(normalized);
+      if (normalized.type === 'error') {
+        stopRequested = true;
+        break;
+      }
+    }
+  }
+
+  if (stopRequested) {
+    try {
+      await reader.cancel();
+    } catch {
+      /* 上游可能已经断开，忽略 */
     }
   }
 }
@@ -599,9 +654,162 @@ function normalizeStreamEvent(raw) {
     sessionId: raw.session_id || raw.sessionId || '',
     assistantMessageId: raw.assistant_message_id || raw.assistantMessageId || '',
     finishReason: raw.finish_reason || raw.finishReason || '',
+    // 出错事件（response_type = "error"）的消息体字段名不稳定，这里统一兜底
+    message: raw.content || raw.error || raw.message || '',
     references: Array.isArray(references) ? references.map(normalizeSearchResult) : undefined,
     usage: raw.usage || undefined,
   };
+}
+
+/* ==================== 自定义智能体（答复约束提示词） ====================
+ *
+ * WeKnora 的问答接口（/knowledge-chat）本身不接受自定义提示词，官方提供的
+ * 约束手段是「自定义智能体」：创建一个 agent，把约束写进它的 system_prompt，
+ * 问答时带上 agent_enabled + agent_id 即可生效。
+ *
+ * 这里的约定：
+ *  - 每个知识库对应一个受管智能体，用 description 前缀做确定性标识，便于重建；
+ *  - 智能体必须显式绑定 model_id（KnowledgeQA 模型），否则上游会报
+ *    "chat model is not configured"，内置智能体的 model_id 是空的，不能直接用。
+ */
+
+/** 受管智能体的 description 前缀，用于识别本系统创建的智能体 */
+const AGENT_DESC_PREFIX = 'obara:design-standards:';
+
+/** 列出指定工作空间（Key）下的智能体 */
+async function listAgentsFor(client) {
+  const data = await request('/agents', { apiKey: client.key });
+  const list = (data && (data.data || data.list || data)) || [];
+  return (Array.isArray(list) ? list : []).map((a) => ({
+    id: a.id,
+    name: a.name || '',
+    description: a.description || '',
+    isBuiltin: !!a.is_builtin,
+    tenantId: a.tenant_id ?? client.tenantId,
+    config: a.config || {},
+  }));
+}
+
+/** 解析该工作空间下可用的 KnowledgeQA 模型 ID（带缓存） */
+async function resolveKnowledgeQAModelId(client) {
+  if (client.qaModelId !== undefined) return client.qaModelId;
+  const data = await request('/models', { apiKey: client.key });
+  const list = (data && (data.data || data.list || data)) || [];
+  const arr = Array.isArray(list) ? list : [];
+  const qa =
+    arr.find((m) => /knowledgeqa|knowledge_qa/i.test(String(m.type || ''))) ||
+    arr.find((m) => /chat/i.test(String(m.type || ''))) ||
+    null;
+  client.qaModelId = qa ? qa.id : null;
+  return client.qaModelId;
+}
+
+/** 按知识库 ID 找到本系统为该库创建的受管智能体 */
+async function findManagedAgent(client, kbId) {
+  const agents = await listAgentsFor(client);
+  return (
+    agents.find((a) => !a.isBuiltin && a.description === AGENT_DESC_PREFIX + kbId) || null
+  );
+}
+
+/** 供页面展示：受管智能体清单（跨工作空间合并） */
+async function listManagedAgents() {
+  const cs = getClients();
+  const settled = await Promise.allSettled(cs.map((c) => listAgentsFor(c)));
+  const merged = [];
+  settled.forEach((r) => {
+    if (r.status === 'fulfilled') {
+      merged.push(...r.value.filter((a) => !a.isBuiltin && a.description.startsWith(AGENT_DESC_PREFIX)));
+    }
+  });
+  return merged.map((a) => ({
+    id: a.id,
+    name: a.name,
+    kbId: a.description.slice(AGENT_DESC_PREFIX.length),
+    tenantId: a.tenantId,
+    modelId: a.config.model_id || '',
+    systemPrompt: a.config.system_prompt || '',
+  }));
+}
+
+/**
+ * 创建或更新某个知识库的约束智能体。
+ * @returns {Promise<{id:string, created:boolean}>}
+ */
+async function ensureAgent({ kbId, prompt, name }) {
+  const client = await resolveClient(kbId);
+  if (!client) {
+    throw new WeKnoraError(
+      `知识库 ${kbId} 无法访问：请确认它存在，且已为其所属工作空间配置 API Key`,
+      { code: 'WEKNORA_KB_FORBIDDEN', status: 403 }
+    );
+  }
+
+  const modelId = await resolveKnowledgeQAModelId(client);
+  if (!modelId) {
+    throw new WeKnoraError(
+      'WeKnora 中没有可用的问答（KnowledgeQA）模型，无法创建约束智能体',
+      { code: 'WEKNORA_NO_QA_MODEL', status: 503 }
+    );
+  }
+
+  const description = AGENT_DESC_PREFIX + kbId;
+  const agentName = String(name || '').trim() || `设计规范约束 · ${kbId.slice(0, 8)}`;
+  const override = {
+    agent_mode: 'quick-answer',
+    model_id: modelId,
+    system_prompt: String(prompt || ''),
+    knowledge_bases: [kbId],
+    enable_rewrite: false,
+  };
+
+  const existing = await findManagedAgent(client, kbId);
+  if (existing) {
+    // 合并原配置，避免 PUT 覆盖掉上游填充的其它默认项
+    const config = { ...(existing.config || {}), ...override };
+    await request(`/agents/${encodeURIComponent(existing.id)}`, {
+      method: 'PUT',
+      body: { name: agentName, description, config },
+      apiKey: client.key,
+    });
+    return { id: existing.id, created: false };
+  }
+
+  const data = await request('/agents', {
+    method: 'POST',
+    body: { name: agentName, description, config: override },
+    apiKey: client.key,
+  });
+  const agent = (data && (data.data || data)) || {};
+  if (!agent.id) {
+    throw new WeKnoraError('WeKnora 未返回新建智能体的 ID', {
+      code: 'WEKNORA_AGENT_CREATE_FAILED',
+    });
+  }
+  return { id: agent.id, created: true };
+}
+
+/** 删除约束智能体（按 Key 依次尝试，直到某个工作空间能删掉） */
+async function deleteAgent(agentId) {
+  const cs = getClients();
+  let lastErr = null;
+  for (const client of cs) {
+    try {
+      await request(`/agents/${encodeURIComponent(agentId)}`, {
+        method: 'DELETE',
+        apiKey: client.key,
+      });
+      return true;
+    } catch (err) {
+      if (err && err.name === 'WeKnoraError' && (err.status === 403 || err.status === 404)) {
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (lastErr) return false;
+  return false;
 }
 
 module.exports = {
@@ -611,6 +819,7 @@ module.exports = {
   defaultKnowledgeBaseIds,
   getStatus,
   listKnowledgeBases,
+  getKnowledgeBase,
   createKnowledgeBase,
   listKnowledge,
   uploadDocument,
@@ -621,4 +830,8 @@ module.exports = {
   streamChat,
   assertSameTenant,
   normalizeSearchResult,
+  listManagedAgents,
+  ensureAgent,
+  deleteAgent,
+  AGENT_DESC_PREFIX,
 };

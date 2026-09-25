@@ -53,6 +53,9 @@ Authorization: Bearer <token>
 | 删除焊枪台账分类/表 | 否 | 否 | 否（按钮可见但拦截） | 是 |
 | 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当 | 否 | 否 | 否 | 是 |
 | 导入焊枪台账 | 否 | 否 | 否 | 是 |
+| 检索/问答/查看知识库文档清单 | 否 | 取决于 `designStandards.allowViewers` | 取决于 `designStandards.allowAdmins` | 是 |
+| 关联/取消关联知识库 | 否 | 否 | 是 | 是 |
+| 配置答复约束提示词 | 否 | 否 | 否 | 是 |
 
 说明：
 
@@ -1736,6 +1739,204 @@ Authorization: Bearer <token>
 
 说明：重置为系统默认值 `["张啸", "张明", "陈青松", "陈大仪"]`。
 
+## 设计规范知识库接口
+
+挂载前缀 `/api/design-standards`。所有接口都需要登录，并受 `settings.designStandards` 页面权限控制；关联/取消关联还要求一般管理员及以上。后端不向前端下发 WeKnora 地址与 API Key。
+
+### 接入状态与知识库
+
+#### 获取接入状态
+
+`GET /api/design-standards/status`
+
+返回 WeKnora 接入状态、各工作空间可达性与已关联知识库列表。
+
+响应：
+
+```json
+{
+  "enabled": true,
+  "configured": true,
+  "reachable": true,
+  "baseUrl": "http://127.0.0.1:8080/api/v1",
+  "tenants": [
+    { "tenantId": 10000, "tenantName": "admin's Workspace", "reachable": true },
+    { "tenantId": 10001, "tenantName": "caifugao110's Workspace", "reachable": true }
+  ],
+  "defaultKnowledgeBaseIds": [],
+  "knowledgeBases": [
+    {
+      "id": "xxxx",
+      "name": "设计规范库",
+      "description": "",
+      "knowledgeCount": 12,
+      "createdAt": "2026-09-01T00:00:00.000Z",
+      "tenantId": 10000,
+      "tenantName": "admin's Workspace"
+    }
+  ]
+}
+```
+
+说明：
+
+- `WEKNORA_ENABLED` 不为 `true` 时返回 `enabled=false`、`reachable=false`；未配置任何 API Key 时 `configured=false`。
+- `tenants` 每个元素对应一个配置的 API Key（主 Key 在前），后端通过 `/auth/me` 解析其工作空间身份；`reachable=false` 表示该 Key 无效、过期或无法连接。
+- `knowledgeBases` 只包含项目已关联（`settings.designStandardsLinkedKbIds`）且能成功解析的知识库；无法解析的已关联库跳过，不影响其他库展示。
+- `defaultKnowledgeBaseIds` 当前固定返回空数组（保留字段，知识库以显式关联为准）。
+
+#### 获取已关联知识库列表
+
+`GET /api/design-standards/knowledge-bases`
+
+响应：`{ "knowledgeBases": [...] }`，数组元素结构同 status 中的 `knowledgeBases`。
+
+#### 关联知识库
+
+`POST /api/design-standards/knowledge-bases/link`
+
+权限：`admin`、`superadmin`。
+
+请求：
+
+```json
+{ "kbId": "知识库 ID" }
+```
+
+- 后端按所有已配置 Key 解析该 ID（先查各 Key 的知识库缓存，未命中则刷新列表，再逐 Key 发起探测），确认知识库存在后写入关联列表。
+- 该 ID 已关联时返回 `409` 和 `该知识库已关联`；ID 在所有工作空间均不可访问时返回 `403`（`WEKNORA_KB_FORBIDDEN`）。
+
+响应（`201`）：`{ "knowledgeBase": { ...知识库对象 } }`。
+
+#### 取消关联知识库
+
+`DELETE /api/design-standards/knowledge-bases/:kbId`
+
+权限：`admin`、`superadmin`。
+
+仅从本系统关联列表移除 ID，**不会删除 WeKnora 中的知识库**；未关联返回 `404` 和 `该知识库未关联`。
+
+响应：`{ "message": "已取消关联" }`。
+
+#### 获取知识库文档清单
+
+`GET /api/design-standards/knowledge-bases/:kbId/documents`
+
+响应：
+
+```json
+{
+  "documents": [
+    {
+      "id": "doc-id",
+      "title": "电极使用规范.pdf",
+      "fileType": "pdf",
+      "fileSize": 102400,
+      "parseStatus": "completed",
+      "createdAt": "2026-09-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### 规范检索
+
+`POST /api/design-standards/search`
+
+请求：
+
+```json
+{ "query": "电极帽材质", "knowledgeBaseIds": ["kb-id-1", "kb-id-2"] }
+```
+
+- `knowledgeBaseIds` 必填且至少 1 个，否则返回 `400`（`未指定知识库，请先关联并选择知识库`）。
+- 支持跨工作空间：后端按知识库所属空间分组并行检索，合并后按 `score` 降序排列。
+
+响应：
+
+```json
+{
+  "results": [
+    {
+      "id": "chunk-id",
+      "content": "命中条款正文……",
+      "score": 0.87,
+      "matchType": "向量检索",
+      "knowledgeId": "doc-id",
+      "knowledgeTitle": "电极使用规范.pdf",
+      "chunkIndex": 3,
+      "seq": null,
+      "startAt": null,
+      "endAt": null,
+      "chunkType": "",
+      "metadata": {}
+    }
+  ],
+  "meta": { "merged": false, "groups": 1 }
+}
+```
+
+- `matchType` 已由后端把数字枚举映射为中文（向量检索/关键词/邻近分块/父分块/关联分块等）。
+- `meta.groups` 为实际检索的工作空间数，`merged=true` 表示结果合并自多个工作空间。
+
+### 智能问答（SSE）
+
+`POST /api/design-standards/chat`
+
+请求：
+
+```json
+{
+  "query": "电极多久更换一次？",
+  "sessionId": "可选，多轮对话沿用上次返回值",
+  "knowledgeBaseIds": ["kb-id-1"]
+}
+```
+
+规则：
+
+- `knowledgeBaseIds` 必填且至少 1 个，否则 `400`；服务未配置任何 Key 时返回 `503`。
+- **所选知识库必须同属一个工作空间**：跨空间时在 SSE 响应头写出之前返回 `400`，`code=WEKNORA_MULTI_TENANT`，消息中列出所跨越的工作空间名称。
+- 不传 `sessionId` 时后端自动创建新会话（WeKnora 会话是工作空间级资源）。
+
+响应：`Content-Type: text/event-stream`，每个事件格式为 `data: <JSON>\n\n`：
+
+| 事件 | 负载 | 说明 |
+|------|------|------|
+| `session` | `{ type:'session', sessionId }` | 会话 ID，多轮对话需原样回传 |
+| `references` | `{ type:'references', references:[...] }` | 引用条款，元素结构同检索结果 |
+| `answer` | `{ type:'answer', content }` | 增量答案文本，客户端逐段累计 |
+| `done` | `{ type:'done', finishReason }` | 流正常结束，整条流只发一次 |
+| `error` | `{ type:'error', message }` | 流内错误（如约束智能体配置有误） |
+
+> 回答正文可能内联 `<kb doc="..." chunk_id="..." kb_id="..." />` 溯源标签，前端需清理后再展示。
+
+### 答复约束提示词设置
+
+提示词配置不在 `/api/design-standards` 前缀下，而在设置路由中：
+
+| API | 方法 | 权限 | 说明 |
+|-----|------|------|------|
+| `/api/settings/design-standards-prompt` | GET | 仅 `superadmin` | 返回 `{ enabled, knowledgeBases }` |
+| `/api/settings/design-standards-prompt` | PUT | 仅 `superadmin` | 保存配置并同步 WeKnora 自定义智能体 |
+
+PUT 请求：
+
+```json
+{
+  "enabled": true,
+  "knowledgeBases": {
+    "kb-id-1": { "prompt": "# 角色\n你是……（支持整篇 Markdown，最长 20000 字符）" }
+  }
+}
+```
+
+说明：
+
+- 每个知识库对应一个受管智能体（description 前缀 `obara:design-standards:` 做确定性标识），后端自动解析该工作空间的 KnowledgeQA（问答）模型并绑定；该空间无可用问答模型时返回 `503`（`WEKNORA_NO_QA_MODEL`）。
+- 非空提示词创建/更新智能体，回写 `agentId` 与 `updatedAt`；提示词被清空或条目被移除时同步删除对应智能体。
+- 响应额外附带 `syncErrors`（逐个知识库列出同步失败原因）；某个库同步失败时保留其原有可用配置，不影响其他库。
+
 ## 系统设置接口
 
 ### 获取系统设置
@@ -3026,6 +3227,10 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `SESSION_INVALIDATED` | 401 | 会话在其他设备登录后失效 |
 | `GUEST_VIEW_DISABLED` | 401 | 未登录查看已关闭，需先登录 |
 | `USER_NOT_FOUND` | 401 | 校验会话时用户不存在（`GET /api/auth/validate`） |
+| `WEKNORA_MULTI_TENANT` | 400 | 问答所选知识库跨越多个工作空间 |
+| `WEKNORA_KB_FORBIDDEN` | 403 | 知识库在所有已配置工作空间均不可访问 |
+| `WEKNORA_NO_QA_MODEL` | 503 | 知识库所属工作空间没有可用的 KnowledgeQA 问答模型 |
+| `WEKNORA_NOT_CONFIGURED` | 503 | WeKnora 未启用或未配置任何 API Key |
 
 未带 `code` 字段的通用错误状态：
 
@@ -3096,6 +3301,11 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
 | `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
+| `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
+| `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
+| `WEKNORA_API_KEY` | 空 | 主工作空间 API Key，仅服务端使用 |
+| `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
+| `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 
 ### CORS 配置示例
 

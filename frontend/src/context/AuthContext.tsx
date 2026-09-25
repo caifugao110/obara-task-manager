@@ -1,6 +1,7 @@
-﻿﻿﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
+﻿﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import { axiosInstance } from '../services/api';
 import { io, Socket } from 'socket.io-client';
+import { buildLoginUrl } from '../utils/redirect';
 
 interface User {
   id: string;
@@ -82,7 +83,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     socket.on('session_invalidated', (data: { reason?: string }) => {
       alert(data?.reason || '您的账号已在其他设备登录');
       logout();
-      window.location.href = '/login';
+      window.location.href = buildLoginUrl();
     });
 
     return () => {
@@ -131,7 +132,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             alert(err.response?.data?.message || '您的账号已在其他设备登录');
           }
           logout();
-          window.location.href = '/login';
+          window.location.href = buildLoginUrl();
         }
       }
     };

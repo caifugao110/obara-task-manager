@@ -62,7 +62,7 @@ cd weknora && bash start.sh
 
 1. `scripts/gen-env.js` — 生成 `.env`（自动填入随机 `JWT_SECRET` / `SYSTEM_AES_KEY`，已存在则跳过）；
 2. `docker compose up -d` — 启动 5 个容器并等待 app 健康；
-3. `scripts/setup.js` — 初始化：注册管理员 → 配置 DeepSeek/智谱模型 → 创建「设计规范库」（**建库时即绑定模型**）→ 创建 API Key → 上传 `knowledge/电极使用规范.pdf` 并等待解析完成 → 把 `WEKNORA_*` 写入 `backend/.env`。
+3. `scripts/setup.js` — 初始化：注册管理员 → 配置 DeepSeek/智谱模型 → 创建**当前工作空间**的 API Key → 把 `WEKNORA_*` 写入 `backend/.env`（不再自动建库/上传文档；其他工作空间的 Key 需手动创建，见第 6 节）。
 
 完成后：
 
@@ -86,15 +86,12 @@ node scripts/setup.js \
   --zhipu-key xxx.yyy          # 3. 初始化
 ```
 
-`setup.js` 幂等，可反复执行：已有模型/知识库/API Key/文档会自动复用跳过。
+`setup.js` 幂等，可反复执行：已有模型/API Key 会自动复用跳过。
 
 常用可选参数：
 
 | 参数 | 说明 |
 |------|------|
-| `--kb-name <名>` | 自定义知识库名称（默认「设计规范库」） |
-| `--file <路径>` | 自定义默认上传文件（默认 `knowledge/电极使用规范.pdf`） |
-| `--no-upload` | 跳过默认文件上传 |
 | `--no-env` | 跳过写入 `backend/.env` |
 | `--base-url <url>` | WeKnora 在其他主机时指定 API 地址 |
 
@@ -106,8 +103,6 @@ weknora/
 ├── .env.example            # 环境变量模板（含密钥生成说明）
 ├── .env                    # 实际配置（gen-env.js 生成，已 gitignore）
 ├── config/config.yaml      # WeKnora app 配置（分块/检索阈值等，来自官方 v0.8.2）
-├── knowledge/
-│   └── 电极使用规范.pdf     # 默认知识库文件（初始化自动上传）
 ├── scripts/
 │   ├── gen-env.js          # 生成 .env（随机密钥，幂等）
 │   └── setup.js            # 一键初始化（幂等）
@@ -128,8 +123,10 @@ docker compose pull && docker compose up -d   # 升级到 WEKNORA_VERSION 指定
 ```
 
 - **更换模型 API Key**：在控制台「设置 → 模型管理」直接改，或删除对应模型后重跑 `setup.js`。
-- **补充规范文件**：用页面「知识库管理」标签上传，或控制台操作，无需改配置。
-- **新增知识库**：页面「知识库管理」可建库，但需在控制台确认其已绑定向量模型，再把新 ID 加入 `backend/.env` 的 `WEKNORA_KNOWLEDGE_BASE_IDS`（逗号分隔）。
+- **管理知识库与文档**：在 WeKnora 控制台（http://localhost/platform/knowledge-bases）创建知识库、上传/删除文档。本系统页面不再提供建库与文档上传/删除功能。
+- **关联知识库到本系统**：在 WeKnora 控制台创建好知识库后，复制其知识库 ID，到本系统「设计规范知识库 → 知识库管理」页面（需要一般管理员及以上）点击「关联知识库」并粘贴 ID 即可。取消关联仅移除本系统的关联记录，不会删除 WeKnora 中的知识库。
+- **接入多个工作空间（多租户）**：WeKnora 的 API Key 按工作空间隔离，一个 Key 只能访问其所属空间的知识库。需要接入其他空间时，分别登录各空间在 API Key 管理中创建 Key，主空间 Key 已由 `setup.js` 写入 `WEKNORA_API_KEY`，其余 Key 用英文逗号分隔填入 `backend/.env` 的 `WEKNORA_EXTRA_API_KEYS`，再重启本系统后端。状态接口的 `tenants` 字段可确认每个 Key 的空间身份与可达性。
+- **答复约束提示词**：由本系统超管在「设计规范知识库」页面底部的「答复约束提示词」面板中按知识库配置（支持整篇 Markdown，最长 20000 字符）；后端据此自动在知识库所属工作空间创建/更新受管自定义智能体，清空提示词则自动删除智能体。配置前提是该空间已有可用的 KnowledgeQA 问答模型。
 
 ## 7. 从旧部署（E:\My Trae\WeKnora）迁移
 
@@ -156,6 +153,7 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 6. **SYSTEM_AES_KEY 一旦设置不可丢失**，否则数据库里已加密的模型 API Key 全部无法解密。
 7. `docker compose pull` 偶发卡顿时，逐镜像 `docker pull <image>` 重试即可；并行拉同一镜像会互相阻塞。
 8. 本系统后端是 `node server.js`（非 nodemon），**改 backend 代码或 backend/.env 后必须重启后端**。
+9. **问答不允许跨工作空间**：检索可以跨空间分组扇出再合并排序，但知识库问答的会话是空间级资源，所选知识库必须同属一个工作空间；跨空间勾选时前端禁用发送，后端也会在 SSE 建连前返回 `400 WEKNORA_MULTI_TENANT`。配置答复约束提示词时，若该空间没有 KnowledgeQA 问答模型则返回 `503 WEKNORA_NO_QA_MODEL`。
 
 ## 9. 安全建议（生产）
 

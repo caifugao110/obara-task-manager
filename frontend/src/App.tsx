@@ -1,7 +1,8 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SystemSettingsProvider } from './context/SystemSettingsContext';
+import { sanitizeRedirect } from './utils/redirect';
 import Login from './pages/Login';
 import ChangePassword from './pages/ChangePassword';
 import Dashboard from './pages/Dashboard';
@@ -26,6 +27,8 @@ const ProtectedRoute = ({
   allowGuest?: boolean;
 }) => {
   const { isAuthenticated, user, forcePasswordChange, authReady } = useAuth();
+  const location = useLocation();
+  const currentPath = location.pathname + location.search + location.hash;
 
   if (!authReady) {
     return null;
@@ -33,13 +36,13 @@ const ProtectedRoute = ({
 
   if (!isAuthenticated) {
     if (!allowGuest) {
-      return <Navigate to="/login" replace />;
+      return <Navigate to={`/login?redirect=${encodeURIComponent(currentPath)}`} replace />;
     }
     return <>{children}</>;
   }
 
   if (forcePasswordChange) {
-    return <Navigate to="/change-password" replace />;
+    return <Navigate to={`/change-password?redirect=${encodeURIComponent(currentPath)}`} replace />;
   }
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
@@ -62,9 +65,11 @@ const ChangePasswordRoute = ({
   children: React.ReactNode;
 }) => {
   const { isAuthenticated, forcePasswordChange } = useAuth();
+  const location = useLocation();
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+    const currentPath = location.pathname + location.search + location.hash;
+    return <Navigate to={`/login?redirect=${encodeURIComponent(currentPath)}`} replace />;
   }
 
   if (!forcePasswordChange) {
@@ -74,12 +79,21 @@ const ChangePasswordRoute = ({
   return <>{children}</>;
 };
 
-const AppRoutes = () => {
+const LoginRoute = () => {
   const { isAuthenticated } = useAuth();
+  const [searchParams] = useSearchParams();
 
+  if (!isAuthenticated) {
+    return <Login />;
+  }
+
+  return <Navigate to={sanitizeRedirect(searchParams.get('redirect'))} replace />;
+};
+
+const AppRoutes = () => {
   return (
     <Routes>
-      <Route path="/login" element={!isAuthenticated ? <Login /> : <Navigate to="/" replace />} />
+      <Route path="/login" element={<LoginRoute />} />
       <Route 
         path="/change-password" 
         element={

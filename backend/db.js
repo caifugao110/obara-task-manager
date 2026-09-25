@@ -230,6 +230,8 @@ const getInitialDb = () => ({
       yearlyCleanupHistory: {}
     },
     workdayOverrides: {},
+    designStandardsLinkedKbIds: [],
+    designStandardsPrompt: { enabled: false, knowledgeBases: {} },
     system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 }
   }
 });
@@ -349,6 +351,23 @@ const applySettingsDefaults = (parsed) => {
   };
   if (!parsed.settings.workdayOverrides || typeof parsed.settings.workdayOverrides !== 'object' || Array.isArray(parsed.settings.workdayOverrides)) {
     parsed.settings.workdayOverrides = {};
+  }
+  // 设计规范知识库：已关联的知识库 ID 列表
+  if (!Array.isArray(parsed.settings.designStandardsLinkedKbIds)) {
+    parsed.settings.designStandardsLinkedKbIds = [];
+  }
+  // 设计规范知识库的「答复约束提示词」配置（仅超级管理员可编辑）：
+  //   { enabled: boolean, knowledgeBases: { [kbId]: { prompt, agentId, updatedAt } } }
+  if (!parsed.settings.designStandardsPrompt || typeof parsed.settings.designStandardsPrompt !== 'object' || Array.isArray(parsed.settings.designStandardsPrompt)) {
+    parsed.settings.designStandardsPrompt = { enabled: false, knowledgeBases: {} };
+  }
+  if (typeof parsed.settings.designStandardsPrompt.enabled !== 'boolean') {
+    parsed.settings.designStandardsPrompt.enabled = false;
+  }
+  if (!parsed.settings.designStandardsPrompt.knowledgeBases
+    || typeof parsed.settings.designStandardsPrompt.knowledgeBases !== 'object'
+    || Array.isArray(parsed.settings.designStandardsPrompt.knowledgeBases)) {
+    parsed.settings.designStandardsPrompt.knowledgeBases = {};
   }
   if (!parsed.settings.system) {
     parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };

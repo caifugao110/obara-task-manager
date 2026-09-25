@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { buildLoginUrl } from './redirect';
 
 export const setupAxiosInterceptors = (onForceLogout?: (message: string) => void) => {
   axios.interceptors.response.use(
@@ -11,7 +12,7 @@ export const setupAxiosInterceptors = (onForceLogout?: (message: string) => void
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         alert('您的账号已被禁用，请联系管理员');
-        window.location.href = '/login';
+        window.location.href = buildLoginUrl();
       }
 
       if (error.response?.status === 401 && code === 'SESSION_INVALIDATED') {
@@ -23,7 +24,7 @@ export const setupAxiosInterceptors = (onForceLogout?: (message: string) => void
         } else {
           alert(msg);
         }
-        window.location.href = '/login';
+        window.location.href = buildLoginUrl();
       }
 
       return Promise.reject(error);

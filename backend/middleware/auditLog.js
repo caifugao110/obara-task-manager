@@ -150,11 +150,18 @@ const getActionDescription = (method, path, body) => {
     'work-hours/export': '导出工时管理表',
     'spec/spec-info': '查询仕样信息',
     'spec/delivery-date': '查询交期',
-    'spec/spec-raw-text': '查询仕样原文'
+    'spec/spec-raw-text': '查询仕样原文',
+    'design-standards/status': '查看知识库状态',
+    'design-standards/knowledge-bases': method === 'POST' ? '关联知识库' : method === 'DELETE' ? '删除知识库' : '查看知识库列表',
+    'design-standards/search': '检索设计规范',
+    'design-standards/chat': '智能问答',
+    'settings/design-standards-prompt': method === 'PUT' ? '更新智能问答提示词设置' : '查看智能问答提示词设置'
   };
 
+  // 未收录路由的兜底：使用中文通用动作，避免在日志中留下英文
+  const genericActions = { GET: '查看数据', POST: '提交操作', PUT: '更新数据', PATCH: '更新数据', DELETE: '删除数据' };
   const key = `${resource}/${action}`;
-  return descriptions[key] || descriptions[resource] || `${method} ${path}`;
+  return descriptions[key] || descriptions[resource] || genericActions[method] || '未知操作';
 };
 
 const appendAuditLogDirect = async (entry) => {

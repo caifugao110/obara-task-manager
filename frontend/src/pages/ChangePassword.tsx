@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Lock, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
+import { sanitizeRedirect } from '../utils/redirect';
 
 const ChangePassword = () => {
   const [oldPassword, setOldPassword] = useState('');
@@ -18,6 +19,8 @@ const ChangePassword = () => {
   const [loading, setLoading] = useState(false);
   const { setForcePasswordChange } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const redirectTarget = sanitizeRedirect(searchParams.get('redirect'));
 
   const togglePasswordVisibility = (field: keyof typeof visiblePasswords) => {
     setVisiblePasswords((current) => ({
@@ -79,12 +82,12 @@ const ChangePassword = () => {
         newPassword
       });
 
-      setSuccess('密码修改成功，正在跳转到首页...');
+      setSuccess('密码修改成功，正在跳转...');
       setForcePasswordChange(false);
       localStorage.removeItem('forcePasswordChange');
       
       setTimeout(() => {
-        navigate('/');
+        navigate(redirectTarget, { replace: true });
       }, 1500);
     } catch (err: any) {
       setError(err.response?.data?.message || '密码修改失败');

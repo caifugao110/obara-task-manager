@@ -265,32 +265,59 @@ RATE_LIMIT_MAX=20
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
-| `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径（生产环境使用） |
+| `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite，迁移完成后可删除 |
+| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；当前登录/改密限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
+| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被限流器使用 |
+| `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
+| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改） |
+| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入，部署 WeKnora 后设为 `true` |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
-| `WEKNORA_API_KEY` | - | WeKnora 空间 API Key，由 `weknora/scripts/setup.js` 自动创建并写入 |
-| `WEKNORA_KNOWLEDGE_BASE_IDS` | - | 默认检索的知识库 ID，多个用英文逗号分隔 |
+| `WEKNORA_API_KEY` | - | 主工作空间 API Key（也用于建库等写操作），仅服务端保存 |
+| `WEKNORA_EXTRA_API_KEYS` | - | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 
 ## 设计规范知识库（WeKnora）
 
 「设计规范知识库」页面（`/design-standards`）基于本地 Docker 部署的 [Tencent/WeKnora](https://github.com/Tencent/WeKnora)，提供规范检索与带引用的智能问答（模型走 DeepSeek + 智谱云端 API）。
 
-**部署所需的一切都在仓库 `weknora/` 目录内**（精简 compose、初始化脚本、默认知识库文件《电极使用规范.pdf》、完整文档），无需单独克隆 WeKnora 源码。部署前先把模型 Key 写入 `weknora/.env`（`DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`，该文件已 gitignore），然后一键部署：
+**部署所需的一切都在仓库 `weknora/` 目录内**（精简 compose、初始化脚本、完整文档），无需单独克隆 WeKnora 源码。部署前先把模型 Key 写入 `weknora/.env`（`DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`，该文件已 gitignore），然后一键部署：
 
 ```bat
 cd weknora
 start.bat
 ```
 
-详细步骤、迁移方法、踩坑记录见 **[weknora/README.md](weknora/README.md)**。注意：`backend/.env` 中 `WEKNORA_*` 变更后需重启后端才生效。
-| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被限流器使用 |
-| `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
-| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
-| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径，用于读取纳期和详细信息 |
-| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
+详细步骤、迁移方法、踩坑记录见 **[weknora/README.md](weknora/README.md)**。注意：`backend/.env` 中 `WEKNORA_*` 变更后需重启后端才生效（生产环境后端以 `node server.js` 子进程运行，没有 nodemon 热重载）。
+
+### 知识库按 ID 关联
+
+后端不再自动建库或上传文档。知识库在 WeKnora 控制台创建后，需要在本系统显式关联：
+
+1. 在 WeKnora 知识库管理页面（默认 `http://<服务器>:8080/platform/knowledge-bases`）打开知识库，从 URL 或列表中复制知识库 ID。
+2. 登录本系统进入「设计规范知识库」页面 → 知识库管理标签页（需要一般管理员及以上），粘贴 ID 完成关联。
+3. 关联仅保存 ID 映射，不会复制或移动 WeKnora 数据；取消关联也不会删除 WeKnora 中的知识库。
+
+### 多工作空间（多租户）
+
+WeKnora 的 API Key 按工作空间隔离，单个 Key 只能访问其所属工作空间的知识库。若规范文档分布在多个工作空间：
+
+1. 分别登录各工作空间，在 API Key 管理中创建 Key。
+2. 将主工作空间的 Key 填入 `WEKNORA_API_KEY`，其余 Key 用英文逗号分隔填入 `WEKNORA_EXTRA_API_KEYS`：
+
+```env
+WEKNORA_API_KEY=key-of-primary-workspace
+WEKNORA_EXTRA_API_KEYS=key-of-workspace-b,key-of-workspace-c
+```
+
+3. 重启后端。服务启动时为每个 Key 建立独立客户端并通过 `/auth/me` 校验身份，状态接口的 `tenants` 字段可查看各工作空间可达性。
+4. 检索支持跨工作空间（可同时勾选多个空间的知识库，结果合并排序）；**问答必须在同一工作空间内**，跨空间勾选时前端禁用发送，后端也会返回 400（`WEKNORA_MULTI_TENANT`）。
+
+### 答复约束提示词
+
+超管可在「设计规范知识库」页面底部的「答复约束提示词」面板中为每个已关联知识库配置提示词（支持整篇 Markdown，最长 20000 字符）。后端据此在知识库所属工作空间创建/更新受管自定义智能体（WeKnora 的知识库问答接口本身不接受自定义提示词）；清空提示词则自动删除对应智能体。前提：该工作空间已配置可用的 KnowledgeQA 问答模型，否则保存时返回 503（`WEKNORA_NO_QA_MODEL`）。一次问答勾选多个库且均有提示词时，以第一个库的约束为准。
 
 生产环境必须配置 `JWT_SECRET`（缺失会导致服务直接退出），并定期备份数据库文件。系统已增强 JWT 失效机制，登出或修改密码后旧令牌将立即失效。
 

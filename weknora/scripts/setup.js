@@ -2,15 +2,16 @@
 /**
  * WeKnora 一键初始化脚本（幂等，可重复执行）
  *
- * 完成以下全部工作，使 obara-task-manager 的「设计规范知识库」开箱即用：
+ * 完成以下工作，使 obara-task-manager 的「设计规范知识库」可以接入：
  *   1. 注册 / 登录 WeKnora 管理员
  *   2. 配置对话模型（DeepSeek）与向量模型（智谱 embedding-3）
- *   3. 创建知识库（★ 建库时即绑定 embedding / summary 模型，
- *      这是 WeKnora 的硬性要求：事后用 PUT 补绑不会生效，
- *      否则文档解析报 "failed to get embedding model: model ID cannot be empty"）
- *   4. 创建全权限 API Key（已有可用 Key 时自动复用）
- *   5. 上传默认知识库文件（knowledge/电极使用规范.pdf）并等待解析完成
- *   6. 把 WEKNORA_* 配置写入 backend/.env
+ *   3. 创建全权限 API Key（已有可用 Key 时自动复用）
+ *   4. 把 WEKNORA_* 配置写入 backend/.env
+ *
+ * 注意：本脚本不再创建默认知识库、也不再上传默认文档。
+ * 知识库由用户在 WeKnora 控制台（http://localhost/platform/knowledge-bases）
+ * 自行创建，然后在 obara-task-manager 的「设计规范知识库 → 知识库管理」页面
+ * 通过「知识库 ID」进行关联。
  *
  * 用法：
  *   node scripts/setup.js --deepseek-key sk-xxx --zhipu-key xxx.yyy
@@ -25,9 +26,6 @@
  *   --base-url <url>        WeKnora API 根地址（默认 http://127.0.0.1:8080/api/v1）
  *   --backend-env <path>    目标 backend/.env 路径（默认 ../../backend/.env）
  *   --email / --password    管理员账号（默认 admin@obara.local / Obara@WeKnora2026）
- *   --kb-name <name>        知识库名称（默认「设计规范库」）
- *   --file <path>           默认上传文件（默认 ../knowledge/电极使用规范.pdf）
- *   --no-upload             跳过默认文件上传
  *   --no-env                跳过写入 backend/.env
  */
 
@@ -84,13 +82,7 @@ const DEEPSEEK_MODEL = args['deepseek-model'] || 'deepseek-flash';
 const EMBEDDING_MODEL = args['embedding-model'] || 'embedding-3';
 const EMBEDDING_DIM = Number(args['embedding-dim'] || 2048);
 
-const KB_NAME = args['kb-name'] || '设计规范库';
-const KB_DESC = args['kb-desc'] || '存放机械设计规范、国家标准、行业标准与企业内部设计准则。';
-
-const DEFAULT_FILE = path.resolve(args.file || path.join(DIR, 'knowledge', '电极使用规范.pdf'));
-const NO_UPLOAD = !!args['no-upload'];
 const NO_ENV = !!args['no-env'];
-const PARSE_TIMEOUT_MS = Number(args['parse-timeout'] || 10 * 60 * 1000);
 
 const log = (...a) => console.log(...a);
 const fail = (msg) => {
@@ -193,7 +185,7 @@ async function main() {
   let ZHIPU_KEY = args['zhipu-key'] || process.env.BIGMODEL_API_KEY || fileEnv.BIGMODEL_API_KEY || '';
 
   // ---------- 1. 注册 / 登录 ----------
-  log('\n[1/6] 准备管理员账号...');
+  log('\n[1/4] 准备管理员账号...');
   const reg = await api('/auth/register', {
     method: 'POST',
     body: { username: ADMIN_USERNAME, email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
@@ -219,7 +211,7 @@ async function main() {
   log(`  · 空间 ID: ${tenantId}`);
 
   // ---------- 2. 模型配置 ----------
-  log('\n[2/6] 配置模型...');
+  log('\n[2/4] 配置模型...');
   const modelList = await api('/models', { token });
   const models = (pick(modelList.data, 'data', 'list') || []).filter((m) => m && m.type);
   const findByType = (type) => models.find((m) => m.type === type);
@@ -280,35 +272,8 @@ async function main() {
     log(`  ✔ 已创建向量模型 ${EMBEDDING_MODEL} (id=${embedModel.id})`);
   }
 
-  // ---------- 3. 知识库（建库时必须绑定模型） ----------
-  log('\n[3/6] 准备知识库...');
-  const kbListRes = await api('/knowledge-bases', { token });
-  const kbList = pick(kbListRes.data, 'data', 'list') || [];
-  let kb = (Array.isArray(kbList) ? kbList : []).find((k) => pick(k, 'name', 'title') === KB_NAME);
-
-  if (kb) {
-    const bound = pick(kb, 'embedding_model_id', 'embeddingModelId');
-    log(`  · 已存在知识库「${KB_NAME}」(id=${kb.id})${bound ? '' : '，⚠ 未绑定向量模型，文档解析会失败，建议删除后由本脚本重建'}`);
-  } else {
-    const created = await api('/knowledge-bases', {
-      method: 'POST',
-      token,
-      body: {
-        name: KB_NAME,
-        description: KB_DESC,
-        // ★ 关键：建库时绑定模型，PUT 后补无效
-        embedding_model_id: embedModel.id,
-        summary_model_id: qaModel.id,
-      },
-    });
-    if (!created.ok) fail(`创建知识库失败：HTTP ${created.status} ${JSON.stringify(created.data).slice(0, 300)}`);
-    kb = pick(created.data, 'data', 'knowledge_base') || created.data;
-    log(`  ✔ 已创建知识库「${KB_NAME}」(id=${kb.id})，已绑定向量/对话模型`);
-  }
-  const kbId = kb.id;
-
-  // ---------- 4. API Key（已有可用 Key 则复用） ----------
-  log('\n[4/6] 准备 API Key...');
+  // ---------- 3. API Key（已有可用 Key 则复用） ----------
+  log('\n[3/4] 准备 API Key...');
   const existingEnv = readExistingEnv(BACKEND_ENV);
   let apiKey = existingEnv.WEKNORA_API_KEY || '';
 
@@ -334,74 +299,19 @@ async function main() {
     log(`  ✔ 已创建 API Key: ${apiKey.slice(0, 10)}…`);
   }
 
-  // ---------- 5. 上传默认知识库文件并等待解析 ----------
-  if (!NO_UPLOAD) {
-    log('\n[5/6] 上传默认知识库文件...');
-    if (!fs.existsSync(DEFAULT_FILE)) {
-      log(`  ! 默认文件不存在：${DEFAULT_FILE}，跳过上传`);
-    } else {
-      const fileName = path.basename(DEFAULT_FILE);
-      const listRes = await api(`/knowledge-bases/${kbId}/knowledge`, { apiKey });
-      const docs = pick(listRes.data, 'data', 'list') || [];
-      const docArr = Array.isArray(docs) ? docs : [];
-      const exists = docArr.find((d) => pick(d, 'title', 'file_name', 'fileName', 'name') === fileName);
-
-      if (exists) {
-        log(`  · 知识库中已存在《${fileName}》(id=${exists.id})，跳过上传`);
-      } else {
-        const buf = fs.readFileSync(DEFAULT_FILE);
-        const form = new FormData();
-        form.append('file', new Blob([buf], { type: 'application/pdf' }), fileName);
-        const up = await api(`/knowledge-bases/${kbId}/knowledge/file`, {
-          method: 'POST',
-          apiKey,
-          form,
-          timeoutMs: 300000,
-        });
-        if (!up.ok) fail(`上传失败：HTTP ${up.status} ${JSON.stringify(up.data).slice(0, 300)}`);
-        const docId = pick(up.data, 'data.id', 'id');
-        log(`  ✔ 已上传《${fileName}》(id=${docId})，等待解析...`);
-
-        // 轮询解析状态
-        const t0 = Date.now();
-        let status = 'pending';
-        while (Date.now() - t0 < PARSE_TIMEOUT_MS) {
-          await sleep(5000);
-          const cur = await api(`/knowledge-bases/${kbId}/knowledge`, { apiKey });
-          const arr = pick(cur.data, 'data', 'list') || [];
-          const doc = (Array.isArray(arr) ? arr : []).find((d) => d.id === docId);
-          status = pick(doc || {}, 'parse_status', 'parseStatus', 'status') || 'unknown';
-          if (['completed', 'success', 'done', 'processed', 'enabled'].includes(String(status).toLowerCase())) break;
-          if (['failed', 'error'].includes(String(status).toLowerCase())) {
-            fail(`文档解析失败（parse_status=${status}）。请到 WeKnora 控制台查看原因。`);
-          }
-          process.stdout.write(`  · 解析中（${status}）...\r`);
-        }
-        if (!['completed', 'success', 'done', 'processed', 'enabled'].includes(String(status).toLowerCase())) {
-          log(`\n  ! 等待解析超时（${PARSE_TIMEOUT_MS / 60000} 分钟），当前状态 ${status}，可稍后在控制台确认`);
-        } else {
-          log(`  ✔ 解析完成（parse_status=${status}）`);
-        }
-      }
-    }
-  } else {
-    log('\n[5/6] 按 --no-upload 跳过文件上传');
-  }
-
-  // ---------- 6. 写入 backend/.env ----------
+  // ---------- 4. 写入 backend/.env ----------
   if (!NO_ENV) {
-    log('\n[6/6] 写入 backend/.env ...');
+    log('\n[4/4] 写入 backend/.env ...');
     upsertEnvFile(BACKEND_ENV, {
       WEKNORA_ENABLED: 'true',
       WEKNORA_BASE_URL: BASE,
       WEKNORA_API_KEY: apiKey,
-      WEKNORA_KNOWLEDGE_BASE_IDS: kbId,
       WEKNORA_TIMEOUT_MS: '60000',
     });
     log(`  ✔ 已更新 ${BACKEND_ENV}`);
     log('  ! 注意：backend 为 node server.js（非 nodemon），需重启后端才会加载新配置');
   } else {
-    log('\n[6/6] 按 --no-env 跳过写入 backend/.env');
+    log('\n[4/4] 按 --no-env 跳过写入 backend/.env');
   }
 
   // ---------- 摘要 ----------
@@ -409,8 +319,10 @@ async function main() {
   log('初始化完成：');
   log(`  WeKnora 控制台 : http://localhost:${process.env.FRONTEND_PORT || 80}`);
   log(`  管理员账号     : ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
-  log(`  知识库         : ${KB_NAME} (id=${kbId})`);
   log(`  API Key        : ${apiKey.slice(0, 10)}…（已写入 backend/.env）`);
+  log('');
+  log('  下一步：在 WeKnora 控制台创建知识库，然后在 obara-task-manager 的');
+  log('  「设计规范知识库 → 知识库管理」页面通过「知识库 ID」关联该知识库。');
   log('-'.repeat(64));
 }
 

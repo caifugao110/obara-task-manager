@@ -265,6 +265,20 @@ const routeActionDescriptions: Record<string, { label: string; description: stri
   // 页面访问设置补充
   'GET settings/design-standards': { label: '查看设计规范知识库设置', description: '查看设计规范知识库页面的访问设置' },
   'PUT settings/design-standards': { label: '更新设计规范知识库设置', description: '修改设计规范知识库页面的访问设置' },
+  'GET settings/design-standards-prompt': { label: '查看智能问答提示词设置', description: '查看设计规范智能问答提示词配置' },
+  'PUT settings/design-standards-prompt': { label: '更新智能问答提示词设置', description: '修改设计规范智能问答提示词配置' },
+
+  // 设计规范知识库
+  'GET design-standards/status': { label: '查看知识库状态', description: '查看设计规范知识库连接与配置状态' },
+  'GET design-standards/knowledge-bases': { label: '查看知识库列表', description: '查看设计规范知识库列表' },
+  'POST design-standards/knowledge-bases': { label: '关联知识库', description: '关联设计规范知识库' },
+  'POST design-standards/knowledge-bases/link': { label: '关联知识库', description: '关联设计规范知识库' },
+  'DELETE design-standards/knowledge-bases/:kbId': { label: '删除知识库', description: '删除设计规范知识库' },
+  'DELETE design-standards/documents/:documentId': { label: '删除知识库文档', description: '删除设计规范知识库中的文档' },
+  'GET design-standards/knowledge-bases/:kbId/documents': { label: '查看知识库文档', description: '查看设计规范知识库中的文档列表' },
+  'POST design-standards/knowledge-bases/:kbId/documents': { label: '上传知识库文档', description: '上传文档到设计规范知识库' },
+  'POST design-standards/search': { label: '检索设计规范', description: '在设计规范知识库中检索内容' },
+  'POST design-standards/chat': { label: '智能问答', description: '使用设计规范知识库进行智能问答' },
   'GET settings/gun-ledger': { label: '查看焊枪台账设置', description: '查看焊枪编号台账页面的访问设置' },
   'PUT settings/gun-ledger': { label: '更新焊枪台账设置', description: '修改焊枪编号台账页面的访问设置' },
 

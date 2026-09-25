@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
+import { io, Socket } from 'socket.io-client';
 import {
   ChevronLeft,
   BookOpen,
@@ -12,12 +13,11 @@ import {
   AlertCircle,
   Github,
   Globe,
+  Home,
   Shield,
   RefreshCw,
   LogOut,
   Send,
-  Upload,
-  Trash2,
   CheckCircle2,
   MessageSquare,
   FolderOpen,
@@ -26,9 +26,11 @@ import {
   Wifi,
   WifiOff,
   Settings2,
-  Plus,
   X,
-  FolderPlus,
+  Trash2,
+  Upload,
+  Link as LinkIcon,
+  Unlink,
   ChevronDown,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -95,14 +97,30 @@ interface WeknoraStatus {
   baseUrl?: string;
   message?: string;
   code?: string;
-  defaultKnowledgeBaseIds: string[];
   knowledgeBases: KnowledgeBase[];
   tenants?: TenantStatus[];
 }
 
 type TabKey = 'search' | 'chat' | 'manage';
 
+/** 单个知识库的答复约束提示词配置（agentId 由后端在同步 WeKnora 智能体后回写） */
+interface PromptKbEntry {
+  prompt: string;
+  agentId?: string;
+  updatedAt?: string;
+}
+
+/** 答复约束提示词总配置：按知识库维度，仅超级管理员可维护 */
+interface PromptConfig {
+  enabled: boolean;
+  knowledgeBases: Record<string, PromptKbEntry>;
+}
+
 const defaultSettings = { enabled: true, allowAdmins: true, allowViewers: false };
+const defaultPromptConfig: PromptConfig = { enabled: false, knowledgeBases: {} };
+
+/** 知识库服务状态静默轮询间隔：WeKnora 容器停止 / 重启后页面状态最迟在此周期内更新 */
+const STATUS_POLL_INTERVAL_MS = 30000;
 
 /** 把字节数格式化成易读字符串 */
 const formatSize = (bytes: number | null) => {
@@ -277,6 +295,11 @@ const DesignStandards: React.FC = () => {
   const [tab, setTab] = useState<TabKey>('search');
   const [status, setStatus] = useState<WeknoraStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
+  // 后端服务（本项目 node 服务）在线状态：socket 连接 + 浏览器网络事件综合判定
+  const [backendOnline, setBackendOnline] = useState(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const socketRef = useRef<Socket | null>(null);
 
   // 规范检索
   const [query, setQuery] = useState('');
@@ -295,18 +318,24 @@ const DesignStandards: React.FC = () => {
   const [selectedKb, setSelectedKb] = useState('');
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // 新增知识库弹窗
-  const [showCreateKb, setShowCreateKb] = useState(false);
-  const [newKbName, setNewKbName] = useState('');
-  const [newKbDesc, setNewKbDesc] = useState('');
-  const [creatingKb, setCreatingKb] = useState(false);
+  // 关联知识库弹窗（通过知识库 ID 关联）
+  const [showLinkKb, setShowLinkKb] = useState(false);
+  const [linkKbId, setLinkKbId] = useState('');
+  const [linkingKb, setLinkingKb] = useState(false);
 
-  // 规范检索 / 智能问答使用的知识库范围；首次加载时默认勾选后端 .env 配置的知识库
+  // 规范检索 / 智能问答使用的知识库范围（由用户手动选择已关联的知识库）
   const [searchKbIds, setSearchKbIds] = useState<string[]>([]);
   const [chatKbIds, setChatKbIds] = useState<string[]>([]);
+
+  // 答复约束提示词（仅超级管理员可维护，按知识库各配一条）
+  const [promptConfig, setPromptConfig] = useState<PromptConfig>(defaultPromptConfig);
+  const [promptKbId, setPromptKbId] = useState('');
+  const [promptDraft, setPromptDraft] = useState('');
+  const [promptSaving, setPromptSaving] = useState(false);
+  const promptFileRef = useRef<HTMLInputElement | null>(null);
+  // 答复约束提示词设置弹窗：由右上角超管名字左侧的按钮触发，在页面中央静态展示
+  const [showPromptModal, setShowPromptModal] = useState(false);
 
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || isSuperAdmin;
@@ -331,7 +360,8 @@ const DesignStandards: React.FC = () => {
     return false;
   }, [isSuperAdmin, settings, user]);
 
-  const online = !!status?.reachable;
+  // 知识库在线 = 后端在线 且 WeKnora 可达；后端离线时所有知识库操作一并不可用
+  const kbOnline = backendOnline && !!status?.reachable;
 
   /**
    * 问答选择的知识库是否跨越了多个 WeKnora 工作空间。
@@ -369,24 +399,45 @@ const DesignStandards: React.FC = () => {
     }
   }, []);
 
-  const fetchStatus = useCallback(async () => {
-    setStatusLoading(true);
+  const fetchStatus = useCallback(async (options: { silent?: boolean } = {}) => {
+    const { silent = false } = options;
+    // 定时轮询为静默模式：不触发「连接中 / 刷新转圈」，避免页面周期性闪动
+    if (!silent) setStatusLoading(true);
     try {
       const res = await axios.get('/api/design-standards/status', authHeader);
+      setBackendOnline(true);
       setStatus(res.data);
     } catch (err: any) {
+      // 无 HTTP 响应（ERR_NETWORK / ECONNREFUSED 等）说明后端服务本身不可达；
+      // 有响应（如 401/403/500）则说明后端在线，只是知识库侧异常
+      setBackendOnline(!!err?.response);
       setStatus({
         enabled: false,
         configured: false,
         reachable: false,
         message: err?.response?.data?.message || '无法连接知识库服务',
-        defaultKnowledgeBaseIds: [],
         knowledgeBases: [],
       });
     } finally {
-      setStatusLoading(false);
+      if (!silent) setStatusLoading(false);
     }
   }, [authHeader]);
+
+  /**
+   * 操作明确返回「连不上 WeKnora / 请求超时」时，立即把知识库标记为不可用，
+   * 不必等待下一次定时轮询；保留知识库列表仅作展示，所有输入会因 reachable=false 被禁用。
+   */
+  const markKbOffline = useCallback((message?: string, code?: string) => {
+    setStatus(prev =>
+      prev
+        ? { ...prev, reachable: false, message: message || prev.message, ...(code ? { code } : {}) }
+        : prev
+    );
+  }, []);
+
+  /** 判断错误是否为知识库服务侧的连接级故障 */
+  const isKbConnectionError = (code?: string) =>
+    code === 'WEKNORA_UNREACHABLE' || code === 'WEKNORA_TIMEOUT';
 
   useEffect(() => {
     fetchSettings();
@@ -396,19 +447,100 @@ const DesignStandards: React.FC = () => {
     if (settingsLoaded && canViewDesignStandards) fetchStatus();
   }, [settingsLoaded, canViewDesignStandards, fetchStatus]);
 
-  // 知识库列表到达后，默认勾选后端 .env 配置的默认知识库（仅初始化，不覆盖用户手动选择）
+  // 后端服务在线状态：socket 连接断开即视为后端离线，重连成功后自动刷新知识库状态
   useEffect(() => {
-    if (!status?.reachable || !status.knowledgeBases?.length) return;
-    const pickDefaults = (prev: string[]) => {
-      if (prev.length) return prev;
-      const validDefaults = (status.defaultKnowledgeBaseIds || []).filter(id =>
-        status.knowledgeBases.some(kb => kb.id === id)
-      );
-      return validDefaults.length ? validDefaults : [status.knowledgeBases[0].id];
+    if (!token || !canViewDesignStandards) return;
+    const socket = io('/', {
+      path: '/socket.io',
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 3000,
+      timeout: 10000,
+      auth: { token },
+    });
+    socketRef.current = socket;
+    let hasConnectedOnce = false;
+
+    socket.on('connect', () => {
+      setBackendOnline(true);
+      // 断线重连后重新拉取知识库状态（期间 WeKnora 可能也发生过变化）
+      if (hasConnectedOnce) fetchStatus();
+      hasConnectedOnce = true;
+    });
+    socket.on('disconnect', () => setBackendOnline(false));
+    socket.on('connect_error', () => setBackendOnline(false));
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
     };
-    setSearchKbIds(pickDefaults);
-    setChatKbIds(pickDefaults);
-  }, [status]);
+  }, [token, canViewDesignStandards, fetchStatus]);
+
+  // 浏览器网络事件作为补充判定（本机断网时 socket 事件可能滞后）
+  useEffect(() => {
+    const handleOnline = () => setBackendOnline(true);
+    const handleOffline = () => setBackendOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // 知识库服务状态定时轮询：
+  // socket 只反映 node 后端的存活，WeKnora 容器退出时后端仍在线，
+  // 因此必须周期性调用 /status 主动探测，页面隐藏或本机离线时暂停。
+  const pollInFlightRef = useRef(false);
+  useEffect(() => {
+    if (!canViewDesignStandards) return;
+
+    const silentPoll = async () => {
+      if (pollInFlightRef.current || document.hidden || !navigator.onLine) return;
+      pollInFlightRef.current = true;
+      try {
+        await fetchStatus({ silent: true });
+      } finally {
+        pollInFlightRef.current = false;
+      }
+    };
+
+    const timer = window.setInterval(silentPoll, STATUS_POLL_INTERVAL_MS);
+    // 从其他标签页切回 / 最小化恢复时立即探测一次，尽快修正状态
+    const handleVisibility = () => {
+      if (!document.hidden) silentPoll();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [canViewDesignStandards, fetchStatus]);
+
+  // 答复约束提示词仅超级管理员可见/可改，因此只在超管身份下加载
+  const fetchPromptConfig = useCallback(async () => {
+    if (!isSuperAdmin) return;
+    try {
+      const res = await axios.get('/api/settings/design-standards-prompt', authHeader);
+      setPromptConfig({
+        enabled: Boolean(res.data?.enabled),
+        knowledgeBases: res.data?.knowledgeBases || {},
+      });
+    } catch (err) {
+      console.error('Error fetching design-standards prompt config:', err);
+    }
+  }, [isSuperAdmin, authHeader]);
+
+  useEffect(() => {
+    fetchPromptConfig();
+  }, [fetchPromptConfig]);
+
+  // 切换知识库时把草稿同步成该库已保存的提示词
+  useEffect(() => {
+    if (!promptKbId) return;
+    setPromptDraft(promptConfig.knowledgeBases[promptKbId]?.prompt || '');
+  }, [promptKbId, promptConfig]);
 
   useEffect(() => {
     if (chatEndRef.current) {
@@ -427,14 +559,26 @@ const DesignStandards: React.FC = () => {
         );
         setDocuments(res.data.documents || []);
       } catch (err: any) {
-        addToast(err?.response?.data?.message || '获取文档列表失败', 'error');
+        const data = err?.response?.data;
+        addToast(data?.message || '获取文档列表失败', 'error');
         setDocuments([]);
+        if (isKbConnectionError(data?.code)) markKbOffline(data?.message, data?.code);
       } finally {
         setDocsLoading(false);
       }
     },
-    [authHeader, addToast]
+    [authHeader, addToast, markKbOffline]
   );
+
+  // 知识库从不可用恢复为可用时，重新拉取当前选中知识库的文档列表
+  const prevReachableRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const reachable = !!status?.reachable;
+    if (prevReachableRef.current === false && reachable && selectedKb) {
+      fetchDocuments(selectedKb);
+    }
+    prevReachableRef.current = reachable;
+  }, [status?.reachable, selectedKb, fetchDocuments]);
 
   /* ==================== 规范检索 ==================== */
 
@@ -458,8 +602,10 @@ const DesignStandards: React.FC = () => {
       );
       setHits(res.data.results || []);
     } catch (err: any) {
+      const data = err?.response?.data;
       setHits([]);
-      addToast(err?.response?.data?.message || '检索失败', 'error');
+      addToast(data?.message || '检索失败', 'error');
+      if (isKbConnectionError(data?.code)) markKbOffline(data?.message, data?.code);
     } finally {
       setSearching(false);
     }
@@ -513,12 +659,15 @@ const DesignStandards: React.FC = () => {
 
       if (!res.ok || !res.body) {
         let message = '问答请求失败';
+        let code = '';
         try {
           const data = await res.json();
           message = data.message || message;
+          code = data.code || '';
         } catch {
           /* 忽略解析失败 */
         }
+        if (isKbConnectionError(code)) markKbOffline(message, code);
         throw new Error(message);
       }
 
@@ -535,6 +684,8 @@ const DesignStandards: React.FC = () => {
           appendToLast(m => ({ ...m, content: m.content + payload.content }));
         } else if (payload.type === 'error') {
           appendToLast(m => ({ ...m, content: m.content || payload.message, error: true }));
+          // SSE 错误事件携带 code 时（后端在 catch 中透传），立即同步知识库状态
+          if (isKbConnectionError(payload.code)) markKbOffline(payload.message, payload.code);
         }
       };
 
@@ -577,67 +728,52 @@ const DesignStandards: React.FC = () => {
 
   /* ==================== 知识库管理 ==================== */
 
-  const handleCreateKb = async () => {
-    const name = newKbName.trim();
-    if (!name) {
-      addToast('请输入知识库名称', 'error');
+  const handleLinkKb = async () => {
+    const kbId = linkKbId.trim();
+    if (!kbId) {
+      addToast('请输入知识库 ID', 'error');
       return;
     }
-    setCreatingKb(true);
+    setLinkingKb(true);
     try {
       const res = await axios.post(
-        '/api/design-standards/knowledge-bases',
-        { name, description: newKbDesc.trim() },
+        '/api/design-standards/knowledge-bases/link',
+        { kbId },
         authHeader
       );
       const kb = res.data?.knowledgeBase;
-      addToast(`知识库「${name}」创建成功`, 'success');
-      setShowCreateKb(false);
-      setNewKbName('');
-      setNewKbDesc('');
+      addToast(`知识库「${kb?.name || kbId}」关联成功`, 'success');
+      setShowLinkKb(false);
+      setLinkKbId('');
       await fetchStatus();
       if (kb?.id) {
         setSelectedKb(kb.id);
         fetchDocuments(kb.id);
       }
     } catch (err: any) {
-      addToast(err?.response?.data?.message || '创建知识库失败', 'error');
+      addToast(err?.response?.data?.message || '关联知识库失败', 'error');
     } finally {
-      setCreatingKb(false);
+      setLinkingKb(false);
     }
   };
 
-  const handleUpload = async (file: File) => {
-    if (!selectedKb) {
-      addToast('请先选择知识库', 'error');
-      return;
-    }
-    setUploading(true);
+  const handleUnlinkKb = async (kbId: string) => {
+    const kb = status?.knowledgeBases?.find(k => k.id === kbId);
+    if (!window.confirm(`确认取消关联知识库「${kb?.name || kbId}」？该操作仅移除本系统的关联记录，不会删除 WeKnora 中的知识库。`)) return;
     try {
-      const form = new FormData();
-      form.append('file', file);
-      await axios.post(`/api/design-standards/knowledge-bases/${selectedKb}/documents`, form, {
-        ...authHeader,
-        headers: { ...authHeader.headers, 'Content-Type': 'multipart/form-data' },
-      });
-      addToast(`《${file.name}》已提交解析`, 'success');
-      fetchDocuments(selectedKb);
+      await axios.delete(`/api/design-standards/knowledge-bases/${kbId}`, authHeader);
+      addToast('已取消关联', 'success');
+      // 若取消关联的是当前选中的知识库，清空选择
+      if (selectedKb === kbId) {
+        setSelectedKb('');
+        setDocuments([]);
+      }
+      // 从检索 / 问答范围中移除被取消关联的知识库
+      setSearchKbIds(prev => prev.filter(id => id !== kbId));
+      setChatKbIds(prev => prev.filter(id => id !== kbId));
+      await fetchStatus();
     } catch (err: any) {
-      addToast(err?.response?.data?.message || '上传失败', 'error');
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  const handleDeleteDocument = async (doc: DocumentItem) => {
-    if (!window.confirm(`确认删除《${doc.title}》？该操作不可撤销。`)) return;
-    try {
-      await axios.delete(`/api/design-standards/documents/${doc.id}`, authHeader);
-      addToast('文档已删除', 'success');
-      setDocuments(prev => prev.filter(d => d.id !== doc.id));
-    } catch (err: any) {
-      addToast(err?.response?.data?.message || '删除失败', 'error');
+      addToast(err?.response?.data?.message || '取消关联失败', 'error');
     }
   };
 
@@ -668,6 +804,113 @@ const DesignStandards: React.FC = () => {
       console.error('Error saving design-standards settings:', err);
       addToast('保存设计规范知识库权限设置失败', 'error');
     }
+  };
+
+  /* ==================== 答复约束提示词（仅超管） ==================== */
+
+  /**
+   * 提交提示词配置。
+   * 后端会把每个知识库的提示词同步到 WeKnora 的自定义智能体上
+   * （创建/更新/删除），并回写 agentId。
+   */
+  const persistPromptConfig = async (
+    next: PromptConfig,
+    successMessage: string
+  ): Promise<boolean> => {
+    setPromptSaving(true);
+    try {
+      const res = await axios.put('/api/settings/design-standards-prompt', next, authHeader);
+      setPromptConfig({
+        enabled: Boolean(res.data?.enabled),
+        knowledgeBases: res.data?.knowledgeBases || {},
+      });
+      const syncErrors: { kbId: string; message: string }[] = res.data?.syncErrors || [];
+      if (syncErrors.length) {
+        const names = syncErrors
+          .map(e => status?.knowledgeBases.find(kb => kb.id === e.kbId)?.name || e.kbId)
+          .join('、');
+        addToast(`已保存，但以下知识库同步失败：${names}。${syncErrors[0].message}`, 'error');
+      } else {
+        addToast(successMessage, 'success');
+      }
+      return true;
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '保存答复约束提示词失败', 'error');
+      return false;
+    } finally {
+      setPromptSaving(false);
+    }
+  };
+
+  const handleSavePrompt = async () => {
+    if (!promptKbId) {
+      addToast('请先选择知识库', 'error');
+      return;
+    }
+    const prompt = promptDraft.trim();
+    if (!prompt) {
+      addToast('提示词不能为空，如需取消约束请点击「清除」', 'error');
+      return;
+    }
+    const kbName = status?.knowledgeBases.find(kb => kb.id === promptKbId)?.name || '该知识库';
+    await persistPromptConfig(
+      {
+        enabled: promptConfig.enabled,
+        knowledgeBases: {
+          ...promptConfig.knowledgeBases,
+          [promptKbId]: { prompt },
+        },
+      },
+      `「${kbName}」的答复约束提示词已保存并生效`
+    );
+  };
+
+  const handleClearPrompt = async (kbId: string) => {
+    const kbName = status?.knowledgeBases.find(kb => kb.id === kbId)?.name || '该知识库';
+    if (!window.confirm(`确认清除「${kbName}」的答复约束提示词？清除后该库将恢复默认回答风格。`)) {
+      return;
+    }
+    const nextKbs = { ...promptConfig.knowledgeBases };
+    delete nextKbs[kbId];
+    const ok = await persistPromptConfig(
+      { enabled: promptConfig.enabled, knowledgeBases: nextKbs },
+      `已清除「${kbName}」的答复约束提示词`
+    );
+    if (ok && promptKbId === kbId) setPromptDraft('');
+  };
+
+  const handleTogglePromptEnabled = async (enabled: boolean) => {
+    await persistPromptConfig(
+      { enabled, knowledgeBases: promptConfig.knowledgeBases },
+      enabled ? '答复约束提示词已启用' : '答复约束提示词已停用（配置保留）'
+    );
+  };
+
+  /** 从 .md / .markdown / .txt 文件导入提示词内容到编辑框 */
+  const handleImportPromptFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许重复导入同一个文件
+    if (!file) return;
+    if (file.size > 512 * 1024) {
+      addToast('文件过大（超过 512KB），请精简后再导入', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || '');
+      if (!text.trim()) {
+        addToast('文件内容为空', 'error');
+        return;
+      }
+      if (text.length > 20000) {
+        addToast(`「${file.name}」超过 20000 字符，已自动截断`, 'error');
+      } else {
+        addToast(`已导入「${file.name}」的内容`, 'success');
+      }
+      setPromptDraft(text.slice(0, 20000));
+    };
+    reader.onerror = () => addToast('读取文件失败', 'error');
+    reader.readAsText(file);
   };
 
   /* ==================== 渲染 ==================== */
@@ -748,27 +991,63 @@ const DesignStandards: React.FC = () => {
             设计规范知识库
             <span
               className={`ml-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
-                statusLoading
+                !backendOnline
+                  ? 'bg-red-100 text-red-700 border-red-300'
+                  : statusLoading
                   ? 'bg-gray-100 text-gray-500 border-gray-200'
-                  : online
+                  : kbOnline
                   ? 'bg-green-100 text-green-700 border-green-300'
-                  : 'bg-red-100 text-red-700 border-red-300'
+                  : 'bg-amber-100 text-amber-700 border-amber-300'
               }`}
+              title={
+                !backendOnline
+                  ? '后端服务连接断开，请确认本地服务已启动'
+                  : statusLoading
+                  ? '正在检测知识库服务状态'
+                  : kbOnline
+                  ? '知识库服务正常'
+                  : '后端正常，但 WeKnora 知识库服务不可达'
+              }
             >
-              {statusLoading ? (
+              {!backendOnline ? (
+                <WifiOff size={12} />
+              ) : statusLoading ? (
                 <Loader2 size={12} className="animate-spin" />
-              ) : online ? (
+              ) : kbOnline ? (
                 <Wifi size={12} />
               ) : (
                 <WifiOff size={12} />
               )}
-              {statusLoading ? '连接中' : online ? '已连接' : '未连接'}
+              {!backendOnline
+                ? '后端离线'
+                : statusLoading
+                ? '连接中'
+                : kbOnline
+                ? '知识库已连接'
+                : '知识库未连接'}
             </span>
           </h2>
         </div>
 
         {user && (
           <div className="flex items-center space-x-4">
+            {isSuperAdmin && (
+              <button
+                type="button"
+                title="答复约束提示词设置"
+                onClick={() => {
+                  setShowPromptModal(true);
+                  // 首次打开时默认选中第一个知识库，方便直接编辑
+                  if (!promptKbId && status?.knowledgeBases?.length) {
+                    setPromptKbId(status.knowledgeBases[0].id);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition"
+              >
+                <Sparkles size={14} className="shrink-0" />
+                答复约束提示词
+              </button>
+            )}
             <span className="text-sm font-bold text-red-600">{user.name}</span>
             <button
               onClick={logout}
@@ -780,6 +1059,14 @@ const DesignStandards: React.FC = () => {
           </div>
         )}
       </header>
+
+      {/* 后端离线提示条（与其他页面离线提示样式一致） */}
+      {!backendOnline && (
+        <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>后端服务连接断开，页面数据暂不可用，服务恢复后将自动重连！</span>
+        </div>
+      )}
 
       {/* 主体内容 */}
       <main className="flex-1 max-w-6xl mx-auto w-full px-6 py-8 pb-24">
@@ -797,7 +1084,17 @@ const DesignStandards: React.FC = () => {
                 知识库，提供规范检索与智能问答，回答均附带引用出处。
               </p>
 
-              {!online && !statusLoading && (
+              {!backendOnline && (
+                <div className="mt-3 flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2">
+                  <AlertCircle size={16} className="text-red-600 mt-0.5 shrink-0" />
+                  <div className="text-xs text-red-700 leading-relaxed">
+                    <span className="font-semibold">后端服务未连接：</span>
+                    请确认本地任务管理服务（Obara-Task-Management-Service-Console）已启动，恢复后将自动重连，也可点击「刷新状态」重试
+                  </div>
+                </div>
+              )}
+
+              {backendOnline && !kbOnline && !statusLoading && (
                 <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
                   <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
                   <div className="text-xs text-amber-700 leading-relaxed">
@@ -807,7 +1104,7 @@ const DesignStandards: React.FC = () => {
                 </div>
               )}
 
-              {online && !statusLoading && status?.tenants?.some(t => !t.reachable) && (
+              {kbOnline && !statusLoading && status?.tenants?.some(t => !t.reachable) && (
                 <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
                   <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
                   <div className="text-xs text-amber-700 leading-relaxed">
@@ -833,6 +1130,16 @@ const DesignStandards: React.FC = () => {
                   <ExternalLink size={11} className="opacity-70" />
                 </a>
                 <a
+                  href="https://weknora.weixin.qq.com/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#07c160] hover:bg-[#06ad56] text-white text-xs font-medium transition"
+                >
+                  <Home size={14} />
+                  WeKnora 官网
+                  <ExternalLink size={11} className="opacity-70" />
+                </a>
+                <a
                   href="http://localhost"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -843,14 +1150,14 @@ const DesignStandards: React.FC = () => {
                   <ExternalLink size={11} className="opacity-70" />
                 </a>
                 <button
-                  onClick={fetchStatus}
+                  onClick={() => fetchStatus()}
                   disabled={statusLoading}
                   className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-blue-300 hover:text-blue-600 text-gray-600 text-xs font-medium transition disabled:opacity-50"
                 >
                   <RefreshCw size={13} className={statusLoading ? 'animate-spin' : ''} />
                   刷新状态
                 </button>
-                {online && status?.knowledgeBases?.length ? (
+                {kbOnline && status?.knowledgeBases?.length ? (
                   <span className="text-xs text-gray-400">已接入 {status.knowledgeBases.length} 个知识库</span>
                 ) : null}
               </div>
@@ -898,9 +1205,9 @@ const DesignStandards: React.FC = () => {
                 knowledgeBases={status?.knowledgeBases || []}
                 selectedIds={searchKbIds}
                 onChange={setSearchKbIds}
-                disabled={!online}
+                disabled={!kbOnline}
               />
-              {online && searchKbIds.length === 0 && (
+              {kbOnline && searchKbIds.length === 0 && (
                 <span className="text-xs text-red-400">请至少选择一个知识库</span>
               )}
             </div>
@@ -911,14 +1218,14 @@ const DesignStandards: React.FC = () => {
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                  placeholder="输入关键词检索设计规范，例如：枪体材质要求、螺纹公差等级…"
-                  disabled={!online}
+                  placeholder="输入关键词检索设计规范"
+                  disabled={!kbOnline}
                   className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none text-sm transition disabled:bg-gray-50 disabled:cursor-not-allowed"
                 />
               </div>
               <button
                 onClick={handleSearch}
-                disabled={searching || !online || !searchKbIds.length}
+                disabled={searching || !kbOnline || !searchKbIds.length}
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {searching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
@@ -926,7 +1233,7 @@ const DesignStandards: React.FC = () => {
               </button>
             </div>
 
-            {!online && (
+            {!kbOnline && (
               <div className="mt-4 text-sm text-gray-400 flex items-center gap-2">
                 <AlertCircle size={15} />
                 知识库未连接，检索功能暂不可用
@@ -999,12 +1306,12 @@ const DesignStandards: React.FC = () => {
                     // 切换知识库范围后开启新会话，避免继续沿用旧会话的检索范围
                     if (ids.join(',') !== chatKbIds.join(',')) setSessionId('');
                   }}
-                  disabled={!online}
+                  disabled={!kbOnline}
                 />
-                {online && chatKbIds.length === 0 && (
+                {kbOnline && chatKbIds.length === 0 && (
                   <span className="text-xs text-red-400">请至少选择一个知识库</span>
                 )}
-                {online && chatCrossTenant && (
+                {kbOnline && chatCrossTenant && (
                   <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700">
                     <AlertCircle size={12} className="shrink-0" />
                     问答不支持跨工作空间（已选：{chatTenantNames.join('、')}），请只保留同一工作空间
@@ -1019,7 +1326,6 @@ const DesignStandards: React.FC = () => {
                   <div className="font-semibold text-gray-500">基于本地知识库的规范问答</div>
                   <p className="text-xs mt-2 max-w-md leading-relaxed">
                     回答由 WeKnora 检索设计规范后生成，并给出引用出处。
-                    试试问：「枪体表面处理的验收标准是什么？」
                   </p>
                 </div>
               )}
@@ -1087,14 +1393,14 @@ const DesignStandards: React.FC = () => {
                     }
                   }}
                   rows={2}
-                  placeholder={online ? '输入你的问题，Enter 发送，Shift+Enter 换行…' : '知识库未连接'}
-                  disabled={!online || streaming}
+                  placeholder={kbOnline ? '输入你的问题，Enter 发送，Shift+Enter 换行…' : '知识库未连接'}
+                  disabled={!kbOnline || streaming}
                   className="flex-1 resize-none px-4 py-2.5 rounded-xl border border-gray-200 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none text-sm transition disabled:bg-gray-50 disabled:cursor-not-allowed"
                 />
                 <button
                   onClick={handleChat}
                   disabled={
-                    !online ||
+                    !kbOnline ||
                     streaming ||
                     !chatInput.trim() ||
                     !chatKbIds.length ||
@@ -1151,38 +1457,27 @@ const DesignStandards: React.FC = () => {
               </select>
 
               <button
-                onClick={() => setShowCreateKb(true)}
-                disabled={!online}
-                title={online ? '新增知识库' : '知识库未连接'}
+                onClick={() => setShowLinkKb(true)}
+                disabled={!kbOnline}
+                title={kbOnline ? '通过知识库 ID 关联知识库' : '知识库未连接'}
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-600 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Plus size={15} />
-                新增知识库
+                <LinkIcon size={15} />
+                关联知识库
               </button>
 
-              <div className="flex-1" />
-
-              <input
-                ref={fileInputRef}
-                type="file"
-                className="hidden"
-                accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.ppt,.pptx"
-                onChange={e => {
-                  const file = e.target.files?.[0];
-                  if (file) handleUpload(file);
-                }}
-              />
               <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!selectedKb || uploading || !online}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={() => selectedKb && handleUnlinkKb(selectedKb)}
+                disabled={!selectedKb || !kbOnline}
+                title={selectedKb ? '取消关联当前知识库' : '请先选择知识库'}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-600 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {uploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
-                上传文档
+                <Unlink size={15} />
+                取消关联
               </button>
             </div>
 
-            {!online ? (
+            {!kbOnline ? (
               <div className="text-sm text-gray-400 flex items-center gap-2 py-8 justify-center">
                 <AlertCircle size={15} />
                 知识库未连接
@@ -1190,7 +1485,7 @@ const DesignStandards: React.FC = () => {
             ) : !selectedKb ? (
               <div className="text-sm text-gray-400 text-center py-8">
                 {(status?.knowledgeBases || []).length === 0
-                  ? '尚未创建知识库，点击上方「新增知识库」创建'
+                  ? '尚未关联知识库，点击上方「关联知识库」输入知识库 ID 进行关联'
                   : '请选择一个知识库'}
               </div>
             ) : docsLoading ? (
@@ -1201,7 +1496,7 @@ const DesignStandards: React.FC = () => {
             ) : documents.length === 0 ? (
               <div className="text-center py-10 text-gray-400">
                 <Database size={36} className="mx-auto mb-3 text-gray-300" />
-                <div className="text-sm">该知识库暂无文档，上传规范文件即可开始构建索引</div>
+                <div className="text-sm">该知识库暂无文档，请到 WeKnora 控制台上传规范文件</div>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -1212,7 +1507,6 @@ const DesignStandards: React.FC = () => {
                       <th className="py-2 font-medium w-24">类型</th>
                       <th className="py-2 font-medium w-24">大小</th>
                       <th className="py-2 font-medium w-24">状态</th>
-                      <th className="py-2 font-medium w-20 text-right">操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1233,15 +1527,6 @@ const DesignStandards: React.FC = () => {
                               {st.label}
                             </span>
                           </td>
-                          <td className="py-2.5 text-right">
-                            <button
-                              onClick={() => handleDeleteDocument(doc)}
-                              className="text-gray-400 hover:text-red-500 transition"
-                              title="删除"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </td>
                         </tr>
                       );
                     })}
@@ -1253,16 +1538,16 @@ const DesignStandards: React.FC = () => {
             <div className="mt-5 flex items-start gap-2 text-xs text-gray-400">
               <AlertCircle size={14} className="mt-0.5 shrink-0" />
               <p>
-                文档解析在 WeKnora 中异步进行，上传后状态会经历「解析中 → 已就绪」，完成后即可被检索与问答命中。
-                更多管理能力（分块查看、标签、FAQ 等）请到 WeKnora 控制台操作。
+                知识库通过「知识库 ID」关联到本系统，文档的上传、删除与更多管理能力请到 WeKnora 控制台操作。
+                文档解析在 WeKnora 中异步进行，状态会经历「解析中 → 已就绪」，完成后即可被检索与问答命中。
               </p>
             </div>
 
-            {/* 新增知识库弹窗 */}
-            {showCreateKb && (
+            {/* 关联知识库弹窗（通过知识库 ID 关联） */}
+            {showLinkKb && (
               <div
                 className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-                onClick={() => !creatingKb && setShowCreateKb(false)}
+                onClick={() => !linkingKb && setShowLinkKb(false)}
               >
                 <div
                   className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6"
@@ -1270,12 +1555,12 @@ const DesignStandards: React.FC = () => {
                 >
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                      <FolderPlus size={20} className="text-blue-500" />
-                      新增知识库
+                      <LinkIcon size={20} className="text-blue-500" />
+                      关联知识库
                     </h3>
                     <button
-                      onClick={() => setShowCreateKb(false)}
-                      disabled={creatingKb}
+                      onClick={() => setShowLinkKb(false)}
+                      disabled={linkingKb}
                       className="text-gray-400 hover:text-gray-600 transition disabled:opacity-50"
                     >
                       <X size={20} />
@@ -1284,49 +1569,49 @@ const DesignStandards: React.FC = () => {
                   <div className="space-y-4">
                     <div>
                       <label className="block text-sm font-semibold text-gray-600 mb-1">
-                        名称 <span className="text-red-500">*</span>
+                        知识库 ID <span className="text-red-500">*</span>
                       </label>
                       <input
-                        value={newKbName}
-                        onChange={e => setNewKbName(e.target.value)}
+                        value={linkKbId}
+                        onChange={e => setLinkKbId(e.target.value)}
                         onKeyDown={e => {
-                          if (e.key === 'Enter' && !creatingKb && newKbName.trim()) handleCreateKb();
+                          if (e.key === 'Enter' && !linkingKb && linkKbId.trim()) handleLinkKb();
                         }}
-                        disabled={creatingKb}
+                        disabled={linkingKb}
                         autoFocus
-                        maxLength={100}
-                        placeholder="例如：X2C-V4 设计规范"
-                        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:border-blue-400 outline-none disabled:opacity-60"
+                        placeholder="粘贴 WeKnora 知识库的 ID"
+                        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm font-mono focus:border-blue-400 outline-none disabled:opacity-60"
                       />
                     </div>
-                    <div>
-                      <label className="block text-sm font-semibold text-gray-600 mb-1">描述</label>
-                      <textarea
-                        value={newKbDesc}
-                        onChange={e => setNewKbDesc(e.target.value)}
-                        disabled={creatingKb}
-                        rows={3}
-                        maxLength={500}
-                        placeholder="可选，简单说明该知识库的用途"
-                        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:border-blue-400 outline-none resize-none disabled:opacity-60"
-                      />
+                    <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 leading-relaxed">
+                      <span className="font-semibold">获取方式：</span>
+                      在 WeKnora 控制台（
+                      <a
+                        href="http://localhost/platform/knowledge-bases"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        http://localhost/platform/knowledge-bases
+                      </a>
+                      ）打开目标知识库，浏览器地址栏或知识库详情中复制其 ID。
                     </div>
                   </div>
                   <div className="flex justify-end gap-3 mt-6">
                     <button
-                      onClick={() => setShowCreateKb(false)}
-                      disabled={creatingKb}
+                      onClick={() => setShowLinkKb(false)}
+                      disabled={linkingKb}
                       className="px-4 py-2 rounded-lg border border-gray-200 text-gray-600 text-sm font-semibold hover:bg-gray-50 transition disabled:opacity-50"
                     >
                       取消
                     </button>
                     <button
-                      onClick={handleCreateKb}
-                      disabled={creatingKb || !newKbName.trim()}
+                      onClick={handleLinkKb}
+                      disabled={linkingKb || !linkKbId.trim()}
                       className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {creatingKb ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
-                      {creatingKb ? '创建中…' : '创建'}
+                      {linkingKb ? <Loader2 size={15} className="animate-spin" /> : <LinkIcon size={15} />}
+                      {linkingKb ? '关联中…' : '关联'}
                     </button>
                   </div>
                 </div>
@@ -1372,24 +1657,247 @@ const DesignStandards: React.FC = () => {
             </div>
           </section>
         )}
+
+        {/* 超级管理员：答复约束提示词设置模态框（点击右上角按钮，在页面中央静态弹出） */}
+        {isSuperAdmin && showPromptModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => {
+              // 保存同步过程中不允许误关
+              if (!promptSaving) setShowPromptModal(false);
+            }}
+          >
+            <div
+              className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* 模态头部：标题 + 全局启停开关 + 关闭按钮 */}
+              <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-gray-100 shrink-0">
+                <h3 className="text-lg font-bold text-gray-800 flex items-center min-w-0">
+                  <Sparkles className="mr-2 text-blue-600 shrink-0" size={22} />
+                  答复约束提示词
+                </h3>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-sm font-semibold text-gray-600">
+                    {promptConfig.enabled ? '已启用' : '已停用'}
+                  </span>
+                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                    <input
+                      type="checkbox"
+                      checked={promptConfig.enabled}
+                      onChange={e => handleTogglePromptEnabled(e.target.checked)}
+                      disabled={promptSaving || !kbOnline}
+                      className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 disabled:opacity-50"
+                    />
+                    <label
+                      className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${
+                        promptConfig.enabled ? 'bg-blue-500' : 'bg-gray-300'
+                      }`}
+                    ></label>
+                  </div>
+                  <button
+                    type="button"
+                    title="关闭"
+                    onClick={() => setShowPromptModal(false)}
+                    disabled={promptSaving}
+                    className="text-gray-400 hover:text-gray-600 transition disabled:opacity-50"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+
+              {/* 模态正文：内容超高时仅在框内滚动 */}
+              <div className="overflow-y-auto px-6 py-5">
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  为每个知识库单独配置一段系统提示词，约束智能问答的回答风格与格式。启用后，
+                  该库的回答将由 WeKnora 的自定义智能体承载，提示词会
+                  <span className="font-semibold text-amber-700">完全替换</span>
+                  WeKnora 默认提示词（引用出处的展示不受影响，仍由系统单独渲染）。
+                  支持 Markdown 格式：可直接粘贴整篇 .md 文档，或从文件导入，内容原样作为系统提示词传给模型。
+                  未配置提示词的知识库保持默认行为。
+                </p>
+
+            {!kbOnline && (
+              <div className="mt-4 mb-4 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+                <div className="text-xs text-amber-700 leading-relaxed">
+                  知识库服务未连接，暂时无法保存提示词（保存时需要同步到 WeKnora 智能体）。已保存的配置仍会正常展示。
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5">
+              {/* 左：知识库列表 */}
+              <div className="rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+                <div className="text-xs font-semibold text-gray-400 px-1 mb-2">知识库</div>
+                <div className="space-y-1 max-h-[340px] overflow-y-auto">
+                  {(status?.knowledgeBases || []).length === 0 && (
+                    <div className="px-1 py-6 text-center text-xs text-gray-400">暂无知识库</div>
+                  )}
+                  {(status?.knowledgeBases || []).map(kb => {
+                    const configured = Boolean(promptConfig.knowledgeBases[kb.id]?.prompt);
+                    const active = promptKbId === kb.id;
+                    return (
+                      <button
+                        key={kb.id}
+                        type="button"
+                        onClick={() => setPromptKbId(kb.id)}
+                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition ${
+                          active
+                            ? 'bg-blue-600 text-white font-semibold'
+                            : 'text-gray-600 hover:bg-white hover:text-blue-600'
+                        }`}
+                      >
+                        <span className="truncate flex-1">{kb.name}</span>
+                        {configured && (
+                          <span
+                            title="已配置约束提示词"
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              active ? 'bg-white' : 'bg-green-500'
+                            }`}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 右：编辑区 */}
+              <div className="rounded-xl border border-gray-100 p-4">
+                {!promptKbId ? (
+                  <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center text-gray-400">
+                    <FileText size={32} className="mb-2 text-gray-300" />
+                    <div className="text-sm">请从左侧选择一个知识库</div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FolderOpen size={15} className="text-blue-500 shrink-0" />
+                        <span className="text-sm font-semibold text-gray-700 truncate">
+                          {status?.knowledgeBases.find(kb => kb.id === promptKbId)?.name || '未命名知识库'}
+                        </span>
+                        {promptConfig.knowledgeBases[promptKbId]?.prompt && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200 shrink-0">
+                            已配置
+                          </span>
+                        )}
+                      </div>
+                      {promptConfig.knowledgeBases[promptKbId]?.updatedAt && (
+                        <span className="text-[11px] text-gray-400 shrink-0">
+                          更新于 {new Date(promptConfig.knowledgeBases[promptKbId].updatedAt as string).toLocaleString('zh-CN')}
+                        </span>
+                      )}
+                    </div>
+
+                    <textarea
+                      value={promptDraft}
+                      onChange={e => setPromptDraft(e.target.value)}
+                      disabled={promptSaving || !kbOnline}
+                      rows={14}
+                      maxLength={20000}
+                      placeholder={'支持 Markdown 格式，可直接粘贴整篇 .md 文档，或点「导入 .md 文件」。例如：\n\n# 角色\n你是欧巴拉设计规范助手，回答必须严格依据检索到的规范条款。\n\n## 输出要求\n- 先给结论，再用 `## 依据` 小节列出条款原文与出处；\n- 涉及尺寸、公差、材质时必须引用具体数值，不得估算；\n- 规范没有明确规定的，直接回答「规范未规定」，不要推测。\n\n## 格式\n用 Markdown 回答：表格用于参数对比，列表用于步骤。'}
+                      className="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm leading-relaxed focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none resize-y disabled:bg-gray-50 disabled:cursor-not-allowed font-mono"
+                    />
+
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-gray-400">
+                        {promptDraft.length} / 20000 字符 · 支持 Markdown · 每次问答取所选知识库中第一个已配置提示词的库生效
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <input
+                          ref={promptFileRef}
+                          type="file"
+                          accept=".md,.markdown,.txt"
+                          className="hidden"
+                          onChange={handleImportPromptFile}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => promptFileRef.current?.click()}
+                          disabled={promptSaving || !kbOnline}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50 hover:border-blue-300 hover:text-blue-600 transition disabled:opacity-50"
+                        >
+                          <Upload size={13} />
+                          导入 .md 文件
+                        </button>
+                        {promptConfig.knowledgeBases[promptKbId]?.prompt && (
+                          <button
+                            type="button"
+                            onClick={() => handleClearPrompt(promptKbId)}
+                            disabled={promptSaving}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-50 transition disabled:opacity-50"
+                          >
+                            <Trash2 size={13} />
+                            清除
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleSavePrompt}
+                          disabled={promptSaving || !kbOnline || !promptDraft.trim()}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {promptSaving ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+                          {promptSaving ? '保存中…' : '保存并生效'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {promptConfig.knowledgeBases[promptKbId]?.agentId && (
+                      <div className="mt-3 text-[11px] text-gray-400 font-mono truncate">
+                        WeKnora 智能体 ID：{promptConfig.knowledgeBases[promptKbId].agentId}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
       <footer className="fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-gray-200 px-6 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
         <div className="max-w-6xl mx-auto flex justify-between items-center text-sm text-gray-500">
           <div>本地知识库 · WeKnora</div>
-          <div className="flex items-center gap-2">
-            <span className="font-medium">当前状态:</span>
-            {online ? (
-              <span className="text-green-600 flex items-center">
-                <span className="w-2 h-2 bg-green-500 rounded-full mr-1"></span>
-                已连接
-              </span>
-            ) : (
-              <span className="text-red-500 flex items-center">
-                <span className="w-2 h-2 bg-red-500 rounded-full mr-1"></span>
-                未连接
-              </span>
-            )}
+          <div className="flex items-center gap-4">
+            <span className="flex items-center">
+              <span className="font-medium mr-1">后端服务:</span>
+              {backendOnline ? (
+                <span className="text-green-600 flex items-center">
+                  <span className="w-2 h-2 bg-green-500 rounded-full mr-1"></span>
+                  已连接
+                </span>
+              ) : (
+                <span className="text-red-500 flex items-center">
+                  <span className="w-2 h-2 bg-red-500 rounded-full mr-1"></span>
+                  已断开
+                </span>
+              )}
+            </span>
+            <span className="flex items-center">
+              <span className="font-medium mr-1">知识库服务:</span>
+              {!backendOnline ? (
+                <span className="text-gray-400 flex items-center">
+                  <span className="w-2 h-2 bg-gray-300 rounded-full mr-1"></span>
+                  未知
+                </span>
+              ) : kbOnline ? (
+                <span className="text-green-600 flex items-center">
+                  <span className="w-2 h-2 bg-green-500 rounded-full mr-1"></span>
+                  已连接
+                </span>
+              ) : (
+                <span className="text-red-500 flex items-center">
+                  <span className="w-2 h-2 bg-red-500 rounded-full mr-1"></span>
+                  未连接
+                </span>
+              )}
+            </span>
           </div>
         </div>
       </footer>

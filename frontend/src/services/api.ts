@@ -4,6 +4,7 @@
  */
 
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
+import { buildLoginUrl } from '../utils/redirect';
 import type {
   LoginCredentials,
   LoginResponse,
@@ -59,7 +60,7 @@ axiosInstance.interceptors.response.use(
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         alert('您的账号已被禁用，请联系管理员');
-        window.location.href = '/login';
+        window.location.href = buildLoginUrl();
       }
     }
     
@@ -67,7 +68,7 @@ axiosInstance.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      window.location.href = '/login';
+      window.location.href = buildLoginUrl();
     }
     
     return Promise.reject(error);

@@ -104,7 +104,7 @@ npm run dev
 | 操作日志 | `/system-logs` | 所有用户的操作日志明细和筛选 |
 | 状态追踪 | `/status-tracking` | 任务状态追踪与批量导入导出 |
 | 焊枪台账 | `/gun-ledger` | 焊枪编号台账：分类/表/行三级管理、焊枪名自动取号、表级独占编辑锁、分类导出与导入 |
-| 设计规范知识库 | `/design-standards` | 基于本地 WeKnora 的规范检索与智能问答（带引用），含知识库文档管理 |
+| 设计规范知识库 | `/design-standards` | 基于本地 WeKnora 的规范检索与智能问答（带引用），知识库按 ID 关联，支持多工作空间与答复约束提示词 |
 
 ## 当前功能
 
@@ -260,11 +260,35 @@ npm run dev
 
 设计规范知识库页面（`/design-standards`）基于本地 Docker 部署的 [Tencent/WeKnora](https://github.com/Tencent/WeKnora) 知识库（问答走 DeepSeek API、向量化走智谱 API），提供三个功能标签：
 
-- **规范检索**：关键词检索知识库中的规范条款，显示命中方式与相关度得分；
+- **规范检索**：关键词检索知识库中的规范条款，显示命中方式（向量检索/关键词等）与相关度得分；
 - **智能问答**：基于检索结果流式生成回答（SSE），并附带引用出处；
-- **知识库管理**（一般管理员及以上）：查看/上传/删除知识库文档，默认知识库为《电极使用规范.pdf》。
+- **知识库管理**（一般管理员及以上）：按知识库 ID 关联/取消关联知识库，并只读查看各库文档清单与解析状态。
 
-WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`），前端统一经 `/api/design-standards/*` 代理访问。部署物料与文档全部内置在仓库 `weknora/` 目录（详见 [weknora/README.md](weknora/README.md) 与 DEPLOYMENT.md）。查看权限与工时管理页面一致，超级管理员可在页面底部配置一般管理员/普通用户的访问权限。
+#### 知识库关联
+
+- 知识库不再自动发现，需显式关联：在 WeKnora 控制台（http://localhost/platform/knowledge-bases）打开目标知识库并复制其 ID，回到本页面「知识库管理 → 关联知识库」粘贴 ID，后端校验通过后保存到项目数据库（`settings.designStandardsLinkedKbIds`）。
+- 取消关联仅移除本系统的关联记录，**不会删除 WeKnora 中的知识库**；文档的上传、删除等管理操作统一在 WeKnora 控制台进行。
+
+#### 检索/问答范围
+
+- 「规范检索」与「智能问答」各有一个**知识库范围多选下拉框**，从已关联知识库中勾选；未勾选时无法提交（红色提示），支持全选。
+- 下拉项显示文档篇数；接入多个工作空间时，每个库带紫色工作空间标签。
+- 问答范围变更后自动开启新会话，避免沿用旧会话的检索范围。
+
+#### 多工作空间（多租户）
+
+- WeKnora 的 API Key 按工作空间隔离，一个 Key 只能访问所属空间的知识库。后端支持配置多个 Key：主 Key `WEKNORA_API_KEY` + 其他空间 Key `WEKNORA_EXTRA_API_KEYS`（英文逗号分隔）。
+- **规范检索支持跨工作空间**：后端按空间分组并行检索，合并后按相关度排序。
+- **智能问答不支持跨工作空间**：WeKnora 会话是空间级资源；所选知识库跨越多个空间时显示琥珀色提示并禁用发送，后端在 SSE 建连前返回 `400`（`WEKNORA_MULTI_TENANT`）。
+- 状态接口返回每个工作空间（Key）的可达性；某个 Key 失效时页面提示「部分工作空间无法访问」，不影响其他空间。
+
+#### 答复约束提示词（仅超级管理员）
+
+- 超级管理员可在页面底部「答复约束提示词」面板中按知识库配置系统提示词（支持 Markdown，可直接粘贴整篇 `.md` 或从文件导入，单条最长 20000 字符）。
+- 保存后后端在该知识库所属工作空间创建/更新一个绑定 KnowledgeQA 模型的**自定义智能体**，问答由该智能体承载，提示词完全替换 WeKnora 默认提示词；引用出处仍由系统单独渲染，不受影响。
+- 一次问答选中多个知识库时，取所选范围内第一个已配置提示词的库生效；清空提示词会同步删除对应智能体；未配置提示词的知识库保持默认行为。
+
+查看权限与工时管理页面一致（`settings.designStandards`），超级管理员可在页面底部配置一般管理员/普通用户的访问权限。WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`），前端统一经 `/api/design-standards/*` 代理访问。部署物料与文档全部内置在仓库 `weknora/` 目录（详见 [weknora/README.md](weknora/README.md) 与 DEPLOYMENT.md）。
 
 ### 系统设置
 
@@ -319,6 +343,7 @@ WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`）�
 - 配置任务报表、工时管理、状态追踪、焊枪台账和系统设置。
 - 导入导出系统数据（任务管理、状态跟踪表、工时管理表、焊枪编号台账）。
 - 管理焊枪台账分类、表、行，配置按表焊枪名生成规则、执行台账初始化（焊枪名初始化/批量初始化）、管理默认担当人员。
+- 关联/取消关联设计规范知识库，配置答复约束提示词。
 - 查看最新管理员登录信息和详细操作日志。
 - 配置未登录查看、多设备同时在线等系统设置。
 - 强制重置任意用户密码（重置后用户下次登录需修改密码）。
@@ -330,6 +355,7 @@ WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`）�
 - 创建普通用户作为登录用户。
 - 配置和管理组长规则。
 - 可新增/重命名/重排焊枪台账分类与表、编辑行（打开表时获取表级独占编辑锁），但**不能删除分类或表**（会被拦截并提示需超级管理员权限）。
+- 可关联/取消关联设计规范知识库并查看各库文档清单（文档的上传与删除在 WeKnora 控制台操作）。
 - 是否可进入任务报表、工时管理、状态追踪、焊枪台账，取决于对应页面的“一般管理员”开关。
 - 是否可进入系统设置数据管理模块，取决于系统设置页面的“一般管理员”开关（仅可查看导出，不能导入）。
 
@@ -359,7 +385,7 @@ WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`）�
 | `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
 | `statusTrackingItems` | 状态追踪记录 |
 | `gunLedger` | 焊枪编号台账，包含 `categories`（分类→表→行三级结构）和 `defaultResponsiblePersons`（默认担当人员） |
-| `settings` | 系统配置，包含权限、工作日覆盖、维护等设置 |
+| `settings` | 系统配置，包含页面权限、工作日覆盖、维护设置、已关联知识库（`designStandardsLinkedKbIds`）、答复约束提示词（`designStandardsPrompt`）等 |
 
 > 如果存在遗留的 `backend/db.json`，后端首次启动时会**自动迁移**到 SQLite，并将原文件重命名为 `db.json.migrated-<时间戳>.bak`。
 
@@ -451,6 +477,11 @@ node --check backend\routes\tasks.js
 | `GITEE_REPO_OWNER` | `caifugao110` | Gitee 仓库所有者 |
 | `GITEE_REPO_NAME` | `obara-task-manager` | Gitee 仓库名称 |
 | `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
+| `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
+| `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
+| `WEKNORA_API_KEY` | 空 | 主工作空间 API Key，仅服务端使用 |
+| `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
+| `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 
 > 修改 `.env` 后必须重启后端服务才能生效。
 
@@ -563,6 +594,7 @@ obara-task-manager/
 │       ├── gunTableLocks.js
 │       ├── simpleZip.js
 │       ├── taskExportWorkbook.js
+│       ├── weknora.js
 │       └── workday.js
 ├── control/                      # .NET Framework 4.8 服务控制台（WinForms EXE）
 │   ├── .gitignore                # 控制台子项目的忽略规则
@@ -663,6 +695,7 @@ obara-task-manager/
 | 压缩打包 | `backend/utils/simpleZip.js` | 多分类导出时将多个 `.xls` 打包为 `.zip` |
 | 工作日工具 | `backend/utils/workday.js` | 工作日覆盖规则、周末判断等工具函数 |
 | 安全配置 | `backend/config/security.js` | JWT、CORS、Gitee API、数据库路径等安全配置 |
+| WeKnora 客户端 | `backend/utils/weknora.js` | 多工作空间 API Key 注册表、知识库关联解析、跨空间检索扇出合并、SSE 流式问答、答复约束智能体管理 |
 | 服务控制台 | `control/ObaraServiceController.csproj` | .NET Framework 4.8 WinForms 程序，用于在 Windows 上控制服务启停、监控端口与一键打开浏览器界面 |
 | 路径解析 | `control/Utils/PathResolver.cs` | 从 EXE 目录向上查找 `backend/` 与 `frontend/`，绑定运行路径，不硬编码绝对路径 |
 | 端口检测 | `control/Utils/PortChecker.cs` | 实时探测前后端端口状态与延迟，用于状态卡片刷新 |
