@@ -534,7 +534,7 @@ const GunLedger: React.FC = () => {
             setActiveTableId(null);
           }
         } else {
-          addToast('保存失败，请重试', 'error');
+          addToast(err?.response?.data?.message || '保存失败，请重试', 'error');
         }
       });
       return prev;

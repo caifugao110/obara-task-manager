@@ -2745,7 +2745,7 @@ PUT 请求：
 
 `POST /api/system/maintenance/offline-backup`
 
-权限：**无需登录**（便于前端检测到离线状态时主动调用）
+权限：本机环回地址（`127.0.0.1`/`::1`，供 stop.bat 等本地运维脚本匿名调用）；非环回请求须为已登录的 `superadmin`
 
 说明：
 

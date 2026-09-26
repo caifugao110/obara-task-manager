@@ -156,39 +156,49 @@ const initialDesigners = [
   { name: '朱栋栋', group: '设计一课张明组' }
 ];
 
+// 初始登录用户名单。初始密码不再硬编码：执行初始化时由浏览器 CSPRNG
+// 为每个账号随机生成，仅在结果弹窗中展示一次，需线下分发给本人。
 const initialLoginUsers = [
-  { username: 'chenqs', password: 'nj.chenqs', name: '陈青松', role: 'admin' },
-  { username: 'wangfy', password: 'nj.wangfy', name: '王福跃', role: 'admin' },
-  { username: 'zhangm', password: 'nj.zhangm', name: '张明', role: 'admin' },
-  { username: 'sunmy', password: 'nj.sunmy', name: '孙茂余', role: 'user' },
-  { username: 'gaoj', password: 'nj.gaoj', name: '高剑', role: 'user' },
-  { username: 'yangh', password: 'nj.yangh', name: '杨虹', role: 'user' },
-  { username: 'zhangwl', password: 'nj.zhangwl', name: '张万利', role: 'user' },
-  { username: 'zhaisx', password: 'nj.zhaisx', name: '翟世学', role: 'admin' },
-  { username: 'daihq', password: 'nj.daihq', name: '戴红琴', role: 'user' },
-  { username: 'chenaz', password: 'nj.chenaz', name: '陈爱珍', role: 'user' },
-  { username: 'chendy', password: 'nj.chendy', name: '陈大仪', role: 'admin' },
-  { username: 'hantj', password: 'nj.hantj', name: '韩同进', role: 'user' },
-  { username: 'hougy', password: 'nj.hougy', name: '侯桂英', role: 'user' },
-  { username: 'zhangx', password: 'nj.zhangx', name: '张啸', role: 'admin' },
-  { username: 'yuanl', password: 'nj.yuanl', name: '袁林', role: 'user' },
-  { username: 'shelm', password: 'nj.shelm', name: '佘鲁明', role: 'user' },
-  { username: 'zhuhy', password: 'nj.zhuhy', name: '朱海洋', role: 'user' },
-  { username: 'yuy', password: 'nj.yuy', name: '郁钰', role: 'user' },
-  { username: 'dingdy', password: 'nj.dingdy', name: '丁代远', role: 'user' },
-  { username: 'zhouh', password: 'nj.zhouh', name: '周骅', role: 'user' },
-  { username: 'zhoucj', password: 'nj.zhoucj', name: '周椿杰', role: 'user' },
-  { username: 'xusy', password: 'nj.xusy', name: '徐绍洋', role: 'user' },
-  { username: 'zhangyz', password: 'nj.zhangyz', name: '张艳珍', role: 'user' },
-  { username: 'lincx', password: 'nj.lincx', name: '林慈贤', role: 'user' },
-  { username: 'wuj', password: 'nj.wuj', name: '吴健', role: 'user' },
-  { username: 'zhudd', password: 'nj.zhudd', name: '朱栋栋', role: 'user' },
-  { username: 'zhangj', password: 'nj.zhangj', name: '张杰', role: 'admin' },
-  { username: 'zhangzw', password: 'nj.zhangzw', name: '张祖旺', role: 'admin' },
-  { username: 'geh', password: 'nj.geh', name: '葛慧', role: 'user' },
-  { username: 'yanxx', password: 'nj.yanxx', name: '严新星', role: 'user' },
-  { username: 'chenhd', password: 'nj.chenhd', name: '陈浩东', role: 'user' }
+  { username: 'chenqs', name: '陈青松', role: 'admin' },
+  { username: 'wangfy', name: '王福跃', role: 'admin' },
+  { username: 'zhangm', name: '张明', role: 'admin' },
+  { username: 'sunmy', name: '孙茂余', role: 'user' },
+  { username: 'gaoj', name: '高剑', role: 'user' },
+  { username: 'yangh', name: '杨虹', role: 'user' },
+  { username: 'zhangwl', name: '张万利', role: 'user' },
+  { username: 'zhaisx', name: '翟世学', role: 'admin' },
+  { username: 'daihq', name: '戴红琴', role: 'user' },
+  { username: 'chenaz', name: '陈爱珍', role: 'user' },
+  { username: 'chendy', name: '陈大仪', role: 'admin' },
+  { username: 'hantj', name: '韩同进', role: 'user' },
+  { username: 'hougy', name: '侯桂英', role: 'user' },
+  { username: 'zhangx', name: '张啸', role: 'admin' },
+  { username: 'yuanl', name: '袁林', role: 'user' },
+  { username: 'shelm', name: '佘鲁明', role: 'user' },
+  { username: 'zhuhy', name: '朱海洋', role: 'user' },
+  { username: 'yuy', name: '郁钰', role: 'user' },
+  { username: 'dingdy', name: '丁代远', role: 'user' },
+  { username: 'zhouh', name: '周骅', role: 'user' },
+  { username: 'zhoucj', name: '周椿杰', role: 'user' },
+  { username: 'xusy', name: '徐绍洋', role: 'user' },
+  { username: 'zhangyz', name: '张艳珍', role: 'user' },
+  { username: 'lincx', name: '林慈贤', role: 'user' },
+  { username: 'wuj', name: '吴健', role: 'user' },
+  { username: 'zhudd', name: '朱栋栋', role: 'user' },
+  { username: 'zhangj', name: '张杰', role: 'admin' },
+  { username: 'zhangzw', name: '张祖旺', role: 'admin' },
+  { username: 'geh', name: '葛慧', role: 'user' },
+  { username: 'yanxx', name: '严新星', role: 'user' },
+  { username: 'chenhd', name: '陈浩东', role: 'user' }
 ] as const;
+
+// 使用浏览器 CSPRNG 生成 12 位初始密码（base64url 字符集）
+const generateInitialPassword = (): string => {
+  const bytes = new Uint8Array(9);
+  window.crypto.getRandomValues(bytes);
+  const binary = String.fromCharCode(...bytes);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
 
 const Admin = () => {
   const { token, logout, user: currentUser, authReady } = useAuth();
@@ -228,6 +238,11 @@ const Admin = () => {
   const [initializingUsers, setInitializingUsers] = useState(false);
   const [designersCollapsed, setDesignersCollapsed] = useState(true);
   const [usersCollapsed, setUsersCollapsed] = useState(true);
+
+  // 初始化用户后一次性展示的初始凭据（关闭后不再可查）
+  const [initialCredentials, setInitialCredentials] = useState<Array<{
+    username: string; name: string; role: string; password: string; ok: boolean;
+  }>>([]);
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const canInitializeDesigners = isSuperAdmin && designers.length === 0;
@@ -474,12 +489,38 @@ const Admin = () => {
 
   const handleInitializeUsers = async () => {
     if (!canInitializeUsers) return;
-    if (!window.confirm(`确定要初始化 ${initialLoginUsers.length} 个登录用户吗？`)) return;
+    if (!window.confirm(`确定要初始化 ${initialLoginUsers.length} 个登录用户吗？初始密码将随机生成并仅展示一次。`)) return;
+
+    // 先在本地生成全部随机密码：即使部分请求失败，密码仍可展示，
+    // 便于重试或手动建号
+    const credentials = initialLoginUsers.map(user => ({
+      username: user.username,
+      name: user.name,
+      role: user.role,
+      password: generateInitialPassword(),
+      ok: false
+    }));
 
     setInitializingUsers(true);
     try {
-      await Promise.all(initialLoginUsers.map(user => axiosInstance.post('/users', user)));
-      addToast(`已初始化 ${initialLoginUsers.length} 个登录用户`, 'success');
+      const results = await Promise.allSettled(
+        credentials.map(c => axiosInstance.post('/users', {
+          username: c.username,
+          name: c.name,
+          role: c.role,
+          password: c.password
+        }))
+      );
+      results.forEach((r, i) => {
+        credentials[i].ok = r.status === 'fulfilled';
+      });
+      const okCount = credentials.filter(c => c.ok).length;
+      const failCount = credentials.length - okCount;
+      addToast(
+        failCount === 0 ? `已初始化 ${okCount} 个登录用户` : `已初始化 ${okCount} 个，${failCount} 个失败`,
+        failCount === 0 ? 'success' : 'error'
+      );
+      setInitialCredentials(credentials);
       fetchData();
     } catch (err: any) {
       addToast(err.response?.data?.message || '初始化登录用户失败', 'error');
@@ -1366,6 +1407,81 @@ const Admin = () => {
             </form>
           </div>
         </section>
+
+        {/* 初始密码一次性展示弹窗 */}
+        {initialCredentials.length > 0 && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-2xl max-h-[90vh] flex flex-col">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <Key size={18} className="text-emerald-600" /> 初始登录密码
+                  </h3>
+                  <p className="text-xs text-red-600 font-bold mt-1">密码仅显示这一次，关闭后无法再次查看，请立即复制并线下分发给本人。</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInitialCredentials([])}
+                  className="p-1 text-gray-400 hover:text-gray-700 rounded"
+                  aria-label="关闭"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="overflow-y-auto px-6 py-4">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
+                      <th className="py-2 pr-2 text-left">姓名</th>
+                      <th className="py-2 pr-2 text-left">用户名</th>
+                      <th className="py-2 pr-2 text-left">初始密码</th>
+                      <th className="py-2 text-left">结果</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {initialCredentials.map(c => (
+                      <tr key={c.username}>
+                        <td className="py-2 pr-2 font-bold text-gray-700">{c.name}</td>
+                        <td className="py-2 pr-2 text-gray-500">{c.username}</td>
+                        <td className="py-2 pr-2">
+                          <code className="px-2 py-0.5 bg-gray-100 rounded text-gray-800 font-bold whitespace-nowrap">{c.password}</code>
+                        </td>
+                        <td className="py-2">
+                          {c.ok
+                            ? <span className="text-green-600 text-xs font-bold">已创建</span>
+                            : <span className="text-red-600 text-xs font-bold">失败</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const text = initialCredentials
+                      .filter(c => c.ok)
+                      .map(c => `${c.name} ${c.username} 初始密码:${c.password}`)
+                      .join('\n');
+                    navigator.clipboard.writeText(text);
+                    addToast('已复制成功用户的初始密码', 'success');
+                  }}
+                  className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 transition"
+                >
+                  复制全部
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInitialCredentials([])}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition"
+                >
+                  我已保存，关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

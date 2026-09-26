@@ -747,7 +747,7 @@ obara-task-manager/
 - 备份文件名：
   - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
   - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
-- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发，**该接口无需鉴权**，便于在前端检测到离线状态时自动调用。
+- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发：本机环回地址（localhost）可匿名调用（供 stop.bat 等运维脚本），非环回请求须为超级管理员。
 
 ### 维护配置
 
@@ -786,12 +786,12 @@ obara-task-manager/
 
 ### 手动维护操作
 
-超级管理员可通过以下 API 手动执行维护操作（除 `offline-backup` 外均需超级管理员权限）：
+超级管理员可通过以下 API 手动执行维护操作：
 
 | 操作 | API | 说明 |
 |------|-----|------|
 | 数据库备份 | `POST /api/system/maintenance/backup` | 立即创建数据库备份 |
-| 断网备份 | `POST /api/system/maintenance/offline-backup` | 立即创建断网备份（无需登录） |
+| 断网备份 | `POST /api/system/maintenance/offline-backup` | 立即创建断网备份（本机环回匿名；外部请求需超级管理员） |
 | 任务导出 | `POST /api/system/maintenance/export-tasks` | 立即导出任务数据 |
 | 编号台账导出 | `POST /api/system/maintenance/export-gun-ledger` | 立即导出全部焊枪编号台账为单个 `.xls` |
 | 清理过期备份 | `POST /api/system/maintenance/cleanup-backups` | 清理超过保留天数的备份 |

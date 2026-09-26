@@ -18,6 +18,9 @@ const categoryNameSchema = Joi.object({
   name: Joi.string().min(1).max(30).required()
 });
 
+// 用户元信息：标准形态是对象；兼容历史脏数据（如 "[Circular Reference]" 字符串）与空值
+const userMetaSchema = Joi.alternatives().try(Joi.object(), Joi.string().allow(''), null);
+
 const rowSchema = Joi.object({
   id: Joi.string().allow('', null),
   serialNumber: Joi.number().integer().allow(null),
@@ -27,9 +30,9 @@ const rowSchema = Joi.object({
   responsiblePerson: Joi.string().allow(''),
   remarks: Joi.string().allow(''),
   createdAt: Joi.string().allow('', null),
-  createdBy: Joi.object().allow(null),
+  createdBy: userMetaSchema,
   updatedAt: Joi.string().allow('', null),
-  updatedBy: Joi.object().allow(null)
+  updatedBy: userMetaSchema
 });
 
 const rowsSchema = Joi.array().items(rowSchema);
@@ -79,6 +82,9 @@ const newId = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().
 
 // 用户的可序列化信息
 const userMeta = (req) => req.user ? { id: req.user.id, username: req.user.username, name: req.user.name } : null;
+
+// 仅保留普通对象形态的用户元信息，过滤历史字符串脏值
+const cleanUserMeta = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 
 // GET /api/gun-ledger —— 取全部数据
 router.get('/', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
@@ -479,7 +485,7 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
       responsiblePerson: String(r.responsiblePerson || ''),
       remarks: String(r.remarks || ''),
       createdAt: prev?.createdAt || (isNew ? now : (r.createdAt || '')),
-      createdBy: prev?.createdBy || (isNew ? meta : (r.createdBy || null)),
+      createdBy: cleanUserMeta(prev?.createdBy) || (isNew ? meta : cleanUserMeta(r.createdBy)),
       updatedAt: now,
       updatedBy: meta
     };

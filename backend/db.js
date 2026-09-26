@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const securityConfig = require('./config/security');
@@ -128,6 +129,13 @@ const normalizeGunNameRule = (rule) => {
   };
 };
 
+// 用户元信息（createdBy/updatedBy）只允许普通对象或 null；
+// 历史数据中曾出现 "[Circular Reference]" 等字符串脏值，会导致接口 Joi 校验失败
+const sanitizeUserMeta = (v) => {
+  if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+  return null;
+};
+
 const normalizeTableList = (list) => {
   if (!Array.isArray(list)) return [];
   return list.map(t => {
@@ -142,9 +150,9 @@ const normalizeTableList = (list) => {
       responsiblePerson: String(r.responsiblePerson || ''),
       remarks: String(r.remarks || ''),
       createdAt: r.createdAt || '',
-      createdBy: r.createdBy || null,
+      createdBy: sanitizeUserMeta(r.createdBy),
       updatedAt: r.updatedAt || '',
-      updatedBy: r.updatedBy || null
+      updatedBy: sanitizeUserMeta(r.updatedBy)
     })) : [];
     // 序号严格按自然顺序连续排列：按序号升序后重新编号为 1..N，杜绝跳号（如 1 直接到 11）
     rows.sort((a, b) => a.serialNumber - b.serialNumber);
@@ -232,7 +240,7 @@ const getInitialDb = () => ({
     workdayOverrides: {},
     designStandardsLinkedKbIds: [],
     designStandardsPrompt: { enabled: false, knowledgeBases: {} },
-    system: { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 }
+    system: { allowGuestView: false, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 }
   }
 });
 
@@ -370,7 +378,7 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.designStandardsPrompt.knowledgeBases = {};
   }
   if (!parsed.settings.system) {
-    parsed.settings.system = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
+    parsed.settings.system = { allowGuestView: false, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
   }
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserDesignPlanColorMark');
   const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserEditOwnTaskColor');
@@ -499,7 +507,11 @@ const initAdmin = async () => {
   if (!_cache) init();
   const superAdminExists = _cache.users.find(u => u.username === 'superadmin');
   if (!superAdminExists) {
-    const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
+    // 不再提供公开固定兜底口令（admin123）：未显式配置时随机生成，
+    // 仅在控制台输出一次，由部署人员记录后登录并立即改密
+    const explicitPassword = process.env.DEFAULT_ADMIN_PASSWORD;
+    const generatedPassword = !explicitPassword;
+    const defaultPassword = explicitPassword || crypto.randomBytes(9).toString('base64url');
     const hashedPassword = bcrypt.hashSync(defaultPassword, 10);
     _cache.users.push({
       id: Date.now().toString(),
@@ -511,8 +523,15 @@ const initAdmin = async () => {
       forcePasswordChange: true
     });
     await writeDb(_cache);
-    console.log(`SuperAdmin account created: ${process.env.DEFAULT_ADMIN_USERNAME || 'superadmin'} / ${defaultPassword}`);
-    console.log('[SECURITY] Default admin password is set. Please change it immediately after logging in.');
+    if (generatedPassword) {
+      console.log('================================================================');
+      console.log(`[INIT] 初始超级管理员随机密码（仅显示一次）：${defaultPassword}`);
+      console.log('[INIT] 请立即记录，登录后修改密码；关闭窗口后将无法再次查看。');
+      console.log('================================================================');
+    } else {
+      console.log(`SuperAdmin account created: ${process.env.DEFAULT_ADMIN_USERNAME || 'superadmin'}`);
+      console.log('[SECURITY] Please change the initial password immediately after logging in.');
+    }
   }
 };
 

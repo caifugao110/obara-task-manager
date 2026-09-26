@@ -36,6 +36,20 @@ const authMiddleware = (req, res, next) => {
       return res.status(401).json({ message, code: 'SESSION_INVALIDATED' });
     }
 
+    // 必须先修改初始密码：未改密前除「修改密码 / 退出登录」外一律拒绝，
+    // 防止绕过前端页面直接调用 API
+    if (user.forcePasswordChange) {
+      const pathOnly = (req.originalUrl || req.path || '').split('?')[0];
+      const isAllowedPath = req.method === 'POST' &&
+        (pathOnly === '/api/auth/change-password' || pathOnly === '/api/auth/logout');
+      if (!isAllowedPath) {
+        return res.status(403).json({
+          message: '请先修改初始密码后再进行其他操作',
+          code: 'FORCE_PASSWORD_CHANGE'
+        });
+      }
+    }
+
     req.user = { ...decoded, role: user.role, name: user.name, username: user.username };
     next();
   } catch (err) {

@@ -731,7 +731,7 @@ backend/
 - 备份文件名：
   - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
   - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
-- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发，**该接口无需鉴权**，便于在前端检测到离线状态时自动调用。
+- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发：本机环回地址（localhost）可匿名调用（供 stop.bat 等运维脚本），非环回请求须为超级管理员。
 - 默认保留 7 天（`offlineBackupRetentionDays`），超过自动清理；断网备份开关、保留天数与目录均可在系统设置「数据库维护」中配置（`PUT /api/system/maintenance`）。
 
 ### 维护配置
@@ -772,7 +772,7 @@ backend/
 | `/api/system/maintenance` | GET | 超级管理员 | 获取维护状态和配置 |
 | `/api/system/maintenance` | PUT | 超级管理员 | 更新维护配置 |
 | `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份 |
-| `/api/system/maintenance/offline-backup` | POST | **无需登录** | 手动触发断网备份 |
+| `/api/system/maintenance/offline-backup` | POST | 环回匿名 / 外部超管 | 手动触发断网备份 |
 | `/api/system/maintenance/export-tasks` | POST | 超级管理员 | 手动导出任务数据 |
 | `/api/system/maintenance/export-gun-ledger` | POST | 超级管理员 | 手动导出全部焊枪编号台账为单个 `.xls` |
 | `/api/system/maintenance/cleanup-backups` | POST | 超级管理员 | 清理过期备份 |

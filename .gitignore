@@ -52,6 +52,8 @@ backend/*.db
 backend/backups/
 backups/
 frontend/src/pages/DesignStandards.tsx.bak-original
+# Timestamped backup files (e.g. data.db.bak-20260926-100403)
+*.bak-*
 
 # Logs
 logs/

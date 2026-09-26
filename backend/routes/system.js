@@ -21,7 +21,7 @@ const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const defaultSystemSettings = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
+const defaultSystemSettings = { allowGuestView: false, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTask: true, specNumberDigits: 5 };
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
 const formatDownloadTimestamp = () => {
@@ -1037,8 +1037,22 @@ router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], async
   res.json({ message: '数据库备份已完成', backup });
 }));
 
-router.post('/maintenance/offline-backup', asyncHandler(async (req, res) => {
-  const result = await maintenance.createOfflineBackup(null, null, { async: true });
+const isLoopbackAddress = (ip) =>
+  ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+
+// 本机运维脚本（stop.bat 经 localhost 调用）允许匿名环回访问；
+// 非环回的外部请求必须是超级管理员，杜绝匿名远程触发备份写盘。
+// trust proxy=1 下直连请求的 X-Forwarded-For 不被采信，无法伪造环回。
+const offlineBackupAccess = (req, res, next) => {
+  if (isLoopbackAddress(req.ip)) return next();
+  authMiddleware(req, res, (err) => {
+    if (err) return next(err);
+    superAdminMiddleware(req, res, next);
+  });
+};
+
+router.post('/maintenance/offline-backup', offlineBackupAccess, asyncHandler(async (req, res) => {
+  const result = await maintenance.createOfflineBackup(req.user?.id, req.user?.username, { async: true });
   if (result.skipped) {
     res.json({ message: '断网备份已跳过', reason: result.reason });
   } else {
