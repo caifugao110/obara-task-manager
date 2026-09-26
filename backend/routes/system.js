@@ -8,7 +8,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const https = require('https');
 const db = require('../db');
-const { authMiddleware, superAdminMiddleware, guestViewMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
+const { authMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
@@ -21,7 +21,7 @@ const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const defaultSystemSettings = { allowGuestView: false, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTask: true, specNumberDigits: 5 };
+const defaultSystemSettings = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTask: true, specNumberDigits: 5 };
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
 const formatDownloadTimestamp = () => {
@@ -39,7 +39,6 @@ const formatDownloadTimestamp = () => {
 };
 
 const systemSettingsSchema = Joi.object({
-  allowGuestView: Joi.boolean().required(),
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
   allowUserEditOwnTaskColor: Joi.boolean().optional(),
@@ -991,7 +990,7 @@ const parseRenderedExportSheet = ({ worksheet, rawRows, targetMonth, designerByN
   return { sheetMap, importedRows };
 };
 
-router.get('/settings', guestViewMiddleware, asyncHandler(async (req, res) => {
+router.get('/settings', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   res.json(normalizeSystemSettings(data.settings?.system));
 }));

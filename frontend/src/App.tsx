@@ -18,13 +18,11 @@ import GunLedger from './pages/GunLedger';
 const ProtectedRoute = ({
   children,
   adminOnly = false,
-  superAdminOnly = false,
-  allowGuest = false
+  superAdminOnly = false
 }: {
   children: React.ReactNode;
   adminOnly?: boolean;
   superAdminOnly?: boolean;
-  allowGuest?: boolean;
 }) => {
   const { isAuthenticated, user, forcePasswordChange, authReady } = useAuth();
   const location = useLocation();
@@ -35,10 +33,7 @@ const ProtectedRoute = ({
   }
 
   if (!isAuthenticated) {
-    if (!allowGuest) {
-      return <Navigate to={`/login?redirect=${encodeURIComponent(currentPath)}`} replace />;
-    }
-    return <>{children}</>;
+    return <Navigate to={`/login?redirect=${encodeURIComponent(currentPath)}`} replace />;
   }
 
   if (forcePasswordChange) {
@@ -105,7 +100,7 @@ const AppRoutes = () => {
       <Route 
         path="/" 
         element={
-          <ProtectedRoute allowGuest>
+          <ProtectedRoute>
             <Dashboard />
           </ProtectedRoute>
         } 

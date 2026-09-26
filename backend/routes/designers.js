@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware, adminMiddleware, guestViewMiddleware } = require('../middleware/auth');
+const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 
@@ -19,7 +19,7 @@ const batchDeleteSchema = Joi.object({
 const normalizeName = (name) => String(name || '').trim().toLowerCase();
 
 // Get all designers (Public access for rendering table)
-router.get('/', guestViewMiddleware, asyncHandler(async (req, res) => {
+router.get('/', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   const designers = (data.designers || []).sort((a, b) => (a.order || 0) - (b.order || 0));
   res.json(designers);

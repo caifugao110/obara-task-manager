@@ -100,40 +100,10 @@ const accessSettingsMiddleware = (settingsKey) => (req, res, next) => {
   return res.status(403).json({ message: '无权访问' });
 };
 
-const guestViewMiddleware = (req, res, next) => {
-  const data = db.readDb();
-  // fail-closed：字段缺失时视为禁止访客查看，避免存量升级环境静默开放未登录读取
-  const allowGuestView = data.settings?.system?.allowGuestView ?? false;
-  if (allowGuestView) {
-    return next();
-  }
-
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-  if (!token) {
-    return res.status(401).json({ message: '请先登录后查看', code: 'GUEST_VIEW_DISABLED' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET, {
-      issuer: JWT_ISSUER,
-      audience: JWT_AUDIENCE
-    });
-    const user = data.users.find(u => u.id === decoded.id);
-    if (!user || user.disabled) {
-      return res.status(401).json({ message: '请先登录后查看', code: 'GUEST_VIEW_DISABLED' });
-    }
-    req.user = decoded;
-    next();
-  } catch {
-    return res.status(401).json({ message: '请先登录后查看', code: 'GUEST_VIEW_DISABLED' });
-  }
-};
-
 module.exports = {
   authMiddleware,
   adminMiddleware,
   superAdminMiddleware,
-  guestViewMiddleware,
   accessSettingsMiddleware,
   hasAccessSettings,
   normalizeAccessSettings,

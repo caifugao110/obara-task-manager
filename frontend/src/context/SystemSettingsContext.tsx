@@ -2,7 +2,6 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { axiosInstance } from '../services/api';
 
 export interface SystemSettingsData {
-  allowGuestView: boolean;
   allowMultiDevice: boolean;
   allowUserDesignPlanColorMark: boolean;
   allowUserEditOwnTaskColor: boolean;
@@ -10,7 +9,6 @@ export interface SystemSettingsData {
 }
 
 const defaultSettings: SystemSettingsData = {
-  allowGuestView: true,
   allowMultiDevice: true,
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTaskColor: true,

@@ -432,7 +432,6 @@ const Dashboard = () => {
   const [sheets, setSheets] = useState<TaskSheet[]>([]);
   const [loading, setLoading] = useState(true);
   const [systemSettingsLoaded, setSystemSettingsLoaded] = useState(false);
-  const [allowGuestView, setAllowGuestView] = useState(true);
   const [allowUserDesignPlanColorMark, setAllowUserDesignPlanColorMark] = useState(true);
   const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
@@ -906,7 +905,7 @@ const Dashboard = () => {
     }, 120);
   }, [jumpTarget, loading, sheets, designers]);
 
-  // 打开主页面时自动将今日任务内容滚动到视图中央展示（所有用户，含未登录访客）
+  // 打开主页面时自动将今日任务内容滚动到视图中央展示
   const todayColumnScrolledRef = useRef(false);
   useEffect(() => {
     if (todayColumnScrolledRef.current) return;
@@ -1766,8 +1765,6 @@ const Dashboard = () => {
           setOfflineCacheUsed(true);
           setIsOnline(false);
         }
-      } else if (err.response?.data?.code === 'GUEST_VIEW_DISABLED') {
-        setAllowGuestView(false);
       } else {
         addToast('数据加载失败', 'error');
       }
@@ -1787,8 +1784,6 @@ const Dashboard = () => {
       axiosInstance.get('/settings/gun-ledger')
     ])
       .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes, designStandardsRes, gunLedgerRes]) => {
-        const guestAllowed = systemRes.data.allowGuestView ?? true;
-        setAllowGuestView(guestAllowed);
         setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? true);
         setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
         setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
@@ -1796,15 +1791,12 @@ const Dashboard = () => {
         setSystemSettingsAccess(systemSettingsRes.data || defaultAccessSettings);
         setDesignStandardsAccess(designStandardsRes.data || defaultAccessSettings);
         setGunLedgerAccess(gunLedgerRes.data || defaultAccessSettings);
-        if (!guestAllowed && !user) setLoading(false);
       })
-      .catch(() => setAllowGuestView(true))
       .finally(() => setSystemSettingsLoaded(true));
   }, [user]);
 
   useEffect(() => {
     if (!systemSettingsLoaded) return;
-    if (!allowGuestView && !user) return;
     fetchData();
 
     if (token) {
@@ -1893,7 +1885,7 @@ const Dashboard = () => {
     } else {
       setIsOnline(true);
     }
-  }, [fetchData, fetchSheets, fetchWorkdayOverrides, systemSettingsLoaded, allowGuestView, user]);
+  }, [fetchData, fetchSheets, fetchWorkdayOverrides, systemSettingsLoaded, user]);
 
   // Online/offline event listeners
   useEffect(() => {
@@ -1903,9 +1895,7 @@ const Dashboard = () => {
       hasShownDisconnectToast.current = false;
       addToast('网络已连接', 'success');
       setTimeout(() => {
-        if (user || allowGuestView) {
-          fetchData();
-        }
+        fetchData();
       }, 1000);
     };
     const handleOffline = () => {
@@ -1922,7 +1912,7 @@ const Dashboard = () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [fetchData, sheets, user, allowGuestView]);
+  }, [fetchData, sheets, user]);
 
   // Save sheets to localStorage for offline use
   useEffect(() => {
@@ -2550,33 +2540,6 @@ const Dashboard = () => {
     </div>
   );
 
-  if (!allowGuestView && !user) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col">
-        <header className="bg-[#217346] text-white px-6 py-3 flex items-center justify-between shadow-md">
-          <a
-            href="https://caifugao110.github.io/obara-task-manager/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-lg font-bold hover:underline"
-          >
-            Obara 任务管理系统
-          </a>
-        </header>
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <FileSpreadsheet size={64} className="mx-auto text-gray-300 mb-4" />
-            <h2 className="text-xl font-bold text-gray-600">请先登录后查看</h2>
-            <p className="text-gray-400 mt-2">管理员已关闭未登录用户的查看权限</p>
-            <Link to="/login" className="inline-block mt-6 px-6 py-2 bg-[#217346] hover:bg-[#1a5c38] text-white font-bold rounded transition">
-              前往登录
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const PRESET_COLORS = [
     { label: '无', value: '' },
     // 淡色系
@@ -2839,7 +2802,7 @@ const Dashboard = () => {
               当前版本 {versionInfo.currentVersion}
             </span>
           )}
-          {user ? (
+          {user && (
             <>
               <div className="flex flex-col items-end">
                 <span className="text-sm font-bold text-red-500">{user.name}</span>
@@ -2859,10 +2822,6 @@ const Dashboard = () => {
                 <LogOut size={20} />
               </button>
             </>
-          ) : (
-            <Link to="/login" className="px-4 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded text-sm font-bold transition">
-              登录编辑
-            </Link>
           )}
         </div>
       </header>

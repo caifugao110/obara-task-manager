@@ -16,7 +16,7 @@ Authorization: Bearer <token>
 
 - 大多数接口直接返回 JSON 对象或数组，不统一包裹 `success/data`。
 - 错误响应通常包含 `message`，部分接口包含 `code` 或 `details`。
-- `guestViewMiddleware` 控制游客是否可以读取主页面所需的任务和设计人员数据。
+- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问。
 - 请求体默认使用 `application/json`；文件导入接口使用 `multipart/form-data`。
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
@@ -36,34 +36,35 @@ Authorization: Bearer <token>
 
 ## 权限速查
 
-| 能力 | 游客 | user | admin | superadmin |
-|------|------|------|-------|------------|
-| 查看主页面任务和设计人员 | 取决于 `allowGuestView` | 是 | 是 | 是 |
-| 编辑任务 | 否 | 否 | 是 | 是 |
-| 管理设计人员 | 否 | 否 | 是 | 是 |
-| 管理登录用户 | 否 | 否 | 只能创建/维护普通用户 | 是 |
-| 批量删除登录用户 | 否 | 否 | 否 | 是 |
-| 页面权限设置 | 否 | 否 | 否 | 是 |
-| 系统设置登录管理、日志管理 | 否 | 否 | 否 | 是 |
-| 系统设置数据管理导出 | 否 | 否 | 取决于 `systemSettings.allowAdmins` | 是 |
-| 系统设置数据管理导入 | 否 | 否 | 否 | 是 |
-| 查看和修改组长规则 | 否 | 否 | 是 | 是 |
-| 重置组长规则为默认 | 否 | 否 | 否 | 是 |
-| 查看焊枪台账 | 否 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
-| 编辑焊枪台账（分类/表/行） | 否 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
-| 删除焊枪台账分类/表 | 否 | 否 | 否（按钮可见但拦截） | 是 |
-| 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当 | 否 | 否 | 否 | 是 |
-| 导入焊枪台账 | 否 | 否 | 否 | 是 |
-| 检索/问答/查看知识库文档清单 | 否 | 取决于 `designStandards.allowViewers` | 取决于 `designStandards.allowAdmins` | 是 |
-| 关联/取消关联知识库 | 否 | 否 | 是 | 是 |
-| 配置答复约束提示词 | 否 | 否 | 否 | 是 |
+| 能力 | user | admin | superadmin |
+|------|------|-------|------------|
+| 查看主页面任务和设计人员 | 是 | 是 | 是 |
+| 编辑任务 | 否 | 是 | 是 |
+| 管理设计人员 | 否 | 是 | 是 |
+| 管理登录用户 | 否 | 只能创建/维护普通用户 | 是 |
+| 批量删除登录用户 | 否 | 否 | 是 |
+| 页面权限设置 | 否 | 否 | 是 |
+| 系统设置登录管理、日志管理 | 否 | 否 | 是 |
+| 系统设置数据管理导出 | 否 | 取决于 `systemSettings.allowAdmins` | 是 |
+| 系统设置数据管理导入 | 否 | 否 | 是 |
+| 查看和修改组长规则 | 否 | 是 | 是 |
+| 重置组长规则为默认 | 否 | 否 | 是 |
+| 查看焊枪台账 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
+| 编辑焊枪台账（分类/表/行） | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
+| 删除焊枪台账分类/表 | 否 | 否（按钮可见但拦截） | 是 |
+| 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当 | 否 | 否 | 是 |
+| 导入焊枪台账 | 否 | 否 | 是 |
+| 检索/问答/查看知识库文档清单 | 取决于 `designStandards.allowViewers` | 取决于 `designStandards.allowAdmins` | 是 |
+| 关联/取消关联知识库 | 否 | 是 | 是 |
+| 配置答复约束提示词 | 否 | 否 | 是 |
 
 说明：
 
-- `settings.leaderboard`、`settings.workHours`、`settings.statusTracking` 控制对应页面是否允许 `admin` 和已登录 `user` 访问，未登录游客不能进入任务报表、工时管理和状态追踪页面。
-- `settings.gunLedger` 控制焊枪台账页面访问权限，`allowViewers` 后端强制为 `false`（普通用户与游客不能进入 `/gun-ledger`）。一般管理员可见删除分类/表按钮但点击被拦截（提示需超级管理员权限）。
+- 所有页面和接口均需登录，未登录用户会被重定向到登录页。
+- `settings.leaderboard`、`settings.workHours`、`settings.statusTracking` 控制对应页面是否允许 `admin` 和已登录 `user` 访问。
+- `settings.gunLedger` 控制焊枪台账页面访问权限，`allowViewers` 后端强制为 `false`（普通用户不能进入 `/gun-ledger`）。一般管理员可见删除分类/表按钮但点击被拦截（提示需超级管理员权限）。
 - `settings.designStandards` 控制设计规范知识库页面（`/design-standards`）访问权限，规则同工时管理。
-- `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户和游客不能进入系统设置。
+- `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户不能进入系统设置。
 - `authMiddleware` 只校验登录态；涉及写入任务、设计人员、状态追踪等接口还会继续校验角色。
 
 ## 认证接口
@@ -354,8 +355,7 @@ Authorization: Bearer <token>
 
 访问控制：
 
-- `settings.system.allowGuestView=true` 时可未登录访问。
-- 关闭未登录查看后需要有效 JWT。
+- 需要有效 JWT（登录后访问）。
 - 返回结果按 `order` 字段升序排列。
 
 响应：
@@ -895,7 +895,7 @@ Authorization: Bearer <token>
 - 前端主开关打开时会同时打开 `allowAdmins` 和 `allowViewers`。
 - `leaderboard.allowViewers=true`、`workHours.allowViewers=true`、`statusTracking.allowViewers=true` 只允许普通用户访问对应页面；未登录游客始终不能进入 `/leaderboard`、`/work-hours` 和 `/status-tracking`。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问）。
-- 四个权限配置的 `GET` 接口（`/settings/leaderboard`、`/settings/work-hours`、`/settings/status-tracking`、`/settings/system-settings`）均使用 `guestViewMiddleware`：`allowGuestView` 开启时匿名可读，关闭后需携带有效 JWT；`PUT` 接口均仅 `superadmin`。
+- 四个权限配置的 `GET` 接口（`/settings/leaderboard`、`/settings/work-hours`、`/settings/status-tracking`、`/settings/system-settings`）均需携带有效 JWT；`PUT` 接口均仅 `superadmin`。
 - 焊枪台账（`/settings/gun-ledger`）和设计规范知识库（`/settings/design-standards`）权限配置同样遵循上述规则；其中 `gunLedger.allowViewers` 后端强制为 `false`。
 
 ### 获取任务报表权限设置
@@ -976,7 +976,7 @@ Authorization: Bearer <token>
 
 `GET /api/settings/workday-overrides`
 
-访问控制：使用 `guestViewMiddleware`——`settings.system.allowGuestView=true` 时可未登录访问，关闭后需要有效 JWT。
+访问控制：需要有效 JWT（登录后访问）。
 
 响应：
 
@@ -1028,7 +1028,7 @@ Authorization: Bearer <token>
 
 `GET /api/settings/leader-rules`
 
-访问控制：使用 `guestViewMiddleware`（`allowGuestView` 开启时游客可读，关闭后需登录）。
+访问控制：需要有效 JWT（登录后访问）。
 
 响应示例：
 
@@ -1970,7 +1970,6 @@ PUT 请求：
 
 ```json
 {
-  "allowGuestView": true,
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
   "allowUserEditOwnTaskColor": true,
@@ -1980,7 +1979,7 @@ PUT 请求：
 
 说明：
 
-- `allowGuestView` 控制未登录游客是否可查看主页面，新环境默认 `false`（未登录查看默认关闭）；从旧版本升级的环境保留存量值。
+- 所有页面和接口均需登录，不提供未登录查看。
 - `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划标记颜色。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
@@ -1995,7 +1994,6 @@ PUT 请求：
 
 ```json
 {
-  "allowGuestView": false,
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
   "specNumberDigits": 6
@@ -3270,7 +3268,6 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `ACCOUNT_DISABLED` | 403 | 账号已禁用 |
 | `FORCE_PASSWORD_CHANGE` | 403 | 未修改初始密码，除「修改密码」「退出登录」外的接口一律被拦截 |
 | `SESSION_INVALIDATED` | 401 | 会话在其他设备登录后失效 |
-| `GUEST_VIEW_DISABLED` | 401 | 未登录查看已关闭，需先登录 |
 | `USER_NOT_FOUND` | 401 | 校验会话时用户不存在（`GET /api/auth/validate`） |
 | `WEKNORA_MULTI_TENANT` | 400 | 问答所选知识库跨越多个工作空间 |
 | `WEKNORA_KB_FORBIDDEN` | 403 | 知识库在所有已配置工作空间均不可访问 |

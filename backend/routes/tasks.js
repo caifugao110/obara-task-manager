@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware, guestViewMiddleware } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 
@@ -226,7 +226,7 @@ const findBatchReplaceMatches = (data, findText, allTable, month, year) => {
   return { matches, itemCount: matches.length, matchCount };
 };
 
-router.get('/', guestViewMiddleware, asyncHandler(async (req, res) => {
+router.get('/', authMiddleware, asyncHandler(async (req, res) => {
   const { month, year, designerId, summary } = req.query;
   const data = db.readDb();
 

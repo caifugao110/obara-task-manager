@@ -99,7 +99,7 @@ const WorkHours = () => {
 
   const fetchSettings = useCallback(async () => {
     try {
-      // 走 axiosInstance 自动携带 Authorization，访客视图关闭时裸请求会被 guestViewMiddleware 拦为 401
+      // 走 axiosInstance 自动携带 Authorization，接口需登录访问
       const res = await axiosInstance.get('/settings/work-hours');
       setSettings(res.data);
     } catch (err) {

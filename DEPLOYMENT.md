@@ -204,7 +204,7 @@ nssm remove ObaraTaskManager
 后端没有单独的 `/health` 接口，也不托管前端静态文件（未挂载 `express.static`，仅提供 `/api/*` 接口和 Socket.IO 服务），生产环境前端需由 IIS/Nginx 等独立托管。可使用以下轻量接口确认服务状态：
 
 ```text
-GET http://localhost:5000/api/system/settings   # 匿名时可能返回 401 JSON（allowGuestView=false）
+GET http://localhost:5000/api/system/settings   # 需要登录，匿名返回 401 JSON
 GET http://localhost:5000/api/system/version    # 需要登录，匿名返回 401 JSON
 ```
 
@@ -405,7 +405,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
-| `settings.system` | 系统设置，如未登录查看（`allowGuestView`，新环境默认关闭；从旧版本升级的环境保留存量值，如需关闭请在系统设置「登录管理」中手动修改）、多设备登录、允许登录用户修改本人设计计划标记颜色、仕样号位数（`specNumberDigits`，5 或 6）；颜色标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
+| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划标记颜色、仕样号位数（`specNumberDigits`，5 或 6）；颜色标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
 
 ### 从 JSON 自动迁移
 
@@ -434,9 +434,9 @@ GITEE_REPO_NAME=obara-task-manager
 - `allowViewers=true` 时，`allowAdmins` 必须为 `true`。
 - 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于普通用户。
 - 任务报表、工时管理、状态追踪页面均要求登录；`leaderboard.allowViewers`、`workHours.allowViewers`、`statusTracking.allowViewers` 只表示允许普通用户访问。
-- 焊枪台账（`gunLedger`）要求登录，`allowViewers` 后端强制为 `false`（普通用户与游客不能进入 `/gun-ledger`）；一般管理员可编辑但不能删除分类/表。
+- 焊枪台账（`gunLedger`）要求登录，`allowViewers` 后端强制为 `false`（普通用户不能进入 `/gun-ledger`）；一般管理员可编辑但不能删除分类/表。
 - 设计规范知识库（`designStandards`）规则同工时管理。
-- `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问），一般管理员仅可查看数据管理模块的导出功能，不能导入。
+- `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户访问），一般管理员仅可查看数据管理模块的导出功能，不能导入。
 
 ## 备份与恢复
 
@@ -568,7 +568,7 @@ taskkill /PID <PID> /F
 2. 确认 `http://localhost:5000` 可访问。
 3. 检查 `frontend/vite.config.ts` 中 `/api` 和 `/socket.io` 的代理配置。
 4. 重新登录，确认浏览器 LocalStorage 中存在 Token。
-5. 如果关闭了未登录查看主页面，需要先登录才能加载任务和设计人员。
+5. 所有页面和接口均需登录，未登录时前端会重定向到登录页。
 
 ### 任务报表或工时管理提示无设计人员
 

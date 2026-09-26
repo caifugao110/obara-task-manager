@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authMiddleware, superAdminMiddleware, adminMiddleware, guestViewMiddleware } = require('../middleware/auth');
+const { authMiddleware, superAdminMiddleware, adminMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const weknora = require('../utils/weknora');
@@ -58,16 +58,16 @@ const updateAccessSettings = (key) => [authMiddleware, superAdminMiddleware, asy
   res.json(data.settings[key]);
 })];
 
-router.get('/leaderboard', guestViewMiddleware, getAccessSettings('leaderboard'));
+router.get('/leaderboard', authMiddleware, getAccessSettings('leaderboard'));
 router.put('/leaderboard', updateAccessSettings('leaderboard'));
 
-router.get('/work-hours', guestViewMiddleware, getAccessSettings('workHours'));
+router.get('/work-hours', authMiddleware, getAccessSettings('workHours'));
 router.put('/work-hours', updateAccessSettings('workHours'));
 
-router.get('/status-tracking', guestViewMiddleware, getAccessSettings('statusTracking'));
+router.get('/status-tracking', authMiddleware, getAccessSettings('statusTracking'));
 router.put('/status-tracking', updateAccessSettings('statusTracking'));
 
-router.get('/design-standards', guestViewMiddleware, getAccessSettings('designStandards'));
+router.get('/design-standards', authMiddleware, getAccessSettings('designStandards'));
 router.put('/design-standards', updateAccessSettings('designStandards'));
 
 /* ==================== 设计规范「答复约束提示词」（仅超级管理员） ====================
@@ -165,13 +165,13 @@ router.put(
   })
 );
 
-router.get('/system-settings', guestViewMiddleware, getAccessSettings('systemSettings'));
+router.get('/system-settings', authMiddleware, getAccessSettings('systemSettings'));
 router.put('/system-settings', updateAccessSettings('systemSettings'));
 
-router.get('/gun-ledger', guestViewMiddleware, getAccessSettings('gunLedger'));
+router.get('/gun-ledger', authMiddleware, getAccessSettings('gunLedger'));
 router.put('/gun-ledger', updateAccessSettings('gunLedger'));
 
-router.get('/workday-overrides', guestViewMiddleware, asyncHandler(async (req, res) => {
+router.get('/workday-overrides', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   res.json(normalizeWorkdayOverrides(data.settings?.workdayOverrides));
 }));
@@ -212,7 +212,7 @@ const leaderRulesSchema = Joi.array().items(
   })
 );
 
-router.get('/leader-rules', guestViewMiddleware, asyncHandler(async (req, res) => {
+router.get('/leader-rules', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();
   const rules = data.settings?.leaderRules || defaultLeaderRules;
   res.json(rules);

@@ -134,7 +134,7 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   offlineBackupDir: 'backups/offline'
 };
 
-const defaultSettings: SystemSettingsData = { allowGuestView: true, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
+const defaultSettings: SystemSettingsData = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 const SystemSettings = () => {
@@ -201,7 +201,7 @@ const SystemSettings = () => {
 
   const fetchAccessSettings = useCallback(async () => {
     try {
-      // 必须走 axiosInstance 携带 Authorization：访客视图关闭时 guestViewMiddleware 对无 token 请求返回 401
+      // 必须走 axiosInstance 携带 Authorization：接口需登录访问
       const res = await axiosInstance.get('/settings/system-settings');
       setAccessSettings(res.data);
     } catch {
@@ -1680,7 +1680,6 @@ const SystemSettings = () => {
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
-                { label: '允许未登录用户查看主页面', detail: 'Guest View', key: 'allowGuestView' as const },
                 { label: '允许多设备同时在线', detail: 'Multi Device', key: 'allowMultiDevice' as const },
                 { label: '允许登录用户修改本人设计计划标记颜色', detail: 'Own Design Plan Color', key: 'allowUserDesignPlanColorMark' as const }
               ].map(item => (

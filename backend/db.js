@@ -240,7 +240,7 @@ const getInitialDb = () => ({
     workdayOverrides: {},
     designStandardsLinkedKbIds: [],
     designStandardsPrompt: { enabled: false, knowledgeBases: {} },
-    system: { allowGuestView: false, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 }
+    system: { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 }
   }
 });
 
@@ -378,13 +378,10 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.designStandardsPrompt.knowledgeBases = {};
   }
   if (!parsed.settings.system) {
-    parsed.settings.system = { allowGuestView: false, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
+    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
   }
-  // 存量环境的 system 对象可能缺 allowGuestView 键：回填默认 false（fail-closed），
-  // 与 guestViewMiddleware 的兜底方向保持一致，防止未登录访客被静默放行
-  if (typeof parsed.settings.system.allowGuestView !== 'boolean') {
-    parsed.settings.system.allowGuestView = false;
-  }
+  // 访客查看功能已移除：清理存量数据中残留的 allowGuestView 键
+  delete parsed.settings.system.allowGuestView;
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserDesignPlanColorMark');
   const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserEditOwnTaskColor');
   const allowOwnDesignPlanColor = hasDesignPlanColorMark || hasEditOwnTaskColor
