@@ -2,6 +2,7 @@
 // 布局约定：每张表对应一个工作表（sheet 名为表名），整个分类构成一个工作簿。
 // 每个工作表结构：第 0 行列表头（序号/焊枪名/客户/时间/担当/备注），其余为数据行。
 const XLSX = require('xlsx');
+const { sanitizeAoaRows } = require('./fileUploadSecurity');
 
 const HEADERS = ['序号', '焊枪名', '客户', '时间', '担当', '备注'];
 const COL_WIDTHS = [
@@ -142,7 +143,7 @@ const buildEmptyCategoryLayout = () => {
 const appendTableSheet = (workbook, sheetName, table, usedNames, sheetInfoMap) => {
   const name = makeSheetName(sheetName, usedNames);
   const layout = buildTableLayout(table);
-  const worksheet = XLSX.utils.aoa_to_sheet(layout.aoaRows);
+  const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(layout.aoaRows));
   worksheet['!cols'] = COL_WIDTHS;
   XLSX.utils.book_append_sheet(workbook, worksheet, name);
   sheetInfoMap.set(name, { layout });
@@ -264,7 +265,7 @@ const buildCategoryBuffer = (gunLedger, categoryName) => {
   if (!tables.length) {
     const name = makeSheetName(categoryName, usedNames);
     const layout = buildEmptyCategoryLayout();
-    const worksheet = XLSX.utils.aoa_to_sheet(layout.aoaRows);
+    const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(layout.aoaRows));
     worksheet['!cols'] = COL_WIDTHS;
     XLSX.utils.book_append_sheet(workbook, worksheet, name);
     sheetInfoMap.set(name, { layout });
@@ -291,7 +292,7 @@ const buildCombinedBuffer = (gunLedger) => {
       } else {
         const name = makePrefixedSheetName(categoryName, table.name, usedNames);
         const layout = buildTableLayout(table);
-        const worksheet = XLSX.utils.aoa_to_sheet(layout.aoaRows);
+        const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(layout.aoaRows));
         worksheet['!cols'] = COL_WIDTHS;
         XLSX.utils.book_append_sheet(workbook, worksheet, name);
         sheetInfoMap.set(name, { layout });
@@ -304,7 +305,7 @@ const buildCombinedBuffer = (gunLedger) => {
   if (tableCount === 0) {
     const name = makeSheetName('说明', usedNames);
     const layout = buildEmptyCategoryLayout();
-    const worksheet = XLSX.utils.aoa_to_sheet(layout.aoaRows);
+    const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(layout.aoaRows));
     worksheet['!cols'] = COL_WIDTHS;
     XLSX.utils.book_append_sheet(workbook, worksheet, name);
     sheetInfoMap.set(name, { layout });

@@ -1,5 +1,6 @@
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend } = require('./workday');
+const { sanitizeAoaRows } = require('./fileUploadSecurity');
 
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
@@ -555,7 +556,7 @@ const buildExcelXml = (monthGroups, designers, workdayOverrides = {}) => {
   [...monthGroups.keys()].sort().forEach(key => {
     const [year, month] = key.split('-').map(Number);
     const { rows, merges, styleMap } = buildMonthWorkbookData(monthGroups.get(key), designers, year, month, workdayOverrides);
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(rows));
     worksheet['!merges'] = merges;
     worksheet['!cols'] = [
       { wpx: 80 },

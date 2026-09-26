@@ -7,7 +7,7 @@ const XLSX = require('xlsx');
 const multer = require('multer');
 const Joi = require('joi');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
-const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
+const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 
 const statusTrackingItemSchema = Joi.object({
   id: Joi.string().allow(''),
@@ -341,7 +341,7 @@ router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req
   });
 
   const worksheetData = [headerRow, ...dataRows];
-  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData, { sheetStubs: true });
+  const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(worksheetData), { sheetStubs: true });
   worksheet['!cols'] = buildAutoColumns(worksheetData, {
     min: 50,
     max: 220,

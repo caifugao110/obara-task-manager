@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../db');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const { authMiddleware } = require('../middleware/auth');
@@ -19,7 +20,7 @@ const JWT_AUDIENCE = securityConfig.jwt.audience;
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
-  keyGenerator: (req) => `${req.ip}|${req.body?.username || ''}`,
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip)}|${req.body?.username || ''}`,
   message: { message: '登录尝试过于频繁，请15分钟后再试' }
 });
 
@@ -27,7 +28,7 @@ const loginLimiter = rateLimit({
 const changePasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip),
   message: { message: '密码修改尝试过于频繁，请15分钟后再试' }
 });
 

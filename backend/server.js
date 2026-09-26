@@ -176,6 +176,21 @@ const removeGunLedgerSessions = (predicate) => {
   return removed;
 };
 
+// Socket 事件频率限制：按连接计数，防止单个客户端高频广播造成全体刷新风暴。
+// 计数挂在 socket.data 上，连接断开时随对象一起回收，不会累积占用内存。
+const socketRateLimit = (socket, eventName, limit, windowMs) => {
+  if (!socket.data.rateBuckets) socket.data.rateBuckets = {};
+  const now = Date.now();
+  const bucket = (socket.data.rateBuckets[eventName] || []).filter(t => now - t < windowMs);
+  if (bucket.length >= limit) {
+    socket.data.rateBuckets[eventName] = bucket;
+    return false;
+  }
+  bucket.push(now);
+  socket.data.rateBuckets[eventName] = bucket;
+  return true;
+};
+
 // 错误处理：认证失败
 io.on('connect_error', (error) => {
   console.error('Socket connection error:', error.message);
@@ -192,11 +207,18 @@ io.on('connection', (socket) => {
   socket.emit('gun_ledger_table_locks_state', gunTableLocks.snapshot());
 
   // task_updated 事件：验证用户身份
-  socket.on('task_updated', (data) => {
+  socket.on('task_updated', () => {
     try {
       requireSocketAuth(socket);
-      // Broadcast to everyone except sender
-      socket.broadcast.emit('task_refreshed', data);
+      // 限制单个连接的广播频率：该事件会触发全体客户端重新拉取数据，
+      // 不加限制时可被任意登录用户高频触发，形成刷新风暴
+      if (!socketRateLimit(socket, 'task_updated', 5, 10 * 1000)) {
+        socket.emit('error', { message: '操作过于频繁，请稍后再试' });
+        return;
+      }
+      // 不转发客户端 payload：前端对该事件不消费参数，仅据此触发重新拉取，
+      // 避免把客户端构造的任意内容广播给所有在线用户
+      socket.broadcast.emit('task_refreshed');
     } catch (err) {
       socket.emit('error', { message: err.message });
     }
@@ -274,7 +296,19 @@ io.on('connection', (socket) => {
   socket.on('status_tracking_start_edit', (data) => {
     try {
       const authenticatedUser = requireSocketAuth(socket);
-      
+
+      // 状态追踪的新增/编辑/删除均要求管理员权限，占用广播同样收敛到管理员，
+      // 否则普通用户可向全体客户端伪造「正在编辑」提示干扰他人
+      if (!['admin', 'superadmin'].includes(authenticatedUser.role)) {
+        socket.emit('error', { message: 'Insufficient permissions' });
+        return;
+      }
+
+      if (!socketRateLimit(socket, 'status_tracking_start_edit', 30, 10 * 1000)) {
+        socket.emit('error', { message: '操作过于频繁，请稍后再试' });
+        return;
+      }
+
       if (!data?.itemId) {
         socket.emit('error', { message: 'Missing itemId' });
         return;

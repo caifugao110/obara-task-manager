@@ -6,7 +6,7 @@ const gunExport = require('../utils/gunLedgerExport');
 const { createZipBuffer } = require('../utils/simpleZip');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const { validateFileType } = require('../utils/fileUploadSecurity');
+const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
 const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
 const Joi = require('joi');
@@ -193,6 +193,22 @@ router.post('/import',
     } catch {
       return res.status(400).json({ message: '无法解析文件，请检查格式' });
     }
+
+    // 结构校验：限制工作表数量 / 行数 / 列数，拦截超大或畸形工作簿
+    const structureValidation = validateWorkbookStructure(workbook);
+    if (!structureValidation.valid) {
+      return res.status(400).json({ message: structureValidation.error });
+    }
+
+    // 恶意公式扫描：导入内容会原样写入台账并进入后续导出的 .xls，
+    // 若含 =cmd|... / DDE 一类公式，管理员打开导出文件时会触发公式注入
+    const securityScan = scanForMaliciousContent(workbook);
+    if (!securityScan.safe) {
+      return res.status(400).json({ message: securityScan.message, details: securityScan.details });
+    }
+
+    // 对单元格做前缀转义，保留内容的同时使其不被 Excel 识别为公式
+    sanitizeWorkbook(workbook);
 
     const { tables: parsedTables, warnings } = gunExport.parseImportedWorkbook(workbook);
     if (!parsedTables.length) {

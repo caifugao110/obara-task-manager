@@ -2,16 +2,16 @@ const db = require('../db');
 const crypto = require('crypto');
 const { getBrowserInfo, getRouteActionDisplay } = require('../utils/auditLogDisplay');
 
-const appendAuditLog = async (data, entry) => {
-  if (!data.auditLogs) data.auditLogs = [];
-  data.auditLogs.push({
+// 操作日志写入 audit_logs 独立表。
+// 早期实现把日志塞进 kv_store 的整库 JSON，每写一条都要 readDb()（整库深拷贝）
+// + writeDb()（8 个集合全量序列化 UPSERT）；而本中间件在每个请求结束时都会写一次，
+// 造成严重的写放大。改为单次 INSERT 后不再触碰业务数据快照。
+const appendAuditLog = async (entry) => {
+  db.appendAuditLogEntry({
     id: crypto.randomUUID(),
     ...entry,
     timestamp: new Date().toISOString()
   });
-  if (data.auditLogs.length > 2000) {
-    data.auditLogs = data.auditLogs.slice(-2000);
-  }
 };
 
 // 以 req.ip 为准（trust proxy='loopback' 时已过滤外部伪造的 XFF），
@@ -61,10 +61,17 @@ const formatResponseMessage = (method, responseBody) => {
   try {
     let message;
     if (typeof responseBody === 'string') {
-      message = responseBody;
+      // 响应体中的敏感字段（如登录/改密返回的 token）同样需要脱敏，
+      // 避免可冒用身份的凭证明文落入操作日志
+      let parsed = null;
+      try { parsed = JSON.parse(responseBody); } catch { /* 非 JSON 字符串，原样记录 */ }
+      message = parsed && typeof parsed === 'object'
+        ? JSON.stringify(sanitizeBody(parsed))
+        : responseBody;
     } else {
+      const sanitizedBody = sanitizeBody(responseBody);
       const seen = new WeakSet();
-      message = JSON.stringify(responseBody, (key, value) => {
+      message = JSON.stringify(sanitizedBody, (key, value) => {
         if (typeof value === 'object' && value !== null) {
           if (Buffer.isBuffer(value)) {
             return '[Buffer]';
@@ -167,9 +174,7 @@ const getActionDescription = (method, path, body) => {
 };
 
 const appendAuditLogDirect = async (entry) => {
-  const data = db.readDb();
-  await appendAuditLog(data, entry);
-  await db.writeDb(data);
+  await appendAuditLog(entry);
 };
 
 const auditLogMiddleware = async (req, res, next) => {
@@ -236,9 +241,9 @@ const auditLogMiddleware = async (req, res, next) => {
         durationMs: Date.now() - startTime
       };
 
-      const data = db.readDb();
-      await appendAuditLog(data, logEntry);
-      await db.writeDb(data);
+      // 单次 INSERT 写入独立表：不再走 readDb()/writeDb()，
+      // 避免每个 API 请求都触发整库深拷贝与全量落盘
+      await appendAuditLog(logEntry);
     } catch (err) {
       console.error('Error writing audit log:', err);
     }

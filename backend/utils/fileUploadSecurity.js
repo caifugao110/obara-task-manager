@@ -58,6 +58,33 @@ function sanitizeCellValue(value) {
   return sanitized;
 }
 
+// 导出侧的公式转义触发器：Excel / WPS 会把这些开头的内容当作公式求值
+const FORMULA_TRIGGER_PATTERN = /^[=+\-@\t\r]/;
+
+/**
+ * 转义单个待导出的单元格值（不改变大小写与首尾空格，仅在必要时加前导单引号）。
+ * 用户录入的 =cmd|'/c calc'!A1、+1+1、@SUM(...) 等内容若原样写入 .xls，
+ * 打开文件时会被 Excel 当作公式执行（CSV / 公式注入）。
+ */
+function escapeFormulaCell(value) {
+  if (typeof value !== 'string' || value === '') return value;
+  if (MALICIOUS_FORMULA_PATTERNS.some(pattern => pattern.test(value))) {
+    return `'${value}`;
+  }
+  if (FORMULA_TRIGGER_PATTERN.test(value)) {
+    return `'${value}`;
+  }
+  return value;
+}
+
+/**
+ * 对 aoa_to_sheet 用的二维数组做批量转义，供各导出工具在写入工作簿前调用。
+ */
+function sanitizeAoaRows(rows) {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map(row => (Array.isArray(row) ? row.map(escapeFormulaCell) : row));
+}
+
 function validateWorkbookStructure(workbook) {
   if (!workbook || !workbook.SheetNames) {
     return { valid: false, error: '无效的工作簿' };
@@ -163,6 +190,8 @@ module.exports = {
   scanForMaliciousContent,
   sanitizeWorkbook,
   sanitizeCellValue,
+  escapeFormulaCell,
+  sanitizeAoaRows,
   MAX_ROWS,
   MAX_SHEETS,
   MAX_CELLS_PER_ROW

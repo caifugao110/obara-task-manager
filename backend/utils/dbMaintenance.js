@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const db = require('../db');
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
+const { sanitizeAoaRows } = require('./fileUploadSecurity');
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
 const gunExport = require('./gunLedgerExport');
 
@@ -183,7 +184,7 @@ const buildTaskExportWorkbook = (sheets, designers, workdayOverrides = {}) => {
       }
     });
 
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(rows));
     worksheet['!cols'] = [{ wch: 12 }, ...Array.from({ length: daysInMonth }, () => [{ wch: 28 }, { wch: 8 }]).flat(), { wch: 10 }];
     XLSX.utils.book_append_sheet(workbook, worksheet, key);
   });

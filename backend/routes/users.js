@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const db = require('../db');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
@@ -121,6 +122,17 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
   const targetUser = data.users[userIndex];
   const { username, password, role, name, group, disabled } = req.body;
 
+  // 超级管理员账号一律不可被禁用（含超管禁用自己）。
+  // 一旦禁用最后一个超管，系统将失去唯一的权限入口，只能改数据库恢复。
+  if (disabled === true && targetUser.role === 'superadmin') {
+    return res.status(403).json({ message: '超级管理员账号不可禁用' });
+  }
+
+  // 超级管理员不能把自己降级：同样是防止系统失去超管入口。
+  if (role && req.user.role === 'superadmin' && targetUser.id === req.user.id && role !== 'superadmin') {
+    return res.status(403).json({ message: '不能降低自己的超级管理员权限' });
+  }
+
   if (username && username !== targetUser.username && data.users.find(u => u.username === username)) {
     return res.status(400).json({ message: '用户名已存在' });
   }
@@ -129,6 +141,8 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
   if (password) {
     targetUser.password = bcrypt.hashSync(password, 10);
     targetUser.forcePasswordChange = true;
+    // 重置密码后吊销该账号已签发的令牌，旧会话立即失效（对齐改密接口的行为）
+    targetUser.sessionToken = crypto.randomUUID();
   }
   if (role && req.user.role === 'superadmin') targetUser.role = role;
   if (name) targetUser.name = name;

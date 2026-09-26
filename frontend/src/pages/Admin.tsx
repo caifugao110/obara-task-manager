@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
+import { buildLoginUrl } from '../utils/redirect';
 import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download, Settings } from 'lucide-react';
 import { format } from 'date-fns';
 import {
@@ -614,6 +615,15 @@ const Admin = () => {
     if (!isSuperAdmin) return;
     const user = users.find(u => u.id === id);
     if (!user) return;
+    // 超级管理员账号不允许禁用（含自己）：禁用最后一个超管会导致系统失去唯一权限入口
+    if (user.role === 'superadmin') {
+      addToast('超级管理员账号不可禁用', 'error');
+      return;
+    }
+    if (user.id === currentUser?.id) {
+      addToast('不能禁用当前登录账号', 'error');
+      return;
+    }
     try {
       await axiosInstance.put(`/users/${id}`, { disabled: !user.disabled });
       addToast(user.disabled ? '账号已启用' : '账号已禁用', 'success');
@@ -632,10 +642,18 @@ const Admin = () => {
     }
     setResetPasswordSubmitting(true);
     try {
+      const isSelf = resetPasswordUserId === currentUser?.id;
       await axiosInstance.put(`/users/${resetPasswordUserId}`, { password: resetPasswordValue });
-      addToast('密码已重置', 'success');
+      addToast(
+        isSelf ? '密码已重置，请使用新密码重新登录并修改密码' : '密码已重置',
+        'success'
+      );
       setResetPasswordUserId(null);
       setResetPasswordValue('');
+      // 重置本人密码会吊销当前令牌并置为强制改密：跳转登录页重新认证
+      if (isSelf) {
+        setTimeout(() => { window.location.href = buildLoginUrl(); }, 800);
+      }
     } catch (err: any) {
       addToast(err.response?.data?.message || '重置失败', 'error');
     } finally {
@@ -1300,7 +1318,7 @@ const Admin = () => {
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          {isSuperAdmin && u.id !== currentUser?.id && (
+                          {isSuperAdmin && u.id !== currentUser?.id && u.role !== 'superadmin' && (
                             <button 
                               onClick={() => handleToggleUserDisabled(u.id)}
                               className={`p-2 rounded-lg transition-all duration-200 ${u.disabled ? 'text-gray-400 hover:text-green-600 hover:bg-green-50' : 'text-green-600 hover:text-gray-400 hover:bg-gray-50'}`}
@@ -1318,11 +1336,12 @@ const Admin = () => {
                               <Settings size={18} />
                             </button>
                           )}
-                          {isSuperAdmin && u.role !== 'superadmin' && (
+                          {/* 重置密码：他人账号限非超管；本人账号始终可重置，作为超管自助改密的唯一入口 */}
+                          {isSuperAdmin && (u.role !== 'superadmin' || u.id === currentUser?.id) && (
                             <button 
                               onClick={() => handleResetPassword(u.id)}
                               className="p-2 text-gray-300 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all duration-200"
-                              title="重置密码"
+                              title={u.id === currentUser?.id ? '修改我的密码' : '重置密码'}
                             >
                               <Key size={18} />
                             </button>

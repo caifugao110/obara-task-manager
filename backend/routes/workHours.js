@@ -6,6 +6,7 @@ const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
+const { sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 
 router.get('/export', [authMiddleware, accessSettingsMiddleware('workHours')], asyncHandler(async (req, res) => {
   const { month } = req.query;
@@ -117,7 +118,7 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('workHours')], a
   });
 
   const worksheetData = [headerRow, ...dataRows];
-  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData, { sheetStubs: true });
+  const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(worksheetData), { sheetStubs: true });
   worksheet['!cols'] = buildAutoColumns(worksheetData, { min: 70, max: 160 });
 
   const workbook = XLSX.utils.book_new();

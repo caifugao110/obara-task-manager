@@ -33,6 +33,13 @@ const socketAuthMiddleware = (socket, next) => {
       return next(new Error('Authentication error: Account disabled'));
     }
 
+    // 与 HTTP 层对齐：未修改初始密码的账号不得建立实时连接。
+    // 否则可绕过 authMiddleware 的 FORCE_PASSWORD_CHANGE 拦截，
+    // 用初始口令连上 WebSocket 后持续接收数据广播、抢占编辑锁。
+    if (user.forcePasswordChange) {
+      return next(new Error('Authentication error: Password change required'));
+    }
+
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
     // Enhanced session check: always validate sessionId against user.sessionToken
     if (user.sessionToken && decoded.sessionId !== user.sessionToken) {

@@ -15,7 +15,7 @@ const asyncHandler = require('express-async-handler');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDisplay');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
-const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
+const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const maintenance = require('../utils/dbMaintenance');
 const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
@@ -637,7 +637,7 @@ const buildExcelXml = (monthGroups, designers, workdayOverrides = {}) => {
   [...monthGroups.keys()].sort().forEach(key => {
     const [year, month] = key.split('-').map(Number);
     const { rows, merges, styleMap } = buildMonthWorkbookData(monthGroups.get(key), designers, year, month, workdayOverrides);
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(rows));
     worksheet['!merges'] = merges;
     worksheet['!cols'] = [
       { wpx: 80 },
@@ -1099,10 +1099,11 @@ router.post('/maintenance/yearly-cleanup', [authMiddleware, superAdminMiddleware
 router.post('/maintenance/clear-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const loginLogsCount = (data.loginLogs || []).length;
-  const auditLogsCount = (data.auditLogs || []).length;
+  const auditLogsCount = db.countAuditLogs();
   data.loginLogs = [];
-  data.auditLogs = [];
   await db.writeDb(data);
+  // 操作日志在独立表中，单独清空
+  db.clearAuditLogs();
   res.json({ message: '日志已清空', loginLogsCount, auditLogsCount });
 }));
 
@@ -1573,9 +1574,9 @@ const filterAuditLogs = (logs, { username, action, method, ip, from, to } = {}) 
 
 router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const { limit = 100, page = 1, username, action, method, ip, from, to } = req.query;
-  
-  const data = db.readDb();
-  let logs = filterAuditLogs(data.auditLogs || [], { username, action, method, ip, from, to });
+
+  // 操作日志已迁至 audit_logs 独立表，不再随整库读出
+  let logs = filterAuditLogs(db.listAuditLogs(), { username, action, method, ip, from, to });
   
   logs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   
@@ -1597,7 +1598,7 @@ router.get('/db-stats', [authMiddleware, superAdminMiddleware], asyncHandler(asy
   
   const tasks = data.tasks || [];
   const loginLogs = data.loginLogs || [];
-  const auditLogs = data.auditLogs || [];
+  const auditLogsCount = db.countAuditLogs();
   const statusTrackingItems = data.statusTrackingItems || [];
   const users = data.users || [];
   const designers = data.designers || [];
@@ -1648,7 +1649,7 @@ router.get('/db-stats', [authMiddleware, superAdminMiddleware], asyncHandler(asy
       months: monthCount,
       statusTrackingItems: statusTrackingItems.length,
       loginLogs: loginLogs.length,
-      auditLogs: auditLogs.length
+      auditLogs: auditLogsCount
     },
     warnings: {
       over50MB: sizeInBytes > 50 * 1024 * 1024,
@@ -1674,14 +1675,10 @@ router.delete('/cleanup/login-logs', [authMiddleware, superAdminMiddleware], asy
 }));
 
 router.delete('/cleanup/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const data = db.readDb();
-  const beforeCount = (data.auditLogs || []).length;
-  
-  if (!data.auditLogs) data.auditLogs = [];
-  data.auditLogs = [];
-  
-  await db.writeDb(data);
-  
+  // 操作日志存于 audit_logs 独立表，直接清空该表即可，无需整库读写
+  const beforeCount = db.countAuditLogs();
+  db.clearAuditLogs();
+
   res.json({
     message: '操作日志已清空',
     cleanedCount: beforeCount
@@ -1772,8 +1769,7 @@ router.delete('/cleanup/status-tracking', [authMiddleware, superAdminMiddleware]
 }));
 
 router.get('/audit-logs/filter-options', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const data = db.readDb();
-  const logs = data.auditLogs || [];
+  const logs = db.listAuditLogs();
   const usernames = [...new Set(logs.map(log => log.username).filter(Boolean))].sort();
   
   const actionLabels = logs
@@ -1790,8 +1786,7 @@ router.get('/audit-logs/filter-options', [authMiddleware, superAdminMiddleware],
 
 router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const { username, action, method, ip, from, to } = req.query;
-  const data = db.readDb();
-  let logs = filterAuditLogs(data.auditLogs || [], { username, action, method, ip, from, to });
+  let logs = filterAuditLogs(db.listAuditLogs(), { username, action, method, ip, from, to });
   logs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   if (logs.length === 0) {
@@ -1819,7 +1814,7 @@ router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHa
   });
 
   const worksheetData = [columns, ...dataRows];
-  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+  const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(worksheetData));
   worksheet['!cols'] = buildAutoColumns(worksheetData, {
     min: 64,
     max: 360,
