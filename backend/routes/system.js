@@ -8,6 +8,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const https = require('https');
 const db = require('../db');
+const taskStore = require('../taskStore');
 const { authMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const Joi = require('joi');
@@ -1097,12 +1098,10 @@ router.post('/maintenance/yearly-cleanup', [authMiddleware, superAdminMiddleware
 }));
 
 router.post('/maintenance/clear-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const data = db.readDb();
-  const loginLogsCount = (data.loginLogs || []).length;
+  // 登录/操作日志均在独立表中，直接清空，无需整库读写
+  const loginLogsCount = db.countLoginLogs();
   const auditLogsCount = db.countAuditLogs();
-  data.loginLogs = [];
-  await db.writeDb(data);
-  // 操作日志在独立表中，单独清空
+  db.clearLoginLogs();
   db.clearAuditLogs();
   res.json({ message: '日志已清空', loginLogsCount, auditLogsCount });
 }));
@@ -1110,38 +1109,26 @@ router.post('/maintenance/clear-logs', [authMiddleware, superAdminMiddleware], a
 router.post('/maintenance/cleanup-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const { month, year, beforeMonth, beforeYear } = req.body;
 
-  const data = db.readDb();
-  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  const originalCount = tasks.length;
-
-  let filteredTasks;
   let removedCount = 0;
 
   if (month && year) {
     const m = parseInt(month, 10);
     const y = parseInt(year, 10);
-    filteredTasks = tasks.filter(t => !(t.month === m && t.year === y));
-    removedCount = originalCount - filteredTasks.length;
+    removedCount = taskStore.deleteSheetsByMonth(y, m);
   } else if (beforeMonth && beforeYear) {
     const m = parseInt(beforeMonth, 10);
     const y = parseInt(beforeYear, 10);
-    filteredTasks = tasks.filter(t => {
-      if (t.year < y) return false;
-      if (t.year === y && t.month < m) return false;
-      return true;
-    });
-    removedCount = originalCount - filteredTasks.length;
+    removedCount = taskStore.deleteSheetsBefore(y, m).removedSheets;
   } else {
     return res.status(400).json({ message: '请指定月份或清理时间点' });
   }
 
-  data.tasks = filteredTasks;
-  await db.writeDb(data);
+  const remainingCount = taskStore.countSheets();
 
   const io = req.app.get('io');
   if (io) io.emit('task_refreshed');
 
-  res.json({ message: '任务数据清理完成', removedCount, remainingCount: filteredTasks.length });
+  res.json({ message: '任务数据清理完成', removedCount, remainingCount });
 }));
 
 router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
@@ -1150,14 +1137,13 @@ router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(a
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const data = db.readDb();
   const fromTime = value.from ? new Date(value.from).getTime() : null;
   const toTime = value.to ? new Date(value.to).getTime() + 24 * 60 * 60 * 1000 - 1 : null;
   const usernameKeyword = value.username.trim().toLowerCase();
   const browserKeyword = value.browser.trim().toLowerCase();
   const ipKeyword = value.ip.trim().toLowerCase();
 
-  const logs = (data.loginLogs || [])
+  const logs = db.listLoginLogs()
     .filter(log => {
       const timestamp = new Date(log.timestamp).getTime();
       const browserText = [
@@ -1187,9 +1173,8 @@ router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(a
 
 router.get('/export-xls', [authMiddleware, accessSettingsMiddleware('systemSettings')], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const tasks = data.tasks || [];
   const designers = data.designers || [];
-  const exportSheets = tasks.filter(sheetHasData);
+  const exportSheets = taskStore.listSheetsWithData();
 
   if (exportSheets.length === 0) {
     return res.status(404).json({ message: '没有可导出的数据' });
@@ -1245,7 +1230,6 @@ router.post('/import-xls', [authMiddleware, superAdminMiddleware, upload.single(
   sanitizeWorkbook(workbook);
 
   const data = db.readDb();
-  if (!data.tasks) data.tasks = [];
   const designers = data.designers || [];
   const designerByName = new Map(designers.map(d => [String(d.name || '').trim(), d]));
   const skippedDesigners = new Set();
@@ -1335,25 +1319,15 @@ router.post('/import-xls', [authMiddleware, superAdminMiddleware, upload.single(
   mergedSheetMap.forEach((importedSheet, designerId) => {
     if (!sheetHasData(importedSheet)) return;
 
-    const existingIndex = data.tasks.findIndex(
-      t => t.designerId === designerId && t.month === targetMonth.month && t.year === targetMonth.year
-    );
-    const normalized = {
+    // saveSheet 为整表覆盖语义：同 designerId+month+year 的旧表被整体替换
+    taskStore.saveSheet({
       id: `sheet-${designerId}-${targetMonth.year}-${targetMonth.month}`,
       designerId,
       month: targetMonth.month,
       year: targetMonth.year,
       days: importedSheet.days
-    };
-
-    if (existingIndex >= 0) {
-      data.tasks[existingIndex] = normalized;
-    } else {
-      data.tasks.push(normalized);
-    }
+    });
   });
-
-  await db.writeDb(data);
 
   const io = req.app.get('io');
   if (io) io.emit('task_refreshed');
@@ -1595,23 +1569,21 @@ router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(a
 
 router.get('/db-stats', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  
-  const tasks = data.tasks || [];
-  const loginLogs = data.loginLogs || [];
+
+  // tasks 在 taskStore 关系表、loginLogs 在独立表，均不在 kv 缓存中，单独统计
+  const sheetsCount = taskStore.countSheets();
+  const totalTasks = taskStore.countEntries();
+  const monthCount = taskStore.countMonths();
+  const tasksJsonBytes = taskStore.entriesJsonSize();
+  const loginLogsCount = db.countLoginLogs();
   const auditLogsCount = db.countAuditLogs();
   const statusTrackingItems = data.statusTrackingItems || [];
   const users = data.users || [];
   const designers = data.designers || [];
-  
-  const totalTasks = tasks.reduce((sum, sheet) => {
-    return sum + Object.values(sheet.days || {}).reduce((daySum, items) => daySum + (Array.isArray(items) ? items.length : 0), 0);
-  }, 0);
-  
-  const monthCount = new Set(tasks.map(t => `${t.year}-${t.month}`)).size;
-  
-  // 逻辑数据大小（所有集合序列化后的体积）
-  const jsonString = JSON.stringify(data);
-  const sizeInBytes = Buffer.byteLength(jsonString, 'utf8');
+
+  // 逻辑数据大小（kv 集合序列化体积 + 任务条目 JSON 体积）
+  const kvJsonBytes = Buffer.byteLength(JSON.stringify(data), 'utf8');
+  const sizeInBytes = kvJsonBytes + tasksJsonBytes;
   const sizeInKB = (sizeInBytes / 1024).toFixed(2);
   const sizeInMB = (sizeInBytes / (1024 * 1024)).toFixed(2);
 
@@ -1644,11 +1616,11 @@ router.get('/db-stats', [authMiddleware, superAdminMiddleware], asyncHandler(asy
     counts: {
       users: users.length,
       designers: designers.length,
-      tasks: tasks.length,
+      tasks: sheetsCount,
       taskItems: totalTasks,
       months: monthCount,
       statusTrackingItems: statusTrackingItems.length,
-      loginLogs: loginLogs.length,
+      loginLogs: loginLogsCount,
       auditLogs: auditLogsCount
     },
     warnings: {
@@ -1660,14 +1632,10 @@ router.get('/db-stats', [authMiddleware, superAdminMiddleware], asyncHandler(asy
 }));
 
 router.delete('/cleanup/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const data = db.readDb();
-  const beforeCount = (data.loginLogs || []).length;
-  
-  if (!data.loginLogs) data.loginLogs = [];
-  data.loginLogs = [];
-  
-  await db.writeDb(data);
-  
+  // 登录日志在独立表中，直接清空即可
+  const beforeCount = db.countLoginLogs();
+  db.clearLoginLogs();
+
   res.json({
     message: '登录日志已清空',
     cleanedCount: beforeCount
@@ -1688,45 +1656,25 @@ router.delete('/cleanup/audit-logs', [authMiddleware, superAdminMiddleware], asy
 router.delete('/cleanup/old-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const { keepMonths = 12 } = req.query;
   const monthsToKeep = Math.max(1, parseInt(keepMonths, 10) || 12);
-  
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
-  
+
   const cutoffMonth = (currentMonth - monthsToKeep + 12) % 12;
   const cutoffYear = cutoffMonth > currentMonth ? currentYear - 1 : currentYear;
-  
+
+  const { removedSheets, removedTaskItems } = taskStore.deleteSheetsBefore(cutoffYear, cutoffMonth);
+  const remainingSheets = taskStore.countSheets();
+
   const data = db.readDb();
-  const tasks = data.tasks || [];
-  
-  const beforeCount = tasks.length;
-  let removedCount = 0;
-  let removedItems = 0;
-  
-  data.tasks = tasks.filter(sheet => {
-    if (sheet.year < cutoffYear) {
-      removedCount++;
-      removedItems += Object.values(sheet.days || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
-      return false;
-    }
-    if (sheet.year === cutoffYear && sheet.month < cutoffMonth) {
-      removedCount++;
-      removedItems += Object.values(sheet.days || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
-      return false;
-    }
-    return true;
-  });
-  
-  await db.writeDb(data);
-  
-  const jsonString = JSON.stringify(data);
-  const sizeAfter = (Buffer.byteLength(jsonString, 'utf8') / 1024).toFixed(2);
-  
+  const sizeAfter = ((Buffer.byteLength(JSON.stringify(data), 'utf8') + taskStore.entriesJsonSize()) / 1024).toFixed(2);
+
   res.json({
     message: `已清理 ${monthsToKeep} 个月之前的任务数据`,
-    removedSheets: removedCount,
-    removedTaskItems: removedItems,
-    remainingSheets: data.tasks.length,
+    removedSheets,
+    removedTaskItems,
+    remainingSheets,
     dbSizeKbAfter: parseFloat(sizeAfter)
   });
 }));
@@ -1836,14 +1784,10 @@ router.get('/audit-logs/export', [authMiddleware, superAdminMiddleware], asyncHa
 }));
 
 router.get('/admin-login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const data = db.readDb();
-  const loginLogs = data.loginLogs || [];
-  
-  const adminLogs = loginLogs
+  const adminLogs = db.listLoginLogs()
     .filter(log => log.role === 'superadmin' || log.role === 'admin')
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .slice(0, 10);
-  
+
   res.json(adminLogs);
 }));
 

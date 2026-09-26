@@ -21,6 +21,7 @@ Authorization: Bearer <token>
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
 - 全部 `/api` 接口启用全局限流：默认每个 IP 15 分钟 3000 次（`OPTIONS` 预检与本机环回请求不计数，可用环境变量 `API_RATE_LIMIT_MAX` 调整），超限返回 HTTP `429`；登录、修改密码另有更严格的独立限流。
+- 超级管理员启用 IP 黑名单后，命中规则的来源 IP 访问任意 `/api` 接口返回 HTTP `403`（`code=IP_BANNED`）；`OPTIONS` 预检与本机回环地址不拦截（详见「IP 黑名单管理」）。
 - 本文中的“管理员”指 `admin` 或 `superadmin`；“仅超级管理员”只允许 `superadmin`。
 - 后端只提供 `/api/*` 接口和 Socket.IO 服务，**不托管前端静态文件**（未挂载 `express.static`），也没有 `/health` 健康检查接口；生产环境前端需独立部署（前端构建基础路径为 `/obara-task-manager/`）。
 
@@ -57,6 +58,7 @@ Authorization: Bearer <token>
 | 检索/问答/查看知识库文档清单 | 取决于 `designStandards.allowViewers` | 取决于 `designStandards.allowAdmins` | 是 |
 | 关联/取消关联知识库 | 否 | 是 | 是 |
 | 配置答复约束提示词 | 否 | 否 | 是 |
+| 管理 IP 黑名单（查看/启停/增删规则） | 否 | 否 | 是 |
 
 说明：
 
@@ -2411,7 +2413,7 @@ PUT 请求：
 
 | 字段 | 说明 |
 |------|------|
-| `size.bytes` | 逻辑数据大小（所有集合 JSON 序列化后的字节数） |
+| `size.bytes` | 逻辑数据大小（kv 集合与任务条目 JSON 序列化后的字节数之和） |
 | `size.kb` | 逻辑数据大小（KB） |
 | `size.mb` | 逻辑数据大小（MB） |
 | `storage.engine` | 数据库引擎，固定为 `SQLite` |
@@ -2949,6 +2951,95 @@ PUT 请求：
 }
 ```
 
+### IP 黑名单管理
+
+超级管理员可维护 IP 黑名单，拦截异常来源的访问。存储在 `settings.ipBlacklist`：
+
+```json
+{
+  "enabled": false,
+  "entries": [
+    {
+      "id": "0e8c1a2b-...",
+      "ip": "192.168.1.0/24",
+      "note": "备注（最长 100 字符）",
+      "createdAt": "2026-09-26T08:00:00.000Z",
+      "createdBy": { "id": "...", "username": "superadmin", "name": "超级管理员" }
+    }
+  ]
+}
+```
+
+规则格式支持三种（保存前由后端校验并归一化）：
+
+| 格式 | 示例 | 说明 |
+|------|------|------|
+| 精确 IP | `192.168.1.100`、`2001:db8::1` | IPv4 / IPv6 均可 |
+| CIDR 网段 | `192.168.1.0/24`、`2001:db8::/32` | 按前缀长度匹配 |
+| IPv4 通配符 | `192.168.*.*` | 按段匹配，仅限 IPv4 |
+
+生效机制（`backend/utils/ipBlacklist.js` 全局中间件）：
+
+- 命中黑名单的 IP 访问任意 `/api` 接口返回 `403`（`code=IP_BANNED`）；
+- `OPTIONS` 预检请求与本机回环地址（`127.0.0.1` / `::1`）永不拦截，防止管理员误封自身出口 IP 后无法自救；
+- 命中黑名单的 IP 尝试登录时，会额外写入一条失败原因「IP 已被列入黑名单」的登录日志，便于在登录管理界面查看拦截记录；
+- IPv4-mapped IPv6（`::ffff:a.b.c.d`）统一归一为 IPv4 后匹配，避免同一地址因表达形式不同绕过；
+- 规则最多保留 500 条，单次批量添加最多 50 条；规则缓存 15 秒 TTL，增删/启停后立即失效缓存生效。
+
+#### 获取 IP 黑名单
+
+`GET /api/system/ip-blacklist`
+
+权限：仅 `superadmin`
+
+响应：返回上述 `settings.ipBlacklist` 对象。
+
+#### 启用/停用 IP 黑名单
+
+`PUT /api/system/ip-blacklist`
+
+权限：仅 `superadmin`
+
+请求体：
+
+```json
+{ "enabled": true }
+```
+
+响应：返回更新后的黑名单配置。`enabled` 非布尔值返回 `400`。
+
+#### 批量添加黑名单规则
+
+`POST /api/system/ip-blacklist`
+
+权限：仅 `superadmin`
+
+请求体（`ip` 支持逗号/分号/空白分隔多条规则，单次最多 50 条；`note` 选填，最长 100 字符）：
+
+```json
+{ "ip": "1.2.3.4, 10.0.0.0/24 192.168.*.*", "note": "异常扫描来源" }
+```
+
+响应：
+
+```json
+{
+  "added": [ { "id": "...", "ip": "1.2.3.4", "note": "异常扫描来源", "createdAt": "...", "createdBy": {} } ],
+  "failed": [ { "ip": "999.1.1.1", "reason": "IP 地址格式不正确" } ],
+  "total": 3
+}
+```
+
+说明：格式非法的规则进入 `failed`（不阻断其他规则）；与已有规则重复的自动跳过（幂等，不报错）；总规则数超过 500 条返回 `400`。
+
+#### 删除黑名单规则
+
+`DELETE /api/system/ip-blacklist/:id`
+
+权限：仅 `superadmin`
+
+响应：`{ "entries": [...], "total": 2 }`。规则不存在返回 `404`。
+
 ## 工时管理表接口
 
 ### 导出工时管理表
@@ -3280,7 +3371,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 |------|----------|------|
 | 400 | `输入格式不正确` / `请指定清理时间点` 等 | 参数校验失败 |
 | 401 | `No token, authorization denied` / `Token is not valid` / `用户名或密码错误` | 未认证、Token 无效或登录凭证错误 |
-| 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` | 权限不足（超管接口/管理员接口/页面权限开关未放行） |
+| 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` / `您的 IP 已被列入黑名单，无法访问本系统`（`code=IP_BANNED`） | 权限不足（超管接口/管理员接口/页面权限开关未放行）或来源 IP 命中黑名单 |
 | 404 | `用户不存在` / `任务条目不存在` / `记录未找到` / `没有可导出的数据` 等 | 资源不存在 |
 | 429 | `请求过于频繁，请稍后再试` / `登录尝试过于频繁，请15分钟后再试` / `密码修改尝试过于频繁，请15分钟后再试` | 触发全局 API 限流、登录限流或修改密码限流 |
 | 500 | `服务器内部错误` | 服务端错误 |
@@ -3298,9 +3389,12 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 1. **任务数据结构迁移**：将旧版 `hours` 对象格式迁移为新版 `days` 对象格式
 2. **日期格式规范化**：统一日期格式为 `YYYY-MM-DD`，截取前 10 位
-3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`workdayOverrides`、`system` 等）
+3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`workdayOverrides`、`system`、`ipBlacklist` 等）
 4. **用户字段迁移**：自动为旧用户补齐 `disabled` 和 `forcePasswordChange` 字段
 5. **强制修改密码迁移**：首次访问用户列表或校验会话时，自动将非超级管理员用户的 `forcePasswordChange` 标记为 `true`
+6. **操作日志独立表**：`auditLogs` 从 `kv_store` 迁往 `audit_logs` 独立表（含时间戳索引），迁移后从 `kv_store` 摘除该集合
+7. **登录日志独立表**：`loginLogs` 同样从 `kv_store` 迁往 `login_logs` 独立表（含时间戳索引），迁移后从 `kv_store` 摘除该集合
+8. **任务数据关系表化**：`tasks` 集合从 `kv_store` 整体 JSON 拆分为 `task_sheets`（按 `designer_id + year + month` 唯一索引）与 `task_entries`（条目级 JSON，外键级联删除）两张关系表；对外接口的 sheet 数据形状不变，前端无感知
 
 迁移规则：
 - 迁移过程会自动保存到 SQLite 数据库（`backend/data.db`）
@@ -3323,6 +3417,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 11. **操作审计**：自动记录所有已登录用户的 API 请求，最多保留 2000 条；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
 12. **登录失败全量留痕与防枚举**：登录成功与失败均写登录日志，失败日志含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`）；对客户端统一返回 `用户名或密码错误`，不暴露用户名是否存在
 13. **Excel 依赖本地化**：Excel 解析使用随仓库分发的 `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，`file:` 协议安装），修复旧版 0.18.5 的 CVE-2023-30533 与 CVE-2024-22363
+14. **IP 黑名单**：超级管理员可在系统设置「登录管理」中配置（精确 IP / CIDR 网段 / IPv4 通配符，最多 500 条），命中的来源 IP 访问任意 `/api` 接口返回 `403`（`IP_BANNED`）；`OPTIONS` 预检与本机回环地址永不拦截，黑名单 IP 的登录尝试会写入失败原因为「IP 已被列入黑名单」的登录日志
 
 ## 环境变量配置
 

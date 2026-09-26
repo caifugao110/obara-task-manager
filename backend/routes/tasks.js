@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const taskStore = require('../taskStore');
 const { authMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
@@ -114,7 +115,7 @@ const updateItemSchema = Joi.object({
   itemId: Joi.string().required(),
   field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'fontSize', 'textColor', 'gunColor').required(),
   value: Joi.alternatives().try(
-    Joi.string().allow(''), 
+    Joi.string().allow(''),
     Joi.number().min(0),
     Joi.array().items(gunSchema),
     Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null)
@@ -159,33 +160,24 @@ const getMonthYearFromDate = (dateStr) => {
   return { month: d.getMonth() + 1, year: d.getFullYear() };
 };
 
-const getOrCreateSheet = (data, designerId, month, year) => {
-  if (!data.tasks) data.tasks = [];
-  let sheet = data.tasks.find(t => t.designerId === designerId && t.month === month && t.year === year);
-  if (!sheet) {
-    sheet = { id: `sheet-${designerId}-${year}-${month}`, designerId, month, year, days: {} };
-    data.tasks.push(sheet);
-  }
-  if (!sheet.days || typeof sheet.days !== 'object') sheet.days = {};
-  return sheet;
-};
-
 const countLiteral = (value, findText) => {
   if (typeof value !== 'string' || !value.includes(findText)) return 0;
   return value.split(findText).length - 1;
 };
 
-const getBatchReplaceTargetSheets = (data, allTable, month, year) => {
-  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  return allTable ? tasks : tasks.filter(sheet => sheet.month === month && sheet.year === year);
+// 批量替换的目标表：LIKE 预筛出含匹配文本的候选表再完整装配，
+// 不再扫描全部任务数据，数据量多大都只加载命中部分
+const getBatchReplaceTargetSheets = (findText, allTable, month, year) => {
+  const candidateIds = taskStore.findCandidateSheetIds(findText, { allTable, month, year });
+  return taskStore.getSheetsByIds(candidateIds);
 };
 
-const findBatchReplaceMatches = (data, findText, allTable, month, year) => {
-  const designerMap = new Map((data.designers || []).map(designer => [designer.id, designer.name]));
+const findBatchReplaceMatches = (targetSheets, designers, findText) => {
+  const designerMap = new Map((designers || []).map(designer => [designer.id, designer.name]));
   const matches = [];
   let matchCount = 0;
 
-  getBatchReplaceTargetSheets(data, allTable, month, year).forEach(sheet => {
+  targetSheets.forEach(sheet => {
     if (!sheet.days || typeof sheet.days !== 'object') return;
 
     Object.entries(sheet.days).forEach(([date, items]) => {
@@ -228,19 +220,15 @@ const findBatchReplaceMatches = (data, findText, allTable, month, year) => {
 
 router.get('/', authMiddleware, asyncHandler(async (req, res) => {
   const { month, year, designerId, summary } = req.query;
-  const data = db.readDb();
 
-  let tasks = data.tasks || [];
-
-  if (designerId) {
-    tasks = tasks.filter(t => t.designerId === designerId);
-  }
-
+  const filter = {};
+  if (designerId) filter.designerId = designerId;
   if (month && year) {
-    const m = parseInt(month);
-    const y = parseInt(year);
-    tasks = tasks.filter(t => t.month === m && t.year === y);
+    filter.month = parseInt(month);
+    filter.year = parseInt(year);
   }
+
+  const tasks = taskStore.listSheets(filter);
 
   if (summary === 'true') {
     const summaryData = tasks.map(sheet => {
@@ -274,12 +262,11 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(403).json({ message: '只有管理员可以编辑表格' });
   }
 
-  const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
-  const sheet = getOrCreateSheet(data, designerId, month, year);
+  const sheet = taskStore.getOrCreateSheet(designerId, month, year);
 
   if (!sheet.days[date]) sheet.days[date] = [];
-  
+
   const addedItems = [];
   for (const item of pasteItems) {
     const gunError = validateNamedGunHours(item.guns);
@@ -301,7 +288,7 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
     addedItems.push(newItem);
   }
 
-  await db.writeDb(data);
+  taskStore.saveSheet(sheet);
   res.status(201).json({ sheetId: sheet.id, designerId, month, year, date, items: addedItems, sheet });
 }));
 
@@ -323,9 +310,8 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(403).json({ message: '只有管理员可以编辑表格' });
   }
 
-  const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
-  const sheet = getOrCreateSheet(data, designerId, month, year);
+  const sheet = taskStore.getOrCreateSheet(designerId, month, year);
 
   if (!sheet.days[date]) sheet.days[date] = [];
   const item = withCreateMeta({
@@ -340,7 +326,7 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
   }, req.user);
   sheet.days[date].push(item);
 
-  await db.writeDb(data);
+  taskStore.saveSheet(sheet);
   res.status(201).json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
 }));
 
@@ -357,7 +343,8 @@ router.post('/batch-replace/search', authMiddleware, asyncHandler(async (req, re
 
   const { findText, allTable, month, year } = validated;
   const data = db.readDb();
-  const result = findBatchReplaceMatches(data, findText, allTable, month, year);
+  const targetSheets = getBatchReplaceTargetSheets(findText, allTable, month, year);
+  const result = findBatchReplaceMatches(targetSheets, data.designers, findText);
 
   res.json({
     ...result,
@@ -377,12 +364,11 @@ router.post('/batch-replace', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   const { findText, replaceText, allTable, month, year } = validated;
-  const data = db.readDb();
-  const targetSheets = getBatchReplaceTargetSheets(data, allTable, month, year);
+  const targetSheets = getBatchReplaceTargetSheets(findText, allTable, month, year);
 
   let replacementCount = 0;
   let itemCount = 0;
-  const updatedSheetIds = new Set();
+  const changedSheets = new Map();
 
   const replaceLiteral = (value) => {
     if (typeof value !== 'string' || !value.includes(findText)) {
@@ -420,21 +406,21 @@ router.post('/batch-replace', authMiddleware, asyncHandler(async (req, res) => {
         if (itemChanged) {
           touchItem(item, req.user);
           itemCount += 1;
-          updatedSheetIds.add(sheet.id);
+          changedSheets.set(sheet.id, sheet);
         }
       });
     });
   });
 
-  if (replacementCount > 0) {
-    await db.writeDb(data);
+  if (changedSheets.size > 0) {
+    taskStore.saveSheets([...changedSheets.values()]);
   }
 
   res.json({
     message: '批量替换完成',
     replacementCount,
     itemCount,
-    sheetCount: updatedSheetIds.size
+    sheetCount: changedSheets.size
   });
 }));
 
@@ -448,7 +434,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   const date = normalizeDate(rawDate);
   const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
-  const sheet = getOrCreateSheet(data, designerId, month, year);
+  const sheet = taskStore.getOrCreateSheet(designerId, month, year);
 
   const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
 
@@ -474,7 +460,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
       item.color = value;
       touchItem(item, req.user);
       sheet.days[date] = items;
-      await db.writeDb(data);
+      taskStore.saveSheet(sheet);
       return res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
     }
 
@@ -523,7 +509,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
 
     touchItem(item, req.user);
     sheet.days[date] = items;
-    await db.writeDb(data);
+    taskStore.saveSheet(sheet);
     return res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
   }
 
@@ -593,7 +579,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
 
     touchItem(item, req.user);
     sheet.days[date] = items;
-    await db.writeDb(data);
+    taskStore.saveSheet(sheet);
     return res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
   }
 
@@ -625,7 +611,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   touchItem(item, req.user);
 
   sheet.days[date] = items;
-  await db.writeDb(data);
+  taskStore.saveSheet(sheet);
   res.json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
 }));
 
@@ -637,9 +623,8 @@ router.delete('/item', authMiddleware, asyncHandler(async (req, res) => {
 
   const { designerId, date: rawDate, itemId } = validated;
   const date = normalizeDate(rawDate);
-  const data = db.readDb();
   const { month, year } = getMonthYearFromDate(date);
-  const sheet = getOrCreateSheet(data, designerId, month, year);
+  const sheet = taskStore.getOrCreateSheet(designerId, month, year);
 
   const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
   if (!isAdmin) {
@@ -654,7 +639,7 @@ router.delete('/item', authMiddleware, asyncHandler(async (req, res) => {
   sheet.days[date] = nextItems;
   if (sheet.days[date].length === 0) delete sheet.days[date];
 
-  await db.writeDb(data);
+  taskStore.saveSheet(sheet);
   res.json({ message: '任务条目已删除', sheetId: sheet.id, designerId, month, year, date, sheet });
 }));
 
@@ -673,36 +658,33 @@ router.post('/move', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(403).json({ message: '只有管理员可以移动任务' });
   }
 
-  const data = db.readDb();
-  
   // Source
   const sMY = getMonthYearFromDate(sDate);
-  const sSheet = getOrCreateSheet(data, sourceDesignerId, sMY.month, sMY.year);
+  const sSheet = taskStore.getOrCreateSheet(sourceDesignerId, sMY.month, sMY.year);
   const sItems = Array.isArray(sSheet.days[sDate]) ? sSheet.days[sDate] : [];
-  
+
   const itemIdx = sItems.findIndex(i => i.id === itemId);
   if (itemIdx === -1) {
     return res.status(404).json({ message: '源任务不存在' });
   }
-  
+
   const [item] = sItems.splice(itemIdx, 1);
   if (sItems.length === 0) delete sSheet.days[sDate];
   else sSheet.days[sDate] = sItems;
 
   // Target
   const tMY = getMonthYearFromDate(tDate);
-  const tSheet = getOrCreateSheet(data, targetDesignerId, tMY.month, tMY.year);
+  const tSheet = taskStore.getOrCreateSheet(targetDesignerId, tMY.month, tMY.year);
   if (!tSheet.days[tDate]) tSheet.days[tDate] = [];
-  
+
+  touchItem(item, req.user);
   if (typeof newIndex === 'number' && newIndex >= 0) {
-    touchItem(item, req.user);
     tSheet.days[tDate].splice(newIndex, 0, item);
   } else {
-    touchItem(item, req.user);
     tSheet.days[tDate].push(item);
   }
 
-  await db.writeDb(data);
+  taskStore.saveSheets([sSheet, tSheet]);
   res.json({ message: '任务已移动', sourceSheet: sSheet, targetSheet: tSheet });
 }));
 

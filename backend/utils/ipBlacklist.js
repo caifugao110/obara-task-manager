@@ -224,19 +224,14 @@ const middleware = (req, res, next) => {
 
   if (req.method === 'POST' && req.path === '/auth/login') {
     try {
-      const data = db.readDb();
-      data.loginLogs = Array.isArray(data.loginLogs) ? data.loginLogs : [];
-      data.loginLogs.push({
-        id: require('crypto').randomUUID(),
+      // 登录日志写入独立表，不再触碰整库数据
+      db.appendLoginLogEntry({
         username: String(req.body?.username || ''),
         ip: normalizeIp(ip),
         userAgent: req.headers['user-agent'] || '',
         success: false,
-        reason: 'IP 已被列入黑名单',
-        timestamp: new Date().toISOString()
+        reason: 'IP 已被列入黑名单'
       });
-      if (data.loginLogs.length > 2000) data.loginLogs = data.loginLogs.slice(-2000);
-      db.writeDb(data).catch(() => {});
     } catch { /* 日志失败不阻断拦截响应 */ }
   }
 

@@ -362,6 +362,17 @@ CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173,http://192.168.160.2
 
 超限返回 HTTP `429`，响应消息为「请求过于频繁，请稍后再试」。限流窗口为内存计数（express-rate-limit），重启后端后计数清零。
 
+### IP 黑名单
+
+超级管理员可在系统设置「登录管理」中维护 IP 黑名单，主动拦截异常来源：
+
+- 规则格式支持精确 IP（`192.168.1.100`、IPv6 同样支持）、CIDR 网段（`10.0.0.0/24`）和 IPv4 通配符（`192.168.*.*`），一次可粘贴多条（逗号/分号/空白分隔，单次最多 50 条，总量上限 500 条），可附备注。
+- 启用后，命中规则的来源 IP 访问任意 `/api` 接口一律返回 `403`（`code=IP_BANNED`）；其登录尝试会以失败原因「IP 已被列入黑名单」写入登录日志，便于在登录管理界面确认拦截效果。
+- 本机回环地址（`127.0.0.1` / `::1`）永不拦截，防止误封自身出口 IP 后无法进入系统自救；`OPTIONS` 预检请求不拦截。
+- IPv4-mapped IPv6（`::ffff:a.b.c.d`）会归一为 IPv4 后匹配，避免同一地址换一种写法绕过。
+- 规则缓存在内存中（15 秒 TTL 兜底），界面上增删规则或启停开关后立即生效。
+- 界面会列出最近登录失败的 IP（排除已封禁的）作为快捷填入候选。
+
 ### Gitee 版本检查
 
 配置 Gitee API 后，系统会通过 API 检查远程仓库版本：
@@ -392,9 +403,6 @@ GITEE_REPO_NAME=obara-task-manager
 |------|------|
 | `users` | 登录用户，角色包括 `superadmin`、`admin`、`user`，含 `forcePasswordChange` 字段 |
 | `designers` | 设计人员列表 |
-| `tasks` | 按设计人员(`designerId`)、年月保存的任务表 |
-| `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 2000 条 |
-| `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
 | `statusTrackingItems` | 状态追踪记录 |
 | `gunLedger` | 焊枪编号台账，包含 `categories`（分类→表→行三级结构）和 `defaultResponsiblePersons`（默认担当人员） |
 | `settings.leaderboard` | 任务报表访问权限 |
@@ -406,6 +414,15 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划标记颜色、仕样号位数（`specNumberDigits`，5 或 6）；颜色标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
+| `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
+
+除上述键值集合外，三类高写入量数据存放在独立的关系表中（首次升级自动从 `kv_store` 搬迁，幂等）：
+
+| 表 | 说明 |
+|----|------|
+| `task_sheets` / `task_entries` | 任务工时表：每张工时表一行（`designer_id + year + month` 唯一索引），任务条目按行存放；写入只重写受影响的单张表，对外接口数据形状不变 |
+| `login_logs` | 登录日志独立表（含 IP、浏览器信息、登录结果），最多保留 2000 条 |
+| `audit_logs` | 操作日志独立表，最多保留 2000 条 |
 
 ### 从 JSON 自动迁移
 
@@ -537,6 +554,18 @@ nginx/IIS 反代均工作正常，真实客户端 IP 经 `X-Forwarded-For` 透�
 > 具体 IP（如 `'192.168.1.5'`）或实际跳数，同时应配合防火墙确保后端端口不被
 > 客户端直接访问。应用层代码（登录/操作日志取 IP）也只使用 `req.ip`，不直接读取
 > `X-Forwarded-For` / `X-Real-IP` 请求头。
+
+### 后端启动日志出现 ERR_ERL_KEY_GEN_IPV6
+
+现象：后端启动或处理登录请求时，日志输出 `ERR_ERL_KEY_GEN_IPV6`（提示 `IPv6 addresses are currently subsumed by the /56 subnet...`）。
+
+原因：express-rate-limit 较新版本要求自定义 `keyGenerator` 返回值对 IPv6 做 /56 子网收敛，
+否则每次生成限流键都会校验失败。该报错**非致命**（限流器仍然生效），但会持续刷错误日志。
+
+修复：`backend/routes/auth.js` 中登录/改密限流器的自定义 `keyGenerator` 已改为使用
+express-rate-limit 官方导出的 `ipKeyGenerator(req.ip)` 生成 IP 部分（IPv4-mapped
+`::ffff:a.b.c.d` 归一为 IPv4，IPv6 收敛到 /56 子网），再拼接用户名或用户 ID。升级到含此
+修复的版本后报错不再出现；**自行改动 `auth.js` 时请保留 `ipKeyGenerator` 包装**。
 
 ### 端口被占用
 
@@ -733,7 +762,7 @@ node --check backend\routes\settings.js
 ## 性能优化建议
 
 1. **SQLite WAL 模式**：数据库启用 WAL（Write-Ahead Logging）模式，支持并发读取，写入通过事务持久化，单库上限 281 TB
-2. **内存缓存**：数据库数据加载到内存缓存，读取请求直接从内存返回，无需每次访问磁盘
+2. **内存缓存 + 关系表存储**：键值集合（用户、设计人员、设置等）加载到内存缓存并做脏检查，仅变更的集合落库；任务工时表拆分为 `task_sheets`/`task_entries` 关系表，查询走索引按需装配，写入只重写受影响的单张表，避免整库 JSON 反复序列化
 3. **数据库文件大小**：`loginLogs` 和 `auditLogs` 均最多保留 2000 条记录，自动清理旧日志
 4. **并发写入保护**：数据库写入采用队列机制，避免并发冲突
 5. **前端防抖**：任务字段变更采用 500ms 防抖保存，减少网络请求
@@ -847,7 +876,7 @@ backend/
 
 `GET /api/system/db-stats` 返回数据库统计信息，包含：
 
-- **size**：逻辑数据大小（所有集合序列化后的体积，字节/KB/MB）
+- **size**：逻辑数据大小（键值集合与任务条目 JSON 序列化后的体积，字节/KB/MB）
 - **storage**：SQLite 存储信息，包括引擎、驱动、journal 模式、`data.db`/`data.db-wal`/`data.db-shm` 文件大小
 - **counts**：用户、设计人员、任务、任务条目、月份、状态追踪、登录日志、操作日志数量
 - **warnings**：数据库超过 10MB/50MB（仅为提示，非硬限制）、任务数据超过 24 个月的警告

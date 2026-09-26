@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const taskStore = require('../taskStore');
 const { authMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
@@ -20,10 +21,9 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('workHours')], a
 
   const data = db.readDb();
   const designers = data.designers || [];
-  const tasks = data.tasks || [];
   const workdayOverrides = normalizeWorkdayOverrides(data.settings?.workdayOverrides);
 
-  const monthTasks = tasks.filter(t => t.year === year && t.month === m);
+  const monthTasks = taskStore.listSheets({ month: m, year });
 
   if (monthTasks.length === 0) {
     return res.status(404).json({ message: '没有可导出的数据' });

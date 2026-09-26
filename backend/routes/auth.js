@@ -72,19 +72,7 @@ const getClientIp = (req) => {
   return raw.replace(/^::ffff:/, '');
 };
 
-const MAX_LOGIN_LOGS = 2000;
-
-const appendLoginLog = async (data, entry) => {
-  if (!data.loginLogs) data.loginLogs = [];
-  data.loginLogs.push({
-    id: crypto.randomUUID(),
-    ...entry,
-    timestamp: new Date().toISOString()
-  });
-  if (data.loginLogs.length > MAX_LOGIN_LOGS) {
-    data.loginLogs = data.loginLogs.slice(-MAX_LOGIN_LOGS);
-  }
-};
+// 登录日志写入独立表（db.appendLoginLogEntry），不再随整库 JSON 读写
 
 router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const { error } = loginSchema.validate(req.body);
@@ -104,21 +92,18 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   if (!user) {
     // 记录失败日志（含不存在的用户名），便于监测爆破/扫号行为；
     // 返回文案与密码错误一致，不产生用户枚举
-    await appendLoginLog(data, { ...logBase, success: false, reason: '用户不存在' });
-    await db.writeDb(data);
+    db.appendLoginLogEntry({ ...logBase, success: false, reason: '用户不存在' });
     return res.status(401).json({ message: '用户名或密码错误' });
   }
 
   if (user.disabled) {
-    await appendLoginLog(data, { ...logBase, userId: user.id, name: user.name, role: user.role, success: false, reason: '账号已禁用' });
-    await db.writeDb(data);
+    db.appendLoginLogEntry({ ...logBase, userId: user.id, name: user.name, role: user.role, success: false, reason: '账号已禁用' });
     return res.status(403).json({ message: '账号已被禁用，请联系管理员', code: 'ACCOUNT_DISABLED' });
   }
 
   const isMatch = bcrypt.compareSync(password, user.password);
   if (!isMatch) {
-    await appendLoginLog(data, { ...logBase, userId: user.id, name: user.name, role: user.role, success: false, reason: '密码错误' });
-    await db.writeDb(data);
+    db.appendLoginLogEntry({ ...logBase, userId: user.id, name: user.name, role: user.role, success: false, reason: '密码错误' });
     return res.status(401).json({ message: '用户名或密码错误' });
   }
 
@@ -137,7 +122,7 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
         newLoginBrowser: browserInfo.summary
       });
     }
-    await appendLoginLog(data, {
+    await db.appendLoginLogEntry({
       ...logBase,
       userId: user.id,
       name: user.name,
@@ -149,7 +134,7 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
 
   data.users[userIndex].sessionToken = sessionId;
 
-  await appendLoginLog(data, {
+  db.appendLoginLogEntry({
     ...logBase,
     userId: user.id,
     name: user.name,

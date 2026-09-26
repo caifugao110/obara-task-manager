@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const db = require('../db');
+const taskStore = require('../taskStore');
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
@@ -130,12 +131,6 @@ const countTaskItems = (tasks = []) => tasks.reduce((total, sheet) => {
   const dayItems = Object.values(sheet.days || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
   return total + dayItems;
 }, 0);
-
-
-const sheetHasData = (sheet) => {
-  if (!sheet?.days || typeof sheet.days !== 'object') return false;
-  return Object.values(sheet.days).some(items => Array.isArray(items) && items.length > 0);
-};
 
 const getDaysInMonth = (year, month) => new Date(year, month, 0).getDate();
 
@@ -286,8 +281,8 @@ const exportTaskData = (options = {}) => {
   const { data, settings } = getMaintenanceSettings();
   const taskExportDir = resolveManagedDir(options.dir || settings.taskExportDir);
   ensureDir(taskExportDir);
-  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  const exportSheets = tasks.filter(sheetHasData);
+  // 任务数据在 taskStore 关系表中，直接查询有内容的表
+  const exportSheets = taskStore.listSheetsWithData();
 
   if (exportSheets.length === 0) {
     const result = { skipped: true, reason: 'no-data', taskSheets: 0, taskItems: 0 };
@@ -416,8 +411,8 @@ const runYearlyTaskCleanup = async (options = {}) => {
   }
 
   const cutoffYear = currentYear - settings.yearlyTaskRetentionYears;
-  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  const archiveTasks = tasks.filter(sheet => Number(sheet.year) < cutoffYear);
+  // 任务数据在 taskStore 关系表中：按年份查询待归档的表
+  const archiveTasks = taskStore.listSheetsBeforeYear(cutoffYear);
 
   if (archiveTasks.length === 0) {
     if (!data.settings) data.settings = {};
@@ -431,8 +426,8 @@ const runYearlyTaskCleanup = async (options = {}) => {
   }
 
   const archive = createYearlyArchive(archiveTasks, cutoffYear, settings);
-  const archiveIds = new Set(archiveTasks.map(sheet => sheet.id || `${sheet.designerId || sheet.userId}-${sheet.year}-${sheet.month}`));
-  data.tasks = tasks.filter(sheet => !archiveIds.has(sheet.id || `${sheet.designerId || sheet.userId}-${sheet.year}-${sheet.month}`));
+  const archiveIds = archiveTasks.map(sheet => sheet.id);
+  taskStore.deleteSheetsByIds(archiveIds);
   if (!data.settings) data.settings = {};
   data.settings.maintenance = settings;
   data.settings.maintenance.yearlyCleanupHistory = {
@@ -519,13 +514,10 @@ const getMaintenanceStatus = () => {
   const shmSize = fs.existsSync(shmPath) ? fs.statSync(shmPath).size : 0;
   const totalDiskSize = dbFileSize + walSize + shmSize;
 
-  // tasks 集合的逻辑大小（JSON 序列化后的字节数）及任务统计
-  const data = db.readDb();
-  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  const tasksJsonSize = Buffer.byteLength(JSON.stringify(tasks), 'utf8');
-  const taskItemsCount = tasks.reduce((sum, sheet) => {
-    return sum + Object.values(sheet.days || {}).reduce((daySum, items) => daySum + (Array.isArray(items) ? items.length : 0), 0);
-  }, 0);
+  // tasks 集合的逻辑大小（任务条目 JSON 字节数）及任务统计（taskStore 关系表）
+  const tasksJsonSize = taskStore.entriesJsonSize();
+  const tasksCount = taskStore.countSheets();
+  const taskItemsCount = taskStore.countEntries();
 
   return {
     settings,
@@ -543,7 +535,7 @@ const getMaintenanceStatus = () => {
       shmSize,
       totalDiskSize,
       tasksJsonSize,
-      tasksCount: tasks.length,
+      tasksCount,
       taskItemsCount
     },
     files: {

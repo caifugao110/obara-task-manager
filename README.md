@@ -316,6 +316,7 @@ npm run dev
 #### 登录管理（仅超级管理员）
 
 - 可配置多设备同时在线，以及“允许登录用户修改本人设计计划标记颜色”。该颜色标记开关默认开启；开启后，普通登录用户可在本人同名设计员的设计计划任务上标记/恢复颜色。
+- **IP 黑名单**：拦截异常来源访问。支持精确 IP（`192.168.1.100`）、CIDR 网段（`10.0.0.0/24`）和 IPv4 通配符（`192.168.*.*`）三种规则格式，可一次粘贴多条（逗号/空白分隔，单次最多 50 条，总量上限 500 条），可附备注；界面会列出最近登录失败的 IP（排除已封禁的）供快捷填入。启用后命中规则的 IP 访问任何接口都会收到 403，其登录尝试会以「IP 已被列入黑名单」记录在登录日志中；本机回环地址（localhost）永不拦截，规则修改后立即生效。
 
 #### 日志管理（仅超级管理员）
 
@@ -376,14 +377,19 @@ npm run dev
 |------|------|
 | `users` | 登录用户列表，包含 `forcePasswordChange` 字段用于强制修改密码 |
 | `designers` | 设计人员列表 |
-| `tasks` | 按设计人员(`designerId`)、年月保存的任务表 |
-| `loginLogs` | 登录历史，包含 IP、浏览器信息和登录结果，最多保留 2000 条 |
-| `auditLogs` | 操作日志，记录所有已登录用户的 API 请求，最多保留 2000 条 |
 | `statusTrackingItems` | 状态追踪记录 |
 | `gunLedger` | 焊枪编号台账，包含 `categories`（分类→表→行三级结构）和 `defaultResponsiblePersons`（默认担当人员） |
-| `settings` | 系统配置，包含页面权限、工作日覆盖、维护设置、已关联知识库（`designStandardsLinkedKbIds`）、答复约束提示词（`designStandardsPrompt`）等 |
+| `settings` | 系统配置，包含页面权限、工作日覆盖、维护设置、IP 黑名单（`ipBlacklist`）、已关联知识库（`designStandardsLinkedKbIds`）、答复约束提示词（`designStandardsPrompt`）等 |
 
-> 如果存在遗留的 `backend/db.json`，后端首次启动时会**自动迁移**到 SQLite，并将原文件重命名为 `db.json.migrated-<时间戳>.bak`。
+除上述键值集合外，三类高写入量数据存放在独立的关系表中，避免整库 JSON 反复序列化：
+
+| 表 | 说明 |
+|----|------|
+| `task_sheets` / `task_entries` | 任务工时表：每张工时表一行（`designer_id + year + month` 唯一索引），任务条目按行存放（条目级 JSON），写入只重写受影响的单张表；对外接口的 sheet 数据形状不变 |
+| `login_logs` | 登录日志独立表，最多保留 2000 条（超限自动清理最旧记录） |
+| `audit_logs` | 操作日志独立表，最多保留 2000 条（超限自动清理最旧记录） |
+
+> 首次启动升级时，遗留的 `backend/db.json` 会**自动迁移**到 SQLite 并将原文件重命名为 `db.json.migrated-<时间戳>.bak`；旧库中 `kv_store` 里的 `tasks`、`loginLogs`、`auditLogs` 也会自动搬迁到对应关系表/独立表（幂等，多次启动不会重复迁移）。
 
 建议定期通过 `POST /api/system/maintenance/backup` 备份数据库，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
 
@@ -547,6 +553,7 @@ node --check backend\routes\tasks.js
 - **请求体敏感信息脱敏**：操作日志记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`。
 - **真实 IP 防伪造**：`trust proxy` 设为 `loopback`，仅信任本机回环代理转发的 `X-Forwarded-For`；外部直连请求伪造的 XFF 不会被采信，登录/操作日志的 IP 与限流计数均以 `req.ip`（Socket 对端地址）为准。
 - **收敛 CSP 响应头**：后端启用 Helmet 内容安全策略（资源仅限同源加载、禁用插件、禁止页面被嵌入框架），作为纵深防御；CORS 为通配符时自动不启用 credentials。
+- **IP 黑名单**：超级管理员可在系统设置「登录管理」中配置精确 IP / CIDR 网段 / IPv4 通配符规则（最多 500 条），命中的来源 IP 访问任意 `/api` 接口一律返回 `403`（`IP_BANNED`）；`OPTIONS` 预检与本机回环地址永不拦截，IPv4-mapped IPv6 会归一为 IPv4 后匹配，防止同一地址换写法绕过。
 - **强制改密 API 拦截**：未修改初始密码的用户除「修改密码」「退出登录」外的所有 API 调用一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。
 - **路径遍历攻击防护**：仕样书 PDF 路径参数进行严格校验，禁止 `..`、`/`、`\`、`:` 等特殊字符，同时检测 URL 编码（如 `%2e%2e`）和 Unicode 编码（如全角句号 `．．`）等绕过手段，确保只能访问允许的共享目录。
 - **密码修改安全**：修改密码接口添加限流（15 分钟内最多 5 次尝试）和参数校验，修改成功后返回新的 JWT Token 并更新 sessionId，使旧 Token 失效。
@@ -565,6 +572,7 @@ obara-task-manager/
 ├── backend/
 │   ├── .env.example
 │   ├── db.js
+│   ├── taskStore.js              # 任务工时表关系型存储层（task_sheets/task_entries）
 │   ├── nodemon.json
 │   ├── package.json
 │   ├── package-lock.json
@@ -590,7 +598,8 @@ obara-task-manager/
 │   ├── templates/
 │   │   └── spec-pdf/
 │   ├── tests/
-│   │   └── pdf/
+│   │   ├── pdf/
+│   │   └── smoke-relational.js   # 关系表存储（taskStore/独立日志表）冒烟测试
 │   ├── utils/
 │   │   ├── auditLogDisplay.js
 │   │   ├── dbMaintenance.js
@@ -598,6 +607,7 @@ obara-task-manager/
 │   │   ├── fileUploadSecurity.js
 │   │   ├── gunLedgerExport.js
 │   │   ├── gunTableLocks.js
+│   │   ├── ipBlacklist.js        # IP 黑名单规则解析/匹配/拦截中间件
 │   │   ├── simpleZip.js
 │   │   ├── taskExportWorkbook.js
 │   │   ├── weknora.js
@@ -710,6 +720,8 @@ obara-task-manager/
 | Socket.IO 认证 | `backend/middleware/socketAuth.js` | WebSocket 连接认证和单设备登录限制 |
 | 操作日志 | `backend/middleware/auditLog.js` | 自动记录所有已登录用户的 API 请求 |
 | 数据库维护 | `backend/utils/dbMaintenance.js` | 自动备份、任务导出、断网备份、年度清理等维护功能 |
+| 任务关系表存储 | `backend/taskStore.js` | 任务工时表的关系型存储层（`task_sheets`/`task_entries`），按设计人员/年月索引读写单张表，对外保持原 sheet 数据形状 |
+| IP 黑名单 | `backend/utils/ipBlacklist.js` | 黑名单规则校验/归一化/匹配（精确 IP、CIDR、IPv4 通配符）与全局拦截中间件 |
 | 文件上传安全 | `backend/utils/fileUploadSecurity.js` | Excel 文件类型验证、结构检查、恶意内容扫描 |
 | 任务导出 | `backend/utils/taskExportWorkbook.js` | 任务数据导出为 Excel 格式 |
 | 焊枪台账导出 | `backend/utils/gunLedgerExport.js` | 焊枪编号台账按分类/全部分类导出为 Excel（含样式、斑马纹、边框） |
@@ -814,7 +826,7 @@ obara-task-manager/
 
 `GET /api/system/db-stats` 返回数据库统计信息：
 
-- 逻辑数据大小（所有集合序列化后的字节/KB/MB）
+- 逻辑数据大小（键值集合与任务条目 JSON 序列化后的字节/KB/MB）
 - SQLite 物理存储信息：引擎、驱动、journal 模式，以及 `data.db`/`data.db-wal`/`data.db-shm` 三个文件的大小
 - 用户、设计人员、任务、日志等数据条数
 - 警告信息（逻辑数据超过 10MB/50MB、数据超过 24 个月，仅为提示非硬限制）

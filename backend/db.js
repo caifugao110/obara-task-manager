@@ -169,6 +169,130 @@ const clearAuditLogs = () => {
   return Number(database.prepare('DELETE FROM audit_logs').run().changes);
 };
 
+// ---------------------------------------------------------------------------
+// 登录日志（loginLogs）独立表
+//
+// 与 audit_logs 同样的写放大问题：登录日志原先塞在 kv_store 的整库 JSON 里，
+// 每次登录/登录失败都触发整库深拷贝 + 全量 UPSERT。独立表后写日志只是一次 INSERT。
+// ---------------------------------------------------------------------------
+const LOGIN_LOG_MAX_ROWS = 2000;
+
+const ensureLoginLogTable = () => {
+  const database = openDatabase();
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS login_logs (
+      id TEXT PRIMARY KEY,
+      timestamp TEXT NOT NULL,
+      userId TEXT,
+      username TEXT,
+      name TEXT,
+      role TEXT,
+      ip TEXT,
+      userAgent TEXT,
+      browserInfo TEXT,
+      success INTEGER,
+      reason TEXT,
+      action TEXT
+    );
+  `);
+  database.exec('CREATE INDEX IF NOT EXISTS idx_login_logs_ts ON login_logs(timestamp)');
+  return database;
+};
+
+const serializeLoginEntry = (entry = {}) => ({
+  id: entry.id || crypto.randomUUID(),
+  timestamp: entry.timestamp || new Date().toISOString(),
+  userId: entry.userId ?? null,
+  username: entry.username ?? null,
+  name: entry.name ?? null,
+  role: entry.role ?? null,
+  ip: entry.ip ?? null,
+  userAgent: entry.userAgent ?? null,
+  browserInfo: entry.browserInfo ? JSON.stringify(entry.browserInfo) : null,
+  success: entry.success === undefined || entry.success === null ? null : (entry.success ? 1 : 0),
+  reason: entry.reason ?? null,
+  action: entry.action ?? null
+});
+
+const deserializeLoginRow = (row) => {
+  if (!row) return row;
+  let browserInfo = null;
+  if (row.browserInfo) {
+    try {
+      browserInfo = JSON.parse(row.browserInfo);
+    } catch (e) {
+      browserInfo = null;
+    }
+  }
+  return { ...row, browserInfo, success: row.success === null ? null : Boolean(row.success) };
+};
+
+const trimLoginLogs = (database) => {
+  database
+    .prepare('DELETE FROM login_logs WHERE rowid <= (SELECT MAX(rowid) FROM login_logs) - ?')
+    .run(LOGIN_LOG_MAX_ROWS);
+};
+
+const appendLoginLogEntry = (entry) => {
+  const database = ensureLoginLogTable();
+  database
+    .prepare(`
+      INSERT INTO login_logs (id, timestamp, userId, username, name, role, ip, userAgent, browserInfo, success, reason, action)
+      VALUES (@id, @timestamp, @userId, @username, @name, @role, @ip, @userAgent, @browserInfo, @success, @reason, @action)
+    `)
+    .run(serializeLoginEntry(entry));
+  trimLoginLogs(database);
+};
+
+const listLoginLogs = () => {
+  const database = ensureLoginLogTable();
+  return database
+    .prepare('SELECT * FROM login_logs ORDER BY timestamp DESC, rowid DESC')
+    .all()
+    .map(deserializeLoginRow);
+};
+
+const countLoginLogs = () => {
+  const database = ensureLoginLogTable();
+  return Number(database.prepare('SELECT COUNT(*) AS c FROM login_logs').get().c);
+};
+
+const clearLoginLogs = () => {
+  const database = ensureLoginLogTable();
+  return Number(database.prepare('DELETE FROM login_logs').run().changes);
+};
+
+// 首次切换到独立表时，把 kv_store 里遗留的 loginLogs 搬迁过来（幂等）
+const migrateLoginLogsToTable = () => {
+  const database = ensureLoginLogTable();
+  if (countLoginLogs() > 0) return;
+
+  const row = database.prepare("SELECT value FROM kv_store WHERE key = 'loginLogs'").get();
+  if (!row) return;
+
+  let legacy = [];
+  try {
+    legacy = JSON.parse(row.value);
+  } catch (e) {
+    return;
+  }
+  if (!Array.isArray(legacy) || legacy.length === 0) return;
+
+  const insert = database
+    .prepare(`
+      INSERT OR IGNORE INTO login_logs (id, timestamp, userId, username, name, role, ip, userAgent, browserInfo, success, reason, action)
+      VALUES (@id, @timestamp, @userId, @username, @name, @role, @ip, @userAgent, @browserInfo, @success, @reason, @action)
+    `);
+  const tx = database.transaction((items) => {
+    for (const item of items) insert.run(serializeLoginEntry(item));
+  });
+  tx(legacy);
+
+  database.prepare("DELETE FROM kv_store WHERE key = 'loginLogs'").run();
+  trimLoginLogs(database);
+  console.log(`[db] 已迁移 ${legacy.length} 条历史登录日志到 login_logs 独立表`);
+};
+
 // 首次切换到独立表时，把 kv_store 里遗留的 auditLogs 搬迁过来（幂等）
 const migrateAuditLogsToTable = () => {
   const database = ensureAuditLogTable();
@@ -203,7 +327,12 @@ const migrateAuditLogsToTable = () => {
   console.log(`[db] 已迁移 ${legacy.length} 条历史操作日志到 audit_logs 独立表`);
 };
 
-// 将缓存中的所有顶层集合持久化到 kv_store（事务）
+// 将缓存中的顶层集合持久化到 kv_store（事务）。
+// 脏检查：每个集合序列化后与上次落库内容比较，仅 UPSERT 真正变化的集合，
+// 避免一次小改动引发全部集合的磁盘写入与 WAL 膨胀。
+// 注意：tasks（taskStore 关系表）、auditLogs / loginLogs（独立表）均已迁出 kv_store。
+let _lastPersistedJson = {};
+
 const persistCache = () => {
   if (!_cache) return;
   const db = openDatabase();
@@ -211,12 +340,14 @@ const persistCache = () => {
     `INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.value`
   );
-  // 注意：auditLogs 已迁出至 audit_logs 独立表，不再随整库一起序列化写入
-  const topLevelKeys = ['users', 'tasks', 'designers', 'loginLogs', 'settings', 'statusTrackingItems', 'gunLedger'];
+  const topLevelKeys = ['users', 'designers', 'settings', 'statusTrackingItems', 'gunLedger'];
   const tx = db.transaction(() => {
     for (const key of topLevelKeys) {
       if (Object.prototype.hasOwnProperty.call(_cache, key)) {
-        upsert.run(key, safeJsonStringify(_cache[key]));
+        const serialized = safeJsonStringify(_cache[key]);
+        if (_lastPersistedJson[key] === serialized) continue;
+        upsert.run(key, serialized);
+        _lastPersistedJson[key] = serialized;
       }
     }
   });
@@ -228,9 +359,11 @@ const loadFromDb = () => {
   const db = openDatabase();
   const rows = db.prepare('SELECT key, value FROM kv_store').all();
   const data = {};
+  _lastPersistedJson = {};
   for (const row of rows) {
     try {
       data[row.key] = JSON.parse(row.value);
+      _lastPersistedJson[row.key] = row.value;
     } catch (e) {
       console.error(`[db] Failed to parse key ${row.key}:`, e.message);
       data[row.key] = row.key === 'settings' ? {} : [];
@@ -355,9 +488,7 @@ const normalizeGunLedger = (gunLedger) => {
 
 const getInitialDb = () => ({
   users: [],
-  tasks: [],
   designers: [],
-  loginLogs: [],
   statusTrackingItems: [],
   gunLedger: buildDefaultGunLedger(),
   settings: {
@@ -546,9 +677,8 @@ const applySettingsDefaults = (parsed) => {
   if (![5, 6].includes(parsed.settings.system.specNumberDigits)) {
     parsed.settings.system.specNumberDigits = 5;
   }
-  if (!parsed.loginLogs) parsed.loginLogs = [];
   if (!parsed.statusTrackingItems) parsed.statusTrackingItems = [];
-  // auditLogs 已迁出至 audit_logs 独立表，此处不再回填该字段
+  // auditLogs / loginLogs 已迁出至独立表，tasks 已迁出至 taskStore 关系表，此处不再回填
   parsed.gunLedger = normalizeGunLedger(parsed.gunLedger);
 
   let migratedUsers = false;
@@ -605,6 +735,8 @@ const init = () => {
   openDatabase();
   // 首次切到独立表时搬迁历史操作日志，并从 kv_store 中摘除该集合
   migrateAuditLogsToTable();
+  // 登录日志同样迁往独立表
+  migrateLoginLogsToTable();
   const rows = _db.prepare('SELECT COUNT(*) as c FROM kv_store').get().c;
   let gunSerialNeedPersist = false;
   if (rows === 0) {
@@ -625,6 +757,14 @@ const init = () => {
   if (migratedRes.migrated || normalizedRes.changed) {
     _cache = normalizedRes.db;
     persistCache();
+  }
+  // tasks 集合迁往 taskStore 关系表（幂等），迁完后从缓存摘除，
+  // 之后 readDb 的整库深拷贝与 persistCache 都不再包含任务数据
+  const taskStore = require('./taskStore');
+  taskStore.migrateFromCache(_cache.tasks);
+  if (_cache.tasks !== undefined) {
+    delete _cache.tasks;
+    delete _lastPersistedJson.tasks;
   }
 };
 
@@ -713,5 +853,10 @@ module.exports = {
   appendAuditLogEntry,
   listAuditLogs,
   countAuditLogs,
-  clearAuditLogs
+  clearAuditLogs,
+  // 登录日志独立表
+  appendLoginLogEntry,
+  listLoginLogs,
+  countLoginLogs,
+  clearLoginLogs
 };
