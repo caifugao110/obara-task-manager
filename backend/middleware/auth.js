@@ -13,7 +13,10 @@ const authMiddleware = (req, res, next) => {
   }
 
   try {
+    // 显式锁定 HS256：防止 alg=none / RS256 公钥混淆一类的算法降级攻击，
+    // 不依赖 jsonwebtoken 版本的默认白名单
     const decoded = jwt.verify(token, JWT_SECRET, {
+      algorithms: ['HS256'],
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE
     });

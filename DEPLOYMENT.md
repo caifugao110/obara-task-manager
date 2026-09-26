@@ -9,7 +9,7 @@
 | Windows | Windows 10/11 或 Windows Server | 推荐使用 PowerShell 或 CMD |
 | Node.js | 22+（推荐 22 LTS） | 安装时勾选加入 PATH；`start.bat` 会强制校验主版本号，低于 22 直接报错退出（better-sqlite3 13、joi 18、pdf-parse 2.4 均要求 Node.js 22+） |
 | npm | 10+ | 随 Node.js 安装 |
-| Git | 较新版本 | 用于拉取代码；`start.bat` 启动时会自动执行 `git pull --rebase` |
+| Git | 较新版本 | 用于人工拉取代码更新；`start.bat` **不会**自动执行 `git pull`（供应链风险，已移除） |
 
 ## 一键启动
 
@@ -22,10 +22,11 @@ start.bat
 脚本以隐藏窗口方式运行（**不会打开浏览器**，需手动访问下方地址），依次执行以下步骤：
 
 1. 检查 Node.js 版本，主版本低于 22 直接报错退出。
-2. 自动执行 `git pull --rebase` 拉取最新代码；存在本地修改时会先自动 stash，拉取完成后再恢复（恢复失败时保留在 git stash 中需手工处理）。
-3. 检查 5000/5173 端口，被占用时自动结束占用进程并释放端口。
-4. 检查根目录 `node_modules/.bin`，依赖缺失时自动执行 `npm install`（仓库使用 npm workspaces，一条命令安装前后端全部依赖）。
-5. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`）。
+2. 检查 5000/5173 端口，被占用时自动结束占用进程并释放端口。
+3. 检查根目录 `node_modules/.bin`，依赖缺失时自动执行 `npm install`（仓库使用 npm workspaces，一条命令安装前后端全部依赖）。
+4. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`）。
+
+> **代码更新流程**：启动脚本不会自动拉取代码（自动 `git pull` 存在「拉取即执行」的供应链风险，已移除）。更新版本时请人工确认后手动执行 `git pull`（本地有修改时自行处理 stash），再运行 `start.bat`。
 
 其他启动/停止脚本：
 
@@ -220,7 +221,7 @@ GET http://localhost:5000/api/system/version    # 需要登录，匿名返回 40
 1. 通知正在使用系统的用户暂停编辑。
 2. 停止前后端进程，可以运行 `stop.bat`。
 3. 备份 `backend/data.db` 和 `backend/.env`（建议通过 `POST /api/system/maintenance/backup` 生成一致性备份）。
-4. 拉取或替换新版本代码（使用 `start.bat` 启动时会自动执行 `git pull --rebase`，可跳过本步）。
+4. 拉取或替换新版本代码（人工确认后手动执行 `git pull`；`start.bat` 不会自动拉取）。
 5. 执行 `npm run install:all` 更新依赖（含 `better-sqlite3` 原生模块）。
 6. 执行 `npm run build` 验证前端构建。
 7. 启动后端和前端，确认数据库迁移日志无异常（若存在遗留 `db.json`，首次启动会自动迁移到 SQLite）。

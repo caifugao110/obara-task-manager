@@ -18,7 +18,9 @@ const socketAuthMiddleware = (socket, next) => {
   }
 
   try {
+    // 与 HTTP 层对齐：显式锁定 HS256，防止算法降级攻击
     const decoded = jwt.verify(token, JWT_SECRET, {
+      algorithms: ['HS256'],
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE
     });

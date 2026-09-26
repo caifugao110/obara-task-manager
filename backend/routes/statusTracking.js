@@ -30,7 +30,8 @@ const statusTrackingItemSchema = Joi.object({
   undrawnVarieties: Joi.number().integer().min(0).allow(null),
   undrawnQuantity: Joi.number().integer().min(0).allow(null),
   unconfirmedQuantity: Joi.number().integer().min(0).allow(null),
-  designDeliveryDays: Joi.number().integer().min(0).allow(null),
+  // 设计纳期为服务端按当天日期动态推导：过期纳期会得到负数，故不限制下限
+  designDeliveryDays: Joi.number().integer().allow(null),
   salesPerson: Joi.string().allow(''),
   leader: Joi.string().allow(''),
   createdAt: Joi.string().allow(''),
@@ -38,7 +39,8 @@ const statusTrackingItemSchema = Joi.object({
 });
 
 function getItemPayload(value) {
-  const { id, createdAt, updatedAt, ...payload } = value;
+  // designDeliveryDays 是服务端按当天日期动态推导的派生字段，不接受客户端落库值
+  const { id, createdAt, updatedAt, designDeliveryDays, ...payload } = value;
   return payload;
 }
 
@@ -112,6 +114,7 @@ router.post('/items', [authMiddleware, adminMiddleware], asyncHandler(async (req
     id: Date.now().toString(),
     productionPlanMonth: payload.productionPlanMonth || getCurrentMonthValue(),
     productionPlanMonths: payload.productionPlanMonths || [payload.productionPlanMonth || getCurrentMonthValue()],
+    designDeliveryDays: calculateDesignDeliveryDays(payload.deliveryDate),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -142,11 +145,16 @@ router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (
   }
   
   const payload = getItemPayload(value);
+  const existingItem = data.statusTrackingItems[index];
+  const effectiveDeliveryDate = Object.prototype.hasOwnProperty.call(payload, 'deliveryDate')
+    ? payload.deliveryDate
+    : existingItem.deliveryDate;
   data.statusTrackingItems[index] = {
-    ...data.statusTrackingItems[index],
+    ...existingItem,
     ...payload,
-    productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
-    productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(data.statusTrackingItems[index]),
+    productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(existingItem) || getCurrentMonthValue(),
+    productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(existingItem),
+    designDeliveryDays: calculateDesignDeliveryDays(effectiveDeliveryDate),
     updatedAt: new Date().toISOString()
   };
   
@@ -209,11 +217,16 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
     if (existingIds.has(itemId)) {
       const index = data.statusTrackingItems.findIndex(i => i.id === itemId);
       if (index !== -1) {
+        const bulkExisting = data.statusTrackingItems[index];
+        const bulkDeliveryDate = Object.prototype.hasOwnProperty.call(payload, 'deliveryDate')
+          ? payload.deliveryDate
+          : bulkExisting.deliveryDate;
         data.statusTrackingItems[index] = {
-          ...data.statusTrackingItems[index],
+          ...bulkExisting,
           ...payload,
-          productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(data.statusTrackingItems[index]) || getCurrentMonthValue(),
-          productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(payload),
+          productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(bulkExisting) || getCurrentMonthValue(),
+          productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(bulkExisting),
+          designDeliveryDays: calculateDesignDeliveryDays(bulkDeliveryDate),
           updatedAt: new Date().toISOString()
         };
       }
@@ -223,6 +236,7 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
         id: itemId,
         productionPlanMonth: payload.productionPlanMonth || getItemPlanMonth(payload) || getCurrentMonthValue(),
         productionPlanMonths: payload.productionPlanMonths || getItemPlanMonths(payload),
+        designDeliveryDays: calculateDesignDeliveryDays(payload.deliveryDate),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       });

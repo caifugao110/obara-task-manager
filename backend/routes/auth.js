@@ -177,7 +177,9 @@ router.get('/validate', asyncHandler(async (req, res) => {
   }
 
   try {
+    // 与其他鉴权点一致：显式锁定 HS256
     const decoded = jwt.verify(token, JWT_SECRET, {
+      algorithms: ['HS256'],
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE
     });
