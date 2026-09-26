@@ -5,7 +5,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const crypto = require('crypto');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const https = require('https');
 const db = require('../db');
 const { authMiddleware, superAdminMiddleware, guestViewMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
@@ -1037,14 +1037,18 @@ router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], async
   res.json({ message: '数据库备份已完成', backup });
 }));
 
-const isLoopbackAddress = (ip) =>
-  ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+const isLoopbackAddress = (ip) => {
+  const normalized = String(ip || '').replace(/^::ffff:/, '');
+  return normalized === '127.0.0.1' || normalized === '::1';
+};
 
 // 本机运维脚本（stop.bat 经 localhost 调用）允许匿名环回访问；
 // 非环回的外部请求必须是超级管理员，杜绝匿名远程触发备份写盘。
-// trust proxy=1 下直连请求的 X-Forwarded-For 不被采信，无法伪造环回。
+// 注意：环回判断必须使用 req.socket.remoteAddress（操作系统层面对端地址，不可伪造），
+// 不能用 req.ip —— trust proxy=1 时，直连请求中客户端伪造的
+// X-Forwarded-For: 127.0.0.1 会被采信，从而绕过本校验。
 const offlineBackupAccess = (req, res, next) => {
-  if (isLoopbackAddress(req.ip)) return next();
+  if (isLoopbackAddress(req.socket.remoteAddress)) return next();
   authMiddleware(req, res, (err) => {
     if (err) return next(err);
     superAdminMiddleware(req, res, next);
@@ -1366,9 +1370,10 @@ router.post('/import-xls', [authMiddleware, superAdminMiddleware, upload.single(
 // 项目根目录（backend/routes/ -> ../../）
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
+// 使用 execFileSync + 参数数组：不经 shell 解析，杜绝命令注入
 const runGit = (args, options = {}) => {
   try {
-    return execSync(`git ${args}`, {
+    return execFileSync('git', args, {
       cwd: PROJECT_ROOT,
       encoding: 'utf-8',
       timeout: 10000,
@@ -1381,14 +1386,14 @@ const runGit = (args, options = {}) => {
 
 const computeLocalVersion = () => {
   try {
-    const commitDate = runGit('log -1 --format=%cd --date=format:%y-%m-%d');
+    const commitDate = runGit(['log', '-1', '--format=%cd', '--date=format:%y-%m-%d']);
     if (!commitDate) {
       return '未知';
     }
-    const fullDate = runGit('log -1 --format=%cd --date=format:%Y-%m-%d');
+    const fullDate = runGit(['log', '-1', '--format=%cd', '--date=format:%Y-%m-%d']);
     let commitCount = 0;
     if (fullDate) {
-      const countStr = runGit(`rev-list --count --since="${fullDate} 00:00:00" --until="${fullDate} 23:59:59" HEAD`);
+      const countStr = runGit(['rev-list', '--count', `--since=${fullDate} 00:00:00`, `--until=${fullDate} 23:59:59`, 'HEAD']);
       commitCount = parseInt(countStr, 10) || 0;
     }
     let version = commitDate;

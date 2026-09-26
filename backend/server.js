@@ -33,8 +33,17 @@ const io = new Server(server, {
 // 应用 Socket.IO 认证中间件
 io.use(socketAuthMiddleware);
 
+// 后端只提供 API 与 Socket.IO（不托管前端 HTML），启用收敛的 CSP 作为纵深防御：
+// 即使未来某个接口返回 HTML/错误页，也只允许同源资源、禁止插件与 framing。
 app.use(helmet({
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"]
+    }
+  },
 }));
 app.use(cors({
   origin: securityConfig.cors.origin,

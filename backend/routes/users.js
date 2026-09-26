@@ -133,7 +133,8 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
   if (role && req.user.role === 'superadmin') targetUser.role = role;
   if (name) targetUser.name = name;
   if (group !== undefined) targetUser.group = group;
-  if (disabled !== undefined) targetUser.disabled = disabled;
+  // 禁用/启用账号与角色变更同级，仅超级管理员可操作，防止管理员禁用自己或他人绕过管理
+  if (disabled !== undefined && req.user.role === 'superadmin') targetUser.disabled = disabled;
 
   await db.writeDb(data);
 

@@ -2,11 +2,25 @@ const dotenv = require('dotenv');
 const path = require('path');
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
+const isProduction = () => (process.env.NODE_ENV || 'development') === 'production';
+
 const parseOriginList = () => {
   const originEnv = process.env.CORS_ORIGIN || '';
-  if (!originEnv.trim()) return ['*'];
+  if (!originEnv.trim()) {
+    // 未配置时回退为 '*'（仅限开发/内网调试）。生产环境应显式配置 CORS_ORIGIN 白名单。
+    if (isProduction()) {
+      console.warn('[SECURITY WARNING] CORS_ORIGIN is not set in production. ' +
+        'Falling back to wildcard origin without credentials. Set CORS_ORIGIN to an explicit allowlist.');
+    }
+    return ['*'];
+  }
   return originEnv.split(',').map(o => o.trim()).filter(Boolean);
 };
+
+const corsOrigins = parseOriginList();
+// 通配符 '*' 与 credentials: true 的组合既违反 CORS 规范（浏览器拒绝），也是最宽松配置；
+// 本项目使用 Bearer Token 鉴权而非 Cookie，通配符场景下无需 credentials。
+const corsAllowCredentials = !corsOrigins.includes('*');
 
 if (!process.env.JWT_SECRET) {
   console.error('[SECURITY ERROR] JWT_SECRET is not set in environment variables.');
@@ -22,9 +36,9 @@ const securityConfig = {
     audience: process.env.JWT_AUDIENCE || 'obara-task-manager-api'
   },
   cors: {
-    origin: parseOriginList(),
+    origin: corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    credentials: true
+    credentials: corsAllowCredentials
   },
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000,
