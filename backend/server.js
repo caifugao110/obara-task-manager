@@ -73,6 +73,12 @@ const apiLimiter = rateLimit({
 });
 app.use('/api', apiLimiter);
 
+// IP 黑名单：命中黑名单的 IP 访问任意 /api 接口一律 403（登录接口会额外记录失败日志）。
+// 中间件内部放行 OPTIONS 预检与本机回环地址（127.0.0.1/::1），
+// 防止管理员误封自身出口 IP 后无法从服务器本机自救。
+const ipBlacklist = require('./utils/ipBlacklist');
+app.use('/api', ipBlacklist.middleware);
+
 // Database logic (Simple JSON storage)
 const db = require('./db');
 const { startMaintenanceScheduler, createOfflineBackup } = require('./utils/dbMaintenance');

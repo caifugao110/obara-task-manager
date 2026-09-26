@@ -5,6 +5,7 @@ import { format } from 'date-fns';
 import {
   AlertCircle,
   Archive,
+  Ban,
   CheckCircle,
   ChevronLeft,
   Database,
@@ -12,10 +13,12 @@ import {
   FileSpreadsheet,
   LogOut,
   PlayCircle,
+  Plus,
   Power,
   RefreshCw,
   Settings,
   Shield,
+  ShieldAlert,
   Trash2,
   Upload,
   History,
@@ -34,6 +37,19 @@ interface Toast {
   message: string;
   type: 'success' | 'error';
   id: number;
+}
+
+interface IpBlacklistEntry {
+  id: string;
+  ip: string;
+  note?: string;
+  createdAt: string;
+  createdBy?: { id?: string; username?: string; name?: string };
+}
+
+interface IpBlacklistData {
+  enabled: boolean;
+  entries: IpBlacklistEntry[];
 }
 
 interface MaintenanceFile {
@@ -143,6 +159,11 @@ const SystemSettings = () => {
   const [accessSettings, setAccessSettings] = useState(defaultAccessSettings);
   const [accessSettingsLoaded, setAccessSettingsLoaded] = useState(false);
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
+  // IP 黑名单：配置数据 / 添加输入框 / 备注 / 提交中
+  const [ipBlacklist, setIpBlacklist] = useState<IpBlacklistData>({ enabled: false, entries: [] });
+  const [ipInput, setIpInput] = useState('');
+  const [ipNote, setIpNote] = useState('');
+  const [ipSaving, setIpSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs' | 'plan'>('data');
@@ -226,6 +247,94 @@ const SystemSettings = () => {
     }
   }, [isSuperAdmin, token]);
 
+  // IP 黑名单：加载 / 启停 / 批量添加 / 删除
+  const fetchIpBlacklist = useCallback(async () => {
+    if (!isSuperAdmin || !token) return;
+    try {
+      const res = await axios.get('/api/system/ip-blacklist', authHeader);
+      setIpBlacklist({ enabled: Boolean(res.data?.enabled), entries: Array.isArray(res.data?.entries) ? res.data.entries : [] });
+    } catch {
+      addToast('无法加载 IP 黑名单', 'error');
+    }
+  }, [isSuperAdmin, token]);
+
+  const toggleIpBlacklist = async (enabled: boolean) => {
+    setIpBlacklist(prev => ({ ...prev, enabled }));
+    try {
+      const res = await axios.put('/api/system/ip-blacklist', { enabled }, authHeader);
+      setIpBlacklist({ enabled: Boolean(res.data?.enabled), entries: Array.isArray(res.data?.entries) ? res.data.entries : [] });
+      addToast(enabled ? 'IP 黑名单已启用，拦截立即生效' : 'IP 黑名单已停用', 'success');
+    } catch {
+      setIpBlacklist(prev => ({ ...prev, enabled: !enabled }));
+      addToast('切换 IP 黑名单状态失败', 'error');
+    }
+  };
+
+  const handleAddIpBlacklist = async () => {
+    const input = ipInput.trim();
+    if (!input) {
+      addToast('请输入要拉黑的 IP', 'error');
+      return;
+    }
+    setIpSaving(true);
+    try {
+      const res = await axios.post('/api/system/ip-blacklist', { ip: input, note: ipNote.trim() }, authHeader);
+      const added: IpBlacklistEntry[] = res.data?.added || [];
+      const failed: { ip: string; reason: string }[] = res.data?.failed || [];
+      if (Array.isArray(res.data?.entries)) {
+        setIpBlacklist(prev => ({ ...prev, entries: res.data.entries }));
+      }
+      if (added.length > 0) {
+        addToast(`已加入黑名单 ${added.length} 条规则`, 'success');
+        setIpInput('');
+        setIpNote('');
+      }
+      if (failed.length > 0) {
+        addToast(`${failed.length} 条规则无效：${failed[0].ip}（${failed[0].reason}）`, 'error');
+      }
+      if (added.length === 0 && failed.length === 0) {
+        addToast('规则已存在，未重复添加', 'success');
+      }
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '添加黑名单失败', 'error');
+    } finally {
+      setIpSaving(false);
+    }
+  };
+
+  const handleDeleteIpBlacklist = async (entry: IpBlacklistEntry) => {
+    try {
+      const res = await axios.delete(`/api/system/ip-blacklist/${entry.id}`, authHeader);
+      setIpBlacklist(prev => ({ ...prev, entries: Array.isArray(res.data?.entries) ? res.data.entries : [] }));
+      addToast(`已解除封禁：${entry.ip}`, 'success');
+    } catch {
+      addToast('删除黑名单规则失败', 'error');
+      fetchIpBlacklist();
+    }
+  };
+
+  // IP 规则类型徽章：精确 IP / 网段 CIDR / 通配符
+  const getIpRuleType = (ip: string): { label: string; className: string } => {
+    if (ip.includes('/')) return { label: '网段 CIDR', className: 'bg-purple-50 text-purple-600 border-purple-100' };
+    if (ip.includes('*')) return { label: '通配符', className: 'bg-amber-50 text-amber-600 border-amber-100' };
+    return { label: '精确 IP', className: 'bg-blue-50 text-blue-600 border-blue-100' };
+  };
+
+  // 最近登录失败的 IP（去重、排除已在黑名单中的），作为快捷填入候选
+  const recentFailedIps = (() => {
+    const banned = new Set(ipBlacklist.entries.map(e => e.ip));
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const log of loginLogs) {
+      const ip = (log.ip || '').trim();
+      if (!ip || banned.has(ip) || seen.has(ip)) continue;
+      seen.add(ip);
+      result.push(ip);
+      if (result.length >= 5) break;
+    }
+    return result;
+  })();
+
   // 获取焊枪编号台账分类摘要（无权限时静默置空，卡片显示空态）
   const fetchGunLedgerCats = useCallback(async () => {
     if (!token) return;
@@ -266,11 +375,11 @@ const SystemSettings = () => {
   useEffect(() => {
     const init = async () => {
       await Promise.all([fetchSettings(), fetchAccessSettings()]);
-      await Promise.all([fetchLoginLogs(), fetchMaintenanceStatus(), fetchGunLedgerCats()]);
+      await Promise.all([fetchLoginLogs(), fetchIpBlacklist(), fetchMaintenanceStatus(), fetchGunLedgerCats()]);
       setLoading(false);
     };
     init();
-  }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchMaintenanceStatus, fetchGunLedgerCats]);
+  }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats]);
 
   useEffect(() => {
     if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'maintenance' || activeTab === 'plan')) {
@@ -724,7 +833,7 @@ const SystemSettings = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col">
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+      <div className="fixed top-12 right-4 z-50 flex flex-col gap-2">
         {toasts.map(toast => (
           <div key={toast.id} className={`flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-white transition-all duration-300 ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
             {toast.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle size={18} />}
@@ -1700,6 +1809,151 @@ const SystemSettings = () => {
                   </div>
                 </div>
               ))}
+            </div>
+
+            {/* IP 黑名单：拦截异常访问来源 */}
+            <div className={`mt-8 rounded-xl border p-5 transition ${ipBlacklist.enabled ? 'border-red-200 bg-gradient-to-br from-red-50/70 to-white' : 'border-gray-200 bg-gray-50/60'}`}>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${ipBlacklist.enabled ? 'bg-red-100 text-red-600' : 'bg-gray-200 text-gray-400'}`}>
+                    <ShieldAlert size={20} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="font-bold text-gray-800">IP 黑名单</h4>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${ipBlacklist.enabled ? 'bg-red-500 text-white border-red-500' : 'bg-white text-gray-400 border-gray-200'}`}>
+                        {ipBlacklist.enabled ? '拦截中' : '已停用'}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                      命中黑名单的 IP 将被拒绝访问本系统全部接口与登录；命中登录请求会记录到登录日志。
+                      本机 <code className="px-1 py-0.5 bg-gray-100 rounded text-[10px] font-mono">127.0.0.1</code> 永不拦截，避免误封自身出口后无法在服务器本机自救。
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-xs text-gray-400 font-medium">共 {ipBlacklist.entries.length} 条规则</span>
+                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                    <input
+                      type="checkbox"
+                      checked={ipBlacklist.enabled}
+                      onChange={(e) => toggleIpBlacklist(e.target.checked)}
+                      disabled={!isSuperAdmin}
+                      className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                    />
+                    <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${ipBlacklist.enabled ? 'bg-red-500' : 'bg-gray-300'}`}></label>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`mt-4 rounded-lg border bg-white p-4 ${ipBlacklist.enabled ? 'border-red-100' : 'border-gray-100'}`}>
+                <div className="flex flex-col gap-2 lg:flex-row">
+                  <div className="relative flex-1">
+                    <Ban size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+                    <input
+                      value={ipInput}
+                      onChange={(e) => setIpInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !ipSaving) handleAddIpBlacklist(); }}
+                      placeholder="输入 IP，如 192.168.1.100（多个用逗号或空格分隔，可批量添加）"
+                      disabled={!isSuperAdmin || ipSaving}
+                      className="w-full rounded-lg border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm font-mono text-gray-700 placeholder:font-sans placeholder:text-gray-300 focus:border-red-300 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-100 disabled:opacity-60"
+                    />
+                  </div>
+                  <input
+                    value={ipNote}
+                    onChange={(e) => setIpNote(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !ipSaving) handleAddIpBlacklist(); }}
+                    placeholder="备注（选填，如：恶意爆破扫描源）"
+                    maxLength={100}
+                    disabled={!isSuperAdmin || ipSaving}
+                    className="w-full lg:w-64 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700 placeholder:text-gray-300 focus:border-red-300 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-100 disabled:opacity-60"
+                  />
+                  <button
+                    onClick={handleAddIpBlacklist}
+                    disabled={!isSuperAdmin || ipSaving || !ipInput.trim()}
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-red-500 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-red-600 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Plus size={16} />
+                    {ipSaving ? '添加中…' : '加入黑名单'}
+                  </button>
+                </div>
+                <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-400">
+                  <span className="font-bold text-gray-500">支持格式：</span>
+                  <span><code className="px-1 py-0.5 bg-blue-50 text-blue-500 rounded font-mono">精确 IP</code> 192.168.1.100</span>
+                  <span><code className="px-1 py-0.5 bg-purple-50 text-purple-500 rounded font-mono">网段 CIDR</code> 192.168.1.0/24</span>
+                  <span><code className="px-1 py-0.5 bg-amber-50 text-amber-600 rounded font-mono">通配符</code> 192.168.*.*</span>
+                </div>
+                {recentFailedIps.length > 0 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-dashed border-gray-100 pt-3">
+                    <span className="text-[11px] font-bold text-gray-500 flex items-center gap-1">
+                      <AlertCircle size={12} className="text-amber-500" />
+                      最近登录失败 IP，点击快速填入：
+                    </span>
+                    {recentFailedIps.map(ip => (
+                      <button
+                        key={ip}
+                        onClick={() => setIpInput(prev => (prev.trim() ? `${prev.trim().replace(/[,，;；\s]+$/, '')}, ${ip}` : ip))}
+                        className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 font-mono text-[11px] text-gray-600 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                      >
+                        {ip}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {ipBlacklist.entries.length === 0 ? (
+                <div className="mt-4 flex flex-col items-center justify-center rounded-lg border border-dashed border-gray-200 bg-white/60 py-8 text-center">
+                  <Ban size={28} className="text-gray-200" />
+                  <p className="mt-2 text-sm text-gray-400 font-medium">暂无黑名单规则</p>
+                  <p className="mt-0.5 text-xs text-gray-300">发现异常访问的 IP 后，在上方输入并加入黑名单</p>
+                </div>
+              ) : (
+                <div className="mt-4 overflow-hidden rounded-lg border border-gray-100 bg-white">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 text-gray-500 text-left">
+                      <tr>
+                        <th className="px-4 py-2.5 font-bold text-xs">IP / 规则</th>
+                        <th className="px-4 py-2.5 font-bold text-xs">备注</th>
+                        <th className="px-4 py-2.5 font-bold text-xs">添加时间</th>
+                        <th className="px-4 py-2.5 font-bold text-xs">操作人</th>
+                        <th className="px-4 py-2.5 font-bold text-xs text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ipBlacklist.entries.map(entry => {
+                        const ruleType = getIpRuleType(entry.ip);
+                        return (
+                          <tr key={entry.id} className="border-t border-gray-50 hover:bg-red-50/30">
+                            <td className="px-4 py-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[13px] font-bold text-gray-800">{entry.ip}</span>
+                                <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-bold ${ruleType.className}`}>{ruleType.label}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-500 max-w-[220px] truncate" title={entry.note || ''}>{entry.note || '-'}</td>
+                            <td className="px-4 py-2.5 text-gray-400 whitespace-nowrap text-xs">
+                              {entry.createdAt ? format(new Date(entry.createdAt), 'yyyy-MM-dd HH:mm') : '-'}
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-500 text-xs whitespace-nowrap">{entry.createdBy?.name || entry.createdBy?.username || '-'}</td>
+                            <td className="px-4 py-2.5 text-right">
+                              <button
+                                onClick={() => handleDeleteIpBlacklist(entry)}
+                                disabled={!isSuperAdmin}
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-bold text-gray-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                                title="解除封禁"
+                              >
+                                <Trash2 size={13} />
+                                解除
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -1,4 +1,5 @@
 ﻿﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
+import axios from 'axios';
 import { axiosInstance } from '../services/api';
 import { io, Socket } from 'socket.io-client';
 import { buildLoginUrl } from '../utils/redirect';
@@ -16,7 +17,7 @@ interface AuthContextType {
   authReady: boolean;
   forcePasswordChange: boolean;
   login: (token: string, user: User, forceChange?: boolean) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
   setForcePasswordChange: (value: boolean) => void;
   isAuthenticated: boolean;
 }
@@ -30,7 +31,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [forcePasswordChange, setForcePasswordChange] = useState(false);
   const socketRef = useRef<Socket | null>(null);
 
-  const logout = useCallback(() => {
+  // 只清本地状态，不带任何网络调用。供 logout 内部与各处强制退出复用。
+  const clearLocalSession = useCallback(() => {
     setToken(null);
     setUser(null);
     setForcePasswordChange(false);
@@ -42,6 +44,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       socketRef.current = null;
     }
   }, []);
+
+  // 登出必须先通知后端吊销 sessionToken（轮换 user.sessionToken），
+  // 否则已签发的 JWT 在 3 天有效期内仍然可用，「禁止多设备登录」也踢不掉旧设备。
+  // 这里用未经全局拦截器的裸 axios：令牌已失效时后端返回 401，不应触发
+  // 拦截器里的弹窗与跳转——退出流程自己完成跳转即可。
+  // 依赖保持为空数组，logout 引用稳定，不会让 useEffect(..., [token, logout]) 反复重跑。
+  const logout = useCallback(async () => {
+    const currentToken = localStorage.getItem('token');
+    try {
+      if (currentToken) {
+        await axios.post('/api/auth/logout', {}, {
+          headers: { Authorization: `Bearer ${currentToken}` },
+          timeout: 5000
+        });
+      }
+    } catch {
+      // 后端吊销失败（网络不通 / 令牌已失效）也必须完成本地退出，不能把用户卡在页面里
+    } finally {
+      clearLocalSession();
+    }
+  }, [clearLocalSession]);
 
   const login = (newToken: string, newUser: User, forceChange?: boolean) => {
     setToken(newToken);
@@ -82,8 +105,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     socket.on('session_invalidated', (data: { reason?: string }) => {
       alert(data?.reason || '您的账号已在其他设备登录');
-      logout();
-      window.location.href = buildLoginUrl();
+      // 必须等登出请求发完再跳转，否则导航会中断 /api/auth/logout 的吊销请求
+      void logout().finally(() => {
+        window.location.href = buildLoginUrl();
+      });
     });
 
     return () => {
@@ -131,7 +156,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           } else {
             alert(err.response?.data?.message || '您的账号已在其他设备登录');
           }
-          logout();
+          // 同上：等吊销请求结束后再跳转
+          await logout();
           window.location.href = buildLoginUrl();
         }
       }

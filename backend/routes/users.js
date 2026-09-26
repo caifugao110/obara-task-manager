@@ -202,6 +202,12 @@ router.delete('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req
     return res.status(404).json({ message: '用户不存在' });
   }
 
+  // 与批量删除保持一致：超级管理员账号不可删除。
+  // 删掉最后一个超管会让系统失去唯一的权限入口，只能手工改数据库恢复。
+  if (data.users[userIndex].role === 'superadmin') {
+    return res.status(400).json({ message: '不能删除超级管理员账号' });
+  }
+
   data.users.splice(userIndex, 1);
   await db.writeDb(data);
   res.json({ message: '用户已删除' });

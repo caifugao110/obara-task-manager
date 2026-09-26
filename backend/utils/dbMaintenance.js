@@ -94,10 +94,29 @@ const getMaintenanceSettings = () => {
   return { data, settings };
 };
 
+// 维护目录一律限制在 backend/ 之内。
+// 仅做「去盘符 + 去前导分隔符」的清洗是不够的：'../../..' 这类相对段会被
+// path.resolve 原样展开，导致目录跳出 backendRoot；再配合 cleanupOldBackups
+// 的 unlinkSync，就能删除 backend 之外的任意文件（越权删除）。
+// 这里 fail-closed：解析结果越界直接抛错，不静默回退到别的目录。
 const resolveManagedDir = (relativeDir) => {
-  const cleanDir = String(relativeDir || '').replace(/^[a-zA-Z]:/, '').replace(/^[/\\]+/, '');
-  return path.resolve(backendRoot, cleanDir);
+  const cleanDir = String(relativeDir || '')
+    .replace(/^[a-zA-Z]:/, '')
+    .replace(/^[/\\]+/, '')
+    .replace(/\.\.[/\\]/g, '')
+    .replace(/[/\\]\.\./g, '');
+  const resolved = path.resolve(backendRoot, cleanDir);
+  if (resolved !== backendRoot && !resolved.startsWith(backendRoot + path.sep)) {
+    throw new Error(`非法的维护目录配置：${relativeDir}`);
+  }
+  return resolved;
 };
+
+// 可被「清理过期备份」删除的文件类型白名单。
+// 四个维护目录只应存放数据库备份（.db 及其 WAL/SHM 伴随文件）、
+// 表格导出（.xls/.xlsx）与年度归档（.json）。加上白名单后，即使某个目录
+// 被指向了混合内容的文件夹，也只会删除这些产物，不会误删无关文件。
+const MANAGED_FILE_PATTERN = /\.(db|db-shm|db-wal|xlsx?|json)$/i;
 
 const ensureDir = (dirPath) => {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -345,7 +364,10 @@ const cleanupOldBackups = (options = {}) => {
   const removed = [];
 
   dirs.forEach(({ path: dirPath, cutoff }) => {
-    listManagedFiles(dirPath, file => file.mtime.getTime() < cutoff).forEach(file => {
+    // 双重条件：既要在保留期之外，也必须是维护产物（扩展名白名单）
+    listManagedFiles(dirPath, file =>
+      file.mtime.getTime() < cutoff && MANAGED_FILE_PATTERN.test(file.name)
+    ).forEach(file => {
       fs.unlinkSync(file.path);
       removed.push({ fileName: file.name, dir: dirPath, size: file.size });
     });

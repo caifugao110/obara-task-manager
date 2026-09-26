@@ -524,6 +524,16 @@ const applySettingsDefaults = (parsed) => {
   if (!parsed.settings.system) {
     parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
   }
+  // IP 黑名单：{ enabled: boolean, entries: [{ id, ip, note, createdAt, createdBy }] }
+  if (!parsed.settings.ipBlacklist || typeof parsed.settings.ipBlacklist !== 'object' || Array.isArray(parsed.settings.ipBlacklist)) {
+    parsed.settings.ipBlacklist = { enabled: false, entries: [] };
+  }
+  if (typeof parsed.settings.ipBlacklist.enabled !== 'boolean') {
+    parsed.settings.ipBlacklist.enabled = false;
+  }
+  if (!Array.isArray(parsed.settings.ipBlacklist.entries)) {
+    parsed.settings.ipBlacklist.entries = [];
+  }
   // 访客查看功能已移除：清理存量数据中残留的 allowGuestView 键
   delete parsed.settings.system.allowGuestView;
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserDesignPlanColorMark');

@@ -1847,5 +1847,95 @@ router.get('/admin-login-logs', [authMiddleware, superAdminMiddleware], asyncHan
   res.json(adminLogs);
 }));
 
+/* ==================== IP 黑名单（仅超级管理员） ====================
+ * 存储：settings.ipBlacklist = { enabled, entries: [{ id, ip, note, createdAt, createdBy }] }
+ * 生效：server.js 全局中间件拦截所有 /api 请求（回环地址永不拦截）。
+ */
+
+const ipBlacklistUtil = require('../utils/ipBlacklist');
+
+router.get('/ip-blacklist', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  res.json(ipBlacklistUtil.readBlacklist());
+}));
+
+router.put('/ip-blacklist', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ message: 'enabled 必须为布尔值' });
+  }
+
+  const data = db.readDb();
+  const current = ipBlacklistUtil.readBlacklist();
+  data.settings.ipBlacklist = { enabled, entries: current.entries };
+  await db.writeDb(data);
+  ipBlacklistUtil.invalidateBlacklistCache();
+  res.json(data.settings.ipBlacklist);
+}));
+
+// 批量添加：body { ip: '1.2.3.4, 10.0.0.0/24', note } —— 支持逗号/空白分隔多条
+router.post('/ip-blacklist', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const rawInput = String(req.body?.ip || '').trim();
+  const note = String(req.body?.note || '').trim().slice(0, 100);
+  if (!rawInput) {
+    return res.status(400).json({ message: '请输入 IP 地址' });
+  }
+
+  const patterns = rawInput.split(/[\s,;，；]+/).filter(Boolean);
+  if (patterns.length > 50) {
+    return res.status(400).json({ message: '单次最多添加 50 条规则' });
+  }
+
+  const data = db.readDb();
+  const current = ipBlacklistUtil.readBlacklist();
+  const entries = current.entries.slice();
+  if (entries.length + patterns.length > ipBlacklistUtil.MAX_BLACKLIST_ENTRIES) {
+    return res.status(400).json({ message: `黑名单最多保留 ${ipBlacklistUtil.MAX_BLACKLIST_ENTRIES} 条规则` });
+  }
+
+  const added = [];
+  const failed = [];
+  for (const pattern of patterns) {
+    const check = ipBlacklistUtil.validateIpPattern(pattern);
+    if (!check.ok) {
+      failed.push({ ip: pattern, reason: check.reason });
+      continue;
+    }
+    // 已归一化的重复规则直接跳过，不报错（幂等添加）
+    if (entries.some(entry => entry.ip === check.normalized)) {
+      continue;
+    }
+    const entry = {
+      id: crypto.randomUUID(),
+      ip: check.normalized,
+      note,
+      createdAt: new Date().toISOString(),
+      createdBy: req.user
+        ? { id: req.user.id, username: req.user.username, name: req.user.name }
+        : undefined
+    };
+    entries.push(entry);
+    added.push(entry);
+  }
+
+  data.settings.ipBlacklist = { enabled: current.enabled, entries };
+  await db.writeDb(data);
+  ipBlacklistUtil.invalidateBlacklistCache();
+  res.json({ added, failed, total: entries.length });
+}));
+
+router.delete('/ip-blacklist/:id', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const current = ipBlacklistUtil.readBlacklist();
+  const entries = current.entries.filter(entry => entry?.id !== req.params.id);
+  if (entries.length === current.entries.length) {
+    return res.status(404).json({ message: '该规则不存在或已被删除' });
+  }
+
+  data.settings.ipBlacklist = { enabled: current.enabled, entries };
+  await db.writeDb(data);
+  ipBlacklistUtil.invalidateBlacklistCache();
+  res.json({ entries, total: entries.length });
+}));
+
 module.exports = router;
 
