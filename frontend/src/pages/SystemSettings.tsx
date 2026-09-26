@@ -26,6 +26,7 @@ import {
   CalendarDays
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { axiosInstance } from '../services/api';
 import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
 
@@ -200,7 +201,8 @@ const SystemSettings = () => {
 
   const fetchAccessSettings = useCallback(async () => {
     try {
-      const res = await axios.get('/api/settings/system-settings');
+      // 必须走 axiosInstance 携带 Authorization：访客视图关闭时 guestViewMiddleware 对无 token 请求返回 401
+      const res = await axiosInstance.get('/settings/system-settings');
       setAccessSettings(res.data);
     } catch {
       addToast('无法加载权限设置', 'error');

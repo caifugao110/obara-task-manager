@@ -14,15 +14,20 @@ const JWT_SECRET = securityConfig.jwt.secret;
 const JWT_ISSUER = securityConfig.jwt.issuer;
 const JWT_AUDIENCE = securityConfig.jwt.audience;
 
+// 登录限流按「IP + 用户名」计数：既防针对单个账号的爆破，
+// 又避免 300+ 人经同一代理出口（共用一个 IP）时早高峰互相挤爆额度
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
+  keyGenerator: (req) => `${req.ip}|${req.body?.username || ''}`,
   message: { message: '登录尝试过于频繁，请15分钟后再试' }
 });
 
+// 改密码限流按「用户 ID」计数（需先通过认证），避免共用出口 IP 时互相影响
 const changePasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
+  keyGenerator: (req) => req.user?.id || req.ip,
   message: { message: '密码修改尝试过于频繁，请15分钟后再试' }
 });
 
@@ -59,12 +64,10 @@ const getBrowserInfo = (userAgent = '') => {
   return { browser, os, device, summary: `${browser} / ${os} / ${device}` };
 };
 
-// 获取客户端真实 IP：优先取代理转发头，并去除 IPv4 映射地址的 ::ffff: 前缀
+// 获取客户端真实 IP：以 req.ip 为准（trust proxy='loopback' 时已过滤外部伪造的 XFF），
+// 不再直接读 X-Forwarded-For 头——该头可被客户端任意伪造
 const getClientIp = (req) => {
-  const raw = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-    || req.headers['x-real-ip']
-    || req.socket?.remoteAddress
-    || '';
+  const raw = req.ip || req.socket?.remoteAddress || '';
   return raw.replace(/^::ffff:/, '');
 };
 
@@ -98,6 +101,10 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const logBase = { username, ip, userAgent, browserInfo };
 
   if (!user) {
+    // 记录失败日志（含不存在的用户名），便于监测爆破/扫号行为；
+    // 返回文案与密码错误一致，不产生用户枚举
+    await appendLoginLog(data, { ...logBase, success: false, reason: '用户不存在' });
+    await db.writeDb(data);
     return res.status(401).json({ message: '用户名或密码错误' });
   }
 

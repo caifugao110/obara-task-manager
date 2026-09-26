@@ -14,12 +14,10 @@ const appendAuditLog = async (data, entry) => {
   }
 };
 
+// 以 req.ip 为准（trust proxy='loopback' 时已过滤外部伪造的 XFF），
+// 不再直接读 X-Forwarded-For 头——该头可被客户端任意伪造
 const getClientIp = (req) => {
-  const raw = req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-    req.headers['x-real-ip'] ||
-    req.connection?.remoteAddress ||
-    req.socket?.remoteAddress ||
-    '';
+  const raw = req.ip || req.socket?.remoteAddress || '';
   // 去除 IPv4 映射地址的 ::ffff: 前缀
   return raw.replace(/^::ffff:/, '');
 };
@@ -32,14 +30,18 @@ const truncateText = (text, maxLength) => {
   return `${text.slice(0, maxLength)}... [truncated ${text.length - maxLength} chars]`;
 };
 
-const sanitizeBody = (body) => {
-  if (!body || typeof body !== 'object') return body;
-  const sanitized = { ...body };
-  if ('password' in sanitized) sanitized.password = '[REDACTED]';
-  if ('oldPassword' in sanitized) sanitized.oldPassword = '[REDACTED]';
-  if ('newPassword' in sanitized) sanitized.newPassword = '[REDACTED]';
-  if (Array.isArray(sanitized)) {
-    return sanitized.map(item => sanitizeBody(item));
+// 敏感字段名（不区分大小写）：命中即在审计日志中脱敏
+const SENSITIVE_KEY_PATTERN = /password|passwd|secret|token|api[-_]?key|authorization/i;
+
+// 递归脱敏：嵌套对象与数组中的敏感字段同样处理，避免明文口令进入审计日志
+const sanitizeBody = (value) => {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeBody);
+  }
+  if (!value || typeof value !== 'object') return value;
+  const sanitized = {};
+  for (const [key, val] of Object.entries(value)) {
+    sanitized[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[REDACTED]' : sanitizeBody(val);
   }
   return sanitized;
 };

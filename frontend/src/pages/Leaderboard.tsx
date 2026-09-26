@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import { axiosInstance } from '../services/api';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, Clock, Calendar, TrendingUp, Medal, Sun, Cloud, Umbrella, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
@@ -251,7 +252,8 @@ const Leaderboard = () => {
 
   const fetchLeaderboardSettings = useCallback(async () => {
     try {
-      const res = await axios.get('/api/settings/leaderboard');
+      // 走 axiosInstance 自动携带 Authorization，访客视图关闭时裸请求会被 guestViewMiddleware 拦为 401
+      const res = await axiosInstance.get('/settings/leaderboard');
       setLeaderboardSettings(res.data);
     } catch (err: any) {
       console.error('Error fetching leaderboard settings:', err);

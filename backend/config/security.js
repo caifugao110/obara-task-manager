@@ -31,7 +31,9 @@ if (!process.env.JWT_SECRET) {
 const securityConfig = {
   jwt: {
     secret: process.env.JWT_SECRET,
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    // 默认 3 天：内网 300+ 人规模下兼顾体验（不必每天重登）；
+    // 配合服务端 sessionToken 吊销机制，登出/改密/禁用即时失效
+    expiresIn: process.env.JWT_EXPIRES_IN || '3d',
     issuer: process.env.JWT_ISSUER || 'obara-task-manager',
     audience: process.env.JWT_AUDIENCE || 'obara-task-manager-api'
   },

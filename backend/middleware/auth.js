@@ -102,7 +102,8 @@ const accessSettingsMiddleware = (settingsKey) => (req, res, next) => {
 
 const guestViewMiddleware = (req, res, next) => {
   const data = db.readDb();
-  const allowGuestView = data.settings?.system?.allowGuestView ?? true;
+  // fail-closed：字段缺失时视为禁止访客查看，避免存量升级环境静默开放未登录读取
+  const allowGuestView = data.settings?.system?.allowGuestView ?? false;
   if (allowGuestView) {
     return next();
   }

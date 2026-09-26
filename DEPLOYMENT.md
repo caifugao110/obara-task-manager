@@ -40,7 +40,7 @@ start.bat
 - 前端：http://localhost:5173
 - 后端：http://localhost:5000
 
-> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。默认密码为 `admin123`，**生产环境必须立即修改**。也可直接操作 `backend/data.db`（使用 SQLite 工具）手动配置，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
+> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。**未设置 `DEFAULT_ADMIN_PASSWORD` 时，首次启动会自动生成随机密码并仅在后端控制台输出一次**（`start.bat` 隐藏窗口启动时该输出写入 `logs/backend.log`，可在其中搜索 `[INIT] 初始超级管理员随机密码`；该账号同时被标记为需强制修改密码），请立即记录并登录修改；显式配置密码时生产环境必须使用强密码并在首次登录后立即修改。也可直接操作 `backend/data.db`（使用 SQLite 工具）手动配置，密码请使用 bcrypt 哈希值存储，切勿使用弱密码。
 
 ## 部署方式选择
 
@@ -66,6 +66,13 @@ npm run dev
 npm run dev:backend
 npm run dev:frontend
 ```
+
+### 依赖安装说明（离线环境 / 原生模块 / 安全）
+
+- 仓库使用 npm workspaces，根目录执行 `npm install`（或 `npm run install:all`）即可安装前后端全部依赖。
+- 根目录 `.npmrc` 固定了 `ignore-scripts=true`：`better-sqlite3@13` 官方提供 Windows 预编译二进制（prebuild-install），安装时无需执行 node-gyp，因此**不需要安装 Visual Studio C++ 生成工具或 Python**；如自行从 git 安装该模块的特殊版本，才需要补装编译工具链并临时放开该限制。
+- Excel 解析依赖 `xlsx` 以本地 vendor 包形式随仓库分发（`backend/vendor/xlsx-0.20.3.tgz`，`package.json` 中为 `"xlsx": "file:vendor/xlsx-0.20.3.tgz"`），安装时无需访问 npm registry 拉取该包；0.20.3 修复了旧版 0.18.5 的原型污染（CVE-2023-30533）与正则拒绝服务（CVE-2024-22363）漏洞。升级时请继续使用 vendor 方式，不要回退到 npm 上的 0.18.5。
+- 完全离线部署时，除上述 vendor 包外其余依赖仍需通过 npm 缓存、私有镜像或随包分发的 `node_modules` 解决。
 
 ## 生产运行建议
 
@@ -185,10 +192,10 @@ nssm remove ObaraTaskManager
 
 1. `backend/.env` 已存在，`JWT_SECRET` 必须配置（缺失将导致服务无法启动）。
 2. `CORS_ORIGIN` 只包含实际允许访问的前端地址。
-3. `backend/data.db` 已存在并已配置超级管理员，或已通过环境变量配置默认管理员账号（首次启动自动创建）。
+3. `backend/data.db` 已存在并已配置超级管理员，或已通过环境变量配置默认管理员账号（首次启动自动创建；未设置 `DEFAULT_ADMIN_PASSWORD` 时随机密码仅在启动控制台显示一次，务必当场记录）。
 4. `backend/data.db` 已完成一次备份（通过 `POST /api/system/maintenance/backup`）。
 5. `npm run build` 能成功完成前端构建。
-6. 后端启动后 `http://localhost:5000/api/system/version` 能返回 JSON。
+6. 后端启动后匿名访问 `http://localhost:5000/api/system/version` 返回 `401` JSON（该接口已要求登录，避免匿名探测版本号）；带登录 Token 请求时返回 `200` 版本信息。
 7. 前端能打开并完成登录、主页面加载、任务保存、导出文件下载等关键流程。
 8. 如果使用仕样 PDF 搜索，运行后端的 Windows 用户能访问 `\\192.168.160.6\仕样书$\`。
 
@@ -197,13 +204,14 @@ nssm remove ObaraTaskManager
 后端没有单独的 `/health` 接口，也不托管前端静态文件（未挂载 `express.static`，仅提供 `/api/*` 接口和 Socket.IO 服务），生产环境前端需由 IIS/Nginx 等独立托管。可使用以下轻量接口确认服务状态：
 
 ```text
-GET http://localhost:5000/api/system/settings
-GET http://localhost:5000/api/system/version
+GET http://localhost:5000/api/system/settings   # 匿名时可能返回 401 JSON（allowGuestView=false）
+GET http://localhost:5000/api/system/version    # 需要登录，匿名返回 401 JSON
 ```
 
 判断标准：
 
-- 能返回 JSON，说明 Express 服务可用。
+- 只要能返回任意 HTTP 响应体为 JSON（包括 `401`），即说明 Express 服务可用；连接被拒绝（无响应）才是服务未启动。带有效登录 Token 请求 `/api/system/version` 应返回 `200`。
+- 也可以只检测 5000 端口是否处于监听状态，或访问 Socket.IO 轮询握手地址 `http://localhost:5000/socket.io/?EIO=4&transport=polling`（应返回 `0{...}` 开头的 Engine.IO 报文）。
 - 前端页脚显示“就绪”，说明前端能连接后端和 Socket.IO。
 - Socket 断开时前端会显示离线横幅，后端恢复后会自动重新连接并刷新数据。
 
@@ -236,11 +244,12 @@ GET http://localhost:5000/api/system/version
 PORT=5000
 NODE_ENV=production
 JWT_SECRET=your-secret-key-change-in-production-2026
-JWT_EXPIRES_IN=7d
+JWT_EXPIRES_IN=3d
 JWT_ISSUER=obara-task-manager
 JWT_AUDIENCE=obara-task-manager-api
 DEFAULT_ADMIN_USERNAME=superadmin
-DEFAULT_ADMIN_PASSWORD=admin123
+# 留空时首次启动自动生成随机密码，仅在后端控制台显示一次（隐藏窗口启动时见 logs/backend.log）
+DEFAULT_ADMIN_PASSWORD=
 CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173,http://127.0.0.1:5173,http://192.168.160.25:5173,http://192.168.160.10:5173
 GITEE_TOKEN=your-gitee-token
 GITEE_REPO_OWNER=caifugao110
@@ -250,7 +259,9 @@ DB_PATH=./db.json
 SPEC_SHARE_PATH=\\192.168.160.6\仕样书$
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
-# LOG_LEVEL=info
+# 全局 API 限流：每 IP 15 分钟最大请求数（默认 3000，OPTIONS 预检与本机环回不计）
+# API_RATE_LIMIT_MAX=3000
+# LOG_LEVEL 为预留变量，当前版本代码未读取，设置后不生效
 ```
 
 | 环境变量 | 默认值 | 说明 |
@@ -258,26 +269,28 @@ RATE_LIMIT_MAX=20
 | `PORT` | `5000` | 后端服务端口 |
 | `NODE_ENV` | `development` | 开发/生产环境，生产环境错误响应不包含堆栈信息 |
 | `JWT_SECRET` | **必填** | JWT 签名密钥，缺失将导致服务无法启动，生产环境**必须**修改为随机字符串 |
-| `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
+| `JWT_EXPIRES_IN` | `3d` | JWT Token 过期时间（默认 3 天；登出/改密/禁用会通过服务端会话吊销立即失效，与有效期长短解耦） |
 | `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
 | `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
-| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源 |
+| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源且不启用 CORS credentials |
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite，迁移完成后可删除 |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
-| `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；当前登录/改密限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
-| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被限流器使用 |
+| `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；登录/改密独立限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
+| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被独立限流器使用 |
+| `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流：每个 IP 15 分钟最大请求数，覆盖全部 `/api` 接口；`OPTIONS` 预检与本机环回（如 `stop.bat` 调备份接口）不计数，超限返回 `429` |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
-| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改） |
-| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
+| `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在后端控制台显示一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时首次启动后应立即修改 |
+| `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入，部署 WeKnora 后设为 `true` |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
 | `WEKNORA_API_KEY` | - | 主工作空间 API Key（也用于建库等写操作），仅服务端保存 |
 | `WEKNORA_EXTRA_API_KEYS` | - | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
+| `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
 
 ## 设计规范知识库（WeKnora）
 
@@ -337,6 +350,18 @@ CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173
 CORS_ORIGIN=https://task.obara.com.cn,http://localhost:5173,http://192.168.160.25:5173
 ```
 
+### 接口限流
+
+后端启用三层限流，避免暴力破解与接口滥用：
+
+| 限流层 | 阈值 | 计数维度 | 说明 |
+|--------|------|----------|------|
+| 全局 API 限流 | 每 15 分钟 3000 次 | 客户端 IP（`req.ip`） | 覆盖所有 `/api` 接口；`OPTIONS` 预检与本机环回请求不计数（保证 `stop.bat` 本机备份调用等不受影响）；可用 `API_RATE_LIMIT_MAX` 调整 |
+| 登录限流 | 每 15 分钟 20 次 | IP + 用户名 | 内网多人共用同一代理出口时不会互相牵连；阈值在代码中硬编码 |
+| 修改密码限流 | 每 15 分钟 5 次 | 用户 ID | 阈值在代码中硬编码 |
+
+超限返回 HTTP `429`，响应消息为「请求过于频繁，请稍后再试」。限流窗口为内存计数（express-rate-limit），重启后端后计数清零。
+
 ### Gitee 版本检查
 
 配置 Gitee API 后，系统会通过 API 检查远程仓库版本：
@@ -351,7 +376,7 @@ GITEE_REPO_OWNER=caifugao110
 GITEE_REPO_NAME=obara-task-manager
 ```
 
-版本检查接口 `GET /api/system/version` 通过 Gitee API 获取最新提交信息，相比传统的 `git fetch` 方式更高效，适合前端频繁轮询。
+版本检查接口 `GET /api/system/version` 通过 Gitee API 获取最新提交信息，相比传统的 `git fetch` 方式更高效，适合前端登录后轮询。该接口**需要登录**（携带有效 Token），匿名访问返回 `401`，避免未授权者探测系统版本。
 
 ## 数据文件
 
@@ -380,7 +405,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
-| `settings.system` | 系统设置，如未登录查看、多设备登录、允许登录用户修改本人设计计划标记颜色、仕样号位数（`specNumberDigits`，5 或 6）；颜色标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
+| `settings.system` | 系统设置，如未登录查看（`allowGuestView`，新环境默认关闭；从旧版本升级的环境保留存量值，如需关闭请在系统设置「登录管理」中手动修改）、多设备登录、允许登录用户修改本人设计计划标记颜色、仕样号位数（`specNumberDigits`，5 或 6）；颜色标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
 
 ### 从 JSON 自动迁移
 
@@ -479,6 +504,17 @@ copy backend\data.db backups\db-before-upgrade-20260705.db
 
 ## 常见问题
 
+### 忘记超级管理员密码
+
+未配置 `DEFAULT_ADMIN_PASSWORD` 时，初始超级管理员密码由系统随机生成，**仅在启动控制台显示一次**。如果丢失且没有其他可用的超级管理员账号：
+
+1. 停止后端服务，并先备份 `backend/data.db`。
+2. 在 `backend/.env` 中设置 `DEFAULT_ADMIN_PASSWORD` 为一个新的强密码。
+3. 使用 SQLite 工具打开 `backend/data.db`，编辑 `kv_store` 表中 `key='users'` 行的 `value`（JSON 数组），删除 `username` 为 `superadmin`（或 `DEFAULT_ADMIN_USERNAME` 配置的用户名）的那个对象，保存。
+   > 也可以不删除用户，直接把该对象的 `password` 字段替换为新的 bcrypt 哈希（cost 10），此时无需第 2 步。
+4. 重启后端：检测到该用户名不存在时，会按 `DEFAULT_ADMIN_PASSWORD` 重新创建超级管理员。
+5. 登录后立即在系统中再次修改密码。
+
 ### 后端崩溃：ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
 
 现象：经 Vite 代理（或 nginx）访问登录接口后，后端进程直接退出，错误日志为
@@ -487,9 +523,20 @@ copy backend\data.db backups\db-before-upgrade-20260705.db
 原因：代理转发的请求带 `X-Forwarded-For` 头，express-rate-limit v8 在未开启
 `trust proxy` 时会校验失败并抛异常（该异常会击穿进程）。
 
-修复：`backend/server.js` 已设置 `app.set('trust proxy', 1)`（信任第一跳代理）。
-**自行升级/替换 server.js 时必须保留这一行**，否则该崩溃会复现。多层代理（如
-nginx 前面还有一层网关）时把 `1` 调整为实际跳数。
+修复：`backend/server.js` 已设置 `app.set('trust proxy', 'loopback')`——只信任来自
+本机环回地址（`127.0.0.1` / `::1`）的转发请求。Vite 开发代理、同机部署的
+nginx/IIS 反代均工作正常，真实客户端 IP 经 `X-Forwarded-For` 透传（取最右一个环回
+左侧的地址），登录日志、操作日志与限流均以此 IP 为准。
+
+**自行升级/替换 server.js 时必须保留这一行**，否则该崩溃会复现。
+
+> 安全提示：不要把 `'loopback'` 改回 `1`。`1` 表示无条件信任「第一跳」，当外部用户
+> 可以绕过代理直连后端端口时，其伪造的 `X-Forwarded-For` 头会被直接采信，导致登录
+> 日志污染与限流失效（实际日志中曾观察到伪造的 `10.0.0.x` 来源地址）。只有当反向代理
+> 与后端**不在同一台机器**（代理来源 IP 不是环回地址）时，才需要把该值改为代理所在的
+> 具体 IP（如 `'192.168.1.5'`）或实际跳数，同时应配合防火墙确保后端端口不被
+> 客户端直接访问。应用层代码（登录/操作日志取 IP）也只使用 `req.ip`，不直接读取
+> `X-Forwarded-For` / `X-Real-IP` 请求头。
 
 ### 端口被占用
 
@@ -597,7 +644,7 @@ SQLite 采用 WAL 模式和事务写入，正常情况下不会因进程崩溃�
 - `26-07-04` > `26-07-03` → 提示更新
 - `26-07-03` < `26-07-04-V2` → 不提示更新（旧版本）
 
-版本检查接口：
+版本检查接口（需登录后携带 Token 调用，匿名返回 `401`）：
 
 ```text
 GET /api/system/version
@@ -814,4 +861,4 @@ backend/
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-09-25
+最后更新：2026-09-26

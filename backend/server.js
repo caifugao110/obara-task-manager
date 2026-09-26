@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 
@@ -12,22 +13,23 @@ const { socketAuthMiddleware, requireSocketAuth } = require('./middleware/socket
 
 const app = express();
 
-// 信任第一跳代理（本地 Vite 开发代理 / 生产 nginx）。
+// 只信任回环代理（本机 Vite 开发代理 / 同机 nginx）。
 // 必需：经代理转发的请求带 X-Forwarded-For 头，express-rate-limit v8 在
-// trust proxy 未开启时会抛 ERR_ERL_UNEXPECTED_X_FORWARDED_FOR 并使进程崩溃；
-// 开启后 req.ip 取真实客户端 IP，登录限流按用户而非按代理地址计数。
-app.set('trust proxy', 1);
+// trust proxy 未开启时会抛 ERR_ERL_UNEXPECTED_X_FORWARDED_FOR 并使进程崩溃。
+// 为何用 'loopback' 而非跳数：已确认生产环境用户直连后端（0 跳），
+// 若设为 1，直连客户端伪造的 X-Forwarded-For 会被采信——日志 IP 可伪造、
+// 限流可绕过（登录日志中已发现 10.0.0.1-5 连号伪造痕迹）。
+// 'loopback' 下仅 127.0.0.1/::1 代理的 XFF 被采信，外部直连一律以 socket 地址为准。
+app.set('trust proxy', 'loopback');
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: securityConfig.cors.origin,
     methods: securityConfig.cors.methods,
     credentials: securityConfig.cors.credentials
-  },
-  // 启用连接认证
-  auth: {
-    required: true
   }
+  // 注：socket.io Server 选项中没有 auth 字段（此前配置为无效死配置）。
+  // 连接认证由下方 io.use(socketAuthMiddleware) 实现。
 });
 
 // 应用 Socket.IO 认证中间件
@@ -51,6 +53,25 @@ app.use(cors({
   credentials: securityConfig.cors.credentials
 }));
 app.use(bodyParser.json());
+
+// 全局限流：覆盖所有 /api 接口，防暴力探测与滥用。
+// 登录（20 次/15 分钟）与改密码（5 次/15 分钟）另有更严格的独立限流，先生效。
+// 默认 3000 次/15 分钟/IP：按 300+ 人内网规模设计，活跃编辑峰值约 1-2 次/秒，
+// 且兼容多人经同一代理出口（按出口 IP 合并计数）的场景；
+// 可用 API_RATE_LIMIT_MAX 调整；OPTIONS 预检与本机回环（stop.bat 等运维脚本）不计数。
+const isLoopback = (ip) => {
+  const normalized = String(ip || '').replace(/^::ffff:/, '');
+  return normalized === '127.0.0.1' || normalized === '::1';
+};
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.API_RATE_LIMIT_MAX) || 3000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS' || isLoopback(req.socket.remoteAddress),
+  message: { message: '请求过于频繁，请稍后再试' }
+});
+app.use('/api', apiLimiter);
 
 // Database logic (Simple JSON storage)
 const db = require('./db');

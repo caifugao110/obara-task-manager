@@ -69,14 +69,14 @@ start.bat
 - 后端：http://localhost:5000
 
 > `start.bat` 强制要求 Node.js 22+（better-sqlite3 13、joi 18、pdf-parse 2.4 在更低版本上无法运行），版本过低时会直接报错退出。
-> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。
+> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。未设置 `DEFAULT_ADMIN_PASSWORD` 时，首次启动会自动生成随机密码并**仅在后端控制台输出一次**（`start.bat` 隐藏窗口运行时输出在 `logs/backend.log`，丢失后可按 [DEPLOYMENT.md](DEPLOYMENT.md) 的「忘记超级管理员密码」FAQ 处理），请立即记录并登录修改（该账号同时被标记为需强制修改密码）。
 
 ### 首次部署检查清单
 
 1. 安装 Node.js 22+（推荐 22 LTS）、npm 10+ 和 Git。
 2. 执行 `npm run install:all` 安装根目录、后端和前端依赖。
 3. 复制 `backend/.env.example` 为 `backend/.env`，必须修改 `JWT_SECRET`（缺失将导致服务无法启动），并配置 `CORS_ORIGIN`。
-4. 可选：配置 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 设置默认管理员账号（首次启动时自动创建）。
+4. 可选：配置 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 设置默认管理员账号（首次启动时自动创建；不设置密码时会生成随机密码，仅在控制台显示一次）。
 5. 使用 `start.bat` 或 `npm run dev` 启动，确认前端 http://localhost:5173 和后端 http://localhost:5000 可访问。
 6. 登录后进入系统设置，确认未登录查看、多设备登录、页面权限和数据导出功能符合部署要求。
 
@@ -187,7 +187,7 @@ npm run dev
 - “批量添加设计人员”支持从外部表格复制粘贴导入，并提供模板。
 - 设计人员导入列：`name,group`。
 - “登录用户列表”用于维护登录账号。
-- 非超级管理员账号为空时，超级管理员可一键初始化默认登录用户。
+- 非超级管理员账号为空时，超级管理员可一键初始化默认登录用户。初始化时由浏览器加密随机数为每个账号生成 12 位随机初始密码，结果弹窗**仅展示一次**（支持一键复制分发），各账号首次登录后强制修改密码。
 - 支持勾选多个登录用户后批量删除，不能批量删除超级管理员或当前登录账号。
 - “批量添加登录用户”支持从外部表格复制粘贴导入，并提供模板。
 - 登录用户导入列：`username,password,name,role`，不需要“分组”列。
@@ -464,13 +464,14 @@ node --check backend\routes\tasks.js
 | `PORT` | `5000` | 后端服务端口 |
 | `NODE_ENV` | `development` | 运行环境（`development` / `production`） |
 | `JWT_SECRET` | **必填** | JWT 签名密钥，生产环境必须修改为随机字符串 |
-| `JWT_EXPIRES_IN` | `7d` | JWT 过期时间 |
+| `JWT_EXPIRES_IN` | `3d` | JWT 过期时间（默认 3 天；配合服务端会话吊销，登出/改密/禁用即时失效） |
 | `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
 | `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（仅首次启动且无超管时生效） |
-| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码，生产环境必须立即修改 |
-| `RATE_LIMIT_WINDOW_MS` | `900000`（15 分钟） | 限流时间窗口配置（当前登录/改密限流器阈值为硬编码，未读取此变量） |
-| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置（同上，当前未被限流器使用） |
+| `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在控制台输出一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时生产环境必须使用强密码并立即修改 |
+| `RATE_LIMIT_WINDOW_MS` | `900000`（15 分钟） | 限流时间窗口配置（登录/改密独立限流器的阈值目前为代码内硬编码，未读取此变量） |
+| `RATE_LIMIT_MAX` | `20` | 限流最大次数配置（同上，当前未被独立限流器使用） |
+| `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流阈值：每个 IP 15 分钟内最大请求数，覆盖所有 `/api` 接口；`OPTIONS` 预检与本机环回请求不计数，超限返回 `429` |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录 |
@@ -478,12 +479,13 @@ node --check backend\routes\tasks.js
 | `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
 | `GITEE_REPO_OWNER` | `caifugao110` | Gitee 仓库所有者 |
 | `GITEE_REPO_NAME` | `obara-task-manager` | Gitee 仓库名称 |
-| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
+| `LOG_LEVEL` | `info` | 日志级别（预留变量：当前版本代码未读取，设置后不生效；日志输出到控制台与 `logs/` 下日志文件） |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
 | `WEKNORA_API_KEY` | 空 | 主工作空间 API Key，仅服务端使用 |
 | `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
+| `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
 
 > 修改 `.env` 后必须重启后端服务才能生效。
 
@@ -521,9 +523,10 @@ node --check backend\routes\tasks.js
 
 系统支持首次登录强制修改密码机制：
 
-- 超级管理员创建的普通用户、一般管理员创建的普通用户首次登录时必须修改密码。
+- 新建登录用户首次登录时必须修改密码（首次启动自动创建的超级管理员同样如此）。
 - 超级管理员重置任意用户密码后，该用户下次登录需修改密码。
 - 已存在的非超级管理员账号在系统升级后会自动标记为需要修改密码。
+- **API 层强制拦截**：`forcePasswordChange` 标记未清除前，除「修改密码」和「退出登录」外的所有 API 调用一律返回 `403`（`code=FORCE_PASSWORD_CHANGE`），防止绕过前端页面直接调用接口。
 - 修改密码页面为 `/change-password`，未提示修改密码时访问会自动跳转回主页。
 
 ## 操作日志
@@ -537,7 +540,7 @@ node --check backend\routes\tasks.js
 - 操作日志最多保留 2000 条，超过自动清理最旧记录。
 - 仅超级管理员可在「操作日志」页面查看，支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
 - 筛选下拉框中的操作类型按拼音排序。
-- 系统设置和操作日志相关接口本身不会被记录到操作日志中。
+- 仅登录日志查询（`/api/system/login-logs*`）与操作日志查询/导出（`/api/system/audit-logs*`）接口本身不记录操作日志，避免日志自我膨胀；系统设置变更、维护操作等其他接口（如 `PUT /api/system/settings`）均正常记录。
 
 ## 安全配置
 
@@ -545,10 +548,16 @@ node --check backend\routes\tasks.js
 
 ### 安全增强特性
 
-- **JWT_SECRET 强制校验**：服务启动时强制校验 `JWT_SECRET` 配置，缺失则直接终止启动并输出错误提示。
-- **请求体敏感信息脱敏**：操作日志记录时自动对 `password`、`oldPassword`、`newPassword` 字段进行脱敏处理（显示为 `[REDACTED]`）。
+- **JWT_SECRET 强制校验**：服务启动时强制校验 `JWT_SECRET` 配置，缺失则直接终止启动并输出错误提示。JWT 默认有效期 3 天（`JWT_EXPIRES_IN`），配合服务端会话吊销机制，登出/改密/禁用后旧令牌立即失效。
+- **全局 API 限流**：所有 `/api` 接口共享每 IP 15 分钟 3000 次的全局限流（可用 `API_RATE_LIMIT_MAX` 调整，`OPTIONS` 预检与本机环回请求不计数）；登录接口另有 15 分钟 20 次的独立限流（按「IP + 用户名」计数），修改密码接口另有 15 分钟 5 次的独立限流（按「用户 ID」计数），兼容内网多人共用同一代理出口的场景。超限统一返回 `429`。
+- **请求体敏感信息脱敏**：操作日志记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`。
+- **真实 IP 防伪造**：`trust proxy` 设为 `loopback`，仅信任本机回环代理转发的 `X-Forwarded-For`；外部直连请求伪造的 XFF 不会被采信，登录/操作日志的 IP 与限流计数均以 `req.ip`（Socket 对端地址）为准。
+- **收敛 CSP 响应头**：后端启用 Helmet 内容安全策略（资源仅限同源加载、禁用插件、禁止页面被嵌入框架），作为纵深防御；CORS 为通配符时自动不启用 credentials。
+- **强制改密 API 拦截**：未修改初始密码的用户除「修改密码」「退出登录」外的所有 API 调用一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。
 - **路径遍历攻击防护**：仕样书 PDF 路径参数进行严格校验，禁止 `..`、`/`、`\`、`:` 等特殊字符，同时检测 URL 编码（如 `%2e%2e`）和 Unicode 编码（如全角句号 `．．`）等绕过手段，确保只能访问允许的共享目录。
 - **密码修改安全**：修改密码接口添加限流（15 分钟内最多 5 次尝试）和参数校验，修改成功后返回新的 JWT Token 并更新 sessionId，使旧 Token 失效。
+- **登录失败全量留痕**：登录成功与失败（含用户不存在、密码错误、账号禁用，失败原因记录在 `reason` 字段）均写登录日志，且「用户不存在」与「密码错误」返回相同文案，避免用户枚举。
+- **Excel 依赖本地化**：Excel 解析使用随仓库分发的 SheetJS `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，以 `file:` 协议安装），修复旧版 0.18.5 的原型污染（CVE-2023-30533）与正则拒绝服务（CVE-2024-22363）漏洞，且内网安装无需再从 npm 拉取该包。
 - **Socket.IO 认证**：WebSocket 连接建立时强制验证 JWT Token，支持从 `socket.handshake.auth.token` 或 `Authorization` 请求头获取令牌，验证失败则拒绝连接。同时支持单设备登录限制，当 `allowMultiDevice=false` 时，已登录用户在其他设备登录会使旧连接失效。
 
 详细的环境变量配置、版本检查机制和安全加固建议，请参考 [Windows 部署指南](DEPLOYMENT.md)。
@@ -588,17 +597,19 @@ obara-task-manager/
 │   │   └── spec-pdf/
 │   ├── tests/
 │   │   └── pdf/
-│   └── utils/
-│       ├── auditLogDisplay.js
-│       ├── dbMaintenance.js
-│       ├── exportWorkbook.js
-│       ├── fileUploadSecurity.js
-│       ├── gunLedgerExport.js
-│       ├── gunTableLocks.js
-│       ├── simpleZip.js
-│       ├── taskExportWorkbook.js
-│       ├── weknora.js
-│       └── workday.js
+│   ├── utils/
+│   │   ├── auditLogDisplay.js
+│   │   ├── dbMaintenance.js
+│   │   ├── exportWorkbook.js
+│   │   ├── fileUploadSecurity.js
+│   │   ├── gunLedgerExport.js
+│   │   ├── gunTableLocks.js
+│   │   ├── simpleZip.js
+│   │   ├── taskExportWorkbook.js
+│   │   ├── weknora.js
+│   │   └── workday.js
+│   └── vendor/                    # 本地 vendor 依赖（随仓库分发，离线可装）
+│       └── xlsx-0.20.3.tgz        # SheetJS xlsx 0.20.3（file: 协议安装，修复 0.18.5 安全漏洞）
 ├── control/                      # .NET Framework 4.8 服务控制台（WinForms EXE）
 │   ├── .gitignore                # 控制台子项目的忽略规则
 │   ├── App.config
@@ -683,6 +694,7 @@ obara-task-manager/
 │   ├── start.bat
 │   └── start.sh
 ├── .gitignore
+├── .npmrc                       # ignore-scripts=true：跳过 install 脚本，免安装 VS C++ 生成工具
 ├── DEPLOYMENT.md
 ├── LICENSE
 ├── README.md
@@ -915,4 +927,4 @@ MIT License
 
 ---
 
-最后更新：2026-09-25
+最后更新：2026-09-26

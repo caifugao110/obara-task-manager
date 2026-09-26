@@ -52,7 +52,10 @@ echo Startup complete
 echo ===============================================
 echo Frontend: http://localhost:%FRONTEND_PORT%
 echo Backend:  http://localhost:%BACKEND_PORT%
-echo Default admin:superadmin / admin123
+echo Default admin user: superadmin (override with DEFAULT_ADMIN_USERNAME)
+echo First-start password is random and printed ONCE in the backend console.
+echo In hidden mode search %LOG_DIR%\backend.log for the "[INIT]" lines.
+echo (Set DEFAULT_ADMIN_PASSWORD in backend\.env to define it yourself.)
 echo Logs: %LOG_DIR%
 echo.
 echo Note: Database auto-migrates from JSON to SQLite on first start if needed.

@@ -1531,7 +1531,8 @@ const compareVersions = (v1, v2) => {
   return p1.versionNum - p2.versionNum;
 };
 
-router.get('/version', asyncHandler(async (req, res) => {
+// 版本信息需登录后查看，避免匿名探测部署版本与更新渠道
+router.get('/version', authMiddleware, asyncHandler(async (req, res) => {
   try {
     let hasUpdate = false;
     let latestVersion = null;

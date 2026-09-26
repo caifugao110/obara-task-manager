@@ -136,6 +136,7 @@ docker compose pull && docker compose up -d   # 升级到 WEKNORA_VERSION 指定
 - **管理知识库与文档**：在 WeKnora 控制台（http://localhost/platform/knowledge-bases）创建知识库、上传/删除文档。本系统页面不再提供建库与文档上传/删除功能。
 - **关联知识库到本系统**：在 WeKnora 控制台创建好知识库后，复制其知识库 ID，到本系统「设计规范知识库 → 知识库管理」页面（需要一般管理员及以上）点击「关联知识库」并粘贴 ID 即可。取消关联仅移除本系统的关联记录，不会删除 WeKnora 中的知识库。
 - **接入多个工作空间（多租户）**：WeKnora 的 API Key 按工作空间隔离，一个 Key 只能访问其所属空间的知识库。需要接入其他空间时，分别登录各空间在 API Key 管理中创建 Key，主空间 Key 已由 `setup.js` 写入 `WEKNORA_API_KEY`，其余 Key 用英文逗号分隔填入 `backend/.env` 的 `WEKNORA_EXTRA_API_KEYS`，再重启本系统后端。状态接口的 `tenants` 字段可确认每个 Key 的空间身份与可达性。
+- **无需配置 `WEKNORA_KNOWLEDGE_BASE_IDS`**：检索与问答始终使用页面上显式关联/勾选的知识库 ID（请求体未传知识库 ID 时后端直接返回 `400`）；`backend/.env` 中的 `WEKNORA_KNOWLEDGE_BASE_IDS` 仅是早期版本遗留的兜底变量，当前流程不读取它，新增知识库只需在页面「关联知识库」即可。
 - **答复约束提示词**：由本系统超管在「设计规范知识库」页面底部的「答复约束提示词」面板中按知识库配置（支持整篇 Markdown，最长 20000 字符）；后端据此自动在知识库所属工作空间创建/更新受管自定义智能体，清空提示词则自动删除智能体。配置前提是该空间已有可用的 KnowledgeQA 问答模型。
 
 ## 7. 从旧部署（E:\My Trae\WeKnora）迁移

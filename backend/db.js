@@ -380,6 +380,11 @@ const applySettingsDefaults = (parsed) => {
   if (!parsed.settings.system) {
     parsed.settings.system = { allowGuestView: false, allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
   }
+  // 存量环境的 system 对象可能缺 allowGuestView 键：回填默认 false（fail-closed），
+  // 与 guestViewMiddleware 的兜底方向保持一致，防止未登录访客被静默放行
+  if (typeof parsed.settings.system.allowGuestView !== 'boolean') {
+    parsed.settings.system.allowGuestView = false;
+  }
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserDesignPlanColorMark');
   const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(parsed.settings.system, 'allowUserEditOwnTaskColor');
   const allowOwnDesignPlanColor = hasDesignPlanColorMark || hasEditOwnTaskColor

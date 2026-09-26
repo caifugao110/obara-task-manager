@@ -26,6 +26,7 @@ import {
   Calendar
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { axiosInstance } from '../services/api';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 
 interface StatusItem {
@@ -306,7 +307,8 @@ const StatusTracking = () => {
 
   const fetchSettings = useCallback(async () => {
     try {
-      const res = await axios.get('/api/settings/status-tracking');
+      // 走 axiosInstance 自动携带 Authorization，访客视图关闭时裸请求会被 guestViewMiddleware 拦为 401
+      const res = await axiosInstance.get('/settings/status-tracking');
       setSettings(res.data);
     } catch (err) {
       console.error('Error fetching status tracking settings:', err);
@@ -346,7 +348,7 @@ const StatusTracking = () => {
 
   const fetchLeaderRules = useCallback(async () => {
     try {
-      const res = await axios.get('/api/settings/leader-rules');
+      const res = await axiosInstance.get('/settings/leader-rules');
       setLeaderRules(res.data);
     } catch (err) {
       console.error('Error fetching leader rules:', err);

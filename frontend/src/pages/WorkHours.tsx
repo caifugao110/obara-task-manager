@@ -16,6 +16,7 @@ import {
   Users
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { axiosInstance } from '../services/api';
 import { getEffectiveIsWeekend, normalizeWorkdayOverrides, WorkdayOverrides } from '../utils/workdayOverrides';
 
 interface DesignerData {
@@ -98,7 +99,8 @@ const WorkHours = () => {
 
   const fetchSettings = useCallback(async () => {
     try {
-      const res = await axios.get('/api/settings/work-hours');
+      // 走 axiosInstance 自动携带 Authorization，访客视图关闭时裸请求会被 guestViewMiddleware 拦为 401
+      const res = await axiosInstance.get('/settings/work-hours');
       setSettings(res.data);
     } catch (err) {
       console.error('Error fetching work hours settings:', err);
@@ -110,7 +112,7 @@ const WorkHours = () => {
 
   const fetchWorkdayOverrides = useCallback(async (showError = true): Promise<WorkdayOverrides> => {
     try {
-      const res = await axios.get('/api/settings/workday-overrides');
+      const res = await axiosInstance.get('/settings/workday-overrides');
       const normalized = normalizeWorkdayOverrides(res.data);
       workdayOverridesRef.current = normalized;
       return normalized;

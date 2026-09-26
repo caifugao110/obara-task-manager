@@ -68,7 +68,12 @@ axiosInstance.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      window.location.href = buildLoginUrl();
+      // 已在登录页/改密页时不再跳转，否则会以当前 URL 为回跳目标造成重定向死循环
+      const { pathname } = window.location;
+      const onAuthPage = pathname.endsWith('/login') || pathname.endsWith('/change-password');
+      if (!onAuthPage) {
+        window.location.href = buildLoginUrl();
+      }
     }
     
     return Promise.reject(error);

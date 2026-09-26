@@ -20,6 +20,7 @@ Authorization: Bearer <token>
 - 请求体默认使用 `application/json`；文件导入接口使用 `multipart/form-data`。
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
+- 全部 `/api` 接口启用全局限流：默认每个 IP 15 分钟 3000 次（`OPTIONS` 预检与本机环回请求不计数，可用环境变量 `API_RATE_LIMIT_MAX` 调整），超限返回 HTTP `429`；登录、修改密码另有更严格的独立限流。
 - 本文中的“管理员”指 `admin` 或 `superadmin`；“仅超级管理员”只允许 `superadmin`。
 - 后端只提供 `/api/*` 接口和 Socket.IO 服务，**不托管前端静态文件**（未挂载 `express.static`），也没有 `/health` 健康检查接口；生产环境前端需独立部署（前端构建基础路径为 `/obara-task-manager/`）。
 
@@ -97,11 +98,13 @@ Authorization: Bearer <token>
 
 说明：
 
-- 登录成功和失败都会记录登录日志，日志包含 IP、原始 `User-Agent` 和解析后的浏览器信息。
+- 登录成功和失败都会记录登录日志，日志包含 IP、原始 `User-Agent` 和解析后的浏览器信息；失败记录含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`），即使用户名不存在也会记录该次尝试。
+- 用户不存在与密码错误均返回相同的 `401` 响应 `用户名或密码错误`，避免通过响应差异枚举有效用户名。
 - 账号禁用时返回 `403` 和 `ACCOUNT_DISABLED`。
 - 关闭多设备登录时，新登录会使旧会话失效。
 - `forcePasswordChange=true` 时前端需引导用户到 `/change-password` 修改密码。
-- 登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
+- **未修改初始密码期间的 API 拦截**：`forcePasswordChange` 标记未清除前，除 `POST /api/auth/change-password` 和 `POST /api/auth/logout` 外的所有已登录接口一律返回 `403`（`code=FORCE_PASSWORD_CHANGE`）。
+- 登录接口受独立速率限制（按「IP + 用户名」计数，15 分钟内最多 20 次尝试），超限返回 HTTP `429` 与消息 `登录尝试过于频繁，请15分钟后再试`；此外还受全局 API 限流（默认每 IP 15 分钟 3000 次）约束。
 
 ### 校验当前会话
 
@@ -163,7 +166,7 @@ Authorization: Bearer <token>
 - 修改成功后返回新的 JWT Token，前端应使用新 Token 更新本地存储。
 - 修改密码后会更新 sessionId，使旧 Token 失效（防止会话固定攻击）。
 - 旧密码不正确时返回 `401`。
-- 接口受速率限制（15 分钟内最多 5 次尝试），超限返回 `密码修改尝试过于频繁，请15分钟后再试`。
+- 接口受独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次尝试），超限返回 HTTP `429` 与消息 `密码修改尝试过于频繁，请15分钟后再试`。
 - 超级管理员重置用户密码后，该用户 `forcePasswordChange` 会被设置为 `true`，下次登录需修改密码。
 
 ### 登出
@@ -292,7 +295,7 @@ Authorization: Bearer <token>
 说明：
 
 - 修改 `password` 时会同时将 `forcePasswordChange` 设置为 `true`，该用户下次登录需修改密码。
-- 仅 `superadmin` 可修改 `role`。
+- 仅 `superadmin` 可修改 `role` 和 `disabled`（禁用/启用账号与角色变更同级，一般管理员无法操作）。
 - `admin` 只能更新自己的信息。
 
 ### 批量删除登录用户
@@ -1977,6 +1980,7 @@ PUT 请求：
 
 说明：
 
+- `allowGuestView` 控制未登录游客是否可查看主页面，新环境默认 `false`（未登录查看默认关闭）；从旧版本升级的环境保留存量值。
 - `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划标记颜色。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
@@ -2007,7 +2011,7 @@ PUT 请求：
 
 `GET /api/system/version`
 
-无需认证。
+需要认证（登录后携带有效 JWT Token；匿名访问返回 `401`，以避免未授权者探测部署版本与更新渠道）。
 
 通过 Gitee API 获取远程仓库最新提交信息，检查是否有更新。
 
@@ -2101,8 +2105,9 @@ PUT 请求：
 
 说明：
 
-- 返回所有登录用户的登录记录。
+- 返回所有登录用户的登录记录（含登录失败记录，账号不存在的尝试也会以提交的用户名记录）。
 - 按时间倒序。
+- `success: false` 的记录含 `reason` 字段，取值：`用户不存在`、`密码错误`、`账号已禁用`；成功记录无该字段。
 
 响应示例：
 
@@ -2125,6 +2130,22 @@ PUT 请求：
     "success": true,
     "action": "login",
     "timestamp": "2026-07-01T00:00:00.000Z"
+  },
+  {
+    "id": "log-id-2",
+    "username": "unknown001",
+    "ip": "::1",
+    "userAgent": "Mozilla/5.0 ...",
+    "browserInfo": {
+      "browser": "Chrome",
+      "os": "Windows",
+      "device": "Desktop",
+      "summary": "Chrome / Windows / Desktop"
+    },
+    "success": false,
+    "reason": "用户不存在",
+    "action": "login",
+    "timestamp": "2026-07-01T00:05:00.000Z"
   }
 ]
 ```
@@ -2302,8 +2323,11 @@ PUT 请求：
 说明：
 
 - 操作日志最多保留 2000 条。
-- `/api/system/login-logs` 和 `/api/system/audit-logs` 相关接口本身不会被记录。
+- 仅记录已登录用户的请求（匿名请求不记）；登录成功的请求会从登录响应中补取用户信息后记录。
+- `GET /api/system/login-logs*` 与 `/api/system/audit-logs*`（含查询、筛选选项、导出）本身不记录，避免日志自我膨胀；系统设置变更、维护等其他接口（如 `PUT /api/system/settings`）均正常记录。
 - GET 请求不记录响应消息，POST/PUT 请求记录请求体（最大 2000 字符）。
+- 请求体在入库前递归脱敏：嵌套对象与数组中的字段名只要匹配 `password`、`passwd`、`secret`、`token`、`api_key`/`apikey`、`authorization`（不区分大小写），值一律替换为 `[REDACTED]`。
+- IP 取 `req.ip`（`trust proxy='loopback'`），不直接采信客户端发送的 `X-Forwarded-For` / `X-Real-IP`。
 - `browserInfo` 包含浏览器名称和版本号、操作系统和版本号、设备类型，`summary` 为拼接后的简要描述。
 
 ### 获取操作日志筛选选项
@@ -2745,7 +2769,7 @@ PUT 请求：
 
 `POST /api/system/maintenance/offline-backup`
 
-权限：本机环回地址（`127.0.0.1`/`::1`，供 stop.bat 等本地运维脚本匿名调用）；非环回请求须为已登录的 `superadmin`
+权限：本机环回地址（`127.0.0.1`/`::1`/IPv4 映射地址 `::ffff:127.0.0.1`，供 stop.bat 等本地运维脚本匿名调用）；非环回请求须为已登录的 `superadmin`。环回判断使用 Socket 对端地址（`req.socket.remoteAddress`），`trust proxy` 下伪造 `X-Forwarded-For` 无法绕过。
 
 说明：
 
@@ -3244,6 +3268,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | 错误码 | HTTP | 说明 |
 |--------|------|------|
 | `ACCOUNT_DISABLED` | 403 | 账号已禁用 |
+| `FORCE_PASSWORD_CHANGE` | 403 | 未修改初始密码，除「修改密码」「退出登录」外的接口一律被拦截 |
 | `SESSION_INVALIDATED` | 401 | 会话在其他设备登录后失效 |
 | `GUEST_VIEW_DISABLED` | 401 | 未登录查看已关闭，需先登录 |
 | `USER_NOT_FOUND` | 401 | 校验会话时用户不存在（`GET /api/auth/validate`） |
@@ -3260,12 +3285,14 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | 401 | `No token, authorization denied` / `Token is not valid` / `用户名或密码错误` | 未认证、Token 无效或登录凭证错误 |
 | 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` | 权限不足（超管接口/管理员接口/页面权限开关未放行） |
 | 404 | `用户不存在` / `任务条目不存在` / `记录未找到` / `没有可导出的数据` 等 | 资源不存在 |
+| 429 | `请求过于频繁，请稍后再试` / `登录尝试过于频繁，请15分钟后再试` / `密码修改尝试过于频繁，请15分钟后再试` | 触发全局 API 限流、登录限流或修改密码限流 |
 | 500 | `服务器内部错误` | 服务端错误 |
 
 注意：
 
-- 登录接口受速率限制（15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
-- 修改密码接口受速率限制（15 分钟内最多 5 次尝试），超限返回 `密码修改尝试过于频繁，请15分钟后再试`。
+- 登录接口受独立速率限制（按「IP + 用户名」计数，15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
+- 修改密码接口受独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次尝试），超限返回 `密码修改尝试过于频繁，请15分钟后再试`。
+- 全部 `/api` 接口还受全局限流保护（按 IP 计数，默认每 15 分钟 3000 次，可用 `API_RATE_LIMIT_MAX` 调整），超限返回 HTTP `429` 与消息 `请求过于频繁，请稍后再试`；`OPTIONS` 预检与本机环回请求不计数。
 - 登录请求体校验：`username` 为 3-30 位字母数字，`password` 至少 6 位。
 
 ## 数据库迁移说明
@@ -3286,16 +3313,19 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 ## 安全特性
 
-1. **JWT 认证**：使用 JWT Token 进行身份验证，过期时间为 7 天（可通过 `JWT_EXPIRES_IN` 配置）
+1. **JWT 认证**：使用 JWT Token 进行身份验证，默认过期时间为 3 天（可通过 `JWT_EXPIRES_IN` 配置）；配合服务端会话吊销，登出、改密、账号禁用后旧 Token 立即失效
 2. **密码加密**：使用 bcrypt 对密码进行哈希加密
-3. **登录限流**：登录接口 15 分钟内最多 20 次尝试，修改密码接口 15 分钟内最多 5 次尝试（阈值在 `backend/routes/auth.js` 中硬编码）
-4. **请求验证**：使用 Joi 进行请求参数验证
-5. **安全头**：使用 Helmet 设置安全相关的 HTTP 头
-6. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置）
-7. **账号禁用**：支持禁用账号，禁用后无法登录
-8. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
-9. **强制修改密码**：新建用户或被重置密码后，下次登录需修改密码
-10. **操作审计**：自动记录所有已登录用户的 API 请求，最多保留 2000 条
+3. **多层限流**：全局 API 限流按 IP 计数（15 分钟 3000 次，可通过 `API_RATE_LIMIT_MAX` 调整，`OPTIONS` 预检与本机环回不计）；登录接口按「IP + 用户名」15 分钟最多 20 次尝试；修改密码接口按「用户 ID」15 分钟最多 5 次尝试（后两项阈值在 `backend/routes/auth.js` 中硬编码），超限返回 HTTP `429`
+4. **真实 IP 防伪造**：`trust proxy` 为 `loopback`，仅信任本机回环代理转发的 `X-Forwarded-For`；日志与限流使用 `req.ip`，不直接读取 `X-Forwarded-For` / `X-Real-IP`
+5. **请求验证**：使用 Joi 进行请求参数验证
+6. **安全头**：使用 Helmet 设置安全相关的 HTTP 头（含收敛 CSP：资源仅限同源、禁用插件、禁止页面被嵌入框架）
+7. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置；通配符模式下自动不启用 credentials）
+8. **账号禁用**：支持禁用账号，禁用后无法登录
+9. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
+10. **强制修改密码**：新建用户或被重置密码后，下次登录需修改密码；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）
+11. **操作审计**：自动记录所有已登录用户的 API 请求，最多保留 2000 条；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
+12. **登录失败全量留痕与防枚举**：登录成功与失败均写登录日志，失败日志含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`）；对客户端统一返回 `用户名或密码错误`，不暴露用户名是否存在
+13. **Excel 依赖本地化**：Excel 解析使用随仓库分发的 `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，`file:` 协议安装），修复旧版 0.18.5 的 CVE-2023-30533 与 CVE-2024-22363
 
 ## 环境变量配置
 
@@ -3306,26 +3336,28 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `PORT` | `5000` | 后端服务端口 |
 | `NODE_ENV` | `development` | 运行环境（`development` / `production`） |
 | `JWT_SECRET` | **必填** | JWT 签名密钥，缺失将导致服务无法启动，生产环境必须修改为随机字符串 |
-| `JWT_EXPIRES_IN` | `7d` | JWT Token 过期时间 |
+| `JWT_EXPIRES_IN` | `3d` | JWT Token 过期时间（默认 3 天；会话吊销独立于有效期生效） |
 | `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
 | `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
-| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源 |
+| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源且不启用 CORS credentials |
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口时间（毫秒），仅在 `security.js` 配置中定义；当前登录/改密限流器使用硬编码阈值，未读取此变量 |
-| `RATE_LIMIT_MAX` | `20` | 限流最大次数，同上，当前未被限流器使用 |
+| `RATE_LIMIT_MAX` | `20` | 限流最大次数，同上，当前未被独立限流器使用 |
+| `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流：每个 IP 15 分钟最大请求数，覆盖全部 `/api` 接口；`OPTIONS` 预检与本机环回不计数，超限返回 `429` |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
-| `DEFAULT_ADMIN_PASSWORD` | `admin123` | 默认管理员密码（首次启动后应立即修改！） |
+| `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在后端控制台显示一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时首次启动后应立即修改 |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
-| `LOG_LEVEL` | `info` | 日志级别（可选：`error`/`warn`/`info`/`debug`） |
+| `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
 | `WEKNORA_API_KEY` | 空 | 主工作空间 API Key，仅服务端使用 |
 | `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
+| `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
 
 ### CORS 配置示例
 
@@ -3363,8 +3395,9 @@ GITEE_REPO_NAME=obara-task-manager
 |------|------|
 | `jwt.issuer` | JWT 签发者，默认 `obara-task-manager` |
 | `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
+| `rateLimit.windowMs` / `rateLimit.max` | 配置块仍保留，但当前三层限流器均未读取这两个值：全局限流阈值取环境变量 `API_RATE_LIMIT_MAX`（默认 3000），窗口固定 15 分钟；登录/改密独立限流阈值在 `backend/routes/auth.js` 内硬编码 |
 | `database.legacyJsonPath` | 遗留 JSON 数据库路径（`DB_PATH`，默认 `./db.json`），仅首次启动迁移时使用 |
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-09-25
+最后更新：2026-09-26
