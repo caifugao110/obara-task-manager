@@ -236,7 +236,11 @@ const Admin = () => {
   const [selectedDesignerIds, setSelectedDesignerIds] = useState<string[]>([]);
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [initializingDesigners, setInitializingDesigners] = useState(false);
+  const [confirmInitDesigners, setConfirmInitDesigners] = useState(false);
+  // 删除确认弹窗（登录用户/设计人员共用，单个与批量通用，记录类型与待删除 id 列表）
+  const [batchDeleteConfirm, setBatchDeleteConfirm] = useState<{ kind: 'users' | 'designers'; ids: string[] } | null>(null);
   const [initializingUsers, setInitializingUsers] = useState(false);
+  const [confirmInitUsers, setConfirmInitUsers] = useState(false);
   const [designersCollapsed, setDesignersCollapsed] = useState(true);
   const [usersCollapsed, setUsersCollapsed] = useState(true);
 
@@ -472,10 +476,12 @@ const Admin = () => {
     }
   };
 
-  const handleInitializeDesigners = async () => {
+  const handleInitializeDesigners = () => {
     if (!canInitializeDesigners) return;
-    if (!window.confirm(`确定要初始化 ${initialDesigners.length} 位设计人员吗？`)) return;
+    setConfirmInitDesigners(true);
+  };
 
+  const runInitializeDesigners = async () => {
     setInitializingDesigners(true);
     try {
       await Promise.all(initialDesigners.map(designer => axiosInstance.post('/designers', designer)));
@@ -488,10 +494,12 @@ const Admin = () => {
     }
   };
 
-  const handleInitializeUsers = async () => {
+  const handleInitializeUsers = () => {
     if (!canInitializeUsers) return;
-    if (!window.confirm(`确定要初始化 ${initialLoginUsers.length} 个登录用户吗？初始密码将随机生成并仅展示一次。`)) return;
+    setConfirmInitUsers(true);
+  };
 
+  const runInitializeUsers = async () => {
     // 先在本地生成全部随机密码：即使部分请求失败，密码仍可展示，
     // 便于重试或手动建号
     const credentials = initialLoginUsers.map(user => ({
@@ -561,23 +569,16 @@ const Admin = () => {
     }
   };
 
-  const handleDeleteUser = async (id: string) => {
+  const handleDeleteUser = (id: string) => {
     if (!isSuperAdmin) return;
     if (id === currentUser?.id) {
       addToast('不能删除自己', 'error');
       return;
     }
-    if (!window.confirm('确定要删除该登录用户吗？')) return;
-    try {
-      await axiosInstance.delete(`/users/${id}`);
-      addToast('账号已删除', 'success');
-      fetchData();
-    } catch (err: any) {
-      addToast(err.response?.data?.message || '删除失败', 'error');
-    }
+    setBatchDeleteConfirm({ kind: 'users', ids: [id] });
   };
 
-  const handleBatchDeleteUsers = async () => {
+  const handleBatchDeleteUsers = () => {
     if (!isSuperAdmin) return;
     const ids = selectedUserIds.filter(id => id !== currentUser?.id);
     const selectedUsers = users.filter(u => ids.includes(u.id));
@@ -589,7 +590,10 @@ const Admin = () => {
       addToast('不能批量删除超级管理员账号', 'error');
       return;
     }
-    if (!window.confirm(`确定要删除选中的 ${ids.length} 个登录用户吗？`)) return;
+    setBatchDeleteConfirm({ kind: 'users', ids });
+  };
+
+  const runBatchDeleteUsers = async (ids: string[]) => {
     try {
       try {
         await axiosInstance.post('/users/batch-delete', { ids });
@@ -685,24 +689,20 @@ const Admin = () => {
     }
   };
 
-  const handleDeleteDesigner = async (id: string) => {
-    if (!window.confirm('确定要从表格中移除该设计人员吗？其任务数据将保留在数据库中但不再显示。')) return;
-    try {
-      await axiosInstance.delete(`/designers/${id}`);
-      addToast('人员已移除', 'success');
-      fetchData();
-    } catch (err: any) {
-      addToast(err.response?.data?.message || '移除失败', 'error');
-    }
+  const handleDeleteDesigner = (id: string) => {
+    setBatchDeleteConfirm({ kind: 'designers', ids: [id] });
   };
 
-  const handleBatchDeleteDesigners = async () => {
+  const handleBatchDeleteDesigners = () => {
     const ids = [...selectedDesignerIds];
     if (ids.length === 0) {
       addToast('请先选择要删除的设计人员', 'error');
       return;
     }
-    if (!window.confirm(`确定要从表格中移除选中的 ${ids.length} 位设计人员吗？其任务数据将保留在数据库中但不再显示。`)) return;
+    setBatchDeleteConfirm({ kind: 'designers', ids });
+  };
+
+  const runBatchDeleteDesigners = async (ids: string[]) => {
     try {
       try {
         await axiosInstance.post('/designers/batch-delete', { ids });
@@ -1427,81 +1427,215 @@ const Admin = () => {
           </div>
         </section>
 
-        {/* 初始密码一次性展示弹窗 */}
-        {initialCredentials.length > 0 && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-2xl max-h-[90vh] flex flex-col">
-              <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                    <Key size={18} className="text-emerald-600" /> 初始登录密码
-                  </h3>
-                  <p className="text-xs text-red-600 font-bold mt-1">密码仅显示这一次，关闭后无法再次查看，请立即复制并线下分发给本人。</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setInitialCredentials([])}
-                  className="p-1 text-gray-400 hover:text-gray-700 rounded"
-                  aria-label="关闭"
-                >
-                  <X size={20} />
-                </button>
+      </main>
+
+      {/* 删除确认弹窗（登录用户/设计人员共用，单个与批量通用，应用内居中，替代浏览器原生 confirm） */}
+      {batchDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
+            <div className="px-6 py-5 flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                <Trash2 size={20} className="text-red-600" />
               </div>
-              <div className="overflow-y-auto px-6 py-4">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
-                      <th className="py-2 pr-2 text-left">姓名</th>
-                      <th className="py-2 pr-2 text-left">用户名</th>
-                      <th className="py-2 pr-2 text-left">初始密码</th>
-                      <th className="py-2 text-left">结果</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {initialCredentials.map(c => (
-                      <tr key={c.username}>
-                        <td className="py-2 pr-2 font-bold text-gray-700">{c.name}</td>
-                        <td className="py-2 pr-2 text-gray-500">{c.username}</td>
-                        <td className="py-2 pr-2">
-                          <code className="px-2 py-0.5 bg-gray-100 rounded text-gray-800 font-bold whitespace-nowrap">{c.password}</code>
-                        </td>
-                        <td className="py-2">
-                          {c.ok
-                            ? <span className="text-green-600 text-xs font-bold">已创建</span>
-                            : <span className="text-red-600 text-xs font-bold">失败</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const text = initialCredentials
-                      .filter(c => c.ok)
-                      .map(c => `${c.name} ${c.username} 初始密码:${c.password}`)
-                      .join('\n');
-                    navigator.clipboard.writeText(text);
-                    addToast('已复制成功用户的初始密码', 'success');
-                  }}
-                  className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 transition"
-                >
-                  复制全部
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setInitialCredentials([])}
-                  className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition"
-                >
-                  我已保存，关闭
-                </button>
+              <div>
+                <h3 className="text-base font-bold text-gray-800">
+                  {batchDeleteConfirm.kind === 'users'
+                    ? batchDeleteConfirm.ids.length === 1 ? '确认删除登录用户' : '确认批量删除登录用户'
+                    : batchDeleteConfirm.ids.length === 1 ? '确认移除设计人员' : '确认批量移除设计人员'}
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  {batchDeleteConfirm.kind === 'users'
+                    ? batchDeleteConfirm.ids.length === 1
+                      ? <>将删除该登录用户账号。</>
+                      : <>将删除选中的 <span className="font-bold text-gray-800">{batchDeleteConfirm.ids.length}</span> 个登录用户账号。</>
+                    : batchDeleteConfirm.ids.length === 1
+                      ? <>将从表格中移除该设计人员。</>
+                      : <>将从表格中移除选中的 <span className="font-bold text-gray-800">{batchDeleteConfirm.ids.length}</span> 位设计人员。</>}
+                </p>
+                <p className="text-xs text-red-600 font-bold mt-2">
+                  {batchDeleteConfirm.kind === 'users'
+                    ? '删除后账号无法恢复，请确认无误后操作。'
+                    : '其任务数据将保留在数据库中但不再显示。'}
+                </p>
               </div>
             </div>
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setBatchDeleteConfirm(null)}
+                className="px-4 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 text-sm font-bold hover:bg-gray-100 transition"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const { kind, ids } = batchDeleteConfirm;
+                  setBatchDeleteConfirm(null);
+                  if (kind === 'users') runBatchDeleteUsers(ids);
+                  else runBatchDeleteDesigners(ids);
+                }}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition"
+              >
+                {batchDeleteConfirm.kind === 'users' ? '确认删除' : '确认移除'}
+              </button>
+            </div>
           </div>
-        )}
-      </main>
+        </div>
+      )}
+
+      {/* 初始化设计人员确认弹窗（应用内居中，替代浏览器原生 confirm） */}
+      {confirmInitDesigners && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
+            <div className="px-6 py-5 flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                <AlertCircle size={20} className="text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-800">确认初始化设计人员</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  将为 <span className="font-bold text-gray-800">{initialDesigners.length}</span> 位设计人员创建任务表条目。
+                </p>
+                <p className="text-xs text-red-600 font-bold mt-2">仅可在设计人员为空时执行，请确认当前没有已有数据。</p>
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmInitDesigners(false)}
+                className="px-4 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 text-sm font-bold hover:bg-gray-100 transition"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmInitDesigners(false);
+                  runInitializeDesigners();
+                }}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition"
+              >
+                确认初始化
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 初始化登录用户确认弹窗（应用内居中，替代浏览器原生 confirm） */}
+      {confirmInitUsers && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
+            <div className="px-6 py-5 flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                <AlertCircle size={20} className="text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-800">确认初始化登录用户</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  将为 <span className="font-bold text-gray-800">{initialLoginUsers.length}</span> 个登录用户创建账号。
+                </p>
+                <p className="text-xs text-red-600 font-bold mt-2">初始密码将随机生成且仅展示一次，关闭后无法再次查看，请提前准备保存方式。</p>
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmInitUsers(false)}
+                className="px-4 py-2 rounded-lg bg-white border border-gray-200 text-gray-700 text-sm font-bold hover:bg-gray-100 transition"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmInitUsers(false);
+                  runInitializeUsers();
+                }}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition"
+              >
+                确认初始化
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 初始密码一次性展示弹窗（置于 main 外，避免 space-y-8 的 margin-top 使遮罩下移偏离视口中心） */}
+      {initialCredentials.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                  <Key size={18} className="text-emerald-600" /> 初始登录密码
+                </h3>
+                <p className="text-xs text-red-600 font-bold mt-1">密码仅显示这一次，关闭后无法再次查看，请立即复制并线下分发给本人。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInitialCredentials([])}
+                className="p-1 text-gray-400 hover:text-gray-700 rounded"
+                aria-label="关闭"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="overflow-y-auto px-6 py-4">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
+                    <th className="py-2 pr-2 text-left">姓名</th>
+                    <th className="py-2 pr-2 text-left">用户名</th>
+                    <th className="py-2 pr-2 text-left">初始密码</th>
+                    <th className="py-2 text-left">结果</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {initialCredentials.map(c => (
+                    <tr key={c.username}>
+                      <td className="py-2 pr-2 font-bold text-gray-700">{c.name}</td>
+                      <td className="py-2 pr-2 text-gray-500">{c.username}</td>
+                      <td className="py-2 pr-2">
+                        <code className="px-2 py-0.5 bg-gray-100 rounded text-gray-800 font-bold whitespace-nowrap">{c.password}</code>
+                      </td>
+                      <td className="py-2">
+                        {c.ok
+                          ? <span className="text-green-600 text-xs font-bold">已创建</span>
+                          : <span className="text-red-600 text-xs font-bold">失败</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const text = initialCredentials
+                    .filter(c => c.ok)
+                    .map(c => `${c.name} ${c.username} 初始密码:${c.password}`)
+                    .join('\n');
+                  navigator.clipboard.writeText(text);
+                  addToast('已复制成功用户的初始密码', 'success');
+                }}
+                className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 transition"
+              >
+                复制全部
+              </button>
+              <button
+                type="button"
+                onClick={() => setInitialCredentials([])}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 transition"
+              >
+                我已保存，关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
