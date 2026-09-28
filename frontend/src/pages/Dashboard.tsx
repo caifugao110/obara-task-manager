@@ -986,6 +986,12 @@ const Dashboard = () => {
   const [addModeTripPlace, setAddModeTripPlace] = useState<string>('');
   const [addModeHours, setAddModeHours] = useState<string>('');
   const [addModeGuns, setAddModeGuns] = useState<GunItem[]>([]);
+  // 自动获取枪名：通过仕样号在 gun-ledger 中查找匹配枪名
+  const [autoGunLookupLoading, setAutoGunLookupLoading] = useState(false);
+  const [autoGunLookupResults, setAutoGunLookupResults] = useState<{ gunName: string; customer: string; tableName: string; category: string }[] | null>(null);
+  const [autoGunLookupContext, setAutoGunLookupContext] = useState<'add' | 'edit' | null>(null);
+  const [autoGunLookupItemId, setAutoGunLookupItemId] = useState<string | null>(null);
+  const [autoGunLookupChecked, setAutoGunLookupChecked] = useState<Set<number>>(new Set());
   const [addModeColor, setAddModeColor] = useState<string>('#86efac');
   const [addModeTaskType, setAddModeTaskType] = useState<'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange'>('none');
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' }>>({});
@@ -1031,6 +1037,12 @@ const Dashboard = () => {
     setManualDeadline(false);
     setManualDeadlineInput('');
     clearAddModeSpecLookup();
+    // 关闭自动获取枪名面板，避免上次查询残留
+    setAutoGunLookupLoading(false);
+    setAutoGunLookupResults(null);
+    setAutoGunLookupContext(null);
+    setAutoGunLookupItemId(null);
+    setAutoGunLookupChecked(new Set());
     setTaskTypeDrafts({});
     setModalOpen(true);
   };
@@ -1050,8 +1062,114 @@ const Dashboard = () => {
     setShowDeadline(/\[\d{1,2}\/\d{1,2}\]\s*$/.test((item.taskName || '').trim()));
     setManualDeadline(false);
     setManualDeadlineInput('');
+    // 关闭自动获取枪名面板，避免上次查询残留
+    setAutoGunLookupLoading(false);
+    setAutoGunLookupResults(null);
+    setAutoGunLookupContext(null);
+    setAutoGunLookupItemId(null);
+    setAutoGunLookupChecked(new Set());
     setTaskTypeDrafts({});
     setModalOpen(true);
+  };
+
+  // 自动获取枪名：根据仕样号在 gun-ledger 中查找匹配的枪名
+  // 匹配规则：行 customer 字段等于仕样号 OR 等于仕样号对应的客户名
+  const runAutoGunLookup = async (specNumber: string, context: 'add' | 'edit', itemId?: string) => {
+    if (!specNumber) return;
+    setAutoGunLookupLoading(true);
+    setAutoGunLookupResults(null);
+    setAutoGunLookupContext(context);
+    setAutoGunLookupItemId(itemId ?? null);
+    setAutoGunLookupChecked(new Set());
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      // 并发拉取仕样信息和枪台账数据
+      const [specInfo, ledgerRes] = await Promise.all([
+        fetchSpecInfo(specNumber),
+        axiosInstance.get('/gun-ledger', authHeader),
+      ]);
+      const clientName = specInfo.success && specInfo.clientName ? specInfo.clientName.trim() : '';
+      const data = ledgerRes.data || {};
+      const categories: Record<string, any[]> = data.categories || {};
+      const matches: { gunName: string; customer: string; tableName: string; category: string }[] = [];
+      Object.entries(categories).forEach(([cat, tables]) => {
+        (tables || []).forEach((table: any) => {
+          (table.rows || []).forEach((row: any) => {
+            const c = (row.customer || '').trim();
+            const g = (row.gunName || '').trim();
+            if (!g) return; // 焊枪名为空跳过
+            // customer 等于仕样号 或 等于客户名时视为命中
+            if (c === specNumber || (clientName && c === clientName)) {
+              matches.push({ gunName: g, customer: c, tableName: table.name || '', category: cat });
+            }
+          });
+        });
+      });
+      setAutoGunLookupResults(matches);
+      if (matches.length === 0) {
+        addToast(`未在枪台账中找到仕样号 ${specNumber} 对应的枪名`, 'error');
+      } else {
+        addToast(`已找到 ${matches.length} 个匹配枪名`, 'success');
+      }
+    } catch {
+      addToast('获取枪台账数据失败', 'error');
+    } finally {
+      setAutoGunLookupLoading(false);
+    }
+  };
+
+  // 应用选中的自动枪名到当前模式
+  // 创建模式：追加到 addModeGuns；编辑模式：追加到 currentItem.guns 并触发 handleItemChange
+  const autoGunGunLookupPicked = (): string[] => {
+    if (!autoGunLookupResults) return [];
+    return autoGunLookupResults
+      .filter((_, idx) => autoGunLookupChecked.has(idx))
+      .map(r => r.gunName);
+  };
+
+  const applyAutoGunLookup = () => {
+    if (!autoGunLookupResults || autoGunLookupChecked.size === 0) return;
+    const picked = autoGunGunLookupPicked();
+    if (autoGunLookupContext === 'add') {
+      setAddModeGuns(prev => [
+        ...prev,
+        ...picked.map(name => ({ id: `gun-new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' })),
+      ]);
+      addToast(`已添加 ${picked.length} 个枪名`, 'success');
+    } else if (autoGunLookupContext === 'edit' && autoGunLookupItemId) {
+      const itemId = autoGunLookupItemId;
+      const designerId = modalDesignerId;
+      const date = modalDate;
+      if (!designerId || !date) return;
+      const item = getAllItems(designerId, date).find(i => i.id === itemId);
+      const currentItem = item ? getItemWithPendingChanges(item) : null;
+      if (!currentItem) return;
+      const baseGuns = currentItem.guns || [];
+      const newGuns: GunItem[] = [
+        ...baseGuns,
+        ...picked.map(name => ({ id: `gun-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' })),
+      ];
+      setTaskTypeDrafts(prev => ({
+        ...prev,
+        [itemId]: { ...(prev[itemId] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
+      }));
+      handleItemChange(designerId, date, itemId, 'guns', newGuns);
+      addToast(`已追加 ${picked.length} 个枪名`, 'success');
+    }
+    // 关闭面板
+    setAutoGunLookupResults(null);
+    setAutoGunLookupContext(null);
+    setAutoGunLookupItemId(null);
+    setAutoGunLookupChecked(new Set());
+  };
+
+  const toggleAutoGunLookupChecked = (idx: number) => {
+    setAutoGunLookupChecked(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
   };
 
   // 删除枪名并记录操作以便撤销
@@ -2253,9 +2371,32 @@ const Dashboard = () => {
   const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
     if (warnIfOfflineEdit()) return;
     try {
-      const nextValue = field === 'taskName' && typeof value === 'string'
+      let nextValue = field === 'taskName' && typeof value === 'string'
         ? await resolvePureSpecTaskName(value)
         : value;
+      // guns 字段：归一化 hours（空串/NaN -> 0），并在存在「有枪名但工时<=0」时静默跳过保存
+      // 这样编辑任务时点击"手动添加枪名"或仅填枪名未填工时不会弹出"输入格式不正确"等错误提示，
+      // 与创建主任务时一致——保存按钮已通过 hasInvalidNamedGunHours 校验禁用
+      if (field === 'guns' && Array.isArray(nextValue)) {
+        const normalizedGuns = nextValue.map((g: any) => ({
+          ...g,
+          hours: typeof g.hours === 'number' && !isNaN(g.hours)
+            ? g.hours
+            : (parseFloat(String(g.hours ?? '')) || 0)
+        }));
+        const hasInvalid = normalizedGuns.some((g: any) => {
+          const name = String(g.name || '').trim();
+          if (!name) return false;
+          const hours = typeof g.hours === 'number' ? g.hours : (parseFloat(String(g.hours)) || 0);
+          return hours <= 0;
+        });
+        if (hasInvalid) {
+          // 静默跳过本次保存：用户在保存按钮被禁用前不应看到错误提示
+          setPendingChanges(prev => prev.filter(c => !(c.designerId === designerId && c.date === date && c.itemId === itemId && c.field === field)));
+          return;
+        }
+        nextValue = normalizedGuns;
+      }
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value: nextValue }, authHeader);
       if (res.data.sheet) {
@@ -3429,16 +3570,99 @@ const Dashboard = () => {
                         <div className="mt-2 pl-4 border-l-2 border-gray-100 flex flex-col gap-2">
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">枪名</span>
-                            <button 
-                              onClick={() => {
-                                setAddModeGuns(prev => [...prev, { id: `gun-new-${Date.now()}`, name: '', hours: '' }]);
-                              }}
-                              className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-                              disabled={!addModeTaskName.trim()}
-                            >
-                              + 添加枪名
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() => {
+                                  const specNo = extractSpecNumber(addModeTaskName);
+                                  if (!specNo || specNo.length !== specNumberDigits) {
+                                    addToast(`请先在任务内容中输入${specNumberDigits}位数仕样号`, 'error');
+                                    return;
+                                  }
+                                  runAutoGunLookup(specNo, 'add');
+                                }}
+                                disabled={!addModeTaskName.trim() || autoGunLookupLoading}
+                                className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-1 rounded hover:bg-emerald-100 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="根据仕样号在枪台账中查找匹配枪名"
+                              >
+                                {autoGunLookupLoading && autoGunLookupContext === 'add' ? '查询中...' : '自动获取枪名'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setAddModeGuns(prev => [...prev, { id: `gun-new-${Date.now()}`, name: '', hours: '' }]);
+                                }}
+                                className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={!addModeTaskName.trim()}
+                              >
+                                手动添加枪名
+                              </button>
+                            </div>
                           </div>
+                          {/* 自动获取枪名结果面板 */}
+                          {autoGunLookupContext === 'add' && (autoGunLookupLoading || autoGunLookupResults) && (
+                            <div className="bg-emerald-50/50 border border-emerald-200 rounded-lg p-2 flex flex-col gap-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-emerald-700">
+                                  {autoGunLookupLoading ? '正在查询枪台账...' : `找到 ${autoGunLookupResults?.length || 0} 个匹配枪名`}
+                                </span>
+                                {autoGunLookupResults && autoGunLookupResults.length > 0 && (
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      onClick={() => setAutoGunLookupChecked(new Set(autoGunLookupResults.map((_, i) => i)))}
+                                      className="text-[10px] text-emerald-700 hover:underline"
+                                    >
+                                      全选
+                                    </button>
+                                    <button
+                                      onClick={() => setAutoGunLookupChecked(new Set())}
+                                      className="text-[10px] text-gray-500 hover:underline"
+                                    >
+                                      清空
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                              {autoGunLookupResults && autoGunLookupResults.length > 0 && (
+                                <>
+                                  <div className="max-h-40 overflow-y-auto flex flex-col gap-0.5">
+                                    {autoGunLookupResults.map((r, idx) => {
+                                      const checked = autoGunLookupChecked.has(idx);
+                                      return (
+                                        <label key={idx} className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer hover:bg-emerald-100/60 text-xs ${checked ? 'bg-emerald-100' : ''}`}>
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() => toggleAutoGunLookupChecked(idx)}
+                                            className="w-3 h-3 accent-emerald-600"
+                                          />
+                                          <span className="font-bold text-gray-800">{r.gunName}</span>
+                                          <span className="text-[10px] text-gray-400">[{r.category} / {r.tableName}]</span>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 pt-1 border-t border-emerald-200">
+                                    <button
+                                      onClick={applyAutoGunLookup}
+                                      disabled={autoGunLookupChecked.size === 0}
+                                      className="text-[10px] bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      添加选中 ({autoGunLookupChecked.size})
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setAutoGunLookupResults(null);
+                                        setAutoGunLookupContext(null);
+                                        setAutoGunLookupChecked(new Set());
+                                      }}
+                                      className="text-[10px] text-gray-500 hover:text-gray-700 px-2 py-1"
+                                    >
+                                      取消
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
                           {addModeGuns.map((gun, gIdx) => (
                             <div key={gun.id} className="flex items-center gap-2 bg-gray-50/50 p-2 rounded-lg group/gun">
                               <input
@@ -3919,21 +4143,108 @@ const Dashboard = () => {
                             <div className="mt-2 pl-4 border-l-2 border-gray-100 flex flex-col gap-2">
                               <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">枪名</span>
-                                <button 
-                                  onClick={() => {
-                                    const newGuns = [...(currentItem.guns || []), { id: `gun-${Date.now()}`, name: '', hours: '' }];
-                                    setTaskTypeDrafts(prev => ({
-                                      ...prev,
-                                      [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
-                                    }));
-                                    handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
-                                  }}
-                                  disabled={!currentItem.taskName || !currentItem.taskName.trim()}
-                                  className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  + 添加枪名
-                                </button>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => {
+                                      const specNo = extractSpecNumber(currentItem.taskName);
+                                      if (!specNo || specNo.length !== specNumberDigits) {
+                                        addToast(`未能从任务名称中提取${specNumberDigits}位数仕样号`, 'error');
+                                        return;
+                                      }
+                                      runAutoGunLookup(specNo, 'edit', currentItem.id);
+                                    }}
+                                    disabled={!currentItem.taskName || !currentItem.taskName.trim() || autoGunLookupLoading}
+                                    className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-1 rounded hover:bg-emerald-100 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title="根据仕样号在枪台账中查找匹配枪名"
+                                  >
+                                    {autoGunLookupLoading && autoGunLookupContext === 'edit' && autoGunLookupItemId === currentItem.id ? '查询中...' : '自动获取枪名'}
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const newGuns = [...(currentItem.guns || []), { id: `gun-${Date.now()}`, name: '', hours: '' }];
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
+                                      }));
+                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
+                                    }}
+                                    disabled={!currentItem.taskName || !currentItem.taskName.trim()}
+                                    className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    手动添加枪名
+                                  </button>
+                                </div>
                               </div>
+                              {/* 自动获取枪名结果面板（编辑模式：在原有枪名之上显示，方便对比） */}
+                              {autoGunLookupContext === 'edit' && autoGunLookupItemId === currentItem.id && (autoGunLookupLoading || autoGunLookupResults) && (
+                                <div className="bg-emerald-50/50 border border-emerald-200 rounded-lg p-2 flex flex-col gap-1.5">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-emerald-700">
+                                      {autoGunLookupLoading ? '正在查询枪台账...' : `找到 ${autoGunLookupResults?.length || 0} 个匹配枪名`}
+                                    </span>
+                                    {autoGunLookupResults && autoGunLookupResults.length > 0 && (
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          onClick={() => setAutoGunLookupChecked(new Set(autoGunLookupResults.map((_, i) => i)))}
+                                          className="text-[10px] text-emerald-700 hover:underline"
+                                        >
+                                          全选
+                                        </button>
+                                        <button
+                                          onClick={() => setAutoGunLookupChecked(new Set())}
+                                          className="text-[10px] text-gray-500 hover:underline"
+                                        >
+                                          清空
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  {autoGunLookupResults && autoGunLookupResults.length > 0 && (
+                                    <>
+                                      <div className="max-h-40 overflow-y-auto flex flex-col gap-0.5">
+                                        {autoGunLookupResults.map((r, idx) => {
+                                          const checked = autoGunLookupChecked.has(idx);
+                                          const existing = (currentItem.guns || []).some(g => (g.name || '').trim() === r.gunName);
+                                          return (
+                                            <label key={idx} className={`flex items-center gap-2 px-2 py-1 rounded text-xs ${checked ? 'bg-emerald-100' : 'hover:bg-emerald-100/60'} ${existing ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                              <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                onChange={() => toggleAutoGunLookupChecked(idx)}
+                                                disabled={existing}
+                                                className="w-3 h-3 accent-emerald-600"
+                                              />
+                                              <span className="font-bold text-gray-800">{r.gunName}</span>
+                                              {existing && <span className="text-[10px] text-gray-400">(已存在)</span>}
+                                              <span className="text-[10px] text-gray-400">[{r.category} / {r.tableName}]</span>
+                                            </label>
+                                          );
+                                        })}
+                                      </div>
+                                      <div className="flex items-center gap-1.5 pt-1 border-t border-emerald-200">
+                                        <button
+                                          onClick={applyAutoGunLookup}
+                                          disabled={autoGunLookupChecked.size === 0}
+                                          className="text-[10px] bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700 transition font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                          追加选中 ({autoGunLookupChecked.size})
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            setAutoGunLookupResults(null);
+                                            setAutoGunLookupContext(null);
+                                            setAutoGunLookupItemId(null);
+                                            setAutoGunLookupChecked(new Set());
+                                          }}
+                                          className="text-[10px] text-gray-500 hover:text-gray-700 px-2 py-1"
+                                        >
+                                          取消
+                                        </button>
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              )}
                               {(currentItem.guns || []).map((gun, gIdx) => (
                                 <div key={gun.id} className="flex items-center gap-2 bg-gray-50/50 p-2 rounded-lg group/gun">
                                   <input 

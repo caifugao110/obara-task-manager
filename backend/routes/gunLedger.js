@@ -80,6 +80,64 @@ const isValidCategoryName = (name) => {
 
 const newId = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+// 检查一组行内的焊枪名是否有重复（空值不计入），返回 [{ gunName, serialNumbers }]
+const findDuplicateGunNames = (rows) => {
+  const seen = new Map();
+  rows.forEach(r => {
+    const name = String(r.gunName || '').trim();
+    if (!name) return;
+    if (seen.has(name)) {
+      seen.get(name).push(r.serialNumber);
+    } else {
+      seen.set(name, [r.serialNumber]);
+    }
+  });
+  const duplicates = [];
+  for (const [gunName, serialNumbers] of seen) {
+    if (serialNumbers.length > 1) {
+      duplicates.push({ gunName, serialNumbers });
+    }
+  }
+  return duplicates;
+};
+
+// 焊枪名自动生成规则（与前端 GunLedger.tsx 的 GUN_NAME_PATTERNS 保持一致）
+const GUN_NAME_PATTERNS = {
+  'X2C': {
+    'SRTC':         { prefix: 'SRTC-2C',    start: 15000, pad: 5 },
+    'SRTX':         { prefix: 'SRTX-2C',    start: 25000, pad: 5 },
+    'SRTV':         { prefix: 'SRTV-C',     start: 200,   pad: 4 },
+    'SRTC-ALA-DC':  { prefix: 'SRTC-ALDC',  start: 400,   pad: 4 },
+    'SRTX-ALA-DC':  { prefix: 'SRTX-ALDC',  start: 400,   pad: 4 },
+    'SRTD':         { prefix: 'SRTD-C',     start: 200,   pad: 4 },
+    'SRTS':         { prefix: 'SRTS-C',     start: 100,   pad: 4 },
+  },
+  'X2C-V2': {
+    'C': { prefix: 'SDZC-C', start: 3000, pad: 4 },
+    'X': { prefix: 'SDZX-C', start: 5000, pad: 4 },
+  },
+  'X2C-V3': {
+    'C': { prefix: 'SDZC-3C', start: 30500, pad: 5 },
+    'X': { prefix: 'SDZX-3C', start: 30500, pad: 5 },
+  },
+};
+
+// 获取表的生效焊枪名规则：优先表级 gunNameRule，其次内置默认模式（与前端一致）
+const getEffectiveGunNameRule = (category, table) => {
+  if (table.gunNameRule) {
+    return table.gunNameRule.enabled ? table.gunNameRule : null;
+  }
+  const pattern = GUN_NAME_PATTERNS[category]?.[table.name];
+  return pattern ? { enabled: true, prefix: pattern.prefix, start: pattern.start, pad: pattern.pad } : null;
+};
+
+// 根据规则+序号计算焊枪名的编号部分（不含前缀）
+const buildGunNumber = (rule, serialNumber) => {
+  if (!rule || !rule.enabled) return '';
+  const num = rule.start + (serialNumber - 1);
+  return String(num).padStart(rule.pad, '0');
+};
+
 // 用户的可序列化信息
 const userMeta = (req) => req.user ? { id: req.user.id, username: req.user.username, name: req.user.name } : null;
 
@@ -255,6 +313,17 @@ router.post('/import',
           updatedAt: nowIso,
           updatedBy: meta
         }))
+        // 焊枪名同表内去重：空值不计入，保留首次出现的行
+        .filter((r, idx, arr) => {
+          const name = String(r.gunName || '').trim();
+          if (!name) return true; // 空值保留
+          const firstIdx = arr.findIndex(x => String(x.gunName || '').trim() === name);
+          if (firstIdx !== idx) {
+            warnings.push(`表「${tableName}」焊枪名「${name}」重复，已保留首次出现的行`);
+            return false;
+          }
+          return true;
+        })
         .sort((a, b) => a.serialNumber - b.serialNumber)
         .map((row, index) => ({ ...row, serialNumber: index + 1 }));
 
@@ -482,6 +551,39 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
   const holder = gunTableLocks.get(req.params.tableId);
   if (holder && (!req.user || holder.userId !== req.user.id)) {
     return res.status(409).json({ message: `该表正由「${holder.name || holder.username}」编辑，请等待其完成后再保存` });
+  }
+
+  // 焊枪名唯一性校验：同表内不允许重复
+  const duplicates = findDuplicateGunNames(value);
+  if (duplicates.length) {
+    const detail = duplicates.map(d => `「${d.gunName}」（序号 ${d.serialNumbers.join('、')}）`).join('；');
+    return res.status(409).json({
+      message: `焊枪名不可重复：${detail}`,
+      duplicates
+    });
+  }
+
+  // 焊枪名编号校验：有生效规则时，非空焊枪名的尾部编号必须与规则计算的一致
+  // 编号不可编辑，前缀可编辑
+  const rule = getEffectiveGunNameRule(found.category, found.table);
+  if (rule) {
+    const invalidNumbers = value.filter(r => {
+      const name = String(r.gunName || '').trim();
+      if (!name) return false;
+      const expectedNum = buildGunNumber(rule, Number(r.serialNumber));
+      const match = name.match(/(\d+)$/);
+      const actualNum = match ? match[1] : '';
+      return actualNum !== expectedNum;
+    });
+    if (invalidNumbers.length) {
+      const detail = invalidNumbers.map(r => {
+        const expected = buildGunNumber(rule, Number(r.serialNumber));
+        return `序号 ${r.serialNumber}（应为 ${expected}）`;
+      }).join('、');
+      return res.status(400).json({
+        message: `焊枪名编号不可修改：${detail}`,
+      });
+    }
   }
 
   const meta = userMeta(req);

@@ -393,6 +393,22 @@ const GunLedger: React.FC = () => {
     return Array.from(set);
   }, [ledger, user]);
 
+  // 当前表中重复的焊枪名集合（用于前端视觉标记）
+  const duplicateGunNames = useMemo(() => {
+    if (!activeTable) return new Set<string>();
+    const nameCount = new Map<string, number>();
+    (activeTable.rows || []).forEach(r => {
+      const name = String(r.gunName || '').trim();
+      if (!name) return;
+      nameCount.set(name, (nameCount.get(name) || 0) + 1);
+    });
+    const dup = new Set<string>();
+    for (const [name, count] of nameCount) {
+      if (count > 1) dup.add(name);
+    }
+    return dup;
+  }, [activeTable]);
+
   // 行锁控制
   const stopRowLock = useCallback(() => {
     if (stopTimeoutRef.current) { clearTimeout(stopTimeoutRef.current); stopTimeoutRef.current = null; }
@@ -522,6 +538,16 @@ const GunLedger: React.FC = () => {
         const t = (prev.categories[cat] || []).find(t => t.id === tableId);
         if (t) { rowsToSave = t.rows || []; break; }
       }
+
+      // 预保存守卫：本地检测到焊枪名重复时直接跳过保存，避免无意义的网络请求
+      const localDup = findDuplicateGunNamesClientSide(rowsToSave);
+      if (localDup.length) {
+        setSaving(false);
+        const detail = localDup.map(d => `「${d.gunName}」（序号 ${d.serialNumbers.join('、')}）`).join('；');
+        addToast(`焊枪名不可重复：${detail}，请修改后再保存`, 'error');
+        return prev;
+      }
+
       axiosInstance.put(`/gun-ledger/tables/${tableId}/rows`, rowsToSave, {
         headers: { Authorization: `Bearer ${token}` },
       }).then(() => {
@@ -529,20 +555,53 @@ const GunLedger: React.FC = () => {
         setSaving(false);
       }).catch((err: any) => {
         setSaving(false);
-        if (err?.response?.status === 409) {
-          addToast(err?.response?.data?.message || '该表正被他人编辑，暂时无法保存', 'error');
-          // 锁已不属于自己：释放本地占用并关闭表格
+        const status = err?.response?.status;
+        const msg = err?.response?.data?.message || '';
+        if (status === 409 && msg.startsWith('焊枪名不可重复')) {
+          // 焊枪名重复：后端兜底返回（正常情况下前端已拦截），提示 + 重新同步
+          addToast(msg + '，已从服务器同步最新数据', 'error');
+          dirtyRowIdsRef.current.clear();
+          fetchLedger();
+        } else if (status === 400 && msg.startsWith('焊枪名编号')) {
+          // 焊枪名编号被修改：后端兜底返回（正常情况下前端已自动修正），提示 + 重新同步
+          addToast(msg, 'error');
+          dirtyRowIdsRef.current.clear();
+          fetchLedger();
+        } else if (status === 409) {
+          // 表被他人锁定：关闭表格
+          addToast(msg || '该表正被他人编辑，暂时无法保存', 'error');
           if (activeTableIdRef.current === tableId) {
             socketRef.current?.emit('gun_ledger_unlock_table', { tableId });
             setActiveTableId(null);
           }
         } else {
-          addToast(err?.response?.data?.message || '保存失败，请重试', 'error');
+          addToast(msg || '保存失败，请重试', 'error');
         }
       });
       return prev;
     });
-  }, [token, addToast]);
+  }, [token, addToast, fetchLedger]);
+
+  // 前端版 findDuplicateGunNames（与后端逻辑一致，空值不计入）
+  const findDuplicateGunNamesClientSide = (rows: GunRow[]) => {
+    const seen = new Map<string, number[]>();
+    rows.forEach(r => {
+      const name = String(r.gunName || '').trim();
+      if (!name) return;
+      if (seen.has(name)) {
+        seen.get(name)!.push(r.serialNumber);
+      } else {
+        seen.set(name, [r.serialNumber]);
+      }
+    });
+    const duplicates: { gunName: string; serialNumbers: number[] }[] = [];
+    for (const [gunName, serialNumbers] of seen) {
+      if (serialNumbers.length > 1) {
+        duplicates.push({ gunName, serialNumbers });
+      }
+    }
+    return duplicates;
+  };
 
   const debouncedSave = useDebounce((tableId: string) => saveTableRows(tableId), 400);
 
@@ -576,6 +635,42 @@ const GunLedger: React.FC = () => {
     if (!activeTable || !isAdmin || !online) return;
     const { id, serialNumber } = row;
     const isPlaceholder = String(id).startsWith('__placeholder__');
+
+    // 焊枪名编号不可编辑 + 前缀可编辑 + 同表不可重复
+    if (field === 'gunName') {
+      const rule = getEffectiveGunNameRule(activeCategory, activeTable);
+      if (rule && rule.enabled) {
+        const trimmedValue = value.trim();
+        if (trimmedValue) {
+          // 计算该行应有的编号（由规则决定，不可编辑）
+          const expectedNum = rule.start + (serialNumber - 1);
+          const expectedNumberStr = String(expectedNum).padStart(rule.pad, '0');
+          // 从新值尾部提取数字
+          const match = trimmedValue.match(/^(.*?)(\d+)$/);
+          if (match) {
+            const userPrefix = match[1];
+            const userNumber = match[2];
+            if (userNumber !== expectedNumberStr) {
+              // 编号被修改：自动修正为规则编号，前缀保留用户输入
+              value = userPrefix + expectedNumberStr;
+            }
+          } else {
+            // 新值不含尾部数字：自动追加规则编号
+            value = trimmedValue + expectedNumberStr;
+          }
+        }
+      }
+      // 同表内焊枪名不可重复（空值不计入）
+      const trimmedNewName = value.trim();
+      if (trimmedNewName) {
+        const dup = (activeTable.rows || []).find(r =>
+          r.id !== id && String(r.gunName || '').trim() === trimmedNewName
+        );
+        if (dup) {
+          addToast(`焊枪名「${trimmedNewName}」已被序号 ${dup.serialNumber} 使用，请修改`, 'error');
+        }
+      }
+    }
 
     patchTableRows(activeTable.id, rows => {
       // 占位行：仅在输入非空值时升级为真行
@@ -627,7 +722,7 @@ const GunLedger: React.FC = () => {
     if (field === 'customer') {
       scheduleCustomerSpecLookup(activeTable.id, serialNumber, value);
     }
-  }, [activeTable, isAdmin, online, patchTableRows, user, debouncedSave, scheduleCustomerSpecLookup]);
+  }, [activeTable, activeCategory, isAdmin, online, addToast, patchTableRows, user, debouncedSave, scheduleCustomerSpecLookup]);
 
   // 单元格聚焦：取行锁
   const handleCellFocus = useCallback((tableId: string, serialNumber: number) => {
@@ -2086,7 +2181,7 @@ const GunLedger: React.FC = () => {
                                     onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
                                     onBlur={handleCellBlur}
                                     onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                    className={`w-full px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                    className={`w-full px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : ''}`}
                                   />
                                 )}
                               </td>

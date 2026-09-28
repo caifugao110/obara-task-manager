@@ -95,8 +95,11 @@ const Leaderboard = () => {
     results.forEach(result => {
       (result.guns || []).forEach(gun => {
         let gunName = String(gun.name || '').trim();
-        gunName = gunName.replace(/[LR]$/i, '').trim();
+        // 去除中文后缀/括号备注（如「改造」「（备注）」），再去掉变体后缀，归一化到 base 枪名：
+        //   SRTX-2C23712L / -X2 / LX2 / L-X2 / -LX5 / -X3 / -X2改造 → SRTX-2C23712
+        // 变体后缀顺序：可选 L/R 变体（带可选 -），再可选 X+数字变体（带可选 -）
         gunName = gunName.replace(/（[^）]*）|\([^)]*\)|[-+][\d]*[\u4e00-\u9fa5]+|[\u4e00-\u9fa5]+$/g, '').trim();
+        gunName = gunName.replace(/(?:-?[LR])?(?:-?X\d+)?$/i, '').trim();
         if (gunName) {
           gunSet.add(gunName);
         }
