@@ -450,7 +450,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   if (field === 'color') {
     const canMarkColor = isAdmin || canUserMarkDesignPlanColor(data, req.user, designerId, item);
     if (!canMarkColor) {
-      return res.status(403).json({ message: '无权标记颜色' });
+      return res.status(403).json({ message: '无权修改任务完成状态' });
     }
 
     const isRestore = normalizeColorValue(value) === '__restore__';
@@ -517,7 +517,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   if (field === 'gunColor') {
     const canMarkGunColor = isAdmin || canUserMarkGunColor(data, req.user, designerId, item);
     if (!canMarkGunColor) {
-      return res.status(403).json({ message: '无权标记枪名颜色' });
+      return res.status(403).json({ message: '无权修改枪名任务完成状态' });
     }
 
     const guns = Array.isArray(item.guns) ? item.guns : [];

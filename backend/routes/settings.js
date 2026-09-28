@@ -33,7 +33,7 @@ const normalizeAccessSettings = (settings = defaultAccessSettings) => {
 
 const normalizeAccessSettingsForKey = (key, settings = defaultAccessSettings) => {
   const normalized = normalizeAccessSettings(settings);
-  if (key === 'systemSettings' || key === 'gunLedger') {
+  if (key === 'systemSettings') {
     normalized.allowViewers = false;
   }
   return normalized;

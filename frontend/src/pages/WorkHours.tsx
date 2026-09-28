@@ -77,7 +77,9 @@ const WorkHours = () => {
   const [excludeWeekendOvertime, setExcludeWeekendOvertime] = useState(false);
   const [excludeVacationLeave, setExcludeVacationLeave] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
+  const isOffline = !isOnline;
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const authHeader = useMemo(() => token ? { headers: { Authorization: `Bearer ${token}` } } : {}, [token]);
@@ -87,6 +89,15 @@ const WorkHours = () => {
     setToasts(prev => [...prev, { message, type, id }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
+
+  // 网络错误（断网/服务不可达）时标记离线，触发页面禁止编辑
+  const markOfflineIfNetworkError = useCallback((err: any) => {
+    if (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error') {
+      setIsOnline(false);
+      return true;
+    }
+    return false;
+  }, []);
 
   const canViewWorkHours = useMemo(() => {
     if (isSuperAdmin) return true;
@@ -104,11 +115,12 @@ const WorkHours = () => {
       setSettings(res.data);
     } catch (err) {
       console.error('Error fetching work hours settings:', err);
+      markOfflineIfNetworkError(err);
       addToast('无法加载工时管理权限设置', 'error');
     } finally {
       setSettingsLoaded(true);
     }
-  }, []);
+  }, [markOfflineIfNetworkError]);
 
   const fetchWorkdayOverrides = useCallback(async (showError = true): Promise<WorkdayOverrides> => {
     try {
@@ -118,12 +130,17 @@ const WorkHours = () => {
       return normalized;
     } catch (err) {
       console.error('Error fetching workday overrides:', err);
+      markOfflineIfNetworkError(err);
       if (showError) addToast('无法加载工作日设置', 'error');
       return workdayOverridesRef.current;
     }
-  }, []);
+  }, [markOfflineIfNetworkError]);
 
   const updateSettings = async (next: Partial<typeof settings>) => {
+    if (isOffline) {
+      addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
     const updated = { ...settings, ...next };
     if (next.enabled === false) {
       updated.allowAdmins = false;
@@ -156,11 +173,12 @@ const WorkHours = () => {
       setDesigners(res.data);
     } catch (err) {
       console.error('Error fetching designers:', err);
+      markOfflineIfNetworkError(err);
       addToast('无法加载人员数据', 'error');
     } finally {
       setLoading(false);
     }
-  }, [authHeader]);
+  }, [authHeader, markOfflineIfNetworkError]);
 
   const fetchWorkHoursData = useCallback(async () => {
     if (designers.length === 0) return;
@@ -248,17 +266,59 @@ const WorkHours = () => {
       setWorkHoursData(Array.from(dataMap.values()).sort((a, b) => b.hours - a.hours));
     } catch (err) {
       console.error('Error fetching work hours data:', err);
+      markOfflineIfNetworkError(err);
       addToast('无法加载工时管理数据', 'error');
     } finally {
       setDataLoading(false);
     }
-  }, [authHeader, currentDate, designers, fetchWorkdayOverrides]);
+  }, [authHeader, currentDate, designers, fetchWorkdayOverrides, markOfflineIfNetworkError]);
 
   useEffect(() => {
     fetchSettings();
     fetchWorkdayOverrides();
     fetchDesigners();
   }, [fetchDesigners, fetchSettings, fetchWorkdayOverrides]);
+
+  // 网络恢复后自动重新加载数据
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      fetchSettings();
+      fetchDesigners();
+    };
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [fetchSettings, fetchDesigners]);
+
+  // 后端服务停止/恢复（navigator.onLine 感知不到本机服务停止，由 axiosInstance 拦截器广播）
+  useEffect(() => {
+    const handleServerUnreachable = () => setIsOnline(false);
+    const handleServerOnline = () => {
+      setIsOnline(true);
+      fetchSettings();
+      fetchDesigners();
+    };
+    window.addEventListener('server-unreachable', handleServerUnreachable);
+    window.addEventListener('server-online', handleServerOnline);
+    return () => {
+      window.removeEventListener('server-unreachable', handleServerUnreachable);
+      window.removeEventListener('server-online', handleServerOnline);
+    };
+  }, [fetchSettings, fetchDesigners]);
+
+  // 离线期间每 5 秒轻量探测后端是否恢复（成功时拦截器自动广播 server-online）
+  useEffect(() => {
+    if (!isOffline) return;
+    const timer = setInterval(() => {
+      axiosInstance.get('/auth/validate').catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [isOffline]);
 
   useEffect(() => {
     if (!loading && canViewWorkHours) fetchWorkHoursData();
@@ -460,6 +520,13 @@ const WorkHours = () => {
           </div>
         )}
       </header>
+
+      {isOffline && (
+        <div className="relative z-40 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
+        </div>
+      )}
 
       <main className="flex-1 max-w-7xl mx-auto w-full overflow-y-auto">
        <div className="p-8">
@@ -677,7 +744,7 @@ const WorkHours = () => {
                       type="checkbox"
                       checked={settings[item.key]}
                       onChange={(e) => updateSettings({ [item.key]: e.target.checked })}
-                      disabled={!settingsLoaded}
+                      disabled={!settingsLoaded || isOffline}
                       className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
                     />
                     <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
@@ -695,10 +762,17 @@ const WorkHours = () => {
           <div>数据每月更新</div>
           <div className="flex items-center gap-2">
             <span className="font-medium">当前状态:</span>
-            <span className="text-green-600 flex items-center">
-              <span className="w-2 h-2 bg-green-500 rounded-full mr-1"></span>
-              正常
-            </span>
+            {isOffline ? (
+              <span className="text-amber-600 flex items-center">
+                <span className="w-2 h-2 bg-amber-500 rounded-full mr-1"></span>
+                离线
+              </span>
+            ) : (
+              <span className="text-green-600 flex items-center">
+                <span className="w-2 h-2 bg-green-500 rounded-full mr-1"></span>
+                正常
+              </span>
+            )}
           </div>
         </div>
       </footer>

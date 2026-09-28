@@ -22,6 +22,7 @@ import {
   Settings2,
   Eraser,
   Download,
+  Eye,
   ChevronRight,
   Zap,
   FolderOpen,
@@ -282,11 +283,14 @@ const GunLedger: React.FC = () => {
 
   const sessionKey = (tableId: string, serialNumber: number) => `${tableId}::${serialNumber}`;
 
-  // 权限判定（同 system-settings：超管恒显，admin 看 enabled+allowAdmins，user 不可见）
+  // 权限判定（同 status-tracking：超管恒显，admin 看 enabled+allowAdmins，user 看 enabled+allowViewers）
   const canAccess = useMemo(() => {
     if (isSuperAdmin) return true;
     if (!accessSettings.enabled) return false;
-    return user?.role === 'admin' && accessSettings.allowAdmins;
+    if (!user) return false;
+    if (user.role === 'admin' && accessSettings.allowAdmins) return true;
+    if (user.role === 'user' && accessSettings.allowViewers) return true;
+    return false;
   }, [isSuperAdmin, accessSettings, user]);
 
   // 加载权限
@@ -465,6 +469,14 @@ const GunLedger: React.FC = () => {
   const handleSelectTable = useCallback((t: GunTable) => {
     const holder = getTableHolder(t.id);
     if (holder) {
+      // 普通用户仅有查看权限，被他人锁定的表直接以只读方式打开
+      if (!isAdminRef.current) {
+        if (activeTableIdRef.current && activeTableIdRef.current !== t.id) stopRowLock();
+        setActiveTableId(t.id);
+        setReadonlyTableId(t.id);
+        addToast(`已只读打开表「${t.name}」（${holder.name || holder.username} 正在编辑）`, 'success');
+        return;
+      }
       addToast(`「${holder.name || holder.username}」正在编辑表「${t.name}」，请稍后再试；可点击锁旁的只读按钮查看`, 'error');
       return;
     }
@@ -995,10 +1007,19 @@ const GunLedger: React.FC = () => {
   const updateAccessSettings = useCallback(async (next: Partial<typeof defaultAccessSettings>) => {
     if (warnIfOffline()) return;
     const updated = { ...accessSettings, ...next };
-    if (next.enabled === false) { updated.allowAdmins = false; }
-    if (updated.allowAdmins === false && accessSettings.allowAdmins) {
-      // 允许关闭，无依赖
+    if (next.enabled === false) {
+      updated.allowAdmins = false;
+      updated.allowViewers = false;
     }
+    if (next.enabled === true) {
+      updated.allowAdmins = true;
+      updated.allowViewers = true;
+    }
+    if (next.allowAdmins === false && updated.allowViewers) {
+      addToast('普通用户权限开启时，不能关闭一般管理员权限', 'error');
+      return;
+    }
+    if (updated.allowViewers) updated.allowAdmins = true;
     setAccessSettings(updated);
     if (!isSuperAdmin) return;
     try {
@@ -1760,7 +1781,7 @@ const GunLedger: React.FC = () => {
           <div className="text-center">
             <ClipboardList size={64} className="mx-auto text-gray-300 mb-4" />
             <h2 className="text-xl font-bold text-gray-600">{isClosed ? '焊枪编号台账未启用' : '暂无权限访问焊枪编号台账'}</h2>
-            <p className="text-gray-400 mt-2">{isClosed ? '请联系超级管理员开启此功能' : '仅管理员可访问，请联系超级管理员'}</p>
+            <p className="text-gray-400 mt-2">{isClosed ? '请联系超级管理员开启此功能' : '请联系超级管理员开启对应权限'}</p>
           </div>
         </div>
       </div>
@@ -1802,14 +1823,16 @@ const GunLedger: React.FC = () => {
             <ClipboardList className="text-emerald-200 mr-2" size={22} />
             焊枪编号台账
           </h2>
-          {/* 分类导出：一个分类一个工作簿，每张表一个工作表；多分类打包 zip */}
-          <button
-            onClick={openExportPanel}
-            className="ml-2 flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/15 hover:bg-white/25 text-xs font-semibold transition"
-            title="按分类导出：一个分类一个工作簿，每张表一个工作表"
-          >
-            <Download size={14} /><span>分类导出</span>
-          </button>
+          {/* 分类导出：一个分类一个工作簿，每张表一个工作表；多分类打包 zip（仅管理员可见，普通用户不可见） */}
+          {isAdmin && (
+            <button
+              onClick={openExportPanel}
+              className="ml-2 flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/15 hover:bg-white/25 text-xs font-semibold transition"
+              title="按分类导出：一个分类一个工作簿，每张表一个工作表"
+            >
+              <Download size={14} /><span>分类导出</span>
+            </button>
+          )}
           {!online && (
             <span className="ml-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500 text-white">
               <AlertCircle size={12} />离线
@@ -1866,6 +1889,14 @@ const GunLedger: React.FC = () => {
         <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
+        </div>
+      )}
+
+      {/* 普通用户只读模式提示条（查看权限打开时仅可浏览，不可编辑；离线提示条已覆盖时不再重复展示） */}
+      {online && !isAdmin && (
+        <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <Eye size={14} className="shrink-0" />
+          <span>当前为只读模式，仅可查看数据，无法编辑</span>
         </div>
       )}
 
@@ -2773,6 +2804,7 @@ const GunLedger: React.FC = () => {
               {[
                 { label: '启用焊枪编号台账', detail: 'Global Toggle', key: 'enabled' as const },
                 { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
+                { label: '普通用户', detail: 'User Access (View Only)', key: 'allowViewers' as const },
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 hover:border-purple-200 transition">
                   <div>

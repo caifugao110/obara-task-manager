@@ -409,12 +409,12 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.leaderboard` | 任务报表访问权限 |
 | `settings.workHours` | 工时管理访问权限 |
 | `settings.statusTracking` | 状态追踪访问权限 |
-| `settings.gunLedger` | 焊枪台账访问权限（`allowViewers` 始终为 `false`） |
+| `settings.gunLedger` | 焊枪台账访问权限（`allowViewers=true` 时普通用户只读） |
 | `settings.designStandards` | 设计规范知识库页面访问权限 |
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
-| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划标记颜色、仕样号位数（`specNumberDigits`，5 或 6）；颜色标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
+| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、仕样号位数（`specNumberDigits`，5 或 6）；完成状态标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
 除上述键值集合外，三类高写入量数据存放在独立的关系表中（首次升级自动从 `kv_store` 搬迁，幂等）：
@@ -452,7 +452,7 @@ GITEE_REPO_NAME=obara-task-manager
 - `allowViewers=true` 时，`allowAdmins` 必须为 `true`。
 - 后端保存时也会规范化 `allowViewers=true` 的情况，保证一般管理员权限不会低于普通用户。
 - 任务报表、工时管理、状态追踪页面均要求登录；`leaderboard.allowViewers`、`workHours.allowViewers`、`statusTracking.allowViewers` 只表示允许普通用户访问。
-- 焊枪台账（`gunLedger`）要求登录，`allowViewers` 后端强制为 `false`（普通用户不能进入 `/gun-ledger`）；一般管理员可编辑但不能删除分类/表。
+- 焊枪台账（`gunLedger`）要求登录；`allowViewers=true` 时普通用户可进入 `/gun-ledger` 只读浏览（GET 接口经 `accessSettingsMiddleware` 放行，写接口仍要求 `admin` 及以上，Socket 锁事件仅管理员可用）；一般管理员可编辑但不能删除分类/表。
 - 设计规范知识库（`designStandards`）规则同工时管理。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户访问），一般管理员仅可查看数据管理模块的导出功能，不能导入。
 
@@ -587,10 +587,10 @@ taskkill /PID <PID> /F
 ### 后端断开后页面无离线提示
 
 1. 检查浏览器是否处于真正的离线状态：`navigator.onLine` 仅检测浏览器网络连接，后端端口断开（服务器宕机）时不触发
-2. 系统使用 Axios 错误码 `ERR_NETWORK` 和 Socket.IO 的 `connect_error` 事件检测后端不可达
-3. 断线时页脚显示红色圆点 + "离线"，页面顶部显示橙色横幅提示
-4. 如果此前已加载过数据，会自动显示缓存内容，不会归零
-5. 后端恢复后自动重新连接，横幅和页脚状态恢复正常
+2. 系统使用双通道检测后端不可达：axios 响应拦截器捕获 `ERR_NETWORK`/`ECONNABORTED` 后广播全局 `server-unreachable` 事件（恢复时广播 `server-online`），主页面/状态追踪/焊枪台账另监听 Socket.IO 的 `connect_error`/`connect` 事件
+3. 断线时页脚显示红色/琥珀色圆点 + "离线"，页面顶部显示橙色横幅提示「当前处于离线模式，此页面禁止编辑」，所有写操作被拦截
+4. 主页面如果此前已加载过数据，会自动显示 localStorage 缓存内容，不会归零
+5. 离线期间页面每 5 秒轻量探测 `/api/auth/validate`，后端恢复后自动重新加载最新数据，横幅和页脚状态恢复正常
 
 ### 前端请求后端失败
 

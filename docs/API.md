@@ -33,7 +33,7 @@ Authorization: Bearer <token>
 | `admin` | 一般管理员 |
 | `user` | 普通用户 |
 
-普通用户登录后可查看主页面。任务报表、工时管理和状态追踪必须登录后访问，是否允许普通用户进入由对应页面的 `allowViewers` 控制。
+普通用户登录后可查看主页面。任务报表、工时管理、状态追踪和焊枪台账必须登录后访问，是否允许普通用户进入由对应页面的 `allowViewers` 控制（焊枪台账对普通用户仅为只读浏览）。
 
 ## 权限速查
 
@@ -50,7 +50,7 @@ Authorization: Bearer <token>
 | 系统设置数据管理导入 | 否 | 否 | 是 |
 | 查看和修改组长规则 | 否 | 是 | 是 |
 | 重置组长规则为默认 | 否 | 否 | 是 |
-| 查看焊枪台账 | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
+| 查看焊枪台账 | 取决于 `gunLedger.allowViewers`（只读） | 取决于 `gunLedger.allowAdmins` | 是 |
 | 编辑焊枪台账（分类/表/行） | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
 | 删除焊枪台账分类/表 | 否 | 否（按钮可见但拦截） | 是 |
 | 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当 | 否 | 否 | 是 |
@@ -64,7 +64,7 @@ Authorization: Bearer <token>
 
 - 所有页面和接口均需登录，未登录用户会被重定向到登录页。
 - `settings.leaderboard`、`settings.workHours`、`settings.statusTracking` 控制对应页面是否允许 `admin` 和已登录 `user` 访问。
-- `settings.gunLedger` 控制焊枪台账页面访问权限，`allowViewers` 后端强制为 `false`（普通用户不能进入 `/gun-ledger`）。一般管理员可见删除分类/表按钮但点击被拦截（提示需超级管理员权限）。
+- `settings.gunLedger` 控制焊枪台账页面访问权限：`allowViewers=true` 时普通用户可进入 `/gun-ledger` 只读浏览（GET 接口经 `accessSettingsMiddleware` 放行，写接口仍要求 `admin` 及以上）；一般管理员可见删除分类/表按钮但点击被拦截（提示需超级管理员权限）。
 - `settings.designStandards` 控制设计规范知识库页面（`/design-standards`）访问权限，规则同工时管理。
 - `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户不能进入系统设置。
 - `authMiddleware` 只校验登录态；涉及写入任务、设计人员、状态追踪等接口还会继续校验角色。
@@ -898,7 +898,7 @@ Authorization: Bearer <token>
 - `leaderboard.allowViewers=true`、`workHours.allowViewers=true`、`statusTracking.allowViewers=true` 只允许普通用户访问对应页面；未登录游客始终不能进入 `/leaderboard`、`/work-hours` 和 `/status-tracking`。
 - `systemSettings` 配置的 `allowViewers` 始终为 `false`（系统设置不允许普通用户和游客访问）。
 - 四个权限配置的 `GET` 接口（`/settings/leaderboard`、`/settings/work-hours`、`/settings/status-tracking`、`/settings/system-settings`）均需携带有效 JWT；`PUT` 接口均仅 `superadmin`。
-- 焊枪台账（`/settings/gun-ledger`）和设计规范知识库（`/settings/design-standards`）权限配置同样遵循上述规则；其中 `gunLedger.allowViewers` 后端强制为 `false`。
+- 焊枪台账（`/settings/gun-ledger`）和设计规范知识库（`/settings/design-standards`）权限配置同样遵循上述规则；其中 `gunLedger.allowViewers=true` 仅放行普通用户只读访问焊枪台账（GET 接口），所有写接口（分类/表/行增删改、规则配置、初始化、导入）仍要求 `admin`/`superadmin`，焊枪台账相关 Socket 锁事件同样仅管理员可用。
 
 ### 获取任务报表权限设置
 
@@ -942,8 +942,8 @@ Authorization: Bearer <token>
 
 说明：
 
-- 用于控制一般管理员是否可以访问焊枪台账页面（`/gun-ledger`）。
-- `allowViewers` 字段被强制为 `false`（焊枪台账不允许普通用户和游客访问）。
+- 用于控制一般管理员/普通用户是否可以访问焊枪台账页面（`/gun-ledger`）。
+- `allowViewers=true` 时普通用户可只读浏览（仅 GET 接口放行），不能执行任何写操作；`allowViewers=true` 时后端同样强制 `allowAdmins=true`。
 
 ### 获取设计规范知识库权限设置
 
@@ -1985,7 +1985,7 @@ PUT 请求：
 
 - 所有页面和接口均需登录，不提供未登录查看。
 - `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
-- 缺失这两个字段时，系统默认允许登录用户修改本人设计计划标记颜色。
+- 缺失这两个字段时，系统默认允许登录用户修改本人设计计划完成状态。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
 
 ### 更新系统设置
@@ -3303,6 +3303,7 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
    - 后台每 30 秒清理心跳超时且无存活连接的僵死锁。
    - `PUT /api/gun-ledger/tables/:tableId/rows` 和 `initialize-gun-names` 接口会校验表锁，被他人持有时返回 `409`。
    - 表被删除、分类被删除、导入覆盖时会强制释放该表的锁。
+3. **角色限制**：`gun_ledger_lock_table`、`gun_ledger_start_edit`、`gun_ledger_table_heartbeat` 三个事件仅 `admin`/`superadmin` 可调用，普通用户（`user`）发送会被拒绝并收到 `error` 事件（`Insufficient permissions`），防止普通用户构造客户端抢占编辑锁。`gun_ledger_unlock_table`、`gun_ledger_stop_edit` 仅释放本 socket 持有的资源，不做角色限制。
 
 ### 多设备登录踢下线机制
 
@@ -3373,7 +3374,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 |------|----------|------|
 | 400 | `输入格式不正确` / `请指定清理时间点` 等 | 参数校验失败 |
 | 401 | `No token, authorization denied` / `Token is not valid` / `用户名或密码错误` | 未认证、Token 无效或登录凭证错误 |
-| 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` / `您的 IP 已被列入黑名单，无法访问本系统`（`code=IP_BANNED`） | 权限不足（超管接口/管理员接口/页面权限开关未放行）或来源 IP 命中黑名单 |
+| 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` / `无权修改任务完成状态` / `无权修改枪名任务完成状态` / `您的 IP 已被列入黑名单，无法访问本系统`（`code=IP_BANNED`） | 权限不足（超管接口/管理员接口/页面权限开关未放行/无颜色标记权限）或来源 IP 命中黑名单 |
 | 404 | `用户不存在` / `任务条目不存在` / `记录未找到` / `没有可导出的数据` 等 | 资源不存在 |
 | 409 | `该表正由「xxx」编辑，请等待其完成后再保存` / `焊枪名不可重复：「xxx」（序号 1、3）` / `该知识库已关联` | 资源冲突：编辑锁被占用、焊枪名重复或知识库重复关联 |
 | 429 | `请求过于频繁，请稍后再试` / `登录尝试过于频繁，请15分钟后再试` / `密码修改尝试过于频繁，请15分钟后再试` | 触发全局 API 限流、登录限流或修改密码限流 |

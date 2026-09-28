@@ -212,7 +212,9 @@ const SystemSettings = () => {
   const [gunImportConfirmed, setGunImportConfirmed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const gunFileInputRef = useRef<HTMLInputElement>(null);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
+  const isOffline = !isOnline;
   const isSuperAdmin = user?.role === 'superadmin';
   const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
 
@@ -230,17 +232,34 @@ const SystemSettings = () => {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
+  // 网络错误（断网/服务不可达）时标记离线，触发页面禁止编辑
+  const markOfflineIfNetworkError = useCallback((err: any) => {
+    if (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error') {
+      setIsOnline(false);
+      return true;
+    }
+    return false;
+  }, []);
+
+  // 离线时拦截一切写操作（修改/导入/维护等）
+  const guardOffline = () => {
+    if (!isOffline) return false;
+    addToast('当前离线，禁止编辑', 'error');
+    return true;
+  };
+
   const fetchAccessSettings = useCallback(async () => {
     try {
       // 必须走 axiosInstance 携带 Authorization：接口需登录访问
       const res = await axiosInstance.get('/settings/system-settings');
       setAccessSettings(res.data);
-    } catch {
+    } catch (err) {
+      markOfflineIfNetworkError(err);
       addToast('无法加载权限设置', 'error');
     } finally {
       setAccessSettingsLoaded(true);
     }
-  }, []);
+  }, [markOfflineIfNetworkError]);
 
   const fetchSettings = useCallback(async () => {
     await refreshSettings();
@@ -252,10 +271,11 @@ const SystemSettings = () => {
     try {
       const res = await axios.get('/api/system/admin-login-logs', authHeader);
       setLoginLogs(res.data);
-    } catch {
+    } catch (err) {
+      markOfflineIfNetworkError(err);
       addToast('无法加载登录历史', 'error');
     }
-  }, [isSuperAdmin, token]);
+  }, [isSuperAdmin, token, markOfflineIfNetworkError]);
 
   // IP 黑名单：加载 / 启停 / 批量添加 / 删除
   const fetchIpBlacklist = useCallback(async () => {
@@ -263,12 +283,14 @@ const SystemSettings = () => {
     try {
       const res = await axios.get('/api/system/ip-blacklist', authHeader);
       setIpBlacklist({ enabled: Boolean(res.data?.enabled), entries: Array.isArray(res.data?.entries) ? res.data.entries : [] });
-    } catch {
+    } catch (err) {
+      markOfflineIfNetworkError(err);
       addToast('无法加载 IP 黑名单', 'error');
     }
-  }, [isSuperAdmin, token]);
+  }, [isSuperAdmin, token, markOfflineIfNetworkError]);
 
   const toggleIpBlacklist = async (enabled: boolean) => {
+    if (guardOffline()) return;
     setIpBlacklist(prev => ({ ...prev, enabled }));
     try {
       const res = await axios.put('/api/system/ip-blacklist', { enabled }, authHeader);
@@ -281,6 +303,7 @@ const SystemSettings = () => {
   };
 
   const handleAddIpBlacklist = async () => {
+    if (guardOffline()) return;
     const input = ipInput.trim();
     if (!input) {
       addToast('请输入要拉黑的 IP', 'error');
@@ -313,6 +336,7 @@ const SystemSettings = () => {
   };
 
   const handleDeleteIpBlacklist = async (entry: IpBlacklistEntry) => {
+    if (guardOffline()) return;
     try {
       const res = await axios.delete(`/api/system/ip-blacklist/${entry.id}`, authHeader);
       setIpBlacklist(prev => ({ ...prev, entries: Array.isArray(res.data?.entries) ? res.data.entries : [] }));
@@ -358,13 +382,14 @@ const SystemSettings = () => {
         const valid = prev.filter(name => list.some(item => item.category === name));
         return valid.length ? valid : list.map(item => item.category);
       });
-    } catch {
+    } catch (err) {
+      markOfflineIfNetworkError(err);
       setGunLedgerCats([]);
       setGunExportCats([]);
     } finally {
       setGunCatsLoading(false);
     }
-  }, [token]);
+  }, [token, markOfflineIfNetworkError]);
 
 
 
@@ -375,12 +400,13 @@ const SystemSettings = () => {
       const res = await axios.get('/api/system/maintenance', authHeader);
       setMaintenanceStatus(res.data);
       setMaintenanceSettings({ ...defaultMaintenanceSettings, ...res.data.settings });
-    } catch {
+    } catch (err) {
+      markOfflineIfNetworkError(err);
       addToast('数据库维护状态加载失败', 'error');
     } finally {
       setMaintenanceLoading(false);
     }
-  }, [isSuperAdmin, token]);
+  }, [isSuperAdmin, token, markOfflineIfNetworkError]);
 
   useEffect(() => {
     const init = async () => {
@@ -391,6 +417,53 @@ const SystemSettings = () => {
     init();
   }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats]);
 
+  // 网络恢复后自动重新加载数据
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      fetchAccessSettings();
+      fetchLoginLogs();
+      fetchIpBlacklist();
+      fetchMaintenanceStatus();
+      fetchGunLedgerCats();
+    };
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats]);
+
+  // 后端服务停止/恢复（navigator.onLine 感知不到本机服务停止，由 axiosInstance 拦截器广播）
+  useEffect(() => {
+    const handleServerUnreachable = () => setIsOnline(false);
+    const handleServerOnline = () => {
+      setIsOnline(true);
+      fetchAccessSettings();
+      fetchLoginLogs();
+      fetchIpBlacklist();
+      fetchMaintenanceStatus();
+      fetchGunLedgerCats();
+    };
+    window.addEventListener('server-unreachable', handleServerUnreachable);
+    window.addEventListener('server-online', handleServerOnline);
+    return () => {
+      window.removeEventListener('server-unreachable', handleServerUnreachable);
+      window.removeEventListener('server-online', handleServerOnline);
+    };
+  }, [fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats]);
+
+  // 离线期间每 5 秒轻量探测后端是否恢复（成功时拦截器自动广播 server-online）
+  useEffect(() => {
+    if (!isOffline) return;
+    const timer = setInterval(() => {
+      axiosInstance.get('/auth/validate').catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [isOffline]);
+
   useEffect(() => {
     if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'maintenance' || activeTab === 'plan')) {
       setActiveTab('data');
@@ -398,6 +471,7 @@ const SystemSettings = () => {
   }, [isSuperAdmin, activeTab]);
 
   const updateSettings = async (next: Partial<SystemSettingsData>) => {
+    if (guardOffline()) return;
     const updated = { ...settings, ...next };
     if (next.allowUserDesignPlanColorMark !== undefined) {
       updated.allowUserEditOwnTaskColor = next.allowUserDesignPlanColorMark;
@@ -415,6 +489,7 @@ const SystemSettings = () => {
   };
 
   const updateAccessSettings = async (next: Partial<typeof defaultAccessSettings>) => {
+    if (guardOffline()) return;
     const updated = { ...accessSettings, ...next };
     if (next.enabled === false) {
       updated.allowAdmins = false;
@@ -455,6 +530,7 @@ const SystemSettings = () => {
       window.URL.revokeObjectURL(url);
       addToast('导出成功', 'success');
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       if (err.response?.status === 404) {
         addToast('没有可导出的数据', 'error');
       } else {
@@ -491,6 +567,7 @@ const SystemSettings = () => {
       window.URL.revokeObjectURL(url);
       addToast('导出成功', 'success');
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       if (err.response?.status === 404) {
         addToast('没有可导出的数据', 'error');
       } else {
@@ -519,6 +596,7 @@ const SystemSettings = () => {
       window.URL.revokeObjectURL(url);
       addToast('导出成功', 'success');
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       if (err.response?.status === 404) {
         addToast('没有可导出的数据', 'error');
       } else {
@@ -556,6 +634,7 @@ const SystemSettings = () => {
       window.URL.revokeObjectURL(url);
       addToast('导出成功', 'success');
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       if (err.response?.status === 404) {
         addToast('没有可导出的数据', 'error');
       } else if (err.response?.status === 403) {
@@ -593,6 +672,7 @@ const SystemSettings = () => {
 
   // 确认导入：上传工作簿，每个工作表成为目标分类下的一张表（覆盖目标分类）
   const confirmGunLedgerImport = async () => {
+    if (guardOffline()) return;
     if (!gunPendingFile || !token) return;
 
     const targetCategory = (gunImportAsNew ? gunImportNewName : gunImportCategory).trim();
@@ -633,6 +713,7 @@ const SystemSettings = () => {
   };
 
   const saveMaintenanceSettings = async () => {
+    if (guardOffline()) return;
     if (!token) return;
     setMaintenanceSaving(true);
     try {
@@ -649,6 +730,7 @@ const SystemSettings = () => {
 
   // 执行维护操作并刷新状态，返回接口 JSON 供调用方展示具体结果
   const runMaintenanceAction = async (url: string, body: any = {}) => {
+    if (guardOffline()) return null;
     if (!token) return null;
     setMaintenanceLoading(true);
     try {
@@ -674,6 +756,7 @@ const SystemSettings = () => {
   };
 
   const handleCleanupBackupsNow = async () => {
+    if (guardOffline()) return;
     if (!window.confirm('将按各项保留天数，清理数据库备份、任务表格导出、编号台账导出、关机备份四个目录中的过期文件。是否继续？')) return;
     const data = await runMaintenanceAction('/api/system/maintenance/cleanup-backups');
     if (data) addToast(`过期文件清理完成，共删除 ${data.cleanup.removedCount} 个文件`, 'success');
@@ -687,6 +770,7 @@ const SystemSettings = () => {
   };
 
   const handleYearlyCleanupNow = async () => {
+    if (guardOffline()) return;
     if (!window.confirm('将忽略检测月份、月初检测窗口及"每年仅执行一次"的限制，立即按当前保留年数执行清理检测：早于临界年份的任务工作表会先永久归档为 JSON，再从数据库删除，此操作不可恢复。是否继续？')) return;
     const data = await runMaintenanceAction('/api/system/maintenance/yearly-cleanup', { force: true });
     if (!data) return;
@@ -706,6 +790,7 @@ const SystemSettings = () => {
   };
 
   const handleClearLogs = async () => {
+    if (guardOffline()) return;
     if (!token) return;
     if (!window.confirm('确定要清空所有登录日志和操作日志吗？此操作不可恢复！')) return;
     setMaintenanceLoading(true);
@@ -721,6 +806,7 @@ const SystemSettings = () => {
   };
 
   const handleCleanupTasks = async () => {
+    if (guardOffline()) return;
     if (!token) return;
     let confirmMsg = '';
     let payload: any = {};
@@ -749,6 +835,7 @@ const SystemSettings = () => {
   };
 
   const handleCleanupStatusTracking = async () => {
+    if (guardOffline()) return;
     if (!token) return;
     const confirmMsg = `确定要清理 ${cleanupStBeforeMonth} 之前的状态跟踪数据吗？（按${cleanupStMode === 'production' ? '添加时间月份' : '纳期月份'}）此操作不可恢复！`;
     if (!window.confirm(confirmMsg)) return;
@@ -788,6 +875,7 @@ const SystemSettings = () => {
   };
 
   const confirmTaskImport = async () => {
+    if (guardOffline()) return;
     if (!pendingImportFile || !token) return;
     if (!importMonth) {
       addToast('请选择要覆盖导入的月份', 'error');
@@ -875,6 +963,13 @@ const SystemSettings = () => {
           </div>
         )}
       </header>
+
+      {isOffline && (
+        <div className="relative z-40 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
+        </div>
+      )}
 
       <div className="sticky top-[48px] z-30 bg-white border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-8 flex space-x-1">
@@ -1800,7 +1895,7 @@ const SystemSettings = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
                 { label: '允许多设备同时在线', detail: 'Multi Device', key: 'allowMultiDevice' as const },
-                { label: '允许登录用户修改本人设计计划标记颜色', detail: 'Own Design Plan Color', key: 'allowUserDesignPlanColorMark' as const }
+                { label: '允许登录用户修改本人设计计划完成状态', detail: 'Own Design Plan Status', key: 'allowUserDesignPlanColorMark' as const }
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                   <div>

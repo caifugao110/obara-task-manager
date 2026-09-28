@@ -243,6 +243,9 @@ const Admin = () => {
   const [confirmInitUsers, setConfirmInitUsers] = useState(false);
   const [designersCollapsed, setDesignersCollapsed] = useState(true);
   const [usersCollapsed, setUsersCollapsed] = useState(true);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  const isOffline = !isOnline;
 
   // 初始化用户后一次性展示的初始凭据（关闭后不再可查）
   const [initialCredentials, setInitialCredentials] = useState<Array<{
@@ -267,6 +270,22 @@ const Admin = () => {
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 3000);
+  };
+
+  // 网络错误（断网/服务不可达）时标记离线，触发页面禁止编辑
+  const markOfflineIfNetworkError = useCallback((err: any) => {
+    if (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error') {
+      setIsOnline(false);
+      return true;
+    }
+    return false;
+  }, []);
+
+  // 离线时拦截一切写操作
+  const guardOffline = () => {
+    if (!isOffline) return false;
+    addToast('当前离线，禁止编辑', 'error');
+    return true;
   };
 
   const parseTableText = (text: string) => {
@@ -325,6 +344,7 @@ const Admin = () => {
   };
 
   const handleBulkImport = async () => {
+    if (guardOffline()) return;
     if (!bulkImportType) return;
     const rows = parseTableText(bulkImportText);
     if (rows.length === 0) {
@@ -382,6 +402,7 @@ const Admin = () => {
       setBulkImportText('');
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '批量导入失败', 'error');
     } finally {
       setBulkImportSubmitting(false);
@@ -397,6 +418,7 @@ const Admin = () => {
       setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     } catch (err: any) {
       console.error('Error fetching users:', err);
+      markOfflineIfNetworkError(err);
       addToast('无法加载管理员列表', 'error');
     }
 
@@ -405,16 +427,56 @@ const Admin = () => {
       setDesigners(Array.isArray(designersRes.data) ? designersRes.data : []);
     } catch (err: any) {
       console.error('Error fetching designers:', err);
+      markOfflineIfNetworkError(err);
       addToast('无法加载设计人员列表', 'error');
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, markOfflineIfNetworkError]);
 
   useEffect(() => {
     if (!authReady || !token) return;
     fetchData();
   }, [authReady, token, fetchData]);
+
+  // 网络恢复后自动重新加载数据
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      fetchData();
+    };
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [fetchData]);
+
+  // 后端服务停止/恢复（navigator.onLine 感知不到本机服务停止，由 axiosInstance 拦截器广播）
+  useEffect(() => {
+    const handleServerUnreachable = () => setIsOnline(false);
+    const handleServerOnline = () => {
+      setIsOnline(true);
+      fetchData();
+    };
+    window.addEventListener('server-unreachable', handleServerUnreachable);
+    window.addEventListener('server-online', handleServerOnline);
+    return () => {
+      window.removeEventListener('server-unreachable', handleServerUnreachable);
+      window.removeEventListener('server-online', handleServerOnline);
+    };
+  }, [fetchData]);
+
+  // 离线期间每 5 秒轻量探测后端是否恢复（成功时拦截器自动广播 server-online）
+  useEffect(() => {
+    if (!isOffline) return;
+    const timer = setInterval(() => {
+      axiosInstance.get('/auth/validate').catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [isOffline]);
 
   useEffect(() => {
     if (!isSuperAdmin && newRole !== 'user') {
@@ -432,6 +494,7 @@ const Admin = () => {
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (guardOffline()) return;
     if (!isSuperAdmin && newRole !== 'user') {
       addToast('一般管理员只能创建普通用户', 'error');
       return;
@@ -451,12 +514,14 @@ const Admin = () => {
       setNewRole('admin');
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '创建失败', 'error');
     }
   };
 
   const handleCreateDesigner = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (guardOffline()) return;
     if (designers.some(d => normalizeKey(d.name) === normalizeKey(newDesignerName))) {
       addToast('设计人员姓名已存在', 'error');
       return;
@@ -472,22 +537,26 @@ const Admin = () => {
       setNewDesignerGroup('');
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '添加失败', 'error');
     }
   };
 
   const handleInitializeDesigners = () => {
+    if (guardOffline()) return;
     if (!canInitializeDesigners) return;
     setConfirmInitDesigners(true);
   };
 
   const runInitializeDesigners = async () => {
+    if (guardOffline()) return;
     setInitializingDesigners(true);
     try {
       await Promise.all(initialDesigners.map(designer => axiosInstance.post('/designers', designer)));
       addToast(`已初始化 ${initialDesigners.length} 位设计人员`, 'success');
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '初始化设计人员失败', 'error');
     } finally {
       setInitializingDesigners(false);
@@ -495,11 +564,13 @@ const Admin = () => {
   };
 
   const handleInitializeUsers = () => {
+    if (guardOffline()) return;
     if (!canInitializeUsers) return;
     setConfirmInitUsers(true);
   };
 
   const runInitializeUsers = async () => {
+    if (guardOffline()) return;
     // 先在本地生成全部随机密码：即使部分请求失败，密码仍可展示，
     // 便于重试或手动建号
     const credentials = initialLoginUsers.map(user => ({
@@ -532,6 +603,7 @@ const Admin = () => {
       setInitialCredentials(credentials);
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '初始化登录用户失败', 'error');
     } finally {
       setInitializingUsers(false);
@@ -539,6 +611,7 @@ const Admin = () => {
   };
 
   const handleToggleHideDesigner = async (id: string, hidden: boolean) => {
+    if (guardOffline()) return;
     const designer = designers.find(d => d.id === id);
     if (!designer) return;
     try {
@@ -546,11 +619,13 @@ const Admin = () => {
       addToast(hidden ? '人员已隐藏' : '已取消隐藏', 'success');
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '操作失败', 'error');
     }
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
+    if (guardOffline()) return;
     const { active, over } = event;
     if (over && active.id !== over.id) {
       const oldIndex = designers.findIndex((d) => d.id === active.id);
@@ -562,7 +637,8 @@ const Admin = () => {
       try {
         await axiosInstance.post('/designers/reorder', { ids: newDesigners.map(d => d.id) });
         addToast('排序已保存', 'success');
-      } catch (err) {
+      } catch (err: any) {
+        markOfflineIfNetworkError(err);
         addToast('排序保存失败', 'error');
         fetchData();
       }
@@ -570,6 +646,7 @@ const Admin = () => {
   };
 
   const handleDeleteUser = (id: string) => {
+    if (guardOffline()) return;
     if (!isSuperAdmin) return;
     if (id === currentUser?.id) {
       addToast('不能删除自己', 'error');
@@ -579,6 +656,7 @@ const Admin = () => {
   };
 
   const handleBatchDeleteUsers = () => {
+    if (guardOffline()) return;
     if (!isSuperAdmin) return;
     const ids = selectedUserIds.filter(id => id !== currentUser?.id);
     const selectedUsers = users.filter(u => ids.includes(u.id));
@@ -594,6 +672,7 @@ const Admin = () => {
   };
 
   const runBatchDeleteUsers = async (ids: string[]) => {
+    if (guardOffline()) return;
     try {
       try {
         await axiosInstance.post('/users/batch-delete', { ids });
@@ -605,17 +684,20 @@ const Admin = () => {
       setSelectedUserIds([]);
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '批量删除失败', 'error');
     }
   };
 
   const handleResetPassword = async (id: string) => {
+    if (guardOffline()) return;
     if (!isSuperAdmin) return;
     setResetPasswordUserId(id);
     setResetPasswordValue('');
   };
 
   const handleToggleUserDisabled = async (id: string) => {
+    if (guardOffline()) return;
     if (!isSuperAdmin) return;
     const user = users.find(u => u.id === id);
     if (!user) return;
@@ -633,11 +715,13 @@ const Admin = () => {
       addToast(user.disabled ? '账号已启用' : '账号已禁用', 'success');
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '操作失败', 'error');
     }
   };
 
   const submitResetPassword = async () => {
+    if (guardOffline()) return;
     if (!isSuperAdmin) return;
     if (!resetPasswordUserId) return;
     if (resetPasswordValue.length < 6) {
@@ -659,6 +743,7 @@ const Admin = () => {
         setTimeout(() => { window.location.href = buildLoginUrl(); }, 800);
       }
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '重置失败', 'error');
     } finally {
       setResetPasswordSubmitting(false);
@@ -666,6 +751,7 @@ const Admin = () => {
   };
 
   const handleSetRole = async (id: string) => {
+    if (guardOffline()) return;
     if (!isSuperAdmin) return;
     const user = users.find(u => u.id === id);
     if (!user) return;
@@ -674,6 +760,7 @@ const Admin = () => {
   };
 
   const submitSetRole = async () => {
+    if (guardOffline()) return;
     if (!isSuperAdmin) return;
     if (!setRoleUserId) return;
     setSetRoleSubmitting(true);
@@ -683,6 +770,7 @@ const Admin = () => {
       setSetRoleUserId(null);
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '权限更新失败', 'error');
     } finally {
       setSetRoleSubmitting(false);
@@ -690,10 +778,12 @@ const Admin = () => {
   };
 
   const handleDeleteDesigner = (id: string) => {
+    if (guardOffline()) return;
     setBatchDeleteConfirm({ kind: 'designers', ids: [id] });
   };
 
   const handleBatchDeleteDesigners = () => {
+    if (guardOffline()) return;
     const ids = [...selectedDesignerIds];
     if (ids.length === 0) {
       addToast('请先选择要删除的设计人员', 'error');
@@ -703,6 +793,7 @@ const Admin = () => {
   };
 
   const runBatchDeleteDesigners = async (ids: string[]) => {
+    if (guardOffline()) return;
     try {
       try {
         await axiosInstance.post('/designers/batch-delete', { ids });
@@ -714,11 +805,13 @@ const Admin = () => {
       setSelectedDesignerIds([]);
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '批量移除失败', 'error');
     }
   };
 
   const handleEditDesigner = (id: string) => {
+    if (guardOffline()) return;
     const designer = designers.find(d => d.id === id);
     if (designer) {
       setEditingDesignerId(id);
@@ -729,6 +822,7 @@ const Admin = () => {
   };
 
   const handleSaveDesigner = async () => {
+    if (guardOffline()) return;
     if (!editingDesignerId) return;
     try {
       const designer = designers.find(d => d.id === editingDesignerId);
@@ -742,6 +836,7 @@ const Admin = () => {
       setEditDesignerModalOpen(false);
       fetchData();
     } catch (err: any) {
+      markOfflineIfNetworkError(err);
       addToast(err.response?.data?.message || '更新失败', 'error');
     }
   };
@@ -1069,6 +1164,13 @@ const Admin = () => {
           </button>
         </div>
       </header>
+
+      {isOffline && (
+        <div className="relative z-40 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
+        </div>
+      )}
 
       <main className="flex-1 p-6 space-y-8 max-w-7xl mx-auto w-full">
         {/* Designers Management (Task Table Members) */}

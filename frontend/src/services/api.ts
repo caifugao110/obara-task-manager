@@ -49,10 +49,31 @@ axiosInstance.interceptors.request.use(
   }
 );
 
+// 后端可达性标记：仅在状态翻转时广播全局事件，避免每次请求都触发页面回调。
+// 后端进程停止时浏览器网络仍在线（navigator.onLine=true），各页面靠监听
+// server-unreachable / server-online 事件进入/退出离线模式。
+let serverReachable = true;
+
 // 响应拦截器 - 处理错误
 axiosInstance.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (!serverReachable) {
+      serverReachable = true;
+      window.dispatchEvent(new CustomEvent('server-online'));
+    }
+    return response;
+  },
   (error: AxiosError) => {
+    // 网络层失败（后端停止/不可达/请求超时）说明服务已不可达
+    if (serverReachable && !error.response && (
+      error.code === 'ERR_NETWORK' ||
+      error.code === 'ECONNABORTED' ||
+      error.message === 'Network Error'
+    )) {
+      serverReachable = false;
+      window.dispatchEvent(new CustomEvent('server-unreachable'));
+    }
+
     // 处理账号禁用情况
     if (error.response?.status === 403) {
       const data = error.response.data as any;

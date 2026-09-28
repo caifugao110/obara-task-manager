@@ -249,7 +249,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
                   <button
                     type="button"
                     className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title="标记为白色"
+                    title="任务完成"
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkColor(item, designerId, date, 'white');
@@ -260,7 +260,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
                   <button
                     type="button"
                     className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title={isAutoMarked ? '恢复主任务及所有枪名标记前颜色' : '恢复标记前颜色'}
+                    title={isAutoMarked ? '任务未完成（联动恢复主任务及所有枪名）' : '任务未完成'}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkColor(item, designerId, date, 'restore');
@@ -308,7 +308,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
                   <button
                     type="button"
                     className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title="标记为白色"
+                    title="任务完成"
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkGunColor(item, designerId, date, index, 'white');
@@ -319,7 +319,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
                   <button
                     type="button"
                     className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title="恢复标记前颜色"
+                    title="任务未完成"
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkGunColor(item, designerId, date, index, 'restore');
@@ -580,7 +580,7 @@ const Dashboard = () => {
       const session = getBlockingEditingSession(designerId, date);
       if (!session) return false;
       if (canViewEditingUser || (user && session.mode === 'colorMark')) {
-        addToast(`${session.name || session.username} ${session.mode === 'colorMark' ? '正在标记任务颜色' : '正在编辑该区域'}`, 'error');
+        addToast(`${session.name || session.username} ${session.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域'}`, 'error');
       }
       return true;
     },
@@ -1487,9 +1487,9 @@ const Dashboard = () => {
         upsertSheet(res.data.sheet);
       }
       socketRef.current?.emit('task_updated');
-      addToast(action === 'white' ? '已标记为白色' : '已恢复标记前颜色', 'success');
+      addToast(action === 'white' ? '该任务标记为已完成' : '该任务标记为未完成', 'success');
     } catch (err: any) {
-      addToast(err.response?.data?.message || '标记颜色失败', 'error');
+      addToast(err.response?.data?.message || '任务完成状态更新失败', 'error');
       fetchSheets();
     } finally {
       setTimeout(() => {
@@ -1520,9 +1520,9 @@ const Dashboard = () => {
         upsertSheet(res.data.sheet);
       }
       socketRef.current?.emit('task_updated');
-      addToast(action === 'white' ? '枪名已标记为白色' : '枪名已恢复标记前颜色', 'success');
+      addToast(action === 'white' ? '该任务标记为已完成' : '该任务标记为未完成', 'success');
     } catch (err: any) {
-      addToast(err.response?.data?.message || '枪名标记颜色失败', 'error');
+      addToast(err.response?.data?.message || '枪名任务完成状态更新失败', 'error');
       fetchSheets();
     } finally {
       setTimeout(() => {
@@ -2077,7 +2077,7 @@ const Dashboard = () => {
         setSelectedTasks([]);
         setModalOpen(false);
         if (canViewEditingUser || (user && data.mode === 'colorMark')) {
-          addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? '正在标记任务颜色' : '正在编辑该区域'}`, 'error');
+          addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域'}`, 'error');
         }
       });
 
@@ -2909,12 +2909,6 @@ const Dashboard = () => {
     return user?.role === 'admin' && systemSettingsAccess.allowAdmins;
   };
 
-  const canShowGunLedgerLink = () => {
-    if (isSuperAdmin) return true;
-    if (!gunLedgerAccess.enabled) return false;
-    return user?.role === 'admin' && gunLedgerAccess.allowAdmins;
-  };
-
   const formatTaskMetaTime = (value?: string) => {
     if (!value) return '暂无记录';
     const date = new Date(value);
@@ -3051,7 +3045,7 @@ const Dashboard = () => {
               <span>设计规范知识库</span>
             </Link>
           )}
-          {canShowGunLedgerLink() && (
+          {canShowAccessLink(gunLedgerAccess) && (
             <Link
               to="/gun-ledger"
               target="_blank"
@@ -3290,7 +3284,7 @@ const Dashboard = () => {
                                           {user && editingSession && editingSession.userId !== user?.id && (canViewEditingUser || editingSession.mode === 'colorMark') && (
                                             <div className="absolute inset-0 bg-red-200/85 flex items-center justify-center z-10">
                                               <span className="text-xs font-bold text-white bg-red-600 px-2 py-1 rounded border border-red-700 shadow-sm">
-                                                {editingSession.name || editingSession.username} {editingSession.mode === 'colorMark' ? '正在标记任务颜色' : '正在编辑'}
+                                                {editingSession.name || editingSession.username} {editingSession.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑'}
                                               </span>
                                             </div>
                                           )}

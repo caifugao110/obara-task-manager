@@ -22,6 +22,7 @@ import {
   Unlock,
   AlertTriangle,
   Download,
+  Eye,
   RotateCcw,
   Calendar
 } from 'lucide-react';
@@ -1203,15 +1204,25 @@ const StatusTracking = () => {
         </div>
       </header>
 
+      {/* 离线禁止编辑提示条（与焊枪台账页面样式一致） */}
+      {offlineWarning && (
+        <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
+        </div>
+      )}
+
+      {/* 普通用户只读模式提示条（查看权限打开时仅可浏览，不可编辑；离线提示条已覆盖时不再重复展示） */}
+      {!offlineWarning && !isAdmin && (
+        <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+          <Eye size={14} className="shrink-0" />
+          <span>当前为只读模式，仅可查看数据，无法编辑</span>
+        </div>
+      )}
+
       <main className="flex-1 px-6 pb-6 overflow-y-auto overflow-x-auto">
         <div className="h-6 shrink-0"></div>
         <div className="w-fit min-w-full bg-white rounded-2xl shadow-xl border border-gray-100">
-          {offlineWarning && (
-            <div className="bg-red-100 border-b border-red-200 px-4 py-2 flex items-center justify-center gap-2 rounded-t-2xl">
-              <AlertTriangle size={18} className="text-red-600" />
-              <span className="text-sm font-medium text-red-700">当前离线，禁止编辑！</span>
-            </div>
-          )}
             <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
               <colgroup>
                 <col style={{ width: '80px' }} />

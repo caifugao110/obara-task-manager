@@ -9,7 +9,7 @@ const path = require('path');
 const fs = require('fs');
 
 const securityConfig = require('./config/security');
-const { socketAuthMiddleware, requireSocketAuth } = require('./middleware/socketAuth');
+const { socketAuthMiddleware, requireSocketAuth, requireSocketRole } = require('./middleware/socketAuth');
 
 const app = express();
 
@@ -355,7 +355,9 @@ io.on('connection', (socket) => {
   // 焊枪编号台账：开始编辑某行（取号）
   socket.on('gun_ledger_start_edit', (data) => {
     try {
-      const authenticatedUser = requireSocketAuth(socket);
+      // 行编辑锁（取号）仅管理员可用：普通用户为只读视图，
+      // 防止构造客户端抢占行锁干扰管理员编辑
+      const authenticatedUser = requireSocketRole(socket);
       if (!data?.tableId || data?.serialNumber === undefined || data?.serialNumber === null) {
         socket.emit('error', { message: 'Missing tableId or serialNumber' });
         return;
@@ -411,7 +413,9 @@ io.on('connection', (socket) => {
   // 焊枪编号台账：申请表级独占编辑锁（打开表准备编辑时触发）
   socket.on('gun_ledger_lock_table', (data) => {
     try {
-      const authenticatedUser = requireSocketAuth(socket);
+      // 表级独占编辑锁仅管理员可申请：普通用户为只读视图（前端亦不发锁请求），
+      // 防止构造客户端抢占表锁并经心跳无限续期，阻断管理员编辑
+      const authenticatedUser = requireSocketRole(socket);
       if (!data?.tableId) {
         socket.emit('error', { message: 'Missing tableId' });
         return;
@@ -452,7 +456,8 @@ io.on('connection', (socket) => {
   // 焊枪编号台账：表级锁心跳续期
   socket.on('gun_ledger_table_heartbeat', (data) => {
     try {
-      const authenticatedUser = requireSocketAuth(socket);
+      // 锁心跳续期同样仅限管理员：防止普通用户为已抢占的锁续命
+      const authenticatedUser = requireSocketRole(socket);
       if (!data?.tableId) return;
       gunTableLocks.heartbeat(String(data.tableId), authenticatedUser.id);
     } catch (err) {
