@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
@@ -133,7 +133,7 @@ const normalizeTaskColor = (value?: string) => String(value || '').trim().toLowe
 const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
 const hasStoredUserMarkColor = (item: TaskItem | GunItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskClick, onDeleteGun, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskClick, onDeleteGun, onMoveGun, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
   const isAutoMarked = item.colorMarkedBy?.id === 'auto';
@@ -291,6 +291,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
         const gunIsWhite = isWhiteTaskColor(gun.color);
         const gunCanRestore = canMarkColor && gunIsWhite && gun.colorMarkedBy && hasStoredUserMarkColor(gun);
         const gunShowMarkWhite = canMarkColor && !gunIsWhite;
+        const gunCount = (item.guns || []).length;
+        const canMoveUp = isAdmin && gunCount > 1 && index > 0;
+        const canMoveDown = isAdmin && gunCount > 1 && index < gunCount - 1;
         
         return (
         <React.Fragment key={gun.id}>
@@ -330,8 +333,32 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
             <div className="flex-1 flex items-center gap-1">
               <span>{gun.name || '未命名'}</span>
             </div>
+            {canMoveUp && (
+              <button
+                className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                title="上移"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveGun(item, designerId, date, index, 'up');
+                }}
+              >
+                <ChevronUp size={14} />
+              </button>
+            )}
+            {canMoveDown && (
+              <button
+                className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                title="下移"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveGun(item, designerId, date, index, 'down');
+                }}
+              >
+                <ChevronDown size={14} />
+              </button>
+            )}
              {isAdmin && (
-               <button 
+               <button
                  className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-red-500 transition-opacity"
                  onClick={(e) => {
                    e.stopPropagation();
@@ -411,7 +438,7 @@ interface Toast {
 
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
-  const { specNumberDigits } = useSystemSettings();
+  const { specNumberDigits, settings: systemSettings } = useSystemSettings();
   const location = useLocation();
   const jumpTarget = useMemo(() => {
     const params = new URLSearchParams(location.search);
@@ -1014,6 +1041,42 @@ const Dashboard = () => {
     };
   }, []);
 
+  // 从枪名提取类型标识：枪名首个「-」前的字符（SRTC->C, SRTX->X, SRTV->V...）
+  const getGunTypeFromName = (gunName: string): 'C' | 'X' | null => {
+    const name = String(gunName || '').trim();
+    const dashIdx = name.indexOf('-');
+    if (dashIdx <= 0) return null;
+    const ch = name.charAt(dashIdx - 1).toUpperCase();
+    return ch === 'C' || ch === 'X' ? ch : null;
+  };
+
+  // 根据任务类型 + 枪名类型获取配置的默认工时；未配置或类型不匹配返回 null
+  const getDefaultGunHoursFor = (
+    taskType: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange',
+    gunName: string
+  ): number | null => {
+    if (taskType !== 'confirm' && taskType !== 'design' && taskType !== 'confirmModify') return null;
+    const gunType = getGunTypeFromName(gunName);
+    if (!gunType) return null;
+    const configured = systemSettings.defaultGunHours?.[taskType]?.[gunType];
+    return typeof configured === 'number' && Number.isFinite(configured) ? configured : null;
+  };
+
+  // 新增任务模式下：按当前任务类型给单个枪名应用默认工时
+  // 仅当该枪当前工时为空时填充，已手动输入的工时不覆盖
+  const applyDefaultHoursToGun = (
+    guns: GunItem[],
+    taskType: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange'
+  ): GunItem[] => {
+    if (taskType !== 'confirm' && taskType !== 'design' && taskType !== 'confirmModify') return guns;
+    return guns.map(gun => {
+      const currentHours = String(gun.hours ?? '').trim();
+      if (currentHours !== '') return gun;
+      const defaultHours = getDefaultGunHoursFor(taskType, gun.name);
+      return defaultHours !== null ? { ...gun, hours: defaultHours } : gun;
+    });
+  };
+
   const openModal = (designerId: string, date: string, addMode: boolean = false) => {
     if (!canEditTasks) {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
@@ -1131,9 +1194,10 @@ const Dashboard = () => {
     if (!autoGunLookupResults || autoGunLookupChecked.size === 0) return;
     const picked = autoGunGunLookupPicked();
     if (autoGunLookupContext === 'add') {
+      const newGuns = picked.map(name => ({ id: `gun-new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' }));
       setAddModeGuns(prev => [
         ...prev,
-        ...picked.map(name => ({ id: `gun-new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' })),
+        ...applyDefaultHoursToGun(newGuns, addModeTaskType)
       ]);
       addToast(`已添加 ${picked.length} 个枪名`, 'success');
     } else if (autoGunLookupContext === 'edit' && autoGunLookupItemId) {
@@ -1190,6 +1254,29 @@ const Dashboard = () => {
     });
     handleItemChange(designerId, date, item.id, 'guns', newGuns);
     addToast('枪名已删除', 'success');
+  };
+
+  // 上移/下移枪名（连同其工时）顺序
+  const onMoveGun = (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
+    if (warnIfCellLocked(designerId, date)) return;
+    const guns = item.guns || [];
+    const target = direction === 'up' ? gunIndex - 1 : gunIndex + 1;
+    if (gunIndex < 0 || gunIndex >= guns.length || target < 0 || target >= guns.length) return;
+    const newGuns = [...guns];
+    [newGuns[gunIndex], newGuns[target]] = [newGuns[target], newGuns[gunIndex]];
+    addToHistory('fieldChange', {
+      designerId,
+      date,
+      itemId: item.id,
+      field: 'guns',
+      newValue: newGuns,
+      originalValue: guns
+    });
+    handleItemChange(designerId, date, item.id, 'guns', newGuns);
   };
 
   const onDeleteTask = (item: TaskItem, designerId: string, date: string) => {
@@ -3153,6 +3240,7 @@ const Dashboard = () => {
                                                 canMarkColor={canMarkColor}
                                                 onTaskClick={onTaskClick}
                                                 onDeleteGun={onDeleteGun}
+                                                onMoveGun={onMoveGun}
                                                 onDeleteTask={onDeleteTask}
                                                 onMarkColor={handleUserDesignPlanColorMark}
                                                 onMarkGunColor={handleGunColorMark}
@@ -3451,7 +3539,9 @@ const Dashboard = () => {
                                   checked={addModeTaskType === 'confirm'}
                                   onChange={(e) => {
                                     if (e.target.checked) {
-                                      setAddModeTaskType('confirm');
+                                      const nextType = 'confirm';
+                                      setAddModeTaskType(nextType);
+                                      setAddModeGuns(prev => applyDefaultHoursToGun(prev, nextType));
                                     } else if (addModeTaskType === 'confirm') {
                                       setAddModeTaskType('none');
                                     }
@@ -3466,7 +3556,9 @@ const Dashboard = () => {
                                   checked={addModeTaskType === 'design'}
                                   onChange={(e) => {
                                     if (e.target.checked) {
-                                      setAddModeTaskType('design');
+                                      const nextType = 'design';
+                                      setAddModeTaskType(nextType);
+                                      setAddModeGuns(prev => applyDefaultHoursToGun(prev, nextType));
                                     } else if (addModeTaskType === 'design') {
                                       setAddModeTaskType('none');
                                     }
@@ -3481,7 +3573,9 @@ const Dashboard = () => {
                                   checked={addModeTaskType === 'confirmModify'}
                                   onChange={(e) => {
                                     if (e.target.checked) {
-                                      setAddModeTaskType('confirmModify');
+                                      const nextType = 'confirmModify';
+                                      setAddModeTaskType(nextType);
+                                      setAddModeGuns(prev => applyDefaultHoursToGun(prev, nextType));
                                     } else if (addModeTaskType === 'confirmModify') {
                                       setAddModeTaskType('none');
                                     }
@@ -3671,9 +3765,17 @@ const Dashboard = () => {
                                 value={gun.name}
                                 placeholder="枪名..."
                                 onChange={(e) => {
+                                  const nextName = e.target.value;
                                   setAddModeGuns(prev => {
                                     const next = [...prev];
-                                    next[gIdx] = { ...next[gIdx], name: e.target.value };
+                                    const currentHours = String(next[gIdx].hours ?? '').trim();
+                                    const shouldFillHours = currentHours === '';
+                                    const defaultHours = shouldFillHours ? getDefaultGunHoursFor(addModeTaskType, nextName) : null;
+                                    next[gIdx] = {
+                                      ...next[gIdx],
+                                      name: nextName,
+                                      ...(defaultHours !== null ? { hours: defaultHours } : {})
+                                    };
                                     return next;
                                   });
                                 }}

@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
-import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
+import { useSystemSettings, SystemSettingsData, DefaultGunHours, GunHoursByType } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
 
 interface Toast {
@@ -150,7 +150,17 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   offlineBackupDir: 'backups/offline'
 };
 
-const defaultSettings: SystemSettingsData = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
+const defaultSettings: SystemSettingsData = {
+  allowMultiDevice: true,
+  allowUserDesignPlanColorMark: true,
+  allowUserEditOwnTaskColor: true,
+  specNumberDigits: 5,
+  defaultGunHours: {
+    confirm: { C: 1.5, X: 2 },
+    design: { C: 2.5, X: 3 },
+    confirmModify: { C: 0.5, X: 0.75 }
+  }
+};
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 const SystemSettings = () => {
@@ -2065,6 +2075,75 @@ const SystemSettings = () => {
               </div>
               <div className="text-xs text-gray-400">
                 当前配置：仕样号需输入 <span className="font-bold text-blue-600">{settings.specNumberDigits}</span> 位数字
+              </div>
+
+              <div className="p-5 bg-gray-50 rounded-xl border border-gray-100">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <div className="font-bold text-gray-700">默认工时规则</div>
+                    <div className="text-xs text-gray-400 mt-1">
+                      主页面新增任务时，勾选「确认图 / 设计 / 确认图修改」后，按枪名首个「-」前字符（C / X）自动填充默认工时
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => updateSettings({ defaultGunHours: { confirm: { C: 1.5, X: 2 }, design: { C: 2.5, X: 3 }, confirmModify: { C: 0.5, X: 0.75 } } })}
+                    disabled={!isSuperAdmin}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${
+                      isSuperAdmin
+                        ? 'bg-white text-gray-600 border border-gray-200 hover:border-blue-300 hover:text-blue-600'
+                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    }`}
+                  >
+                    恢复默认
+                  </button>
+                </div>
+                <div className="overflow-hidden rounded-xl border border-gray-200">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-100 text-gray-600">
+                        <th className="px-4 py-2.5 text-left font-bold">任务类型</th>
+                        <th className="px-4 py-2.5 text-center font-bold">C 类枪名</th>
+                        <th className="px-4 py-2.5 text-center font-bold">X 类枪名</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {([
+                        { key: 'confirm' as const, label: '确认图' },
+                        { key: 'design' as const, label: '设计' },
+                        { key: 'confirmModify' as const, label: '确认图修改' }
+                      ]).map(row => (
+                        <tr key={row.key} className="border-t border-gray-200">
+                          <td className="px-4 py-2.5 font-bold text-gray-700">{row.label}</td>
+                          {(['C', 'X'] as const).map(type => (
+                            <td key={type} className="px-4 py-2.5 text-center">
+                              <input
+                                type="number"
+                                step="0.25"
+                                min="0"
+                                max="24"
+                                value={settings.defaultGunHours?.[row.key]?.[type] ?? ''}
+                                onChange={(e) => {
+                                  const num = parseFloat(e.target.value);
+                                  if (!Number.isFinite(num) || num < 0 || num > 24) return;
+                                  const current: DefaultGunHours = settings.defaultGunHours || defaultSettings.defaultGunHours!;
+                                  const typeRow: GunHoursByType = { ...current[row.key], [type]: num };
+                                  updateSettings({
+                                    defaultGunHours: { ...current, [row.key]: typeRow }
+                                  });
+                                }}
+                                disabled={!isSuperAdmin}
+                                className={`w-20 h-9 text-center bg-white border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${!isSuperAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-xs text-gray-400 mt-2">
+                  枪名示例：<span className="font-mono text-gray-600">SRTC-2C-15001</span>（首个「-」前为 C）、<span className="font-mono text-gray-600">SRTX-2C-25001</span>（首个「-」前为 X）
+                </div>
               </div>
             </div>
           </div>

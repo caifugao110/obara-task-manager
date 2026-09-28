@@ -22,7 +22,17 @@ const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const defaultSystemSettings = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTask: true, specNumberDigits: 5 };
+const defaultSystemSettings = {
+  allowMultiDevice: true,
+  allowUserDesignPlanColorMark: true,
+  allowUserEditOwnTask: true,
+  specNumberDigits: 5,
+  defaultGunHours: {
+    confirm: { C: 1.5, X: 2 },
+    design: { C: 2.5, X: 3 },
+    confirmModify: { C: 0.5, X: 0.75 }
+  }
+};
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
 const formatDownloadTimestamp = () => {
@@ -39,11 +49,21 @@ const formatDownloadTimestamp = () => {
   ].join('');
 };
 
+const gunHoursTypeSchema = Joi.object({
+  C: Joi.number().min(0).max(24).required(),
+  X: Joi.number().min(0).max(24).required()
+});
+
 const systemSettingsSchema = Joi.object({
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
   allowUserEditOwnTaskColor: Joi.boolean().optional(),
-  specNumberDigits: Joi.number().integer().valid(5, 6).optional()
+  specNumberDigits: Joi.number().integer().valid(5, 6).optional(),
+  defaultGunHours: Joi.object({
+    confirm: gunHoursTypeSchema.required(),
+    design: gunHoursTypeSchema.required(),
+    confirmModify: gunHoursTypeSchema.required()
+  }).optional()
 });
 
 const maintenanceSettingsSchema = Joi.object({
@@ -68,6 +88,14 @@ const maintenanceSettingsSchema = Joi.object({
   offlineBackupDir: Joi.string().trim().min(1).max(200).required()
 });
 
+const normalizeGunHours = (raw, fallback) => {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  return {
+    C: typeof src.C === 'number' && Number.isFinite(src.C) ? src.C : fallback.C,
+    X: typeof src.X === 'number' && Number.isFinite(src.X) ? src.X : fallback.X
+  };
+};
+
 const normalizeSystemSettings = (settings = {}) => {
   const merged = { ...defaultSystemSettings, ...settings };
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(settings, 'allowUserDesignPlanColorMark');
@@ -75,10 +103,17 @@ const normalizeSystemSettings = (settings = {}) => {
   const allowOwnDesignPlanColor = hasDesignPlanColorMark || hasEditOwnTaskColor
     ? Boolean(settings.allowUserDesignPlanColorMark || settings.allowUserEditOwnTaskColor)
     : true;
+  const fallbackGunHours = defaultSystemSettings.defaultGunHours;
+  const rawGunHours = merged.defaultGunHours && typeof merged.defaultGunHours === 'object' ? merged.defaultGunHours : {};
   return {
     ...merged,
     allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
-    allowUserEditOwnTaskColor: allowOwnDesignPlanColor
+    allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
+    defaultGunHours: {
+      confirm: normalizeGunHours(rawGunHours.confirm, fallbackGunHours.confirm),
+      design: normalizeGunHours(rawGunHours.design, fallbackGunHours.design),
+      confirmModify: normalizeGunHours(rawGunHours.confirmModify, fallbackGunHours.confirmModify)
+    }
   };
 };
 
