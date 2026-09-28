@@ -7,10 +7,12 @@ const isProduction = () => (process.env.NODE_ENV || 'development') === 'producti
 const parseOriginList = () => {
   const originEnv = process.env.CORS_ORIGIN || '';
   if (!originEnv.trim()) {
-    // 未配置时回退为 '*'（仅限开发/内网调试）。生产环境应显式配置 CORS_ORIGIN 白名单。
+    // 未配置时回退为 '*'（仅限开发/内网调试）。生产环境强制要求显式白名单。
     if (isProduction()) {
-      console.warn('[SECURITY WARNING] CORS_ORIGIN is not set in production. ' +
-        'Falling back to wildcard origin without credentials. Set CORS_ORIGIN to an explicit allowlist.');
+      console.error('[SECURITY ERROR] CORS_ORIGIN is not set in production.');
+      console.error('Production deployments MUST set an explicit CORS_ORIGIN allowlist.');
+      console.error('Example: CORS_ORIGIN=https://task.obara.com.cn');
+      process.exit(1);
     }
     return ['*'];
   }
