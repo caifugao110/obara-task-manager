@@ -172,10 +172,10 @@ const COLUMNS: { key: keyof GunRow | 'serialNumber' | 'clear'; label: string; wi
   { key: 'serialNumber', label: '序号', width: 'w-16 min-w-[4rem]' },
   { key: 'gunName', label: '焊枪名', width: 'w-28 min-w-[7rem]' },
   { key: 'customer', label: '客户', width: 'w-96 min-w-[24rem]' },
-  { key: 'time', label: '时间', width: 'w-28 min-w-[7rem]' },
+  { key: 'time', label: '时间', width: 'w-24 min-w-[6rem]' },
   { key: 'responsiblePerson', label: '担当', width: 'w-24 min-w-[6rem]' },
-  { key: 'remarks', label: '备注', width: 'w-48 min-w-[12rem]' },
-  { key: 'clear', label: '操作', width: 'w-14 min-w-[3.5rem]' },
+  { key: 'remarks', label: '备注', width: 'w-64 min-w-[16rem]' },
+  { key: 'clear', label: '操作', width: 'w-24 min-w-[6rem]' },
 ];
 const EDITABLE_COLS = ['gunName', 'customer', 'time', 'responsiblePerson', 'remarks'] as const;
 
@@ -195,6 +195,8 @@ const GunLedger: React.FC = () => {
   const [editingSessions, setEditingSessions] = useState<Record<string, EditingSession>>({});
   // 表级独占编辑锁：tableId -> 持有者会话
   const [tableLocks, setTableLocks] = useState<Record<string, TableLockSession>>({});
+  // 只读打开的表：表被他人锁定时，用户可以只读打开查看内容，不申请表级锁、不可编辑
+  const [readonlyTableId, setReadonlyTableId] = useState<string | null>(null);
   const [renamingTableId, setRenamingTableId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [newPersonInput, setNewPersonInput] = useState('');
@@ -238,10 +240,14 @@ const GunLedger: React.FC = () => {
   const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRowIdsRef = useRef<Set<string>>(new Set());
   const inputRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
+  // 操作列「向下复制」每行的复制数量输入框（非受控，点击加号时读取值，1~20）
+  const countInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const specLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 表级锁相关 refs（供 socket 回调与卸载清理读取最新值）
   const activeTableIdRef = useRef<string | null>(null);
   const prevActiveTableRef = useRef<string | null>(null);
+  const readonlyTableIdRef = useRef<string | null>(null);
+  readonlyTableIdRef.current = readonlyTableId;
   const isAdminRef = useRef(isAdmin);
   const userRef = useRef(user);
   const onlineRef = useRef(online);
@@ -349,6 +355,9 @@ const GunLedger: React.FC = () => {
     return null;
   }, [ledger, activeTableId]);
 
+  // 当前表是否处于只读打开状态（表被他人锁定时的只读模式：不申请表级锁、禁用所有编辑）
+  const activeTableReadOnly = Boolean(activeTable && readonlyTableId === activeTable.id);
+
   // 表底部状态条：无任何提示内容时不渲染，使台账区白底与底部 footer 无缝衔接（与左侧表列表一致）
   const tableEditingSessions = activeTable
     ? Object.values(editingSessions).filter(s => s.tableId === activeTable.id)
@@ -440,21 +449,35 @@ const GunLedger: React.FC = () => {
   const handleSelectTable = useCallback((t: GunTable) => {
     const holder = getTableHolder(t.id);
     if (holder) {
-      addToast(`「${holder.name || holder.username}」正在编辑表「${t.name}」，请稍后再试`, 'error');
+      addToast(`「${holder.name || holder.username}」正在编辑表「${t.name}」，请稍后再试；可点击锁旁的只读按钮查看`, 'error');
       return;
     }
     if (activeTableIdRef.current && activeTableIdRef.current !== t.id) stopRowLock();
+    setReadonlyTableId(null);
     setActiveTableId(t.id);
     if (isAdminRef.current && onlineRef.current) requestTableLock(t.id);
   }, [getTableHolder, addToast, stopRowLock, requestTableLock]);
 
+  // 只读打开被他人锁定的表：不申请表级锁，所有编辑控件禁用
+  const handleSelectTableReadOnly = useCallback((t: GunTable) => {
+    if (activeTableIdRef.current && activeTableIdRef.current !== t.id) stopRowLock();
+    setActiveTableId(t.id);
+    setReadonlyTableId(t.id);
+    addToast(`已只读打开表「${t.name}」，无法编辑`, 'success');
+  }, [stopRowLock, addToast]);
+
   // 完成编辑：释放锁并关闭当前表
   const handleFinishEditing = useCallback(() => {
     const tid = activeTableIdRef.current;
-    if (tid) releaseTableLock(tid);
+    if (tid) {
+      if (!readonlyTableIdRef.current || readonlyTableIdRef.current !== tid) {
+        releaseTableLock(tid);
+      }
+    }
     stopRowLock();
     setActiveTableId(null);
-    addToast('已结束编辑，其他人员现在可以打开该表', 'success');
+    setReadonlyTableId(null);
+    addToast(readonlyTableIdRef.current ? '已关闭只读查看' : '已结束编辑，其他人员现在可以打开该表', 'success');
   }, [releaseTableLock, stopRowLock, addToast]);
 
   // 切换分类：关闭并释放当前表锁
@@ -462,6 +485,7 @@ const GunLedger: React.FC = () => {
     if (cat === activeCategory) return;
     stopRowLock();
     setActiveTableId(null);
+    setReadonlyTableId(null);
     setActiveCategory(cat);
   }, [activeCategory, stopRowLock]);
 
@@ -488,27 +512,6 @@ const GunLedger: React.FC = () => {
   const patchTableRows = useCallback((tableId: string, updater: (rows: GunRow[]) => GunRow[]) => {
     patchTable(tableId, t => ({ ...t, rows: updater(t.rows || []) }));
   }, [patchTable]);
-
-  // 客户列输入仕样号时自动查询客户名
-  const scheduleCustomerSpecLookup = useCallback((tableId: string, serialNumber: number, value: string) => {
-    if (specLookupTimeoutRef.current) { clearTimeout(specLookupTimeoutRef.current); specLookupTimeoutRef.current = null; }
-    const trimmed = value.trim();
-    // 仅当输入值为纯仕样号（指定位数的纯数字）时触发
-    const isPureSpec = new RegExp(`^\\d{${specNumberDigits}}$`).test(trimmed);
-    if (!isPureSpec) return;
-    setSpecLookupLoading(true);
-    specLookupTimeoutRef.current = setTimeout(async () => {
-      const info = await fetchSpecInfo(trimmed);
-      setSpecLookupLoading(false);
-      if (info.success && info.clientName?.trim()) {
-        const clientName = info.clientName.trim();
-        patchTableRows(tableId, rows => rows.map(r => r.serialNumber === serialNumber ? { ...r, customer: clientName } : r));
-        addToast(`已获取客户：${clientName}`, 'success');
-      } else {
-        addToast(info.message || `未找到仕样号 ${trimmed} 的客户信息`, 'error');
-      }
-    }, 600);
-  }, [specNumberDigits, fetchSpecInfo, patchTableRows, addToast]);
 
   // 保存某表行（debounce）
   const saveTableRows = useCallback((tableId: string) => {
@@ -542,6 +545,31 @@ const GunLedger: React.FC = () => {
   }, [token, addToast]);
 
   const debouncedSave = useDebounce((tableId: string) => saveTableRows(tableId), 400);
+
+  // 客户列输入仕样号时自动查询客户名
+  const scheduleCustomerSpecLookup = useCallback((tableId: string, serialNumber: number, value: string) => {
+    if (specLookupTimeoutRef.current) { clearTimeout(specLookupTimeoutRef.current); specLookupTimeoutRef.current = null; }
+    const trimmed = value.trim();
+    // 仅当输入值为纯仕样号（指定位数的纯数字）时触发
+    const isPureSpec = new RegExp(`^\\d{${specNumberDigits}}$`).test(trimmed);
+    if (!isPureSpec) return;
+    setSpecLookupLoading(true);
+    specLookupTimeoutRef.current = setTimeout(async () => {
+      const info = await fetchSpecInfo(trimmed);
+      setSpecLookupLoading(false);
+      if (info.success && info.clientName?.trim()) {
+        const clientName = info.clientName.trim();
+        patchTableRows(tableId, rows => rows.map(r => r.serialNumber === serialNumber ? { ...r, customer: clientName, updatedAt: new Date().toISOString() } : r));
+        // 完整客户名查询回来后必须再次触发保存，否则只会保存到本地状态，
+        // 后端和其他客户端仍只保留最初输入的仕样号。
+        setSaving(true);
+        debouncedSave(tableId);
+        addToast(`已获取客户：${clientName}`, 'success');
+      } else {
+        addToast(info.message || `未找到仕样号 ${trimmed} 的客户信息`, 'error');
+      }
+    }, 600);
+  }, [specNumberDigits, fetchSpecInfo, patchTableRows, addToast, debouncedSave]);
 
   // 单元格变更
   const handleCellChange = useCallback((row: GunRow, field: keyof GunRow, value: string) => {
@@ -614,7 +642,7 @@ const GunLedger: React.FC = () => {
 
   // 清除行内容：保留焊枪名与序号，清空客户/时间/担当/备注（占位行无内容可清，按钮不渲染）
   const handleClearRow = useCallback((row: GunRow) => {
-    if (!activeTable || !isAdmin || !online) return;
+    if (!activeTable || !isAdmin || !online || activeTableReadOnly) return;
     if (String(row.id).startsWith('__placeholder__')) return;
     patchTableRows(activeTable.id, rows => rows.map(r => r.id === row.id
       ? { ...r, customer: '', time: '', responsiblePerson: '', remarks: '', updatedAt: new Date().toISOString(), updatedBy: user ? { id: user.id, username: user.username, name: user.name } : null }
@@ -622,7 +650,76 @@ const GunLedger: React.FC = () => {
     dirtyRowIdsRef.current.add(row.id);
     setSaving(true);
     debouncedSave(activeTable.id);
-  }, [activeTable, isAdmin, online, patchTableRows, user, debouncedSave]);
+  }, [activeTable, isAdmin, online, activeTableReadOnly, patchTableRows, user, debouncedSave]);
+
+  // 向下复制：把当前行的「客户名/时间/担当」复制到该行下方最新的「客户名为空」的行
+  // 加号按钮前的数字框决定复制行数（默认 1，范围 1~20）；占位行会被提升为真实行
+  const handleCopyDown = useCallback((row: GunRow) => {
+    if (!activeTable || !isAdmin || !online || activeTableReadOnly) return;
+    const srcCustomer = row.customer;
+    if (!srcCustomer.trim()) {
+      addToast('当前行客户名为空，无法复制', 'error');
+      return;
+    }
+    const srcTime = row.time;
+    const srcPerson = row.responsiblePerson;
+    // 读取该行数字框的复制数量（非受控，点击时取值并夹到 1~10）
+    const inputEl = countInputRefs.current[row.id];
+    let count = 1;
+    if (inputEl) {
+      const parsed = parseInt(inputEl.value, 10);
+      if (!Number.isNaN(parsed)) count = Math.min(10, Math.max(1, parsed));
+    }
+    // 在展示行中定位当前行，取其下方「客户名为空」的行（升序）前 count 个
+    const startIdx = displayRows.findIndex(r => r.id === row.id);
+    if (startIdx < 0) return;
+    const targets = displayRows
+      .slice(startIdx + 1)
+      .filter(r => !r.customer.trim())
+      .slice(0, count);
+    if (targets.length === 0) {
+      addToast('下方无客户名为空的行可复制', 'error');
+      return;
+    }
+    patchTableRows(activeTable.id, rows => {
+      let next = [...rows];
+      const nowIso = new Date().toISOString();
+      const userMeta = user ? { id: user.id, username: user.username, name: user.name } : null;
+      for (const t of targets) {
+        const isPlaceholder = String(t.id).startsWith('__placeholder__');
+        if (isPlaceholder) {
+          // 占位行：提升为真实行，保留其预填焊枪名与序号，写入客户/时间/担当
+          const promoted: GunRow = {
+            id: newRowId(),
+            serialNumber: t.serialNumber,
+            gunName: t.gunName,
+            customer: srcCustomer,
+            time: srcTime,
+            responsiblePerson: srcPerson,
+            remarks: '',
+            createdAt: nowIso,
+            createdBy: userMeta,
+            updatedAt: nowIso,
+            updatedBy: userMeta,
+          };
+          next = [...next, promoted];
+          dirtyRowIdsRef.current.add(promoted.id);
+        } else {
+          // 已有空行：写入客户/时间/担当，保留焊枪名/序号/备注
+          next = next.map(r => r.id === t.id
+            ? { ...r, customer: srcCustomer, time: srcTime, responsiblePerson: srcPerson, updatedAt: nowIso, updatedBy: userMeta }
+            : r);
+          dirtyRowIdsRef.current.add(t.id);
+        }
+      }
+      return next;
+    });
+    setSaving(true);
+    debouncedSave(activeTable.id);
+    if (targets.length < count) {
+      addToast(`下方仅有 ${targets.length} 行客户名为空，已复制 ${targets.length} 行`, 'success');
+    }
+  }, [activeTable, isAdmin, online, activeTableReadOnly, displayRows, patchTableRows, user, debouncedSave, addToast]);
 
   // 键盘导航：Enter 下移
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>, rowIdx: number, colIdx: number) => {
@@ -690,9 +787,15 @@ const GunLedger: React.FC = () => {
       return;
     }
     if (DEFAULT_CATEGORIES.includes(category)) { addToast('默认分类不允许删除', 'error'); return; }
-    const tableCount = (ledger.categories[category] || []).length;
+    // 分类下有任意表格被他人锁定时禁止删除
+    const catTables = ledger.categories[category] || [];
+    if (catTables.some(t => Boolean(getTableHolder(t.id)))) {
+      addToast('分类下有表格被他人锁定，暂时无法删除分类', 'error');
+      return;
+    }
+    const tableCount = catTables.length;
     setDeleteCategoryTarget({ name: category, tableCount });
-  }, [ledger, addToast, isSuperAdmin, warnIfOffline]);
+  }, [ledger, addToast, isSuperAdmin, warnIfOffline, getTableHolder]);
 
   // 确认删除分类（实际执行）
   const confirmDeleteCategory = useCallback(async () => {
@@ -759,8 +862,14 @@ const GunLedger: React.FC = () => {
       addToast('删除表格属于高风险操作，需要超级管理员权限，请联系超级管理员删除', 'error', true);
       return;
     }
+    // 表被他人锁定时禁止删除
+    const holder = getTableHolder(tableId);
+    if (holder) {
+      addToast(`表被「${holder.name || holder.username}」锁定，暂时无法删除`, 'error');
+      return;
+    }
     setDeleteTableTarget({ id: tableId, name });
-  }, [isSuperAdmin, addToast, warnIfOffline]);
+  }, [isSuperAdmin, addToast, warnIfOffline, getTableHolder]);
 
   // 确认删除表（实际执行）
   const confirmDeleteTable = useCallback(async () => {
@@ -1289,10 +1398,10 @@ const GunLedger: React.FC = () => {
     setConfirmBatch(null);
   }, [online]);
 
-  // 切换表时：释放上一张表的表级锁与行锁，并同步 ref
+  // 切换表时：释放上一张表的表级锁与行锁，并同步 ref（只读打开的表从未申请过锁，不释放）
   useEffect(() => {
     const prev = prevActiveTableRef.current;
-    if (prev && prev !== activeTableId) {
+    if (prev && prev !== activeTableId && readonlyTableIdRef.current !== prev) {
       releaseTableLock(prev);
     }
     prevActiveTableRef.current = activeTableId;
@@ -1300,20 +1409,20 @@ const GunLedger: React.FC = () => {
     stopRowLock();
   }, [activeTableId, stopRowLock, releaseTableLock]);
 
-  // 表级锁心跳：每 20 秒续期一次（服务端 TTL 60 秒）
+  // 表级锁心跳：每 20 秒续期一次（服务端 TTL 60 秒）；只读打开的表不发心跳
   useEffect(() => {
-    if (!activeTableId || !isAdmin) return;
+    if (!activeTableId || !isAdmin || activeTableReadOnly) return;
     const timer = setInterval(() => {
       socketRef.current?.emit('gun_ledger_table_heartbeat', { tableId: activeTableId });
     }, 20000);
     return () => clearInterval(timer);
-  }, [activeTableId, isAdmin]);
+  }, [activeTableId, isAdmin, activeTableReadOnly]);
 
   // 卸载清理
   useEffect(() => () => {
     if (stopTimeoutRef.current) clearTimeout(stopTimeoutRef.current);
     const tid = prevActiveTableRef.current;
-    if (tid) socketRef.current?.emit('gun_ledger_unlock_table', { tableId: tid });
+    if (tid && readonlyTableIdRef.current !== tid) socketRef.current?.emit('gun_ledger_unlock_table', { tableId: tid });
   }, []);
 
   // Esc 关闭弹窗
@@ -1687,6 +1796,9 @@ const GunLedger: React.FC = () => {
               {Object.keys(ledger?.categories || {}).map((cat, idx, arr) => {
                 const canMoveUp = idx > 0;
                 const canMoveDown = idx < arr.length - 1;
+                // 分类下有任意表格被他人锁定时，禁止删除分类
+                const catTables = (ledger?.categories[cat] || []);
+                const catHasLockedTable = catTables.some(t => Boolean(getTableHolder(t.id)));
                 return (
                   <div
                     key={cat}
@@ -1721,9 +1833,10 @@ const GunLedger: React.FC = () => {
                     )}
                     {isAdmin && !DEFAULT_CATEGORIES.includes(cat) && (
                       <button
-                        onClick={() => openDeleteCategoryModal(cat)}
-                        className={`px-2 py-2 opacity-0 group-hover:opacity-100 transition ${activeCategory === cat ? 'text-white hover:text-red-200' : 'text-gray-400 hover:text-red-600'}`}
-                        title="删除分类"
+                        onClick={() => { if (catHasLockedTable) return; openDeleteCategoryModal(cat); }}
+                        disabled={catHasLockedTable}
+                        title={catHasLockedTable ? '分类下有表格被他人锁定，无法删除' : '删除分类'}
+                        className={`px-2 py-2 opacity-0 group-hover:opacity-100 transition ${catHasLockedTable ? 'text-gray-300 cursor-not-allowed' : activeCategory === cat ? 'text-white hover:text-red-200' : 'text-gray-400 hover:text-red-600'}`}
                       >
                         <Trash2 size={13} />
                       </button>
@@ -1774,7 +1887,23 @@ const GunLedger: React.FC = () => {
                           <ClipboardList size={14} className="shrink-0 opacity-70" />
                           <span className="truncate">{t.name}</span>
                           {lockedByOther && (
-                            <Lock size={12} className="shrink-0 text-amber-600" aria-label={`${holder!.name || holder!.username} 正在编辑`} />
+                            <>
+                              <Lock size={12} className="shrink-0 text-amber-600" aria-label={`${holder!.name || holder!.username} 正在编辑`} />
+                              {!isActive && (
+                                <button
+                                  onClick={e => { e.stopPropagation(); handleSelectTableReadOnly(t); }}
+                                  title={`只读打开：查看 ${holder!.name || holder!.username} 正在编辑的表`}
+                                  className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 transition"
+                                >
+                                  只读打开
+                                </button>
+                              )}
+                              {isActive && activeTableReadOnly && (
+                                <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-700">
+                                  只读中
+                                </span>
+                              )}
+                            </>
                           )}
                           {lockedBySelf && (
                             <Lock size={12} className="shrink-0 text-emerald-600" aria-label="我正在编辑" />
@@ -1786,8 +1915,22 @@ const GunLedger: React.FC = () => {
                       <div className="hidden group-hover:flex pr-1 gap-0.5">
                         <button onClick={() => handleMoveTable(t.id, 'up')} disabled={!canMoveUp} className={`p-1 text-gray-400 hover:text-emerald-600 ${!canMoveUp ? 'opacity-30 cursor-not-allowed' : ''}`} title="上移"><ArrowUp size={13} /></button>
                         <button onClick={() => handleMoveTable(t.id, 'down')} disabled={!canMoveDown} className={`p-1 text-gray-400 hover:text-emerald-600 ${!canMoveDown ? 'opacity-30 cursor-not-allowed' : ''}`} title="下移"><ArrowDown size={13} /></button>
-                        {isAdmin && <button onClick={() => { if (warnIfOffline()) return; setRenamingTableId(t.id); setRenameValue(t.name); }} className="p-1 text-gray-400 hover:text-blue-600" title="重命名"><Pencil size={13} /></button>}
-                        <button onClick={() => openDeleteTableModal(t.id, t.name)} className="p-1 text-gray-400 hover:text-red-600" title="删除"><Trash2 size={13} /></button>
+                        <button
+                          onClick={() => { if (lockedByOther) return; if (warnIfOffline()) return; setRenamingTableId(t.id); setRenameValue(t.name); }}
+                          disabled={lockedByOther}
+                          title={lockedByOther ? `表被 ${holder!.name || holder!.username} 锁定，无法重命名` : '重命名'}
+                          className={`p-1 ${lockedByOther ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-blue-600'}`}
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          onClick={() => { if (lockedByOther) return; openDeleteTableModal(t.id, t.name); }}
+                          disabled={lockedByOther}
+                          title={lockedByOther ? `表被 ${holder!.name || holder!.username} 锁定，无法删除` : '删除'}
+                          className={`p-1 ${lockedByOther ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600'}`}
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1813,12 +1956,17 @@ const GunLedger: React.FC = () => {
                 <h3 className="font-bold text-gray-800 flex items-center gap-2">
                   <ClipboardList size={18} className="text-emerald-600" />
                   {activeTable.name}
-                  {isAdmin && online && Boolean(tableLocks[activeTable.id]) && (
+                  {activeTableReadOnly && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200" title={`${(() => { const h = getTableHolder(activeTable.id); return h ? `${h.name || h.username} 正在编辑` : ''; })()}，当前为只读打开`}>
+                      <Lock size={11} />只读打开
+                    </span>
+                  )}
+                  {isAdmin && online && !activeTableReadOnly && Boolean(tableLocks[activeTable.id]) && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700 border border-emerald-200" title="编辑期间其他人员无法打开该表">
                       <Lock size={11} />编辑中 · 其他人暂无法打开
                     </span>
                   )}
-                  {!online && (
+                  {!online && !activeTableReadOnly && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200" title="网络恢复后自动重新进入编辑状态">
                       <AlertCircle size={11} />离线 · 只读禁止编辑
                     </span>
@@ -1826,23 +1974,28 @@ const GunLedger: React.FC = () => {
                   <span className="text-xs font-normal text-gray-400 ml-2">序号自动递增 · 预留 {PLACEHOLDER_COUNT} 个未取号行</span>
                 </h3>
                 <div className="flex items-center gap-2">
-                  {isAdmin && renamingTableId !== activeTable.id && (
-                    <>
-                      {isAdmin && (
-                        <button
-                          onClick={handleFinishEditing}
-                          disabled={!online}
-                          className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded border transition ${
-                            !online
-                              ? 'text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed'
-                              : 'text-amber-700 hover:text-white bg-amber-50 hover:bg-amber-500 border-amber-200 hover:border-amber-500'
-                          }`}
-                          title={!online ? '当前离线，无法结束编辑，请在网络恢复后操作' : '释放编辑锁，关闭本表，其他人员即可打开'}
-                        >
-                          <Unlock size={13} />完成编辑
-                        </button>
-                      )}
-                    </>
+                  {isAdmin && renamingTableId !== activeTable.id && !activeTableReadOnly && (
+                    <button
+                      onClick={handleFinishEditing}
+                      disabled={!online}
+                      className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded border transition ${
+                        !online
+                          ? 'text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed'
+                          : 'text-amber-700 hover:text-white bg-amber-50 hover:bg-amber-500 border-amber-200 hover:border-amber-500'
+                      }`}
+                      title={!online ? '当前离线，无法结束编辑，请在网络恢复后操作' : '释放编辑锁，关闭本表，其他人员即可打开'}
+                    >
+                      <Unlock size={13} />完成编辑
+                    </button>
+                  )}
+                  {activeTableReadOnly && (
+                    <button
+                      onClick={handleFinishEditing}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded border text-gray-600 hover:text-white bg-gray-50 hover:bg-gray-500 border-gray-200 hover:border-gray-500 transition"
+                      title="关闭只读查看"
+                    >
+                      <X size={13} />关闭只读
+                    </button>
                   )}
                 </div>
               </div>
@@ -1870,7 +2023,7 @@ const GunLedger: React.FC = () => {
                             const refKey = `${row.serialNumber}-${field}`;
                             const isResponsible = field === 'responsiblePerson';
                             const value = isPlaceholder ? (field === 'gunName' ? row.gunName : '') : (row[field] as string || '');
-                            const disabled = !isAdmin || !online || Boolean(blocking);
+                            const disabled = !isAdmin || !online || activeTableReadOnly || Boolean(blocking);
                             return (
                               <td key={field} className={`border border-gray-300 p-0 relative ${field === 'gunName' ? 'min-w-[7rem]' : ''}`}>
                                 {isResponsible ? (
@@ -1939,16 +2092,44 @@ const GunLedger: React.FC = () => {
                               </td>
                             );
                           })}
-                          {/* 操作列：清除该行除焊枪名外的所有内容（每行都有；占位行本无可清内容，点击为无操作） */}
-                          <td className="border border-gray-300 px-1 py-1 text-center">
-                            <button
-                              onClick={() => handleClearRow(row)}
-                              disabled={!isAdmin || !online || Boolean(blocking)}
-                              title="清除该行除焊枪名外的所有内容"
-                              className={`p-1 rounded ${!isAdmin || !online || Boolean(blocking) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
-                            >
-                              <Eraser size={14} />
-                            </button>
+                          {/* 操作列：[复制数量][向下复制][清除] —— 加号把当前行客户/时间/担当复制到下方最新的空行 */}
+                          <td className="border border-gray-300 px-1 py-1">
+                            <div className="flex items-center justify-center gap-1">
+                              <input
+                                ref={el => { countInputRefs.current[row.id] = el; }}
+                                type="number"
+                                min={1}
+                                max={10}
+                                step={1}
+                                defaultValue={1}
+                                disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking)}
+                                title="复制行数（1~10）"
+                                onInput={e => {
+                                  const v = (e.target as HTMLInputElement).value;
+                                  const n = parseInt(v, 10);
+                                  if (!Number.isNaN(n) && n > 10) {
+                                    (e.target as HTMLInputElement).value = '10';
+                                  }
+                                }}
+                                className="w-10 px-1 py-0.5 text-center text-xs border border-gray-300 rounded outline-none focus:border-emerald-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                              />
+                              <button
+                                onClick={() => handleCopyDown(row)}
+                                disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()}
+                                title="向下复制：把本行客户/时间/担当复制到下方最新的空行"
+                                className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
+                              >
+                                <Plus size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleClearRow(row)}
+                                disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking)}
+                                title="清除该行除焊枪名外的所有内容"
+                                className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
+                              >
+                                <Eraser size={14} />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
