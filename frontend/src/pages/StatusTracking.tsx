@@ -228,6 +228,8 @@ const StatusTracking = () => {
   const [fullTableSearch, setFullTableSearch] = useState(false);
   const [showOutdatedDelivery, setShowOutdatedDelivery] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [updatingItemId, setUpdatingItemId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [planMonthEditorItemId, setPlanMonthEditorItemId] = useState<string | null>(null);
@@ -679,11 +681,11 @@ const StatusTracking = () => {
       return;
     }
 
-    setLoading(true);
+    setUpdatingItemId(id);
     try {
       const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
       const res = await axios.post('/api/spec/spec-info', { specNumber: item.specNumber }, { ...authHeader, timeout: 15000 });
-      
+
       if (!res.data.success) {
         addToast(res.data.message || '获取仕样信息失败', 'error');
         return;
@@ -722,7 +724,7 @@ const StatusTracking = () => {
         addToast('获取仕样信息失败: ' + (err.response?.data?.message || err.message), 'error');
       }
     } finally {
-      setLoading(false);
+      setUpdatingItemId(null);
     }
   }, [allItems, token, saveItems, updateItemOnServer, leaderRules, isOffline, isAdmin]);
 
@@ -1517,10 +1519,11 @@ const StatusTracking = () => {
                               <>
                                 <button
                                   onClick={() => updateItemInfo(item.id)}
-                                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition"
+                                  disabled={updatingItemId === item.id}
+                                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition disabled:opacity-50 disabled:cursor-wait"
                                   title="更新信息"
                                 >
-                                  <RefreshCw size={16} />
+                                  <RefreshCw size={16} className={updatingItemId === item.id ? 'animate-spin' : ''} />
                                 </button>
                                 <button
                                   onClick={() => setPlanMonthEditorItemId(item.id)}
@@ -1531,7 +1534,7 @@ const StatusTracking = () => {
                                   <Calendar size={16} />
                                 </button>
                                 <button
-                                  onClick={() => deleteItem(item.id)}
+                                  onClick={() => setDeleteConfirmId(item.id)}
                                   className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition"
                                   title="删除"
                                 >
@@ -1595,6 +1598,48 @@ const StatusTracking = () => {
           </div>
         </div>
       </footer>
+
+      {deleteConfirmId && isAdmin && (() => {
+        const targetItem = allItems.find(item => item.id === deleteConfirmId);
+        if (!targetItem) {
+          return null;
+        }
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <AlertTriangle className="text-red-600" size={22} />
+                </div>
+                <h3 className="text-lg font-bold text-gray-800">确认删除</h3>
+              </div>
+              <p className="text-gray-600 mb-1">确定要删除这条记录吗？此操作不可撤销。</p>
+              <div className="text-sm text-gray-500 bg-gray-50 rounded-lg p-3 mt-3 space-y-1">
+                <div className="truncate"><span className="text-gray-400">客户：</span>{targetItem.clientName || '未填写'}</div>
+                <div className="truncate"><span className="text-gray-400">仕样号：</span>{targetItem.specNumber || '未填写'}</div>
+              </div>
+              <div className="flex space-x-3 mt-6">
+                <button
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="flex-1 px-4 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg transition"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => {
+                    const id = deleteConfirmId;
+                    setDeleteConfirmId(null);
+                    deleteItem(id);
+                  }}
+                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition"
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {showModal && isAdmin && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

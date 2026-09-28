@@ -977,6 +977,10 @@ const Dashboard = () => {
   const [showDeadline, setShowDeadline] = useState(false);
   // 新增模式下查询到的纳期标签字符串（如 "[9/15]"），用于在输入框右侧预览显示
   const [addModeDeadlineTag, setAddModeDeadlineTag] = useState<string | null>(null);
+  // 是否手动输入纳期（仅在勾选"显示纳期"后可用），默认不勾选
+  const [manualDeadline, setManualDeadline] = useState(false);
+  // 手动输入的纳期原始值（如 "9/15"），保存/同步时自动包装为 [M/D]
+  const [manualDeadlineInput, setManualDeadlineInput] = useState<string>('');
   const [selectedTaskType, setSelectedTaskType] = useState<'none' | 'trip' | 'sick' | 'vacation' | 'illness'>('none');
   const [addModeTaskName, setAddModeTaskName] = useState<string>('');
   const [addModeTripPlace, setAddModeTripPlace] = useState<string>('');
@@ -1024,6 +1028,8 @@ const Dashboard = () => {
     setAddModeTaskType('none');
     setShowDeadline(false);
     setAddModeDeadlineTag(null);
+    setManualDeadline(false);
+    setManualDeadlineInput('');
     clearAddModeSpecLookup();
     setTaskTypeDrafts({});
     setModalOpen(true);
@@ -1042,6 +1048,8 @@ const Dashboard = () => {
     setIsAddMode(false);
     // 记住该任务原有的纳期状态：任务名以 [M/D] 结尾则勾选“显示纳期”
     setShowDeadline(/\[\d{1,2}\/\d{1,2}\]\s*$/.test((item.taskName || '').trim()));
+    setManualDeadline(false);
+    setManualDeadlineInput('');
     setTaskTypeDrafts({});
     setModalOpen(true);
   };
@@ -1191,7 +1199,7 @@ const Dashboard = () => {
       addToast(infoResult.message || `未找到仕样号 ${baseName} 的客户信息`, 'error');
     }
 
-    if (showDeadline) {
+    if (showDeadline && !manualDeadline) {
       const deliveryDate = specInfo?.deliveryDate || (await fetchSpecDeliveryDate(baseName)).date;
       const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
       if (deliverySuffix) {
@@ -1219,7 +1227,7 @@ const Dashboard = () => {
         const clientName = getDesignPlanClientName(specInfo, specNumber);
         setAddModeTaskName(current => current.trim() === specNumber ? clientName : current);
         // 如果已勾选"显示纳期"，同步查询并预览纳期
-        if (showDeadline) {
+        if (showDeadline && !manualDeadline) {
           const result = await fetchSpecDeliveryDate(specNumber);
           const suffix = result.success ? getDeliveryDateSuffix(result.date) : null;
           setAddModeDeadlineTag(suffix);
@@ -2406,6 +2414,8 @@ const Dashboard = () => {
       if (!checked) {
         setShowDeadline(false);
         setAddModeDeadlineTag(null);
+        setManualDeadline(false);
+        setManualDeadlineInput('');
         return;
       }
       // 勾选：必须能从任务名中提取到指定位数的仕样号
@@ -2438,6 +2448,8 @@ const Dashboard = () => {
     if (!checked) {
       // 立即取消勾选并移除已有的纳期后缀
       setShowDeadline(false);
+      setManualDeadline(false);
+      setManualDeadlineInput('');
       targets.forEach(i => {
         const raw = (i.taskName || '').trim();
         if (/\[\d{1,2}\/\d{1,2}\]\s*$/.test(raw)) {
@@ -2471,6 +2483,34 @@ const Dashboard = () => {
       }
     }
     if (!addedAny) setShowDeadline(false);
+  };
+
+  // 切换"手动输入"复选框
+  // - 勾选：从已有纳期（新增模式 addModeDeadlineTag / 编辑模式任务名后缀）预填到输入框
+  // - 取消勾选：清空手动输入值
+  const handleManualDeadlineToggle = (checked: boolean) => {
+    setManualDeadline(checked);
+    if (!checked) {
+      setManualDeadlineInput('');
+      return;
+    }
+    // 预填：优先使用已查询到的纳期
+    if (isAddMode) {
+      if (addModeDeadlineTag) {
+        const m = addModeDeadlineTag.match(/^\[(\d{1,2}\/\d{1,2})\]$/);
+        setManualDeadlineInput(m ? m[1] : '');
+      }
+      return;
+    }
+    if (modalDesignerId && modalDate) {
+      const items = getAllItems(modalDesignerId, modalDate).map(i => getItemWithPendingChanges(i));
+      const focused = focusTarget ? items.find(i => i.id === focusTarget.itemId) : null;
+      const source = focused || items.find(i => /\[\d{1,2}\/\d{1,2}\]\s*$/.test((i.taskName || '').trim()));
+      if (source) {
+        const m = (source.taskName || '').match(/\[(\d{1,2}\/\d{1,2})\]\s*$/);
+        setManualDeadlineInput(m ? m[1] : '');
+      }
+    }
   };
 
   const addItem = async (designerId: string, date: string, taskType?: 'none' | 'trip' | 'sick' | 'vacation' | 'illness') => {
@@ -3150,6 +3190,17 @@ const Dashboard = () => {
                   />
                   显示纳期
                 </label>
+                {showDeadline && (
+                  <label className="flex items-center gap-1.5 text-sm font-bold select-none cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={manualDeadline}
+                      onChange={(e) => { handleManualDeadlineToggle(e.target.checked); }}
+                      className="w-4 h-4 cursor-pointer accent-white"
+                    />
+                    手动输入
+                  </label>
+                )}
               </div>
               <button onClick={() => { 
                 // 清空待保存的更改
@@ -3329,13 +3380,24 @@ const Dashboard = () => {
                                 placeholder={`输入完整任务名称或者${specNumberDigits}位数仕样号自动对应`}
                                 autoFocus
                               />
-                              {showDeadline && addModeDeadlineTag && (
-                                <span
-                                  className="shrink-0 px-2 py-1 text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg whitespace-nowrap"
-                                  title="纳期"
-                                >
-                                  {addModeDeadlineTag}
-                                </span>
+                              {showDeadline && (
+                                manualDeadline ? (
+                                  <input
+                                    type="text"
+                                    className="shrink-0 w-16 h-10 px-2 text-xs font-bold text-red-600 bg-red-50 border-2 border-red-200 rounded-lg text-center outline-none focus:ring-2 focus:ring-red-400 focus:bg-white transition"
+                                    placeholder="M/D"
+                                    value={manualDeadlineInput}
+                                    onChange={(e) => setManualDeadlineInput(e.target.value)}
+                                    autoFocus
+                                  />
+                                ) : (addModeDeadlineTag && (
+                                  <span
+                                    className="shrink-0 px-2 py-1 text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg whitespace-nowrap"
+                                    title="纳期"
+                                  >
+                                    {addModeDeadlineTag}
+                                  </span>
+                                ))
                               )}
                             </div>
                             <input
@@ -3728,6 +3790,27 @@ const Dashboard = () => {
                                   placeholder={`输入完整任务名称或者${specNumberDigits}位数仕样号自动对应`}
                                 />
                                 {showDeadline && (() => {
+                                  if (manualDeadline) {
+                                    const deadlineMatch = (currentItem.taskName || '').match(/\[(\d{1,2}\/\d{1,2})\]\s*$/);
+                                    const currentVal = manualDeadlineInput || (deadlineMatch ? deadlineMatch[1] : '');
+                                    return (
+                                      <input
+                                        type="text"
+                                        className="shrink-0 w-16 h-10 px-2 text-xs font-bold text-red-600 bg-red-50 border-2 border-red-200 rounded-lg text-center outline-none focus:ring-2 focus:ring-red-400 focus:bg-white transition"
+                                        placeholder="M/D"
+                                        value={currentVal}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setManualDeadlineInput(val);
+                                          const m = val.match(/^(\d{1,2})\/(\d{1,2})$/);
+                                          if (m) {
+                                            const base = (currentItem.taskName || '').replace(/\s*\[\d{1,2}\/\d{1,2}\]\s*$/, '').trim();
+                                            handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', `${base} [${m[1]}/${m[2]}]`);
+                                          }
+                                        }}
+                                      />
+                                    );
+                                  }
                                   const deadlineTag = (currentItem.taskName || '').match(/(\[\d{1,2}\/\d{1,2}\])\s*$/);
                                   return deadlineTag ? (
                                     <span
@@ -3772,21 +3855,31 @@ const Dashboard = () => {
                                       return;
                                     }
 
-                                    let deliveryDate = specInfo.deliveryDate;
-                                    if (!deliveryDate) {
-                                      const deliveryResult = await fetchSpecDeliveryDate(specNo);
-                                      if (deliveryResult.success && deliveryResult.date) {
-                                        deliveryDate = deliveryResult.date;
+                                    let deliverySuffix: string | null = null;
+                                    if (manualDeadline) {
+                                      const m = manualDeadlineInput.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+                                      if (m) {
+                                        deliverySuffix = `[${m[1]}/${m[2]}]`;
                                       } else {
-                                        addToast(deliveryResult.message || '获取纳期失败', 'error');
+                                        addToast('手动纳期格式不正确，请输入 M/D 格式（如 9/15）', 'error');
                                         return;
                                       }
-                                    }
-
-                                    const deliverySuffix = getDeliveryDateSuffix(deliveryDate);
-                                    if (!deliverySuffix) {
-                                      addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
-                                      return;
+                                    } else {
+                                      let deliveryDate = specInfo.deliveryDate;
+                                      if (!deliveryDate) {
+                                        const deliveryResult = await fetchSpecDeliveryDate(specNo);
+                                        if (deliveryResult.success && deliveryResult.date) {
+                                          deliveryDate = deliveryResult.date;
+                                        } else {
+                                          addToast(deliveryResult.message || '获取纳期失败', 'error');
+                                          return;
+                                        }
+                                      }
+                                      deliverySuffix = getDeliveryDateSuffix(deliveryDate);
+                                      if (!deliverySuffix) {
+                                        addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
+                                        return;
+                                      }
                                     }
 
                                     let updatedCount = 0;
@@ -4085,21 +4178,30 @@ const Dashboard = () => {
                       }
                       
                       if (showDeadline && selectedTaskType === 'none' && taskName && taskName !== '未命名') {
-                        const specNo = extractSpecNumber(taskName);
-                        if (specNo) {
-                          const result = fetchedSpecInfo?.specNumber === specNo && fetchedSpecInfo.deliveryDate
-                            ? { success: true, date: fetchedSpecInfo.deliveryDate }
-                            : await fetchSpecDeliveryDate(specNo);
-                          if (result.success && result.date) {
-                            const dateMatch = result.date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-                            if (dateMatch) {
-                              const month = parseInt(dateMatch[2], 10);
-                              const day = parseInt(dateMatch[3], 10);
-                              const dateStr = `[${month}/${day}]`;
-                              taskName = taskName.replace(/\s*\[(\d{1,2})\/(\d{1,2})\]$/, '') + ' ' + dateStr;
-                            }
+                        if (manualDeadline && manualDeadlineInput.trim()) {
+                          const m = manualDeadlineInput.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+                          if (m) {
+                            taskName = taskName.replace(/\s*\[\d{1,2}\/\d{1,2}\]$/, '') + ` [${m[1]}/${m[2]}]`;
                           } else {
-                            addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
+                            addToast('手动纳期格式不正确，请输入 M/D 格式（如 9/15）', 'error');
+                          }
+                        } else if (!manualDeadline) {
+                          const specNo = extractSpecNumber(taskName);
+                          if (specNo) {
+                            const result = fetchedSpecInfo?.specNumber === specNo && fetchedSpecInfo.deliveryDate
+                              ? { success: true, date: fetchedSpecInfo.deliveryDate }
+                              : await fetchSpecDeliveryDate(specNo);
+                            if (result.success && result.date) {
+                              const dateMatch = result.date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                              if (dateMatch) {
+                                const month = parseInt(dateMatch[2], 10);
+                                const day = parseInt(dateMatch[3], 10);
+                                const dateStr = `[${month}/${day}]`;
+                                taskName = taskName.replace(/\s*\[(\d{1,2})\/(\d{1,2})\]$/, '') + ' ' + dateStr;
+                              }
+                            } else {
+                              addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
+                            }
                           }
                         }
                       }
