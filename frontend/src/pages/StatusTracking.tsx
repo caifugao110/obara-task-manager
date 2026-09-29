@@ -1096,7 +1096,8 @@ const StatusTracking = () => {
           {isAdmin && (
             <button
               onClick={() => setShowModal(true)}
-              className="px-6 py-1.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-bold rounded-full shadow-md hover:shadow-lg transition-all duration-200 tracking-wide"
+              disabled={offlineWarning}
+              className="px-6 py-1.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-bold rounded-full shadow-md hover:shadow-lg transition-all duration-200 tracking-wide disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-md"
             >
               添加记录
             </button>
@@ -1104,8 +1105,8 @@ const StatusTracking = () => {
           {isAdmin && (
             <button
               onClick={handleExport}
-              disabled={exporting}
-              className="flex items-center gap-2 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white text-sm font-bold rounded-lg transition"
+              disabled={exporting || offlineWarning}
+              className="flex items-center gap-2 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition"
             >
               {exporting ? <RefreshCw size={16} className="animate-spin" /> : <Download size={16} />}
               导出显示结果
@@ -1185,7 +1186,8 @@ const StatusTracking = () => {
           {isAdmin && (
             <button
               onClick={() => setShowLeaderRulesModal(true)}
-              className="flex items-center space-x-2 px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold rounded-lg transition"
+              disabled={offlineWarning}
+              className="flex items-center space-x-2 px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Users size={18} />
               <span>组长规则</span>
@@ -1204,9 +1206,9 @@ const StatusTracking = () => {
         </div>
       </header>
 
-      {/* 离线禁止编辑提示条（与焊枪台账页面样式一致） */}
+      {/* 离线禁止编辑提示条（与焊枪台账页面样式一致，滚动时吸顶） */}
       {offlineWarning && (
-        <div className="relative z-50 shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+        <div className="sticky top-12 z-[45] shrink-0 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
         </div>
@@ -1220,7 +1222,7 @@ const StatusTracking = () => {
         </div>
       )}
 
-      <main className="flex-1 px-6 pb-6 overflow-y-auto overflow-x-auto">
+      <main className={`flex-1 px-6 pb-6 overflow-y-auto overflow-x-auto ${offlineWarning ? 'offline-locked' : ''}`}>
         <div className="h-6 shrink-0"></div>
         <div className="w-fit min-w-full bg-white rounded-2xl shadow-xl border border-gray-100">
             <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>

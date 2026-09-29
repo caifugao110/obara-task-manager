@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
@@ -509,6 +509,9 @@ const Dashboard = () => {
   const [batchMatches, setBatchMatches] = useState<BatchReplaceMatch[]>([]);
   const [batchMatchCount, setBatchMatchCount] = useState(0);
   const [batchSearchDone, setBatchSearchDone] = useState(false);
+  // 点击"定位"后模态框临时半透明，方便透过模态框查看底部表格中的目标任务
+  const [batchLocateDimmed, setBatchLocateDimmed] = useState(false);
+  const batchLocateRestoreTimerRef = useRef<number | null>(null);
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isOfflineMode = !isOnline || offlineCacheUsed;
   const canEditTasks = isAdmin && !isOfflineMode;
@@ -517,6 +520,16 @@ const Dashboard = () => {
   useEffect(() => {
     isOfflineModeRef.current = isOfflineMode;
   }, [isOfflineMode]);
+
+  // 批量操作模态框关闭时恢复透明度并清理定位恢复计时器
+  useEffect(() => {
+    if (batchReplaceOpen) return;
+    setBatchLocateDimmed(false);
+    if (batchLocateRestoreTimerRef.current) {
+      window.clearTimeout(batchLocateRestoreTimerRef.current);
+      batchLocateRestoreTimerRef.current = null;
+    }
+  }, [batchReplaceOpen]);
 
   // 普通用户且在设计人员列表中时，打开主页面默认只显示本人任务
   const autoFilteredDesignerRef = useRef(false);
@@ -1015,7 +1028,7 @@ const Dashboard = () => {
   const [addModeGuns, setAddModeGuns] = useState<GunItem[]>([]);
   // 自动获取枪名：通过仕样号在 gun-ledger 中查找匹配枪名
   const [autoGunLookupLoading, setAutoGunLookupLoading] = useState(false);
-  const [autoGunLookupResults, setAutoGunLookupResults] = useState<{ gunName: string; customer: string; tableName: string; category: string }[] | null>(null);
+  const [autoGunLookupResults, setAutoGunLookupResults] = useState<{ gunName: string; customer: string; tableName: string; category: string; used?: boolean }[] | null>(null);
   const [autoGunLookupContext, setAutoGunLookupContext] = useState<'add' | 'edit' | null>(null);
   const [autoGunLookupItemId, setAutoGunLookupItemId] = useState<string | null>(null);
   const [autoGunLookupChecked, setAutoGunLookupChecked] = useState<Set<number>>(new Set());
@@ -1154,7 +1167,7 @@ const Dashboard = () => {
       const clientName = specInfo.success && specInfo.clientName ? specInfo.clientName.trim() : '';
       const data = ledgerRes.data || {};
       const categories: Record<string, any[]> = data.categories || {};
-      const matches: { gunName: string; customer: string; tableName: string; category: string }[] = [];
+      const matches: { gunName: string; customer: string; tableName: string; category: string; used?: boolean }[] = [];
       Object.entries(categories).forEach(([cat, tables]) => {
         (tables || []).forEach((table: any) => {
           (table.rows || []).forEach((row: any) => {
@@ -1168,6 +1181,10 @@ const Dashboard = () => {
           });
         });
       });
+      // 标记已被主任务使用的枪名（与台账页天蓝色标识含义一致）；拉取失败不影响匹配结果
+      const usedRes = await axiosInstance.get('/tasks/used-gun-names', authHeader).catch(() => null);
+      const usedSet = new Set<string>((usedRes?.data?.gunNames || []).map((n: string) => String(n).trim()));
+      matches.forEach(m => { m.used = usedSet.has(m.gunName); });
       setAutoGunLookupResults(matches);
       if (matches.length === 0) {
         addToast(`未在枪台账中找到仕样号 ${specNumber} 对应的枪名`, 'error');
@@ -2563,6 +2580,49 @@ const Dashboard = () => {
     }
   };
 
+  // 点击查找结果时定位到底部表格中的目标任务：
+  // 确保行可见（人员筛选/分组折叠）、选中高亮并滚动到该单元格，批量操作模态框保持打开。
+  const handleBatchLocate = (match: BatchReplaceMatch) => {
+    const designer = designers.find(d => d.id === match.designerId);
+    if (!designer) return;
+
+    // 若该人员当前被筛选条件隐藏（如"全部"下被隐藏，或筛选成了其他人），则切换筛选到该人员
+    const rowVisible = selectedDesignerId === 'all'
+      ? !designer.hidden
+      : selectedDesignerId === match.designerId;
+    if (!rowVisible) setSelectedDesignerId(match.designerId);
+
+    // 展开该人员所在分组
+    const group = designer.group || '未分组';
+    if (collapsedGroups[group]) {
+      setCollapsedGroups(prev => {
+        const next = { ...prev, [group]: false };
+        localStorage.setItem('collapsedGroups', JSON.stringify(next));
+        return next;
+      });
+    }
+
+    // 选中任务以蓝色边框高亮
+    setSelectedTasks([{ itemId: match.itemId, designerId: match.designerId, date: match.date }]);
+
+    // 模态框透明度降为 20%，便于透过模态框查看底部定位结果；鼠标移回模态框或 3 秒后恢复
+    setBatchLocateDimmed(true);
+    if (batchLocateRestoreTimerRef.current) window.clearTimeout(batchLocateRestoreTimerRef.current);
+    batchLocateRestoreTimerRef.current = window.setTimeout(() => {
+      setBatchLocateDimmed(false);
+      batchLocateRestoreTimerRef.current = null;
+    }, 3000);
+
+    // 等待表格重渲染后滚动定位
+    window.setTimeout(() => {
+      const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
+      const target = document.querySelector(
+        `[data-task-id="${escapeSelector(match.itemId)}"][data-designer-id="${escapeSelector(match.designerId)}"][data-date="${escapeSelector(match.date)}"]`
+      ) as HTMLElement | null;
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    }, 120);
+  };
+
   const handleBatchReplace = async () => {
     if (warnIfOfflineEdit()) return;
     if (!batchFindText) {
@@ -3722,7 +3782,7 @@ const Dashboard = () => {
                                             onChange={() => toggleAutoGunLookupChecked(idx)}
                                             className="w-3 h-3 accent-emerald-600"
                                           />
-                                          <span className="font-bold text-gray-800">{r.gunName}</span>
+                                          <span className={`font-bold ${r.used ? 'text-sky-600' : 'text-gray-800'}`}>{r.gunName}</span>
                                           <span className="text-[10px] text-gray-400">[{r.category} / {r.tableName}]</span>
                                         </label>
                                       );
@@ -4310,7 +4370,7 @@ const Dashboard = () => {
                                                 disabled={existing}
                                                 className="w-3 h-3 accent-emerald-600"
                                               />
-                                              <span className="font-bold text-gray-800">{r.gunName}</span>
+                                              <span className={`font-bold ${r.used ? 'text-sky-600' : 'text-gray-800'}`}>{r.gunName}</span>
                                               {existing && <span className="text-[10px] text-gray-400">(已存在)</span>}
                                               <span className="text-[10px] text-gray-400">[{r.category} / {r.tableName}]</span>
                                             </label>
@@ -4733,7 +4793,17 @@ const Dashboard = () => {
               if (!batchReplaceLoading) setBatchReplaceOpen(false);
             }}
           />
-          <div className="relative w-[540px] max-w-[94vw] bg-white rounded-lg shadow-2xl border-2 border-gray-200 overflow-hidden">
+          <div
+            className="relative w-[540px] max-w-[94vw] bg-white rounded-lg shadow-2xl border-2 border-gray-200 overflow-hidden"
+            style={{ opacity: batchLocateDimmed ? 0.2 : 1, transition: 'opacity 0.3s ease' }}
+            onMouseEnter={() => {
+              if (batchLocateRestoreTimerRef.current) {
+                window.clearTimeout(batchLocateRestoreTimerRef.current);
+                batchLocateRestoreTimerRef.current = null;
+              }
+              setBatchLocateDimmed(false);
+            }}
+          >
             <div className="flex items-center justify-between px-4 py-3 bg-[#217346] text-white">
               <div className="font-bold text-base">批量操作</div>
               <button
@@ -4807,17 +4877,44 @@ const Dashboard = () => {
                   ) : (
                     <div className="divide-y divide-gray-100">
                       {batchMatches.map(match => (
-                        <div key={`${match.designerId}-${match.date}-${match.itemId}`} className="px-3 py-2">
+                        <div
+                          key={`${match.designerId}-${match.date}-${match.itemId}`}
+                          className="px-3 py-2 hover:bg-blue-50/60 cursor-pointer transition group/match"
+                          onClick={() => handleBatchLocate(match)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleBatchLocate(match);
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          title="点击定位到底部表格中的该任务"
+                        >
                           <div className="flex items-center justify-between gap-3">
                             <div className="text-sm font-bold text-gray-800 truncate">{match.taskName || '无任务名'}</div>
-                            <div className="shrink-0 text-[11px] text-gray-500">{match.designerName} · {match.date}</div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[11px] text-gray-500">{match.designerName} · {match.date}</span>
+                              <span className="hidden group-hover/match:inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[11px] font-bold">
+                                <Crosshair size={11} />定位
+                              </span>
+                            </div>
                           </div>
                           <div className="mt-1 flex flex-wrap gap-1.5">
-                            {match.fields.map((field, index) => (
-                              <span key={`${field.field}-${index}`} className="px-2 py-0.5 rounded bg-yellow-50 text-yellow-800 border border-yellow-200 text-[11px]">
-                                {field.label} {field.count} 处
-                              </span>
-                            ))}
+                            {match.fields.map((field, index) => {
+                              // 枪名直接显示完整枪名；任务名匹配显示其仕样号（无仕样号时回退为"任务名"）
+                              const badgeLabel = field.field === 'gunName'
+                                ? `枪名${field.text}`
+                                : (() => {
+                                    const spec = extractSpecNumber(field.text || '');
+                                    return spec ? `任务仕样号${spec}` : '任务名';
+                                  })();
+                              return (
+                                <span key={`${field.field}-${index}`} className="px-2 py-0.5 rounded bg-yellow-50 text-yellow-800 border border-yellow-200 text-[11px]">
+                                  {badgeLabel}：{field.count} 处
+                                </span>
+                              );
+                            })}
                           </div>
                         </div>
                       ))}

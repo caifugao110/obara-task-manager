@@ -27,6 +27,16 @@
   text-orientation: upright;
 }
 
+/* 离线模式锁定区域：禁用内部所有可交互控件（按钮/输入框/下拉/文本域），视觉灰化 */
+.offline-locked button,
+.offline-locked input,
+.offline-locked select,
+.offline-locked textarea {
+  pointer-events: none;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;

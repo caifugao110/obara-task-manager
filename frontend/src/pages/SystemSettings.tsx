@@ -965,13 +965,13 @@ const SystemSettings = () => {
       </header>
 
       {isOffline && (
-        <div className="relative z-40 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+        <div className="sticky top-12 z-40 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
         </div>
       )}
 
-      <div className="sticky top-[48px] z-30 bg-white border-b border-gray-200">
+      <div className={`sticky ${isOffline ? 'top-[81px]' : 'top-[48px]'} z-30 bg-white border-b border-gray-200`}>
         <div className="max-w-5xl mx-auto px-8 flex space-x-1">
           <button
             onClick={() => setActiveTab('data')}
@@ -1234,7 +1234,7 @@ const SystemSettings = () => {
         </div>
       )}
 
-      <main className="flex-1 p-8 max-w-5xl mx-auto w-full space-y-8">
+      <main className={`flex-1 p-8 max-w-5xl mx-auto w-full space-y-8 ${isOffline ? 'offline-locked' : ''}`}>
         {activeTab === 'data' && (
           <>
             <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">

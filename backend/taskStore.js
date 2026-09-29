@@ -230,6 +230,30 @@ const deleteSheetsBefore = (year, month) => {
 };
 
 // ---------------------------------------------------------------------------
+// 主任务枪名使用情况
+// ---------------------------------------------------------------------------
+// 收集所有主任务条目中使用的焊枪名（去重、去空白）
+// LIKE 预筛只读含 guns 字段的条目 JSON，避免全量反序列化
+const listUsedGunNames = () => {
+  const raw = ensureTables();
+  const rows = raw.prepare(`SELECT data FROM task_entries WHERE data LIKE '%"guns"%'`).all();
+  const names = new Set();
+  for (const row of rows) {
+    try {
+      const item = JSON.parse(row.data);
+      const guns = Array.isArray(item.guns) ? item.guns : [];
+      for (const g of guns) {
+        const name = String(g && g.name || '').trim();
+        if (name) names.add(name);
+      }
+    } catch {
+      // 条目 JSON 损坏时跳过，不影响其余条目
+    }
+  }
+  return Array.from(names);
+};
+
+// ---------------------------------------------------------------------------
 // 统计
 // ---------------------------------------------------------------------------
 const countSheets = () => Number(ensureTables().prepare('SELECT COUNT(*) AS c FROM task_sheets').get().c);
@@ -330,5 +354,6 @@ module.exports = {
   countMonths,
   entriesJsonSize,
   findCandidateSheetIds,
+  listUsedGunNames,
   migrateFromCache
 };

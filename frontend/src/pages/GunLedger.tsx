@@ -220,6 +220,8 @@ const GunLedger: React.FC = () => {
   const [batchInitializing, setBatchInitializing] = useState(false);
   const [confirmBatch, setConfirmBatch] = useState<BatchInitTarget | null>(null);
   const [specLookupLoading, setSpecLookupLoading] = useState(false);
+  // 已被主任务使用的焊枪名集合：命中者枪名显示天蓝色
+  const [usedGunNames, setUsedGunNames] = useState<Set<string>>(new Set());
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
   const [addCategoryValue, setAddCategoryValue] = useState('');
   const [addTableOpen, setAddTableOpen] = useState(false);
@@ -334,6 +336,20 @@ const GunLedger: React.FC = () => {
   useEffect(() => {
     if (canAccess) fetchLedger();
   }, [canAccess, fetchLedger]);
+
+  // 拉取已被主任务使用的焊枪名集合（用于枪名天蓝色标识）
+  const fetchUsedGunNames = useCallback(async () => {
+    try {
+      const res = await axiosInstance.get('/tasks/used-gun-names', authHeader);
+      setUsedGunNames(new Set((res.data?.gunNames || []).map((n: string) => String(n).trim())));
+    } catch {
+      // 拉取失败仅影响高亮，不打断台账本身的使用
+    }
+  }, [authHeader]);
+
+  useEffect(() => {
+    if (canAccess) fetchUsedGunNames();
+  }, [canAccess, fetchUsedGunNames]);
 
   // 当前分类的表
   const tables = useMemo<GunTable[]>(() => {
@@ -1297,11 +1313,17 @@ const GunLedger: React.FC = () => {
       // 断线重连后：刷新台账数据并重新申请表级锁；若期间锁被他人取得，会收到 blocked 事件并自动关闭
       if (hasConnectedOnce) fetchLedger();
       hasConnectedOnce = true;
+      fetchUsedGunNames();
       const tid = activeTableIdRef.current;
       if (tid && isAdminRef.current) socket.emit('gun_ledger_lock_table', { tableId: tid });
     });
     socket.on('disconnect', () => { setOnline(false); stopRowLock(); });
     socket.on('connect_error', () => { setOnline(false); });
+
+    // 主页面任务变更后服务端广播 task_refreshed：同步刷新已用枪名（天蓝色标识）
+    socket.on('task_refreshed', () => {
+      fetchUsedGunNames();
+    });
 
     // ===== 表级独占编辑锁事件 =====
     socket.on('gun_ledger_table_locks_state', (sessions: TableLockSession[]) => {
@@ -1489,6 +1511,7 @@ const GunLedger: React.FC = () => {
     const handleOnline = () => {
       setOnline(true);
       fetchLedger();
+      fetchUsedGunNames();
     };
     const handleOffline = () => setOnline(false);
     window.addEventListener('online', handleOnline);
@@ -1497,7 +1520,7 @@ const GunLedger: React.FC = () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [fetchLedger]);
+  }, [fetchLedger, fetchUsedGunNames]);
 
   // 进入离线状态：关闭所有管理类弹窗与重命名输入，避免离线期间产生无法保存的操作
   useEffect(() => {
@@ -2212,7 +2235,7 @@ const GunLedger: React.FC = () => {
                                     onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
                                     onBlur={handleCellBlur}
                                     onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                    className={`w-full px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : ''}`}
+                                    className={`w-full px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
                                   />
                                 )}
                               </td>

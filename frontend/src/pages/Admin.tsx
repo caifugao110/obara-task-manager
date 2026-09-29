@@ -1166,17 +1166,17 @@ const Admin = () => {
       </header>
 
       {isOffline && (
-        <div className="relative z-40 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+        <div className="sticky top-12 z-40 bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
           <AlertCircle size={14} className="shrink-0" />
           <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止编辑！</span>
         </div>
       )}
 
-      <main className="flex-1 p-6 space-y-8 max-w-7xl mx-auto w-full">
+      <main className={`flex-1 p-6 space-y-8 max-w-7xl mx-auto w-full ${isOffline ? 'offline-locked' : ''}`}>
         {/* Designers Management (Task Table Members) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
-            <div className="sticky top-[48px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+            <div className={`sticky ${isOffline ? 'top-[81px]' : 'top-[48px]'} z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center`}>
               <button
                 type="button"
                 onClick={() => {
@@ -1322,7 +1322,7 @@ const Admin = () => {
         {/* Login Users Management (Admins) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-8 border-t border-gray-200">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
-            <div className="sticky top-[48px] z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+            <div className={`sticky ${isOffline ? 'top-[81px]' : 'top-[48px]'} z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center`}>
               <button
                 type="button"
                 onClick={() => {

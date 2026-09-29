@@ -195,7 +195,7 @@ const findBatchReplaceMatches = (targetSheets, designers, findText) => {
           item.guns.forEach((gun, index) => {
             const gunNameCount = countLiteral(gun.name, findText);
             if (gunNameCount > 0) {
-              fields.push({ field: 'gunName', label: `枪名 ${index + 1}`, text: gun.name, count: gunNameCount });
+              fields.push({ field: 'gunName', label: `枪名${index + 1}`, text: gun.name, count: gunNameCount });
               matchCount += gunNameCount;
             }
           });
@@ -217,6 +217,11 @@ const findBatchReplaceMatches = (targetSheets, designers, findText) => {
 
   return { matches, itemCount: matches.length, matchCount };
 };
+
+// 所有主任务条目中使用过的焊枪名（去重）——台账页/主页面据此将已用枪名标为天蓝色
+router.get('/used-gun-names', authMiddleware, asyncHandler(async (req, res) => {
+  res.json({ gunNames: taskStore.listUsedGunNames() });
+}));
 
 router.get('/', authMiddleware, asyncHandler(async (req, res) => {
   const { month, year, designerId, summary } = req.query;

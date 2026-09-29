@@ -470,6 +470,28 @@ Authorization: Bearer <token>
 
 ## 任务接口
 
+### 获取已使用的焊枪名列表
+
+`GET /api/tasks/used-gun-names`
+
+权限：需登录（任意角色）。
+
+返回所有主任务条目中使用过的焊枪名（去重、去空白）。台账页与主页面「自动获取枪名」结果面板据此把已被主任务使用的枪名显示为天蓝色。
+
+响应：
+
+```json
+{
+  "gunNames": ["SRTC-2C00001", "SRTC-2C00002"]
+}
+```
+
+说明：
+
+- 数据来源于全部月份任务条目的 `guns[].name`，跨月份去重。
+- 前端在焊枪台账页面加载、Socket 重连、收到 `task_refreshed` 广播及网络恢复时重新拉取，保证天蓝色标识与主任务数据实时一致。
+- 拉取失败仅影响天蓝色高亮，不影响台账与主页面本身的功能。
+
 ### 获取任务数据
 
 `GET /api/tasks`
@@ -813,7 +835,8 @@ Authorization: Bearer <token>
       "itemId": "task-1",
       "taskName": "设计计划 12345",
       "fields": [
-        { "field": "taskName", "label": "任务名", "text": "设计计划 12345", "count": 1 }
+        { "field": "taskName", "label": "任务名", "text": "设计计划 12345", "count": 1 },
+        { "field": "gunName", "label": "枪名1", "text": "SRTC-2C00001", "count": 2 }
       ]
     }
   ],
@@ -827,6 +850,8 @@ Authorization: Bearer <token>
 
 - 搜索范围包括任务名和枪名。
 - 返回匹配的任务条目列表及每个条目中的匹配字段详情。
+- `fields[].field` 为 `gunName` 时，`label` 格式为 `枪名N`（N 为枪名在条目内的序号，从 1 开始）。
+- 每条匹配包含 `designerId`、`date`、`itemId`，前端「批量操作」模态框据此实现点击查找结果定位到底部表格中的目标任务。
 - `itemCount` 表示匹配的任务条目数，`matchCount` 表示总匹配次数。
 
 ### 批量替换执行
@@ -3496,4 +3521,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-09-28
+最后更新：2026-09-29
