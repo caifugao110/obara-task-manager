@@ -560,19 +560,30 @@ const Dashboard = () => {
     }
   }, [batchReplaceOpen]);
 
-  // 普通用户且在设计人员列表中时，打开主页面默认只显示本人任务
+  // 普通用户且在设计人员列表中时，打开主页面默认只显示本人任务；
+  // 管理员（admin/superadmin）且在设计人员列表中时，默认筛选显示其所在分组
   const autoFilteredDesignerRef = useRef(false);
   useEffect(() => {
     if (autoFilteredDesignerRef.current) return;
     if (!user || designers.length === 0) return;
     autoFilteredDesignerRef.current = true;
-    if (user.role !== 'user') return; // 仅普通用户自动过滤
-    if (jumpTarget) return; // 带 URL 任务跳转参数时不按人员筛选，确保目标任务可见
+    if (jumpTarget) return; // 带 URL 任务跳转参数时不按人员/分组筛选，确保目标任务可见
     const targetName = String(user.name || '').trim().toLowerCase();
     if (!targetName) return;
     const matched = designers.find(d => String(d.name || '').trim().toLowerCase() === targetName);
-    if (matched) {
+    if (!matched) return;
+    if (user.role === 'user') {
       setSelectedDesignerId(matched.id);
+    } else {
+      const group = matched.group || '未分组';
+      setSelectedDesignerId(`group:${group}`);
+      // 默认展开其所在分组，避免历史折叠状态导致看不到成员
+      setCollapsedGroups(prev => {
+        if (!prev[group]) return prev;
+        const next = { ...prev, [group]: false };
+        localStorage.setItem('collapsedGroups', JSON.stringify(next));
+        return next;
+      });
     }
   }, [user, designers, jumpTarget]);
 
@@ -904,6 +915,10 @@ const Dashboard = () => {
   };
 
   const filteredDesigners = useMemo(() => {
+    if (selectedDesignerId.startsWith('group:')) {
+      const g = selectedDesignerId.slice('group:'.length);
+      return designers.filter(d => (d.group || '未分组') === g && !d.hidden);
+    }
     const base = designers.filter(d => !d.hidden || selectedDesignerId === d.id);
     if (selectedDesignerId === 'all') return base;
     return designers.filter(d => d.id === selectedDesignerId);
@@ -933,6 +948,16 @@ const Dashboard = () => {
   }, [filteredDesigners]);
 
   const sortedGroups = useMemo(() => Object.keys(designersByGroup).sort(), [designersByGroup]);
+
+  const designerDropdownGroups = useMemo(() => {
+    const groups: Record<string, Designer[]> = {};
+    designers.forEach(d => {
+      const g = d.group || '未分组';
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(d);
+    });
+    return Object.keys(groups).sort().map(name => ({ name, members: groups[name] }));
+  }, [designers]);
 
   useEffect(() => {
     if (!jumpTarget) return;
@@ -2649,10 +2674,12 @@ const Dashboard = () => {
     const designer = designers.find(d => d.id === match.designerId);
     if (!designer) return;
 
-    // 若该人员当前被筛选条件隐藏（如"全部"下被隐藏，或筛选成了其他人），则切换筛选到该人员
+    // 若该人员当前被筛选条件隐藏（如"全部"下被隐藏，或筛选成了其他人/其他分组），则切换筛选到该人员
     const rowVisible = selectedDesignerId === 'all'
       ? !designer.hidden
-      : selectedDesignerId === match.designerId;
+      : selectedDesignerId.startsWith('group:')
+        ? (designer.group || '未分组') === selectedDesignerId.slice('group:'.length) && !designer.hidden
+        : selectedDesignerId === match.designerId;
     if (!rowVisible) setSelectedDesignerId(match.designerId);
 
     // 展开该人员所在分组
@@ -3120,11 +3147,16 @@ const Dashboard = () => {
             <select
               value={selectedDesignerId}
               onChange={(e) => setSelectedDesignerId(e.target.value)}
-              className="appearance-none bg-[#1a5c38] text-white text-sm font-medium px-3 py-1.5 pr-8 rounded border-none outline-none cursor-pointer hover:bg-[#237a47] transition"
+              className="w-[100px] appearance-none bg-[#1a5c38] text-white text-sm font-medium px-3 py-1.5 pr-8 rounded border-none outline-none cursor-pointer hover:bg-[#237a47] transition"
             >
               <option value="all">全部人员</option>
-              {designers.map(d => (
-                <option key={d.id} value={d.id}>{d.name}</option>
+              {designerDropdownGroups.map(g => (
+                <React.Fragment key={g.name}>
+                  <option value={`group:${g.name}`} style={{ color: '#d97706', fontWeight: 700 }}>{g.name}</option>
+                  {g.members.map(d => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </React.Fragment>
               ))}
             </select>
             <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-white/80" size={14} />
