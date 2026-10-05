@@ -133,7 +133,7 @@ const normalizeTaskColor = (value?: string) => String(value || '').trim().toLowe
 const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
 const hasStoredUserMarkColor = (item: TaskItem | GunItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskClick, onDeleteGun, onMoveGun, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
   const isAutoMarked = item.colorMarkedBy?.id === 'auto';
@@ -235,13 +235,13 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
         }
       }}
       tabIndex={isAdmin ? 0 : -1}
-      className={`relative group/task grid grid-cols-[12rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
+      className={`relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
     >
       {/* Main Task Row */}
       <div
-        className={`px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
+        className={`pl-2 pr-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
       >
-        <div className={`flex items-center ${item.leaveType ? 'justify-center' : 'justify-start'} w-full px-1`}>
+        <div className={`flex items-center ${item.leaveType ? 'justify-center' : 'justify-start'} w-full pr-1`}>
             {/* Mark buttons before task text */}
             {!item.leaveType && canMarkColor && (
               <div className="flex items-center gap-0.5 mr-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
@@ -277,6 +277,35 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, onTaskCli
               </span>
             ) : (
               item.taskName || <span className="text-gray-300 italic">无</span>
+            )}
+            {/* Move up/down buttons after task text */}
+            {!item.leaveType && isAdmin && (canMoveUp || canMoveDown) && (
+              <div className="flex items-center gap-0.5 ml-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
+                {canMoveUp && (
+                  <button
+                    className="p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                    title="上移"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMoveTask(item, designerId, date, 'up');
+                    }}
+                  >
+                    <ChevronUp size={14} />
+                  </button>
+                )}
+                {canMoveDown && (
+                  <button
+                    className="p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                    title="下移"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMoveTask(item, designerId, date, 'down');
+                    }}
+                  >
+                    <ChevronDown size={14} />
+                  </button>
+                )}
+              </div>
             )}
           </div>
       </div>
@@ -592,12 +621,10 @@ const Dashboard = () => {
     (designerId: string, date: string) => {
       const session = getBlockingEditingSession(designerId, date);
       if (!session) return false;
-      if (canViewEditingUser || (user && session.mode === 'colorMark')) {
-        addToast(`${session.name || session.username} ${session.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域'}`, 'error');
-      }
+      addToast(`${session.name || session.username} ${session.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域，暂无法修改任务完成状态'}`, 'error');
       return true;
     },
-    [canViewEditingUser, getBlockingEditingSession, user]
+    [getBlockingEditingSession]
   );
 
   const startEditingCell = useCallback(
@@ -1294,6 +1321,44 @@ const Dashboard = () => {
       originalValue: guns
     });
     handleItemChange(designerId, date, item.id, 'guns', newGuns);
+  };
+
+  // 上移/下移主任务（同一天单元格内与相邻任务交换顺序）
+  const onMoveTask = async (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
+    if (warnIfCellLocked(designerId, date)) return;
+    // 按显示顺序找到相邻任务，再换算成完整数组中的目标索引（兼容被隐藏的空任务）
+    const visibleItems = getItems(designerId, date);
+    const visIdx = visibleItems.findIndex(i => i.id === item.id);
+    const targetVisIdx = direction === 'up' ? visIdx - 1 : visIdx + 1;
+    if (visIdx < 0 || visIdx >= visibleItems.length || targetVisIdx < 0 || targetVisIdx >= visibleItems.length) return;
+    const targetItem = visibleItems[targetVisIdx];
+    const rawTargetIdx = getAllItems(designerId, date).findIndex(i => i.id === targetItem.id);
+    if (rawTargetIdx === -1) return;
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axiosInstance.post('/tasks/move', {
+        sourceDesignerId: designerId,
+        sourceDate: date,
+        itemId: item.id,
+        targetDesignerId: designerId,
+        targetDate: date,
+        newIndex: rawTargetIdx
+      }, authHeader);
+      if (res.data.sourceSheet) upsertSheet(res.data.sourceSheet);
+      if (res.data.targetSheet) upsertSheet(res.data.targetSheet);
+      addToHistory('batchMove', {
+        items: [{ sourceDesignerId: designerId, sourceDate: date, targetDesignerId: designerId, targetDate: date, itemId: item.id }]
+      });
+      socketRef.current?.emit('task_updated');
+    } catch (err: any) {
+      console.error('移动任务失败:', err?.response?.data || err);
+      addToast(err?.response?.data?.message || '移动失败', 'error');
+      fetchSheets();
+    }
   };
 
   const onDeleteTask = (item: TaskItem, designerId: string, date: string) => {
@@ -2093,9 +2158,7 @@ const Dashboard = () => {
         setSelectedCell(null);
         setSelectedTasks([]);
         setModalOpen(false);
-        if (canViewEditingUser || (user && data.mode === 'colorMark')) {
-          addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域'}`, 'error');
-        }
+        addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域，暂无法修改任务完成状态'}`, 'error');
       });
 
       socketRef.current.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
@@ -2718,9 +2781,11 @@ const Dashboard = () => {
       if (suffix) {
         setAddModeDeadlineTag(suffix);
       } else {
+        // 未在PDF中找到纳期信息：保持"显示纳期"勾选，自动打开"手动输入"，由用户决定是否填写
         addToast(result.message || `未找到仕样号 ${specNo} 的纳期信息`, 'error');
-        setShowDeadline(false);
         setAddModeDeadlineTag(null);
+        setManualDeadline(true);
+        setManualDeadlineInput('');
       }
       return;
     }
@@ -2747,7 +2812,7 @@ const Dashboard = () => {
       return;
     }
 
-    // 勾选：立即给出勾选反馈，再异步查询纳期；全部失败时回退为未勾选
+    // 勾选：立即给出勾选反馈，再异步查询纳期；全部失败时保持勾选并自动打开"手动输入"
     setShowDeadline(true);
     let addedAny = false;
     for (const i of targets) {
@@ -2770,7 +2835,10 @@ const Dashboard = () => {
         addToast(result.message || `未找到仕样号 ${specNo} 的纳期信息`, 'error');
       }
     }
-    if (!addedAny) setShowDeadline(false);
+    if (!addedAny) {
+      setManualDeadline(true);
+      setManualDeadlineInput('');
+    }
   };
 
   // 切换"手动输入"复选框
@@ -3182,7 +3250,7 @@ const Dashboard = () => {
                 <tr className="bg-[#f8f9fa] text-gray-600 h-16 table-header-row">
                   <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 w-24 min-w-[6rem] font-bold text-center shadow-[1px_0_0_0_#d1d5db] z-50">设计员</th>
                   {days.map(d => (
-                    <th key={d.fullDate} colSpan={2} className={`group/date sticky top-0 border border-gray-300 min-w-[240px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
+                    <th key={d.fullDate} colSpan={2} className={`group/date sticky top-0 border border-gray-300 min-w-[336px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
                       <div className="text-[10px] opacity-60">{d.dayName}</div>
                       <div>{d.dayNum}</div>
                       {isAdmin && (
@@ -3205,7 +3273,7 @@ const Dashboard = () => {
                   <th className="sticky left-0 top-16 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[1px_0_0_0_#d1d5db] z-40"></th>
                   {days.map(d => (
                     <React.Fragment key={`sub-${d.fullDate}`}>
-                      <th className={`sticky top-16 border border-gray-300 w-48 z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>任务内容</th>
+                      <th className={`sticky top-16 border border-gray-300 w-[18rem] z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>任务内容</th>
                       <th className={`sticky top-16 border border-gray-300 w-12 z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>工时</th>
                     </React.Fragment>
                   ))}
@@ -3259,7 +3327,7 @@ const Dashboard = () => {
                                       designerId={d.id}
                                       date={day.fullDate}
                                       colSpan={2}
-                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] relative group/cell`}
+                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] min-w-[21rem] relative group/cell`}
                                       onClick={(e: React.MouseEvent) => {
                                         if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
                                           setSelectedTasks([]);
@@ -3270,7 +3338,7 @@ const Dashboard = () => {
                                     >
                                       <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
                                         <div className="flex flex-col min-h-[40px]">
-                                          {items.map(item => {
+                                          {items.map((item, itemIndex) => {
                                             const canMarkColor = Boolean(
                                               token &&
                                               !isOfflineMode &&
@@ -3279,8 +3347,7 @@ const Dashboard = () => {
                                                 (user?.role === 'admin' || user?.role === 'superadmin') ||
                                                 (user?.role === 'user' &&
                                                   allowUserDesignPlanColorMark &&
-                                                  String(d.name || '').trim() === String(user.name || '').trim()
-                                                )
+                                                  String(d.name || '').trim() === String(user.name || '').trim())
                                               )
                                             );
 
@@ -3292,9 +3359,12 @@ const Dashboard = () => {
                                                 date={day.fullDate}
                                                 isAdmin={canEditTasks}
                                                 canMarkColor={canMarkColor}
+                                                canMoveUp={canEditTasks && items.length > 1 && itemIndex > 0}
+                                                canMoveDown={canEditTasks && items.length > 1 && itemIndex < items.length - 1}
                                                 onTaskClick={onTaskClick}
                                                 onDeleteGun={onDeleteGun}
                                                 onMoveGun={onMoveGun}
+                                                onMoveTask={onMoveTask}
                                                 onDeleteTask={onDeleteTask}
                                                 onMarkColor={handleUserDesignPlanColorMark}
                                                 onMarkGunColor={handleGunColorMark}
@@ -3384,7 +3454,7 @@ const Dashboard = () => {
         <DragOverlay>
           {activeTask && (
             <div className="flex border border-blue-400 shadow-2xl rounded opacity-90 scale-105 bg-white overflow-hidden">
-              <div className="w-48 border-r border-gray-200 flex flex-col bg-white">
+              <div className="w-[18rem] border-r border-gray-200 flex flex-col bg-white">
                 <div className="px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium">
                   {(() => {
                     const item = activeTask.item;

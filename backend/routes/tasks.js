@@ -679,7 +679,10 @@ router.post('/move', authMiddleware, asyncHandler(async (req, res) => {
 
   // Target
   const tMY = getMonthYearFromDate(tDate);
-  const tSheet = taskStore.getOrCreateSheet(targetDesignerId, tMY.month, tMY.year);
+  // 同一张表（同设计员同年同月）时必须复用源表对象：getOrCreateSheet 每次都会从库里
+  // 重新装配一个新对象，不复用会导致目标日期数组仍含被移任务原身，插入后产生重复 id
+  const isSameSheet = sourceDesignerId === targetDesignerId && sMY.month === tMY.month && sMY.year === tMY.year;
+  const tSheet = isSameSheet ? sSheet : taskStore.getOrCreateSheet(targetDesignerId, tMY.month, tMY.year);
   if (!tSheet.days[tDate]) tSheet.days[tDate] = [];
 
   touchItem(item, req.user);
@@ -689,7 +692,7 @@ router.post('/move', authMiddleware, asyncHandler(async (req, res) => {
     tSheet.days[tDate].push(item);
   }
 
-  taskStore.saveSheets([sSheet, tSheet]);
+  taskStore.saveSheets(isSameSheet ? [sSheet] : [sSheet, tSheet]);
   res.json({ message: '任务已移动', sourceSheet: sSheet, targetSheet: tSheet });
 }));
 
