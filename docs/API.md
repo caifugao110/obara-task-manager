@@ -50,6 +50,8 @@ Authorization: Bearer <token>
 | 系统设置数据管理导入 | 否 | 否 | 是 |
 | 查看和修改组长规则 | 否 | 是 | 是 |
 | 重置组长规则为默认 | 否 | 否 | 是 |
+| 查看和修改工厂规则 | 否 | 是 | 是 |
+| 重置工厂规则为默认 | 否 | 否 | 是 |
 | 查看焊枪台账 | 取决于 `gunLedger.allowViewers`（只读） | 取决于 `gunLedger.allowAdmins` | 是 |
 | 编辑焊枪台账（分类/表/行） | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
 | 删除焊枪台账分类/表 | 否 | 否（按钮可见但拦截） | 是 |
@@ -1106,6 +1108,61 @@ Authorization: Bearer <token>
 
 响应：返回默认组长规则数组，结构同 `GET /api/settings/leader-rules`。
 
+### 获取工厂规则
+
+`GET /api/settings/factory-rules`
+
+访问控制：需要有效 JWT（登录后访问）。
+
+工厂规则将营业担当人员映射到对应工厂（合法工厂值：`O/NJG`、`O/SHA`），状态追踪页面添加/编辑记录时按营业担当自动匹配 `factory` 字段，未命中任何规则时使用默认工厂。
+
+响应示例：
+
+```json
+{
+  "defaultFactory": "O/NJG",
+  "rules": [
+    { "factory": "O/SHA", "members": ["吴露鹭", "茅舒", "沈雨帆", "梁科研", "张晟隽"] }
+  ]
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `defaultFactory` | 默认工厂，营业担当未命中任何规则时使用，合法值 `O/NJG`、`O/SHA` |
+| `rules` | 工厂规则数组（工厂 → 营业担当成员列表映射），存储在 `settings.factoryRules` |
+| `rules[].factory` | 工厂名称，合法值 `O/NJG`、`O/SHA` |
+| `rules[].members` | 该工厂对应的营业担当人员列表 |
+
+### 更新工厂规则
+
+`PUT /api/settings/factory-rules`
+
+权限：`admin`、`superadmin`
+
+请求体结构同 `GET /api/settings/factory-rules` 响应，`defaultFactory` 与 `rules` 均为必填（Joi 校验，未知字段丢弃）：
+
+```json
+{
+  "defaultFactory": "O/NJG",
+  "rules": [
+    { "factory": "O/SHA", "members": ["吴露鹭", "茅舒"] }
+  ]
+}
+```
+
+### 重置工厂规则
+
+`POST /api/settings/factory-rules/reset`
+
+权限：仅 `superadmin`
+
+说明：将工厂规则重置为系统默认值（默认工厂 `O/NJG`；规则 `O/SHA → 吴露鹭、茅舒、沈雨帆、梁科研、张晟隽`）。
+
+响应：返回默认工厂规则对象，结构同 `GET /api/settings/factory-rules`。
+
 ## 状态追踪接口
 
 ### 获取状态追踪记录
@@ -1153,7 +1210,7 @@ Authorization: Bearer <token>
 | 字段 | 说明 |
 |------|------|
 | `id` | 记录唯一标识，创建时自动生成 |
-| `factory` | 工厂 |
+| `factory` | 工厂（`O/NJG`、`O/SHA`；前端按营业担当自动匹配工厂规则填充） |
 | `clientName` | 客户名称 |
 | `specNumber` | 仕样号 |
 | `productionPlanMonth` | 添加时间月份（`YYYY-MM`），创建时缺省取当前月 |

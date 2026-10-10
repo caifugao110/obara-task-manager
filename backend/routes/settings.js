@@ -201,7 +201,7 @@ router.put('/workday-overrides', [authMiddleware, adminMiddleware, asyncHandler(
 const defaultLeaderRules = [
   { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },
   { leader: '张啸', members: ['李守健', '邓明江', '贾银鑫', '熊飞'] },
-  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '刘知新', '梁科研', '吴方盛'] },
+  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '梁科研', '吴方盛'] },
   { leader: '陈青松', members: ['张广奇', '李劲日', '曹圩圩', '许孟涵'] }
 ];
 
@@ -237,6 +237,54 @@ router.post('/leader-rules/reset', [authMiddleware, superAdminMiddleware], async
   data.settings.leaderRules = defaultLeaderRules;
   await db.writeDb(data);
   res.json(defaultLeaderRules);
+}));
+
+// 工厂规则：将营业担当人员映射到对应工厂，未命中规则时使用默认工厂
+const factoryOptions = ['O/NJG', 'O/SHA'];
+const defaultFactoryRules = [
+  { factory: 'O/SHA', members: ['吴露鹭', '茅舒', '沈雨帆', '梁科研', '张晟隽'] }
+];
+const defaultFactory = 'O/NJG';
+
+const factoryRulesSchema = Joi.object({
+  defaultFactory: Joi.string().valid(...factoryOptions).required(),
+  rules: Joi.array().items(
+    Joi.object({
+      factory: Joi.string().valid(...factoryOptions).required(),
+      members: Joi.array().items(Joi.string()).required()
+    })
+  ).required()
+});
+
+router.get('/factory-rules', authMiddleware, asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const stored = data.settings?.factoryRules;
+  const payload = {
+    defaultFactory: stored?.defaultFactory || defaultFactory,
+    rules: stored?.rules && stored.rules.length ? stored.rules : defaultFactoryRules
+  };
+  res.json(payload);
+}));
+
+router.put('/factory-rules', [authMiddleware, adminMiddleware, asyncHandler(async (req, res) => {
+  const { error, value } = factoryRulesSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const data = db.readDb();
+  if (!data.settings) data.settings = {};
+  data.settings.factoryRules = value;
+  await db.writeDb(data);
+  res.json(data.settings.factoryRules);
+})]);
+
+router.post('/factory-rules/reset', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  if (!data.settings) data.settings = {};
+  data.settings.factoryRules = { defaultFactory, rules: defaultFactoryRules };
+  await db.writeDb(data);
+  res.json(data.settings.factoryRules);
 }));
 
 module.exports = router;

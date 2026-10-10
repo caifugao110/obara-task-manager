@@ -416,6 +416,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
+| `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
 | `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、仕样号位数（`specNumberDigits`，5 或 6）；完成状态标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
@@ -754,6 +755,7 @@ GET /api/system/version
 | 自动获取枪名 | 在主页面任务编辑模态框点击「自动获取枪名」 | 输入仕样号后自动填充匹配的枪名，已被主任务使用的枪名显示天蓝色 |
 | 手动输入纳期 | 在主页面任务编辑模态框设置纳期日期 | 保存后任务显示自定义纳期 |
 | 批量操作定位 | 打开「批量操作」搜索后点击某条查找结果 | 底部表格滚动定位并高亮目标任务，模态框保持打开并短暂降为半透明 |
+| 状态追踪排序 | 在状态追踪页面依次点击「纳期」表头三次、再点击「设计纳期」表头 | 第一次升序（↕→↑，表头深蓝高亮），第二次降序（↓），第三次取消排序恢复原始顺序；设计纳期同理；空纳期始终排在末尾 |
 | 枪名天蓝色标识 | 在主页面任务中使用某台账枪名后回到焊枪台账页 | 该枪名在台账表格中显示为天蓝色（无需刷新页面） |
 
 ## 验证命令

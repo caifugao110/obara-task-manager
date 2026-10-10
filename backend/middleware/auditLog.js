@@ -128,6 +128,8 @@ const getActionDescription = (method, path, body) => {
     'settings/workday-overrides': method === 'PUT' ? '更新工作日设置' : '查看工作日设置',
     'settings/leader-rules': method === 'PUT' ? '更新组长规则' : '查看组长规则',
     'settings/leader-rules/reset': '重置组长规则',
+    'settings/factory-rules': method === 'PUT' ? '更新工厂规则' : '查看工厂规则',
+    'settings/factory-rules/reset': '重置工厂规则',
     'system/settings': method === 'PUT' ? '更新系统设置' : '查看系统设置',
     'system/version': '查看版本',
     'system/export-xls': '导出任务数据',

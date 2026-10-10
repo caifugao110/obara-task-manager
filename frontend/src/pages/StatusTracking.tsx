@@ -13,7 +13,6 @@ import {
   X,
   Search,
   Save,
-  Edit3,
   Trash2,
   UserPlus,
   Users,
@@ -24,7 +23,11 @@ import {
   Download,
   Eye,
   RotateCcw,
-  Calendar
+  Calendar,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  Building2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
@@ -80,6 +83,16 @@ interface LeaderRule {
   members: string[];
 }
 
+interface FactoryRule {
+  factory: string;
+  members: string[];
+}
+
+interface FactoryRulesConfig {
+  defaultFactory: string;
+  rules: FactoryRule[];
+}
+
 interface EditingSession {
   itemId: string;
   userId: string;
@@ -92,9 +105,18 @@ const defaultSettings = { enabled: true, allowAdmins: true, allowViewers: false 
 const defaultLeaderRules: LeaderRule[] = [
   { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },
   { leader: '张啸', members: ['李守健', '邓明江', '贾银鑫', '熊飞'] },
-  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '刘知新', '梁科研', '吴方盛'] },
+  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '梁科研', '吴方盛'] },
   { leader: '陈青松', members: ['张广奇', '李劲日', '曹圩圩', '许孟涵'] }
 ];
+
+const defaultFactoryRules: FactoryRule[] = [
+  { factory: 'O/SHA', members: ['吴露鹭', '茅舒', '沈雨帆', '梁科研', '张晟隽'] }
+];
+const defaultFactory = 'O/NJG';
+const defaultFactoryRulesConfig: FactoryRulesConfig = {
+  defaultFactory: defaultFactory,
+  rules: defaultFactoryRules
+};
 
 const factoryOptions = ['O/NJG', 'O/SHA'];
 
@@ -105,6 +127,16 @@ const getLeaderBySalesPerson = (salesPerson: string, rules: LeaderRule[]): strin
     }
   }
   return '';
+};
+
+const getFactoryBySalesPerson = (salesPerson: string, config: FactoryRulesConfig): string => {
+  if (!salesPerson) return config.defaultFactory;
+  for (const rule of config.rules) {
+    if (rule.members.includes(salesPerson)) {
+      return rule.factory;
+    }
+  }
+  return config.defaultFactory;
 };
 
 const calculateDesignDeliveryDays = (deliveryDate: string): number => {
@@ -237,7 +269,11 @@ const StatusTracking = () => {
   const [specNumberInput, setSpecNumberInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [leaderRules, setLeaderRules] = useState<LeaderRule[]>(defaultLeaderRules);
+  const [factoryRulesConfig, setFactoryRulesConfig] = useState<FactoryRulesConfig>(defaultFactoryRulesConfig);
   const [showLeaderRulesModal, setShowLeaderRulesModal] = useState(false);
+  const [rulesModalTab, setRulesModalTab] = useState<'leader' | 'factory'>('leader');
+  const [showResetRulesConfirm, setShowResetRulesConfirm] = useState(false);
+  const [resettingRules, setResettingRules] = useState(false);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [syncStatus, setSyncStatus] = useState<'connected' | 'disconnected'>('disconnected');
   const [monthFilterMode, setMonthFilterMode] = useState<'production' | 'delivery'>('production');
@@ -247,6 +283,7 @@ const StatusTracking = () => {
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
   const [offlineWarning, setOfflineWarning] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [sortConfig, setSortConfig] = useState<{ key: 'deliveryDate' | 'designDeliveryDays'; direction: 'asc' | 'desc' } | null>({ key: 'deliveryDate', direction: 'asc' });
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dateInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
 
@@ -358,28 +395,80 @@ const StatusTracking = () => {
     }
   }, []);
 
-  const saveLeaderRules = async () => {
+  const fetchFactoryRules = useCallback(async () => {
+    try {
+      const res = await axiosInstance.get('/settings/factory-rules');
+      setFactoryRulesConfig({
+        defaultFactory: res.data.defaultFactory || defaultFactory,
+        rules: res.data.rules && res.data.rules.length ? res.data.rules : defaultFactoryRules
+      });
+    } catch (err) {
+      console.error('Error fetching factory rules:', err);
+    }
+  }, []);
+
+  const saveAllRules = async () => {
     if (!isAdmin) return;
+    let ok = true;
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       await axios.put('/api/settings/leader-rules', leaderRules, authHeader);
-      addToast('组长规则已保存', 'success');
-      setShowLeaderRulesModal(false);
     } catch (err) {
+      ok = false;
       console.error('Error saving leader rules:', err);
       addToast('保存组长规则失败', 'error');
+    }
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.put('/api/settings/factory-rules', factoryRulesConfig, authHeader);
+    } catch (err) {
+      ok = false;
+      console.error('Error saving factory rules:', err);
+      addToast('保存工厂规则失败', 'error');
+    }
+    if (ok) {
+      addToast('组长/工厂规则已保存', 'success');
+      setShowLeaderRulesModal(false);
     }
   };
 
   const resetLeaderRules = async () => {
+    setResettingRules(true);
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       await axios.post('/api/settings/leader-rules/reset', {}, authHeader);
       setLeaderRules(defaultLeaderRules);
+      setShowResetRulesConfirm(false);
       addToast('组长规则已重置为默认', 'success');
     } catch (err) {
       console.error('Error resetting leader rules:', err);
       addToast('重置组长规则失败', 'error');
+    } finally {
+      setResettingRules(false);
+    }
+  };
+
+  const resetFactoryRules = async () => {
+    setResettingRules(true);
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.post('/api/settings/factory-rules/reset', {}, authHeader);
+      setFactoryRulesConfig(defaultFactoryRulesConfig);
+      setShowResetRulesConfirm(false);
+      addToast('工厂规则已重置为默认', 'success');
+    } catch (err) {
+      console.error('Error resetting factory rules:', err);
+      addToast('重置工厂规则失败', 'error');
+    } finally {
+      setResettingRules(false);
+    }
+  };
+
+  const resetCurrentTabRules = async () => {
+    if (rulesModalTab === 'leader') {
+      await resetLeaderRules();
+    } else {
+      await resetFactoryRules();
     }
   };
 
@@ -484,10 +573,11 @@ const StatusTracking = () => {
     try {
       const designDeliveryDays = specInfo?.deliveryDate ? calculateDesignDeliveryDays(specInfo.deliveryDate) : 0;
       const leader = specInfo?.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : '';
+      const factory = getFactoryBySalesPerson(specInfo?.salesPerson || '', factoryRulesConfig);
 
       const newItem: StatusItem = {
         id: Date.now().toString(),
-        factory: 'O/NJG',
+        factory,
         clientName: specInfo?.clientName || '',
         specNumber: specInfo?.specNumber || specNumberInput.trim(),
         productionPlanMonth: operationMonth,
@@ -532,7 +622,7 @@ const StatusTracking = () => {
     } finally {
       setLoading(false);
     }
-  }, [specNumberInput, allItems, token, saveItems, createItemOnServer, leaderRules, currentMonth]);
+  }, [specNumberInput, allItems, token, saveItems, createItemOnServer, leaderRules, factoryRulesConfig, currentMonth]);
 
   const updateField = useCallback((id: string, field: keyof StatusItem, value: any) => {
     if (!isAdmin) {
@@ -695,6 +785,9 @@ const StatusTracking = () => {
       const specInfo: SpecInfoResponse = res.data;
       const designDeliveryDays = specInfo.deliveryDate ? calculateDesignDeliveryDays(specInfo.deliveryDate) : 0;
       const leader = specInfo.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : item.leader;
+      const factory = specInfo.salesPerson
+        ? getFactoryBySalesPerson(specInfo.salesPerson, factoryRulesConfig)
+        : item.factory;
 
       let updatedItem: StatusItem | null = null;
       const updated = allItems.map(i => {
@@ -706,7 +799,8 @@ const StatusTracking = () => {
             deliveryDate: specInfo.deliveryDate || i.deliveryDate,
             designDeliveryDays,
             salesPerson: specInfo.salesPerson || i.salesPerson,
-            leader
+            leader,
+            factory
           };
           return updatedItem;
         }
@@ -727,7 +821,7 @@ const StatusTracking = () => {
     } finally {
       setUpdatingItemId(null);
     }
-  }, [allItems, token, saveItems, updateItemOnServer, leaderRules, isOffline, isAdmin]);
+  }, [allItems, token, saveItems, updateItemOnServer, leaderRules, factoryRulesConfig, isOffline, isAdmin]);
 
   const startEditing = useCallback((itemId: string) => {
     if (!isAdmin) {
@@ -812,8 +906,9 @@ const StatusTracking = () => {
   useEffect(() => {
     fetchSettings();
     fetchLeaderRules();
+    fetchFactoryRules();
     loadItems();
-  }, [fetchSettings, fetchLeaderRules, loadItems]);
+  }, [fetchSettings, fetchLeaderRules, fetchFactoryRules, loadItems]);
 
   useEffect(() => {
     loadItems();
@@ -966,8 +1061,49 @@ const StatusTracking = () => {
         item.leader.toLowerCase().includes(term)
       );
     }
+    if (sortConfig) {
+      result = [...result].sort((a, b) => {
+        if (sortConfig.key === 'deliveryDate') {
+          // 空值始终放末尾
+          if (!a.deliveryDate && !b.deliveryDate) return 0;
+          if (!a.deliveryDate) return 1;
+          if (!b.deliveryDate) return -1;
+          const cmp = a.deliveryDate.localeCompare(b.deliveryDate);
+          return sortConfig.direction === 'asc' ? cmp : -cmp;
+        }
+        if (sortConfig.key === 'designDeliveryDays') {
+          const va = a.designDeliveryDays ?? 0;
+          const vb = b.designDeliveryDays ?? 0;
+          const cmp = va - vb;
+          return sortConfig.direction === 'asc' ? cmp : -cmp;
+        }
+        return 0;
+      });
+    }
     return result;
-  }, [allItems, searchTerm, factoryFilter, monthFilterMode, currentMonth, deliveryMonth, fullTableSearch, showOutdatedDelivery]);
+  }, [allItems, searchTerm, factoryFilter, monthFilterMode, currentMonth, deliveryMonth, fullTableSearch, showOutdatedDelivery, sortConfig]);
+
+  const toggleSort = useCallback((key: 'deliveryDate' | 'designDeliveryDays') => {
+    setSortConfig(prev => {
+      if (!prev || prev.key !== key) {
+        return { key, direction: 'asc' };
+      }
+      if (prev.direction === 'asc') {
+        return { key, direction: 'desc' };
+      }
+      // 第三次点击取消排序
+      return null;
+    });
+  }, []);
+
+  const SortIcon = ({ columnKey }: { columnKey: 'deliveryDate' | 'designDeliveryDays' }) => {
+    if (!sortConfig || sortConfig.key !== columnKey) {
+      return <ArrowUpDown size={14} className="inline ml-1 opacity-60" />;
+    }
+    return sortConfig.direction === 'asc'
+      ? <ArrowUp size={14} className="inline ml-1" />
+      : <ArrowDown size={14} className="inline ml-1" />;
+  };
 
   const addLeaderRule = () => {
     setLeaderRules([...leaderRules, { leader: '', members: [''] }]);
@@ -992,11 +1128,56 @@ const StatusTracking = () => {
 
   const removeMember = (ruleIndex: number, memberIndex: number) => {
     const updated = [...leaderRules];
-    updated[ruleIndex] = { 
-      ...updated[ruleIndex], 
-      members: updated[ruleIndex].members.filter((_, i) => i !== memberIndex) 
+    updated[ruleIndex] = {
+      ...updated[ruleIndex],
+      members: updated[ruleIndex].members.filter((_, i) => i !== memberIndex)
     };
     setLeaderRules(updated);
+  };
+
+  const addFactoryRule = () => {
+    setFactoryRulesConfig(prev => ({
+      ...prev,
+      rules: [...prev.rules, { factory: prev.defaultFactory, members: [''] }]
+    }));
+  };
+
+  const removeFactoryRule = (index: number) => {
+    setFactoryRulesConfig(prev => ({
+      ...prev,
+      rules: prev.rules.filter((_, i) => i !== index)
+    }));
+  };
+
+  const updateFactoryRule = (index: number, field: 'factory' | 'members', value: string | string[]) => {
+    setFactoryRulesConfig(prev => {
+      const updated = [...prev.rules];
+      updated[index] = { ...updated[index], [field]: value };
+      return { ...prev, rules: updated };
+    });
+  };
+
+  const updateDefaultFactory = (value: string) => {
+    setFactoryRulesConfig(prev => ({ ...prev, defaultFactory: value }));
+  };
+
+  const addFactoryMember = (index: number) => {
+    setFactoryRulesConfig(prev => {
+      const updated = [...prev.rules];
+      updated[index] = { ...updated[index], members: [...updated[index].members, ''] };
+      return { ...prev, rules: updated };
+    });
+  };
+
+  const removeFactoryMember = (ruleIndex: number, memberIndex: number) => {
+    setFactoryRulesConfig(prev => {
+      const updated = [...prev.rules];
+      updated[ruleIndex] = {
+        ...updated[ruleIndex],
+        members: updated[ruleIndex].members.filter((_, i) => i !== memberIndex)
+      };
+      return { ...prev, rules: updated };
+    });
   };
 
   if (loading || !settingsLoaded) {
@@ -1185,12 +1366,15 @@ const StatusTracking = () => {
 
           {isAdmin && (
             <button
-              onClick={() => setShowLeaderRulesModal(true)}
+              onClick={() => {
+                setRulesModalTab('leader');
+                setShowLeaderRulesModal(true);
+              }}
               disabled={offlineWarning}
               className="flex items-center space-x-2 px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Users size={18} />
-              <span>组长规则</span>
+              <span>组长/工厂规则</span>
             </button>
           )}
 
@@ -1255,7 +1439,16 @@ const StatusTracking = () => {
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
                     <VerticalHeader text="数量" />
                   </th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>纳期</th>
+                  <th
+                    className={`px-2 py-1.5 text-center border-r border-white cursor-pointer select-none hover:bg-blue-700 transition ${
+                      sortConfig?.key === 'deliveryDate' ? 'bg-blue-800' : ''
+                    }`}
+                    rowSpan={2}
+                    onClick={() => toggleSort('deliveryDate')}
+                    title="点击排序"
+                  >
+                    纳期<SortIcon columnKey="deliveryDate" />
+                  </th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
                     <VerticalHeader text="已发图" />
                   </th>
@@ -1283,8 +1476,18 @@ const StatusTracking = () => {
                   <th className="px-2 py-1.5 text-center border-r border-white bg-teal-400" rowSpan={2}>
                     <VerticalHeader text="未确认数" />
                   </th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
-                    <VerticalHeader text="设计纳期" />
+                  <th
+                    className={`px-2 py-1.5 text-center border-r border-white cursor-pointer select-none hover:bg-blue-700 transition ${
+                      sortConfig?.key === 'designDeliveryDays' ? 'bg-blue-800' : ''
+                    }`}
+                    rowSpan={2}
+                    onClick={() => toggleSort('designDeliveryDays')}
+                    title="点击排序"
+                  >
+                    <div className="flex flex-col items-center gap-0.5">
+                      <VerticalHeader text="设计纳期" />
+                      <SortIcon columnKey="designDeliveryDays" />
+                    </div>
                   </th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>营业担当</th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>组长</th>
@@ -1496,7 +1699,8 @@ const StatusTracking = () => {
                             onChange={(e) => {
                               updateItem(item.id, {
                                 salesPerson: e.target.value,
-                                leader: getLeaderBySalesPerson(e.target.value, leaderRules)
+                                leader: getLeaderBySalesPerson(e.target.value, leaderRules),
+                                factory: getFactoryBySalesPerson(e.target.value, factoryRulesConfig)
                               });
                             }}
                             disabled={isLocked || !isAdmin}
@@ -1655,20 +1859,21 @@ const StatusTracking = () => {
       })()}
 
       {showModal && isAdmin && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-bold text-gray-800">添加状态跟踪记录</h3>
-              <button
-                onClick={() => setShowModal(false)}
-                className="p-1 text-gray-400 hover:text-gray-600 transition"
-              >
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !loading && setShowModal(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <Plus size={20} />
+                添加状态跟踪记录
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => !loading && setShowModal(false)} disabled={loading}>
                 <X size={20} />
               </button>
             </div>
-            <div className="space-y-4">
+            <div className="p-5 space-y-4">
               <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">仕样号</label>
+                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">仕样号</label>
                 <div className="relative">
                   <input
                     type="text"
@@ -1678,28 +1883,33 @@ const StatusTracking = () => {
                       if (e.key === 'Enter') addItem();
                     }}
                     placeholder={`请输入仕样号（${specNumberDigits}位数字）`}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg text-lg text-gray-800 font-semibold tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white focus:border-transparent transition disabled:opacity-60"
                     autoFocus
                   />
                   {loading && (
                     <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-blue-600" size={20} />
                   )}
                 </div>
-                <p className="text-xs text-gray-400 mt-2">请输入 {specNumberDigits} 位仕样号，系统将自动从PDF文件中获取客户名、纳期、数量和营业担当信息</p>
+                <div className="flex items-start gap-2 mt-2.5 p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
+                  <AlertCircle size={14} className="text-blue-500 shrink-0 mt-0.5" />
+                  <p className="text-xs text-blue-700/80 leading-relaxed">请输入 {specNumberDigits} 位仕样号，系统将自动从PDF文件中获取客户名、纳期、数量和营业担当信息</p>
+                </div>
               </div>
             </div>
-            <div className="flex space-x-3 mt-6">
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
               <button
                 onClick={() => setShowModal(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg transition"
+                disabled={loading}
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
               >
                 取消
               </button>
               <button
                 onClick={addItem}
                 disabled={loading}
-                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition disabled:opacity-50"
+                className="px-5 py-2 rounded-lg bg-blue-600 text-white font-bold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
               >
+                {loading && <RefreshCw size={14} className="animate-spin" />}
                 {loading ? '获取中...' : '添加'}
               </button>
             </div>
@@ -1763,107 +1973,289 @@ const StatusTracking = () => {
       })()}
 
       {showLeaderRulesModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-4xl mx-4 max-h-[85vh] overflow-auto">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-3">
-                <h3 className="text-xl font-bold text-gray-800">组长规则配置</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !resettingRules && setShowLeaderRulesModal(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-4xl mx-4 max-h-[85vh] flex flex-col border border-gray-200 overflow-hidden">
+            {/* 头部 */}
+            <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <Users size={20} />
+                组长/工厂规则配置
+              </div>
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={resetLeaderRules}
-                  disabled={!isSuperAdmin}
-                  className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed bg-gray-100 text-gray-600 hover:bg-gray-200"
-                  title={isSuperAdmin ? '重置为默认规则' : '仅超级管理员可重置'}
+                  onClick={() => setShowResetRulesConfirm(true)}
+                  disabled={!isSuperAdmin || resettingRules}
+                  className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-white/15 hover:bg-white/25 rounded-md border border-white/25 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={isSuperAdmin ? `恢复为系统默认${rulesModalTab === 'leader' ? '组长' : '工厂'}规则` : '仅超级管理员可重置'}
                 >
-                  <RotateCcw size={12} />
-                  重置为默认规则
+                  <RotateCcw size={12} className={resettingRules ? 'animate-spin' : ''} />
+                  {resettingRules ? '重置中...' : '重置为默认规则'}
+                </button>
+                <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowLeaderRulesModal(false)}>
+                  <X size={20} />
                 </button>
               </div>
+            </div>
+            {/* Tab 切换栏 */}
+            <div className="flex shrink-0 border-b border-gray-200 bg-gray-50">
               <button
-                onClick={() => setShowLeaderRulesModal(false)}
-                className="p-1 text-gray-400 hover:text-gray-600 transition"
+                onClick={() => setRulesModalTab('leader')}
+                className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold transition border-b-2 ${
+                  rulesModalTab === 'leader'
+                    ? 'border-blue-600 text-blue-600 bg-white'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                }`}
               >
+                <Users size={16} />
+                组长规则
+                <span className="text-xs font-medium text-gray-400">({leaderRules.length})</span>
+              </button>
+              <button
+                onClick={() => setRulesModalTab('factory')}
+                className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold transition border-b-2 ${
+                  rulesModalTab === 'factory'
+                    ? 'border-teal-600 text-teal-600 bg-white'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                <Building2 size={16} />
+                工厂规则
+                <span className="text-xs font-medium text-gray-400">({factoryRulesConfig.rules.length})</span>
+              </button>
+            </div>
+            {/* 规则内容区 */}
+            <div className="flex-1 min-h-0 p-5 overflow-y-auto">
+              {rulesModalTab === 'leader' ? (
+                <div className="grid grid-cols-2 gap-4">
+                  {leaderRules.map((rule, index) => (
+                    <div key={index} className="border border-gray-200 rounded-xl p-4 bg-gray-50/60 hover:border-blue-300 hover:shadow-md transition">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-lg bg-blue-600 text-white text-xs font-black flex items-center justify-center shadow-sm">{index + 1}</span>
+                          <span className="text-sm font-bold text-gray-600">规则 {index + 1}</span>
+                        </div>
+                        <button
+                          onClick={() => removeLeaderRule(index)}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                          disabled={leaderRules.length <= 1}
+                          title="删除此规则"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                      <div className="mb-3">
+                        <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">组长姓名</label>
+                        <input
+                          type="text"
+                          value={rule.leader}
+                          onChange={(e) => updateLeaderRule(index, 'leader', e.target.value)}
+                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-800 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                          placeholder="输入组长姓名"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest ml-1">营业担当成员</label>
+                          <button
+                            onClick={() => addMember(index)}
+                            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-bold px-2 py-0.5 rounded-md hover:bg-blue-50 transition"
+                          >
+                            <UserPlus size={12} />
+                            添加成员
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {rule.members.map((member, mIndex) => (
+                            <div key={mIndex} className="flex items-center gap-0.5 bg-white border border-gray-200 rounded-lg pl-2.5 pr-1 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100 transition">
+                              <input
+                                type="text"
+                                value={member}
+                                onChange={(e) => {
+                                  const updatedMembers = [...rule.members];
+                                  updatedMembers[mIndex] = e.target.value;
+                                  updateLeaderRule(index, 'members', updatedMembers);
+                                }}
+                                className="px-0 py-1.5 bg-transparent text-sm text-gray-800 font-semibold outline-none w-16"
+                                placeholder="姓名"
+                              />
+                              <button
+                                onClick={() => removeMember(index, mIndex)}
+                                className="p-1 text-gray-300 hover:text-red-500 transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-gray-300"
+                                disabled={rule.members.length <= 1}
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* 默认工厂设置 */}
+                  <div className="flex items-center gap-3 p-4 border border-teal-200 rounded-xl bg-teal-50/60">
+                    <div className="flex items-center gap-2 text-teal-700 shrink-0">
+                      <Building2 size={18} />
+                      <span className="text-sm font-bold">默认工厂</span>
+                    </div>
+                    <div className="text-xs text-gray-500">未命中规则的营业担当将分配至此工厂</div>
+                    <div className="ml-auto w-40">
+                      <div className="relative">
+                        <select
+                          value={factoryRulesConfig.defaultFactory}
+                          onChange={(e) => updateDefaultFactory(e.target.value)}
+                          className="w-full appearance-none px-3 py-2 bg-white border border-teal-300 rounded-lg text-sm text-gray-800 font-bold focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition cursor-pointer"
+                        >
+                          {factoryOptions.map(option => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                        <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-teal-500 pointer-events-none" />
+                      </div>
+                    </div>
+                  </div>
+                  {/* 工厂规则卡片 */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {factoryRulesConfig.rules.map((rule, index) => (
+                      <div key={index} className="border border-gray-200 rounded-xl p-4 bg-gray-50/60 hover:border-teal-300 hover:shadow-md transition">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <span className="w-6 h-6 rounded-lg bg-teal-600 text-white text-xs font-black flex items-center justify-center shadow-sm">{index + 1}</span>
+                            <span className="text-sm font-bold text-gray-600">规则 {index + 1}</span>
+                          </div>
+                          <button
+                            onClick={() => removeFactoryRule(index)}
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                            disabled={factoryRulesConfig.rules.length === 0}
+                            title="删除此规则"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                        <div className="mb-3">
+                          <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">对应工厂</label>
+                          <div className="relative">
+                            <select
+                              value={rule.factory}
+                              onChange={(e) => updateFactoryRule(index, 'factory', e.target.value)}
+                              className="w-full appearance-none px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-800 font-bold focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition cursor-pointer"
+                            >
+                              {factoryOptions.map(option => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
+                            </select>
+                            <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest ml-1">营业担当成员</label>
+                            <button
+                              onClick={() => addFactoryMember(index)}
+                              className="flex items-center gap-1 text-xs text-teal-600 hover:text-teal-700 font-bold px-2 py-0.5 rounded-md hover:bg-teal-50 transition"
+                            >
+                              <UserPlus size={12} />
+                              添加成员
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {rule.members.map((member, mIndex) => (
+                              <div key={mIndex} className="flex items-center gap-0.5 bg-white border border-gray-200 rounded-lg pl-2.5 pr-1 focus-within:border-teal-400 focus-within:ring-2 focus-within:ring-teal-100 transition">
+                                <input
+                                  type="text"
+                                  value={member}
+                                  onChange={(e) => {
+                                    const updatedMembers = [...rule.members];
+                                    updatedMembers[mIndex] = e.target.value;
+                                    updateFactoryRule(index, 'members', updatedMembers);
+                                  }}
+                                  className="px-0 py-1.5 bg-transparent text-sm text-gray-800 font-semibold outline-none w-16"
+                                  placeholder="姓名"
+                                />
+                                <button
+                                  onClick={() => removeFactoryMember(index, mIndex)}
+                                  className="p-1 text-gray-300 hover:text-red-500 transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-gray-300"
+                                  disabled={rule.members.length <= 1}
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* 底部操作栏 */}
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between shrink-0">
+              <span className="text-xs text-gray-400 font-medium">
+                {rulesModalTab === 'leader' ? `共 ${leaderRules.length} 条组长规则` : `共 ${factoryRulesConfig.rules.length} 条工厂规则`}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={rulesModalTab === 'leader' ? addLeaderRule : addFactoryRule}
+                  className="flex items-center gap-2 px-4 py-2 border border-gray-200 hover:bg-gray-100 text-gray-700 font-bold rounded-lg transition"
+                >
+                  <Plus size={16} />
+                  添加规则
+                </button>
+                <button
+                  onClick={saveAllRules}
+                  className="flex items-center gap-2 px-5 py-2 bg-blue-600 text-white font-bold hover:bg-blue-700 rounded-lg transition"
+                >
+                  <Save size={16} />
+                  保存全部
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 重置为默认规则确认弹窗 */}
+      {showResetRulesConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !resettingRules && setShowResetRulesConfirm(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <AlertCircle size={20} />
+                重置为默认规则
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => !resettingRules && setShowResetRulesConfirm(false)} disabled={resettingRules}>
                 <X size={20} />
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              {leaderRules.map((rule, index) => (
-                <div key={index} className="border border-gray-200 rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <Edit3 size={16} className="text-gray-400" />
-                      <span className="text-sm font-medium text-gray-500">规则 {index + 1}</span>
-                    </div>
-                    <button
-                      onClick={() => removeLeaderRule(index)}
-                      className="p-1 text-gray-400 hover:text-red-600 transition"
-                      disabled={leaderRules.length <= 1}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                  <div className="mb-3">
-                    <label className="block text-xs font-bold text-gray-500 mb-1">组长姓名</label>
-                    <input
-                      type="text"
-                      value={rule.leader}
-                      onChange={(e) => updateLeaderRule(index, 'leader', e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="输入组长姓名"
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-bold text-gray-500">营业担当成员</label>
-                      <button
-                        onClick={() => addMember(index)}
-                        className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
-                      >
-                        <UserPlus size={12} />
-                        添加成员
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {rule.members.map((member, mIndex) => (
-                        <div key={mIndex} className="flex items-center gap-1">
-                          <input
-                            type="text"
-                            value={member}
-                            onChange={(e) => {
-                              const updatedMembers = [...rule.members];
-                              updatedMembers[mIndex] = e.target.value;
-                              updateLeaderRule(index, 'members', updatedMembers);
-                            }}
-                            className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-20"
-                            placeholder="姓名"
-                          />
-                          <button
-                            onClick={() => removeMember(index, mIndex)}
-                            className="p-1 text-gray-400 hover:text-red-600 transition"
-                            disabled={rule.members.length <= 1}
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <AlertCircle size={22} className="text-amber-500 shrink-0 mt-0.5" />
+                <div className="text-sm text-gray-700 leading-relaxed">
+                  <div className="font-bold text-amber-700 mb-1">此操作将覆盖当前规则</div>
+                  <div>确定要将{rulesModalTab === 'leader' ? '组长规则' : '工厂规则'}重置为系统默认规则吗？当前已修改的规则内容将全部丢失。</div>
                 </div>
-              ))}
+              </div>
             </div>
-            <div className="flex justify-end gap-3 mt-6">
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
               <button
-                onClick={addLeaderRule}
-                className="flex items-center gap-2 px-5 py-2.5 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg transition"
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                onClick={() => setShowResetRulesConfirm(false)}
+                disabled={resettingRules}
               >
-                <Plus size={16} />
-                添加规则
+                取消
               </button>
               <button
-                onClick={saveLeaderRules}
-                className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition"
+                className="px-5 py-2 rounded-lg bg-amber-600 text-white font-bold hover:bg-amber-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                onClick={resetCurrentTabRules}
+                disabled={resettingRules}
               >
-                <Save size={16} />
-                保存
+                {resettingRules && <RefreshCw size={14} className="animate-spin" />}
+                {resettingRules ? '重置中...' : '确认重置'}
               </button>
             </div>
           </div>

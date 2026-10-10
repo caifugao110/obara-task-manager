@@ -75,6 +75,11 @@ const routeActionDisplays = {
   'PUT settings/leader-rules': { label: '更新组长规则', description: '修改组长分配规则配置' },
   'PUT leader-rules': { label: '更新组长规则', description: '修改组长分配规则配置' },
   'POST settings/leader-rules/reset': { label: '重置组长规则', description: '重置组长分配规则为默认值' },
+  'GET settings/factory-rules': { label: '查看工厂规则', description: '查看营业担当与工厂映射规则' },
+  'GET factory-rules': { label: '查看工厂规则', description: '查看营业担当与工厂映射规则' },
+  'PUT settings/factory-rules': { label: '更新工厂规则', description: '修改营业担当与工厂映射规则' },
+  'PUT factory-rules': { label: '更新工厂规则', description: '修改营业担当与工厂映射规则' },
+  'POST settings/factory-rules/reset': { label: '重置工厂规则', description: '重置工厂映射规则为默认值' },
   'PUT settings': { label: '更新设置', description: '修改系统设置' },
 
   'GET system/settings': { label: '查看系统设置', description: '查看系统级配置' },
@@ -302,6 +307,9 @@ const legacyActionDescriptions = {
   '验证登录': '验证用户登录状态',
   '查看组长规则': '查看组长分配规则配置',
   '更新组长规则': '修改组长分配规则配置',
+  '查看工厂规则': '查看营业担当与工厂映射规则',
+  '更新工厂规则': '修改营业担当与工厂映射规则',
+  '重置工厂规则': '重置工厂映射规则为默认值',
   '添加记录': '新增数据记录'
 };
 
