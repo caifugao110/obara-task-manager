@@ -15,7 +15,17 @@ const JWT_SECRET = securityConfig.jwt.secret;
 const JWT_ISSUER = securityConfig.jwt.issuer;
 const JWT_AUDIENCE = securityConfig.jwt.audience;
 
-// 登录限流按「IP + 用户名」计数：既防针对单个账号的爆破，
+// 登录限流第一层：仅按 IP 计数。「IP + 用户名」细粒度限流的桶随用户名切换而更换，
+// 单一 IP 可对全部账号轮流各试一批弱口令（密码喷洒），此层按 IP 总量兜底。
+// 阈值需远高于单账号限额：300+ 人经同一代理出口（共用一个 IP）时，
+// 早高峰集中登录不应触发；默认 300 次/15 分钟/IP，可用 LOGIN_IP_RATE_LIMIT_MAX 调整。
+const loginIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.LOGIN_IP_RATE_LIMIT_MAX) || 300,
+  message: { message: '登录尝试过于频繁，请15分钟后再试' }
+});
+
+// 登录限流第二层：按「IP + 用户名」计数：既防针对单个账号的爆破，
 // 又避免 300+ 人经同一代理出口（共用一个 IP）时早高峰互相挤爆额度
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -23,6 +33,10 @@ const loginLimiter = rateLimit({
   keyGenerator: (req) => `${ipKeyGenerator(req.ip)}|${req.body?.username || ''}`,
   message: { message: '登录尝试过于频繁，请15分钟后再试' }
 });
+
+// 不存在用户的等价 bcrypt 比较目标：模块加载时生成一次（随机盐），
+// 让「用户不存在」分支与真实密码校验执行同样的哈希工作量，抹平响应时序差
+const DUMMY_HASH = bcrypt.hashSync('timing-equalization-placeholder', 10);
 
 // 改密码限流按「用户 ID」计数（需先通过认证），避免共用出口 IP 时互相影响
 const changePasswordLimiter = rateLimit({
@@ -74,7 +88,7 @@ const getClientIp = (req) => {
 
 // 登录日志写入独立表（db.appendLoginLogEntry），不再随整库 JSON 读写
 
-router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
+router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res) => {
   const { error } = loginSchema.validate(req.body);
   if (error) {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
@@ -90,21 +104,23 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const logBase = { username, ip, userAgent, browserInfo };
 
   if (!user) {
-    // 记录失败日志（含不存在的用户名），便于监测爆破/扫号行为；
-    // 返回文案与密码错误一致，不产生用户枚举
+    // 对不存在的用户名执行一次等价 bcrypt 比较；返回文案与密码错误一致，不产生用户枚举
+    bcrypt.compareSync(password, DUMMY_HASH);
     db.appendLoginLogEntry({ ...logBase, success: false, reason: '用户不存在' });
     return res.status(401).json({ message: '用户名或密码错误' });
-  }
-
-  if (user.disabled) {
-    db.appendLoginLogEntry({ ...logBase, userId: user.id, name: user.name, role: user.role, success: false, reason: '账号已禁用' });
-    return res.status(403).json({ message: '账号已被禁用，请联系管理员', code: 'ACCOUNT_DISABLED' });
   }
 
   const isMatch = bcrypt.compareSync(password, user.password);
   if (!isMatch) {
     db.appendLoginLogEntry({ ...logBase, userId: user.id, name: user.name, role: user.role, success: false, reason: '密码错误' });
     return res.status(401).json({ message: '用户名或密码错误' });
+  }
+
+  // 禁用检查必须在密码校验通过之后：若前置返回固定 403 ACCOUNT_DISABLED，
+  // 攻击者无须口令即可借该响应码探测用户名存在性与禁用状态
+  if (user.disabled) {
+    db.appendLoginLogEntry({ ...logBase, userId: user.id, name: user.name, role: user.role, success: false, reason: '账号已禁用' });
+    return res.status(403).json({ message: '账号已被禁用，请联系管理员', code: 'ACCOUNT_DISABLED' });
   }
 
   const systemSettings = data.settings?.system || { allowMultiDevice: true };

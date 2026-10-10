@@ -305,6 +305,30 @@ namespace ObaraServiceController.Utils
             return null;
         }
 
+        // Locate nodemon's JS entry point (bin/nodemon.js) so the backend can
+        // be launched as "node nodemon.js server.js" — editing backend *.js
+        // files then auto-restarts the service.  nodemon is a backend
+        // dependency; under npm workspaces it is hoisted into the repo-root
+        // node_modules, standalone installs keep it inside backend.  Returns
+        // null when nodemon is not installed so callers fall back to running
+        // server.js directly.
+        private static string FindNodemonEntry(string backendPath)
+        {
+            string workspaceRoot = FindWorkspaceRoot(backendPath);
+            string[] candidates = new string[]
+            {
+                Path.Combine(backendPath, "node_modules", "nodemon", "bin", "nodemon.js"),
+                workspaceRoot != null
+                    ? Path.Combine(workspaceRoot, "node_modules", "nodemon", "bin", "nodemon.js")
+                    : null
+            };
+            foreach (string candidate in candidates)
+            {
+                if (candidate != null && File.Exists(candidate)) return candidate;
+            }
+            return null;
+        }
+
         // Resolve the node_modules directory that actually holds a service's
         // dependencies.  Two layouts are supported:
         //
@@ -523,13 +547,33 @@ namespace ObaraServiceController.Utils
                 // is the cleanest and most predictable outcome — the tracked
                 // PID IS the real backend Node process, port env is passed
                 // through exactly how server.js expects it.
+                //
+                // nodemon support: when nodemon is installed we launch its JS
+                // entry directly ("node nodemon.js server.js") instead of
+                // plain server.js, so editing backend *.js files auto-restarts
+                // the service without losing the no-npm-wrapper property.
+                // The tracked PID is the nodemon process; the existing
+                // taskkill /T /F stop logic still kills the whole tree
+                // (nodemon + its child node server.js).  Without nodemon we
+                // fall back to the previous direct launch.
                 string serverEntry = Path.Combine(backendPath, "server.js");
                 if (!File.Exists(serverEntry))
                     throw new Exception("后端入口文件不存在 (server.js)，请检查目录结构。");
 
+                string nodemonEntry = FindNodemonEntry(backendPath);
+
                 var startInfo = new ProcessStartInfo();
                 startInfo.FileName = _cachedNodeExe;
-                startInfo.Arguments = string.Format("\"{0}\"", serverEntry);
+                if (nodemonEntry != null)
+                {
+                    startInfo.Arguments = string.Format("\"{0}\" \"{1}\"", nodemonEntry, serverEntry);
+                    OnLogMessage(new ProcessEventArgs(ServiceType.Backend,
+                        "使用 nodemon 启动后端（*.js 文件变动将自动重启服务）", port));
+                }
+                else
+                {
+                    startInfo.Arguments = string.Format("\"{0}\"", serverEntry);
+                }
                 startInfo.WorkingDirectory = backendPath;
                 startInfo.CreateNoWindow = true;
                 startInfo.UseShellExecute = false;

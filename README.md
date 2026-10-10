@@ -484,6 +484,7 @@ node --check backend\routes\tasks.js
 | `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在控制台输出一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时生产环境必须使用强密码并立即修改 |
 | `RATE_LIMIT_WINDOW_MS` | `900000`（15 分钟） | 限流时间窗口配置（登录/改密独立限流器的阈值目前为代码内硬编码，未读取此变量） |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置（同上，当前未被独立限流器使用） |
+| `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流阈值：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
 | `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流阈值：每个 IP 15 分钟内最大请求数，覆盖所有 `/api` 接口；`OPTIONS` 预检与本机环回请求不计数，超限返回 `429` |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
@@ -562,7 +563,7 @@ node --check backend\routes\tasks.js
 ### 安全增强特性
 
 - **JWT_SECRET 强制校验**：服务启动时强制校验 `JWT_SECRET` 配置，缺失则直接终止启动并输出错误提示。JWT 默认有效期 3 天（`JWT_EXPIRES_IN`），配合服务端会话吊销机制，登出/改密/禁用后旧令牌立即失效。
-- **全局 API 限流**：所有 `/api` 接口共享每 IP 15 分钟 3000 次的全局限流（可用 `API_RATE_LIMIT_MAX` 调整，`OPTIONS` 预检与本机环回请求不计数）；登录接口另有 15 分钟 20 次的独立限流（按「IP + 用户名」计数），修改密码接口另有 15 分钟 5 次的独立限流（按「用户 ID」计数），兼容内网多人共用同一代理出口的场景。超限统一返回 `429`。
+- **多层 API 限流**：登录接口三层限流（按 IP 15 分钟 300 次兜底防密码喷洒，可用 `LOGIN_IP_RATE_LIMIT_MAX` 调整；按「IP + 用户名」15 分钟 20 次防单账号爆破；再加全局限流），修改密码接口两层限流（按用户 ID 15 分钟 5 次 + 全局 API 限流）；所有 `/api` 接口共享每 IP 15 分钟 3000 次的全局限流（可用 `API_RATE_LIMIT_MAX` 调整，`OPTIONS` 预检与本机环回请求不计数），兼容内网多人共用同一代理出口的场景。超限统一返回 `429`。
 - **请求体敏感信息脱敏**：操作日志记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`。
 - **真实 IP 防伪造**：`trust proxy` 设为 `loopback`，仅信任本机回环代理转发的 `X-Forwarded-For`；外部直连请求伪造的 XFF 不会被采信，登录/操作日志的 IP 与限流计数均以 `req.ip`（Socket 对端地址）为准。
 - **收敛 CSP 响应头**：后端启用 Helmet 内容安全策略（资源仅限同源加载、禁用插件、禁止页面被嵌入框架），作为纵深防御；CORS 为通配符时自动不启用 credentials。
@@ -946,4 +947,4 @@ MIT License
 
 ---
 
-最后更新：2026-09-29
+最后更新：2026-10-10

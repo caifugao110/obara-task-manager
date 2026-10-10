@@ -59,7 +59,7 @@ router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res)
   }
   
   const users = data.users.map(u => {
-    const { password, ...rest } = u;
+    const { password, sessionToken, ...rest } = u;
     return rest;
   });
   res.json(users);
@@ -98,7 +98,7 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
   data.users.push(newUser);
   await db.writeDb(data);
 
-  const { password: _, ...userResponse } = newUser;
+  const { password: _, sessionToken: __, ...userResponse } = newUser;
   res.status(201).json(userResponse);
 }));
 
@@ -152,7 +152,7 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
 
   await db.writeDb(data);
 
-  const { password: _, ...userResponse } = targetUser;
+  const { password: _, sessionToken: __, ...userResponse } = targetUser;
   res.json(userResponse);
 }));
 

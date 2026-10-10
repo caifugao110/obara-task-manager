@@ -169,7 +169,9 @@ set "OBARA_BACKEND_LOG=%LOG_DIR%\backend.log"
 set "OBARA_BACKEND_ERR=%LOG_DIR%\backend.err.log"
 set "OBARA_BACKEND_PID=%LOG_DIR%\backend.pid"
 echo [%date% %time%] Starting backend on port %BACKEND_PORT%...>> "%OBARA_BACKEND_LOG%"
-wscript.exe //nologo "%SCRIPT_DIR%start-process-hidden.vbs" "%BACKEND_DIR%" "set PORT=%BACKEND_PORT%&& npm start" "%OBARA_BACKEND_LOG%" "%OBARA_BACKEND_ERR%" "%OBARA_BACKEND_PID%"
+rem npm run dev = nodemon server.js: backend *.js file changes auto-restart
+rem the service. nodemon resolves from the workspace-root node_modules\.bin.
+wscript.exe //nologo "%SCRIPT_DIR%start-process-hidden.vbs" "%BACKEND_DIR%" "set PORT=%BACKEND_PORT%&& npm run dev" "%OBARA_BACKEND_LOG%" "%OBARA_BACKEND_ERR%" "%OBARA_BACKEND_PID%"
 if errorlevel 1 (
     echo [ERROR] Backend service failed to start.
     exit /b 1

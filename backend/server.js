@@ -117,9 +117,16 @@ app.use('/api/design-standards', designStandardsRoutes);
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(err.status || 500).json({
-    message: err.message || '服务器内部错误',
-    error: process.env.NODE_ENV === 'development' ? err : {}
+  const status = err.status || 500;
+  const isDev = process.env.NODE_ENV === 'development';
+  // 5xx 服务端错误：生产环境不向客户端透出内部错误细节（如 SQLite 约束错误、
+  // 文件路径等），避免信息泄露；4xx 客户端错误保留原始消息便于排障
+  const message = status >= 500 && !isDev
+    ? '服务器内部错误'
+    : (err.message || '服务器内部错误');
+  res.status(status).json({
+    message,
+    error: isDev ? err : {}
   });
 });
 

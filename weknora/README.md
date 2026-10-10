@@ -172,3 +172,5 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 - `weknora/.env` 中 `DB_PASSWORD` / `REDIS_PASSWORD` 改为强口令；
 - 生产建议在 `weknora/.env` 增加 `DISABLE_REGISTRATION=true` 禁止公开注册；
 - 不要把 `.env`、`backend/.env` 提交到 git（已在 .gitignore 中）。
+
+最后更新：2026-10-10

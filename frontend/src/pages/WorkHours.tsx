@@ -9,6 +9,7 @@ import {
   CheckCircle,
   ChevronLeft,
   Clock,
+  Download,
   LogOut,
   Medal,
   RefreshCw,
@@ -77,6 +78,7 @@ const WorkHours = () => {
   const [excludeWeekendOvertime, setExcludeWeekendOvertime] = useState(false);
   const [excludeVacationLeave, setExcludeVacationLeave] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   const isOffline = !isOnline;
@@ -324,6 +326,37 @@ const WorkHours = () => {
     if (!loading && canViewWorkHours) fetchWorkHoursData();
   }, [loading, canViewWorkHours, fetchWorkHoursData]);
 
+  // 导出当前月份工时管理表（与系统设置页一致，月份由当前页面决定）
+  const handleWorkHoursExport = async () => {
+    if (!token) return;
+    const month = format(currentDate, 'yyyy-MM');
+    setExporting(true);
+    try {
+      const res = await axios.get(`/api/work-hours/export?month=${month}`, {
+        ...authHeader,
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `work-hours-${month}-${format(new Date(), 'yyyyMMddHHmmss')}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      addToast('导出成功', 'success');
+    } catch (err: any) {
+      markOfflineIfNetworkError(err);
+      if (err.response?.status === 404) {
+        addToast('没有可导出的数据', 'error');
+      } else {
+        addToast('导出失败', 'error');
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const getDisplayedWorkHours = useCallback(
     (item: WorkHoursData) => excludeWeekendOvertime ? item.workdayHours : item.hours,
     [excludeWeekendOvertime]
@@ -470,6 +503,17 @@ const WorkHours = () => {
             <Clock className="text-blue-500 mr-2" size={24} />
             工时管理
           </h2>
+          {isAdmin && (
+            <button
+              onClick={handleWorkHoursExport}
+              disabled={exporting}
+              className="flex items-center gap-2 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition"
+              title={`导出 ${format(currentDate, 'yyyy年MM月')} 工时管理表`}
+            >
+              {exporting ? <RefreshCw size={16} className="animate-spin" /> : <Download size={16} />}
+              导出显示结果
+            </button>
+          )}
         </div>
 
         <div className="flex items-center space-x-4">

@@ -107,7 +107,7 @@ Authorization: Bearer <token>
 - 关闭多设备登录时，新登录会使旧会话失效。
 - `forcePasswordChange=true` 时前端需引导用户到 `/change-password` 修改密码。
 - **未修改初始密码期间的 API 拦截**：`forcePasswordChange` 标记未清除前，除 `POST /api/auth/change-password` 和 `POST /api/auth/logout` 外的所有已登录接口一律返回 `403`（`code=FORCE_PASSWORD_CHANGE`）。
-- 登录接口受独立速率限制（按「IP + 用户名」计数，15 分钟内最多 20 次尝试），超限返回 HTTP `429` 与消息 `登录尝试过于频繁，请15分钟后再试`；此外还受全局 API 限流（默认每 IP 15 分钟 3000 次）约束。
+- 登录接口受三层速率限制：第一层按 IP 15 分钟内最多 300 次尝试（`LOGIN_IP_RATE_LIMIT_MAX` 可调整，堵密码喷洒缺口）；第二层按「IP + 用户名」15 分钟内最多 20 次尝试（防止单账号爆破），两层均超限返回 HTTP `429` 与消息 `登录尝试过于频繁，请15分钟后再试`；此外还受全局 API 限流（默认每 IP 15 分钟 3000 次）约束。
 
 ### 校验当前会话
 
@@ -3407,7 +3407,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 注意：
 
-- 登录接口受独立速率限制（按「IP + 用户名」计数，15 分钟内最多 20 次尝试），超限返回 `登录尝试过于频繁，请15分钟后再试`。
+- 登录接口三层限流：第一层按 IP 15 分钟内最多 300 次（可通过 `LOGIN_IP_RATE_LIMIT_MAX` 调整，堵密码喷洒）；第二层按「IP + 用户名」15 分钟内最多 20 次尝试（防止单账号爆破）；两层均超限返回 `登录尝试过于频繁，请15分钟后再试`。
 - 修改密码接口受独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次尝试），超限返回 `密码修改尝试过于频繁，请15分钟后再试`。
 - 全部 `/api` 接口还受全局限流保护（按 IP 计数，默认每 15 分钟 3000 次，可用 `API_RATE_LIMIT_MAX` 调整），超限返回 HTTP `429` 与消息 `请求过于频繁，请稍后再试`；`OPTIONS` 预检与本机环回请求不计数。
 - 登录请求体校验：`username` 为 3-30 位字母数字，`password` 至少 6 位。
@@ -3435,7 +3435,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 1. **JWT 认证**：使用 JWT Token 进行身份验证，默认过期时间为 3 天（可通过 `JWT_EXPIRES_IN` 配置）；配合服务端会话吊销，登出、改密、账号禁用后旧 Token 立即失效
 2. **密码加密**：使用 bcrypt 对密码进行哈希加密
-3. **多层限流**：全局 API 限流按 IP 计数（15 分钟 3000 次，可通过 `API_RATE_LIMIT_MAX` 调整，`OPTIONS` 预检与本机环回不计）；登录接口按「IP + 用户名」15 分钟最多 20 次尝试；修改密码接口按「用户 ID」15 分钟最多 5 次尝试（后两项阈值在 `backend/routes/auth.js` 中硬编码），超限返回 HTTP `429`
+3. **多层限流**：登录接口三层限流（按 IP 15 分钟 300 次兜底防密码喷洒，可用 `LOGIN_IP_RATE_LIMIT_MAX` 调整；按「IP + 用户名」15 分钟最多 20 次尝试；再加全局限流）；修改密码接口两层限流（按用户 ID 15 分钟最多 5 次尝试 + 全局 API 限流）；全局 API 限流按 IP 计数（15 分钟 3000 次，可通过 `API_RATE_LIMIT_MAX` 调整，`OPTIONS` 预检与本机环回不计），超限返回 HTTP `429`
 4. **真实 IP 防伪造**：`trust proxy` 为 `loopback`，仅信任本机回环代理转发的 `X-Forwarded-For`；日志与限流使用 `req.ip`，不直接读取 `X-Forwarded-For` / `X-Real-IP`
 5. **请求验证**：使用 Joi 进行请求参数验证
 6. **安全头**：使用 Helmet 设置安全相关的 HTTP 头（含收敛 CSP：资源仅限同源、禁用插件、禁止页面被嵌入框架）
@@ -3468,6 +3468,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口时间（毫秒），仅在 `security.js` 配置中定义；当前登录/改密限流器使用硬编码阈值，未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数，同上，当前未被独立限流器使用 |
+| `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
 | `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流：每个 IP 15 分钟最大请求数，覆盖全部 `/api` 接口；`OPTIONS` 预检与本机环回不计数，超限返回 `429` |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在后端控制台显示一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时首次启动后应立即修改 |
@@ -3521,4 +3522,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-09-29
+最后更新：2026-10-10
