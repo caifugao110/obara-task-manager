@@ -492,7 +492,7 @@ node --check backend\routes\tasks.js
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
 | `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录 |
-| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔 |
+| `CORS_ORIGIN` | 开发环境默认 `*`；**生产环境必填** | 允许的前端地址，多个用逗号分隔；开发环境未配置时允许任意来源且不启用 CORS credentials；**生产环境未配置将导致服务启动失败（`process.exit(1)`），必须设置显式白名单** |
 | `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
 | `GITEE_REPO_OWNER` | `caifugao110` | Gitee 仓库所有者 |
 | `GITEE_REPO_NAME` | `obara-task-manager` | Gitee 仓库名称 |
@@ -569,7 +569,7 @@ node --check backend\routes\tasks.js
 - **多层 API 限流**：登录接口三层限流（按 IP 15 分钟 300 次兜底防密码喷洒，可用 `LOGIN_IP_RATE_LIMIT_MAX` 调整；按「IP + 用户名」15 分钟 20 次防单账号爆破；再加全局限流），修改密码接口两层限流（按用户 ID 15 分钟 5 次 + 全局 API 限流）；所有 `/api` 接口共享每 IP 15 分钟 3000 次的全局限流（可用 `API_RATE_LIMIT_MAX` 调整，`OPTIONS` 预检与本机环回请求不计数），兼容内网多人共用同一代理出口的场景。超限统一返回 `429`。
 - **请求体敏感信息脱敏**：操作日志记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`。
 - **真实 IP 防伪造**：`trust proxy` 设为 `loopback`，仅信任本机回环代理转发的 `X-Forwarded-For`；外部直连请求伪造的 XFF 不会被采信，登录/操作日志的 IP 与限流计数均以 `req.ip`（Socket 对端地址）为准。
-- **收敛 CSP 响应头**：后端启用 Helmet 内容安全策略（资源仅限同源加载、禁用插件、禁止页面被嵌入框架），作为纵深防御；CORS 为通配符时自动不启用 credentials。
+- **收敛 CSP 响应头 + CORS 强制白名单**：后端启用 Helmet 内容安全策略（资源仅限同源加载、禁用插件、禁止页面被嵌入框架），作为纵深防御；CORS 为通配符时自动不启用 credentials。**生产环境强制要求显式 CORS_ORIGIN 白名单**，未配置将导致服务启动失败（`security.js` 中直接 `process.exit(1)`），开发环境未配置才允许回退为通配符 `*`。
 - **IP 黑名单**：超级管理员可在系统设置「登录管理」中配置精确 IP / CIDR 网段 / IPv4 通配符规则（最多 500 条），命中的来源 IP 访问任意 `/api` 接口一律返回 `403`（`IP_BANNED`）；`OPTIONS` 预检与本机回环地址永不拦截，IPv4-mapped IPv6 会归一为 IPv4 后匹配，防止同一地址换写法绕过。
 - **强制改密 API 拦截**：未修改初始密码的用户除「修改密码」「退出登录」外的所有 API 调用一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。
 - **路径遍历攻击防护**：仕样书 PDF 路径参数进行严格校验，禁止 `..`、`/`、`\`、`:` 等特殊字符，同时检测 URL 编码（如 `%2e%2e`）和 Unicode 编码（如全角句号 `．．`）等绕过手段，确保只能访问允许的共享目录。

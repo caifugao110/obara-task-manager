@@ -47,7 +47,7 @@ start.bat
 
 | 场景 | 推荐方式 | 说明 |
 |------|----------|------|
-| 本机试用或局域网临时使用 | `start.bat` | 自动拉取代码、检查 Node 版本与端口、按需安装依赖、隐藏窗口启动前后端（不打开浏览器） |
+| 本机试用或局域网临时使用 | `start.bat` | 检查 Node 版本与端口、按需安装依赖、隐藏窗口启动前后端（不打开浏览器）；**不会自动拉取代码**，需人工确认后手动 `git pull` |
 | 开发调试 | `npm run dev` | 前后端同时运行，前端通过 Vite 代理访问后端 |
 | 长期运行 | 后端 `npm start` + 前端静态部署或 `npm run preview` | 建议配合任务计划程序、Windows 服务或 PM2 等进程管理工具 |
 | 仅后端 API 服务 | `npm run start:backend` | 适合前端已由 IIS/Nginx/静态文件服务托管的场景 |
@@ -273,7 +273,7 @@ RATE_LIMIT_MAX=20
 | `JWT_EXPIRES_IN` | `3d` | JWT Token 过期时间（默认 3 天；登出/改密/禁用会通过服务端会话吊销立即失效，与有效期长短解耦） |
 | `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
 | `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
-| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源且不启用 CORS credentials |
+| `CORS_ORIGIN` | 开发环境默认 `*`；**生产环境必填** | 允许的前端地址，多个用逗号分隔；开发环境未配置时允许任意来源且不启用 CORS credentials；**生产环境未配置将导致服务启动失败（`process.exit(1)`），必须设置显式白名单** |
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
@@ -339,6 +339,8 @@ WEKNORA_EXTRA_API_KEYS=key-of-workspace-b,key-of-workspace-c
 生产环境必须配置 `JWT_SECRET`（缺失会导致服务直接退出），并定期备份数据库文件。系统已增强 JWT 失效机制，登出或修改密码后旧令牌将立即失效。
 
 ### CORS 配置
+
+生产环境**必须**显式配置 CORS_ORIGIN 白名单，否则后端在 `NODE_ENV=production` 时会直接 `process.exit(1)` 拒绝启动。通配符 `*` 仅在开发环境下允许作为默认值回退。
 
 生产环境应限制 CORS 允许的源：
 

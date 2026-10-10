@@ -3496,7 +3496,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 4. **真实 IP 防伪造**：`trust proxy` 为 `loopback`，仅信任本机回环代理转发的 `X-Forwarded-For`；日志与限流使用 `req.ip`，不直接读取 `X-Forwarded-For` / `X-Real-IP`
 5. **请求验证**：使用 Joi 进行请求参数验证
 6. **安全头**：使用 Helmet 设置安全相关的 HTTP 头（含收敛 CSP：资源仅限同源、禁用插件、禁止页面被嵌入框架）
-7. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置；通配符模式下自动不启用 credentials）
+7. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置；通配符模式下自动不启用 credentials）。**生产环境强制要求显式白名单**，未配置将导致服务启动失败（`process.exit(1)`），开发环境未配置才允许回退为通配符 `*`
 8. **账号禁用**：支持禁用账号，禁用后无法登录
 9. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
 10. **强制修改密码**：新建用户或被重置密码后，下次登录需修改密码；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）
@@ -3517,7 +3517,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `JWT_EXPIRES_IN` | `3d` | JWT Token 过期时间（默认 3 天；会话吊销独立于有效期生效） |
 | `JWT_ISSUER` | `obara-task-manager` | JWT 签发方 |
 | `JWT_AUDIENCE` | `obara-task-manager-api` | JWT 接收方 |
-| `CORS_ORIGIN` | `*`（未配置时） | 允许的前端地址，多个用逗号分隔；未配置时后端允许任意来源且不启用 CORS credentials |
+| `CORS_ORIGIN` | 开发环境默认 `*`；**生产环境必填** | 允许的前端地址，多个用逗号分隔；开发环境未配置时允许任意来源且不启用 CORS credentials；**生产环境未配置将导致服务启动失败（`process.exit(1)`），必须设置显式白名单** |
 | `GITEE_TOKEN` | - | Gitee API Token，用于版本检查 |
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |

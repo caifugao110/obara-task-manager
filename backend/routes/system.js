@@ -1415,7 +1415,18 @@ const computeLocalVersion = () => {
   }
 };
 
-const STARTUP_VERSION = computeLocalVersion();
+// 版本号带 30 秒 TTL 缓存：启动时算一次的常量无法反映 git pull 后的
+// 新 HEAD（后端未重启时 nodemon 可能没触发重启或直接不是用 nodemon
+// 启动的），每次请求动态算 + 短缓存既保证实时又不会每次 exec git。
+let _versionCache = null;
+let _versionCacheUntil = 0;
+const getLocalVersion = () => {
+  const now = Date.now();
+  if (_versionCache && now < _versionCacheUntil) return _versionCache;
+  _versionCache = computeLocalVersion();
+  _versionCacheUntil = now + 30_000;
+  return _versionCache;
+};
 
 const fetchGiteeLatestCommit = () => {
   return new Promise((resolve) => {
@@ -1543,22 +1554,23 @@ const compareVersions = (v1, v2) => {
 // 版本信息需登录后查看，避免匿名探测部署版本与更新渠道
 router.get('/version', authMiddleware, asyncHandler(async (req, res) => {
   try {
+    const currentVersion = getLocalVersion();
     let hasUpdate = false;
     let latestVersion = null;
 
     const giteeCommit = await fetchGiteeLatestCommit();
     if (giteeCommit) {
       const remoteVersion = giteeCommit.date;
-      const comparison = compareVersions(remoteVersion, STARTUP_VERSION);
+      const comparison = compareVersions(remoteVersion, currentVersion);
       if (comparison > 0) {
         hasUpdate = true;
         latestVersion = remoteVersion;
       }
     }
 
-    res.json({ currentVersion: STARTUP_VERSION, hasUpdate, latestVersion });
+    res.json({ currentVersion, hasUpdate, latestVersion });
   } catch {
-    res.json({ currentVersion: STARTUP_VERSION, hasUpdate: false, latestVersion: null });
+    res.json({ currentVersion: getLocalVersion(), hasUpdate: false, latestVersion: null });
   }
 }));
 
