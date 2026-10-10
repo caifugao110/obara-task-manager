@@ -32,8 +32,9 @@ echo.
 call :check_node
 if errorlevel 1 goto end
 
-rem 已移除自动 git pull：启动时拉取远端代码并立即执行存在供应链风险，
-rem 代码更新改为人工确认后执行（git pull），再运行本脚本启动服务。
+rem Auto git pull removed: pulling remote code at startup and executing it
+rem immediately poses a supply-chain risk. Update code manually (git pull),
+rem then run this script to start the services.
 
 call :check_ports
 if errorlevel 1 goto end
@@ -103,12 +104,29 @@ exit /b 0
 echo.
 echo [2/5] Checking ports...
 
+call :cleanup_processes
+
 call :release_port %BACKEND_PORT% backend
 if errorlevel 1 exit /b 1
 
 call :release_port %FRONTEND_PORT% frontend
 if errorlevel 1 exit /b 1
 
+exit /b 0
+
+:cleanup_processes
+rem Kill orphaned VBS-launched cmd.exe / node.exe from previous start.bat runs.
+rem When nodemon crashes it enters "waiting for file changes" mode: it stops
+rem listening on the port but keeps the parent cmd.exe (launched by VBS) alive.
+rem That cmd.exe holds a lock on backend.log/frontend.log, so the next start.bat
+rem run cannot write to the log file and the new service silently fails to start.
+rem Find these orphaned processes by matching the script directory in their
+rem command line and kill the entire process tree.  Only node.exe processes
+rem and cmd.exe processes running "npm run dev" are targeted, so the current
+rem start.bat cmd.exe process is never killed.
+echo Cleaning up orphaned processes from previous runs...
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('%SCRIPT_DIR%') -and ($_.Name -eq 'node.exe' -or $_.CommandLine -match 'npm run dev') } | ForEach-Object { taskkill /F /T /PID $_.ProcessId 2>$null }" >nul 2>&1
+ping -n 2 127.0.0.1 >nul
 exit /b 0
 
 :release_port
