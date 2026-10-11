@@ -6,6 +6,7 @@ const asyncHandler = require('express-async-handler');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const db = require('../db');
+const specPdfParser = require('../utils/specPdfParser');
 
 // 获取系统配置的仕样号位数（默认 5，可配置为 5 或 6）
 function getConfiguredSpecDigits() {
@@ -278,6 +279,16 @@ async function extractSpecInfoFromPdf(p) {
     var lines = t.split('\n').map(l => l.trim()).filter(l => l);
     var headerText = lines.slice(0, 3).join('');
     info.isModification = headerText.includes('客户仕样书') && headerText.includes('修改');
+
+    // 优先按5类专用仕样书规则解析（PSW GUN / SERVO GUN / GM Lean Series GUN / 焊钳修改 / IT GUN），
+    // 未命中类别或专用规则解析不到仕样号时，回退到下方通用解析规则
+    var specCategory = specPdfParser.detectSpecCategory(lines);
+    if (specCategory) {
+      var catInfo = specPdfParser.extractSpecInfoByCategory(lines, specCategory);
+      if (catInfo && catInfo.specNumber) {
+        return catInfo;
+      }
+    }
 
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
