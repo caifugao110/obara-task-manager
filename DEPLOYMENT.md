@@ -260,6 +260,7 @@ DB_PATH=./db.json
 SPEC_SHARE_PATH=\\192.168.160.6\仕样书$
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
+LOGIN_IP_RATE_LIMIT_MAX=300
 # 全局 API 限流：每 IP 15 分钟最大请求数（默认 3000，OPTIONS 预检与本机环回不计）
 # API_RATE_LIMIT_MAX=3000
 # LOG_LEVEL 为预留变量，当前版本代码未读取，设置后不生效
@@ -906,4 +907,4 @@ backend/
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-10-10
+最后更新：2026-10-11

@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 const securityConfig = require('../config/security');
+const { isSessionValid } = require('./auth');
 
 const JWT_SECRET = securityConfig.jwt.secret;
 const JWT_ISSUER = securityConfig.jwt.issuer;
@@ -43,8 +44,8 @@ const socketAuthMiddleware = (socket, next) => {
     }
 
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
-    // Enhanced session check: always validate sessionId against user.sessionToken
-    if (user.sessionToken && decoded.sessionId !== user.sessionToken) {
+    // 与 HTTP 层对齐：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
+    if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
       return next(new Error('Authentication error: Session invalidated'));
     }
 

@@ -143,6 +143,7 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
     targetUser.forcePasswordChange = true;
     // 重置密码后吊销该账号已签发的令牌，旧会话立即失效（对齐改密接口的行为）
     targetUser.sessionToken = crypto.randomUUID();
+    targetUser.sessionTokens = [];
   }
   if (role && req.user.role === 'superadmin') targetUser.role = role;
   if (name) targetUser.name = name;

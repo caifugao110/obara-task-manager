@@ -16,7 +16,7 @@ Authorization: Bearer <token>
 
 - 大多数接口直接返回 JSON 对象或数组，不统一包裹 `success/data`。
 - 错误响应通常包含 `message`，部分接口包含 `code` 或 `details`。
-- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问。
+- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问；唯一例外是 `GET /api/auth/session-policy`（会话有效期政策，无需登录，供登录页展示提示）。
 - 请求体默认使用 `application/json`；文件导入接口使用 `multipart/form-data`。
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
@@ -106,7 +106,7 @@ Authorization: Bearer <token>
 - 登录成功和失败都会记录登录日志，日志包含 IP、原始 `User-Agent` 和解析后的浏览器信息；失败记录含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`），即使用户名不存在也会记录该次尝试。
 - 用户不存在与密码错误均返回相同的 `401` 响应 `用户名或密码错误`，避免通过响应差异枚举有效用户名。
 - 账号禁用时返回 `403` 和 `ACCOUNT_DISABLED`。
-- 关闭多设备登录时，新登录会使旧会话失效。
+- 关闭多设备登录时，新登录会使旧会话失效。开启多设备登录时，同一账号的多个会话并存（每账号上限 10 个，超出淘汰最早会话），新登录不会使旧设备下线；登出仅吊销当前设备的会话。
 - `forcePasswordChange=true` 时前端需引导用户到 `/change-password` 修改密码。
 - **未修改初始密码期间的 API 拦截**：`forcePasswordChange` 标记未清除前，除 `POST /api/auth/change-password` 和 `POST /api/auth/logout` 外的所有已登录接口一律返回 `403`（`code=FORCE_PASSWORD_CHANGE`）。
 - 登录接口受三层速率限制：第一层按 IP 15 分钟内最多 300 次尝试（`LOGIN_IP_RATE_LIMIT_MAX` 可调整，堵密码喷洒缺口）；第二层按「IP + 用户名」15 分钟内最多 20 次尝试（防止单账号爆破），两层均超限返回 HTTP `429` 与消息 `登录尝试过于频繁，请15分钟后再试`；此外还受全局 API 限流（默认每 IP 15 分钟 3000 次）约束。
@@ -139,6 +139,28 @@ Authorization: Bearer <token>
   "message": "您的账号已在其他设备登录"
 }
 ```
+
+Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失效，请重新登录`），前端据此提示重新登录；用户不存在或已禁用时返回 `401`（`code=USER_NOT_FOUND` / `ACCOUNT_DISABLED`，无 `message` 字段）。
+
+### 获取会话有效期政策
+
+`GET /api/auth/session-policy`
+
+无需登录。返回 JWT 有效期配置与格式化后的中文展示文本，供登录页展示「重新登录周期」提示。
+
+响应：
+
+```json
+{
+  "expiresIn": "3d",
+  "displayText": "3 天"
+}
+```
+
+说明：
+
+- `expiresIn` 为 `JWT_EXPIRES_IN` 环境变量的原始配置值。
+- `displayText` 为后端将 `expiresIn`（支持 `d`/`h`/`m`/`s` 单位）格式化后的中文描述，如 `3 天`、`12 小时`；格式无法解析时回退为 `3 天`。
 
 ### 修改密码
 
@@ -3389,7 +3411,7 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
 
 ### 多设备登录踢下线机制
 
-连接建立时，服务端会自动将 socket 加入 `user:${user.id}` room（无需客户端发送 `register_user` 事件）。新登录时，后端通过 `io.to(user:${user.id}).emit('session_invalidated', ...)` 通知该用户的其他设备下线。关闭多设备登录时（`allowMultiDevice=false`），新登录会使旧会话失效。
+连接建立时，服务端会自动将 socket 加入 `user:${user.id}` room（无需客户端发送 `register_user` 事件）。关闭多设备登录时（`allowMultiDevice=false`），新登录会使旧会话失效，并通过 `io.to(user:${user.id}).emit('session_invalidated', ...)` 通知该用户的其他设备下线；开启多设备登录时（`allowMultiDevice=true`），各设备的会话并存于 `sessionTokens` 列表中，新登录不发踢下线事件。
 
 ### 连接恢复自动加载
 
@@ -3444,6 +3466,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `ACCOUNT_DISABLED` | 403 | 账号已禁用 |
 | `FORCE_PASSWORD_CHANGE` | 403 | 未修改初始密码，除「修改密码」「退出登录」外的接口一律被拦截 |
 | `SESSION_INVALIDATED` | 401 | 会话在其他设备登录后失效 |
+| `TOKEN_EXPIRED` | 401 | Token 已过期（`GET /api/auth/validate` 校验失败时返回） |
 | `USER_NOT_FOUND` | 401 | 校验会话时用户不存在（`GET /api/auth/validate`） |
 | `WEKNORA_MULTI_TENANT` | 400 | 问答所选知识库跨越多个工作空间 |
 | `WEKNORA_KB_FORBIDDEN` | 403 | 知识库在所有已配置工作空间均不可访问 |
@@ -3579,4 +3602,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-10-10
+最后更新：2026-10-11

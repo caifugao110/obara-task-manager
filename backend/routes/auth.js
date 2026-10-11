@@ -8,7 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, isSessionValid } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
@@ -151,6 +151,15 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
     });
   }
 
+  if (systemSettings.allowMultiDevice) {
+    // 多设备模式：追加而非覆盖会话，各设备互不挤下线；
+    // 上限 10 个（超出时淘汰最早会话），防止 JSON 库中的会话列表无限增长
+    const tokens = [...(data.users[userIndex].sessionTokens || []), sessionId];
+    data.users[userIndex].sessionTokens = tokens.slice(-10);
+  } else {
+    data.users[userIndex].sessionTokens = [sessionId];
+  }
+  // sessionToken 始终指向最近一次登录的会话：从多设备切回单设备时仅保留最新会话
   data.users[userIndex].sessionToken = sessionId;
 
   db.appendLoginLogEntry({
@@ -224,8 +233,8 @@ router.get('/validate', asyncHandler(async (req, res) => {
     }
 
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
-    // Enhanced session check: always validate sessionId against user.sessionToken
-    if (user.sessionToken && decoded.sessionId !== user.sessionToken) {
+    // 会话校验：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
+    if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
       const message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
       return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message });
     }
@@ -280,7 +289,9 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
   const newSessionId = crypto.randomUUID();
   data.users[userIndex].password = bcrypt.hashSync(newPassword, 10);
   data.users[userIndex].forcePasswordChange = false;
+  // 改密后吊销所有设备会话（安全惯例），仅当前设备凭签发的新令牌保持登录
   data.users[userIndex].sessionToken = newSessionId;
+  data.users[userIndex].sessionTokens = [newSessionId];
   
   await db.writeDb(data);
 
@@ -305,8 +316,20 @@ router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
   const userIndex = data.users.findIndex(u => u.id === req.user.id);
 
   if (userIndex !== -1) {
-    // Generate a new UUID on logout to invalidate all existing tokens for this user
-    data.users[userIndex].sessionToken = crypto.randomUUID();
+    const targetUser = data.users[userIndex];
+    const systemSettings = data.settings?.system || { allowMultiDevice: true };
+    if (systemSettings.allowMultiDevice && Array.isArray(targetUser.sessionTokens) && targetUser.sessionTokens.length > 0) {
+      // 多设备模式：仅吊销当前设备的会话，其他设备保持在线
+      targetUser.sessionTokens = targetUser.sessionTokens.filter(t => t !== req.user.sessionId);
+      if (targetUser.sessionToken === req.user.sessionId) {
+        // 当前设备是「最新会话」时，将 sessionToken 指向剩余会话；全部离线则置随机值
+        targetUser.sessionToken = targetUser.sessionTokens[0] || crypto.randomUUID();
+      }
+    } else {
+      // 单设备模式：重新生成 sessionToken 使该账号所有旧令牌失效
+      targetUser.sessionToken = crypto.randomUUID();
+      targetUser.sessionTokens = [];
+    }
     await db.writeDb(data);
   }
 

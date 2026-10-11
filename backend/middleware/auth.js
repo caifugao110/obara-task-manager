@@ -6,6 +6,20 @@ const JWT_SECRET = securityConfig.jwt.secret;
 const JWT_ISSUER = securityConfig.jwt.issuer;
 const JWT_AUDIENCE = securityConfig.jwt.audience;
 
+// 会话有效性校验（HTTP 与 Socket 层共用）：
+// - 多设备模式（allowMultiDevice=true）：认可 sessionTokens 列表中的全部会话，
+//   各设备新登录追加而非覆盖，旧设备不会被挤下线；
+//   列表为空时回退到单 token 校验（兼容历史数据及管理员重置密码后的全吊销状态）
+// - 单设备模式：仅认可 sessionToken 对应的最新会话；
+//   sessionToken 为空视为未启用会话校验（兼容从未登录过的历史账号）
+const isSessionValid = (user, sessionId, allowMultiDevice) => {
+  if (allowMultiDevice) {
+    const tokens = user.sessionTokens || [];
+    if (tokens.length > 0) return tokens.includes(sessionId);
+  }
+  return !user.sessionToken || user.sessionToken === sessionId;
+};
+
 const authMiddleware = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
   if (!token) {
@@ -32,9 +46,8 @@ const authMiddleware = (req, res, next) => {
     }
 
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
-    // Enhanced session check: always validate sessionId against user.sessionToken
-    // If they don't match, the token is considered stale (e.g., after logout or password change)
-    if (user.sessionToken && decoded.sessionId !== user.sessionToken) {
+    // 会话校验：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
+    if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
       const message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
       return res.status(401).json({ message, code: 'SESSION_INVALIDATED' });
     }
@@ -112,5 +125,6 @@ module.exports = {
   accessSettingsMiddleware,
   hasAccessSettings,
   normalizeAccessSettings,
-  defaultAccessSettings
+  defaultAccessSettings,
+  isSessionValid
 };
