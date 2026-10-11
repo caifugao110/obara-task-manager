@@ -56,7 +56,9 @@ const authMiddleware = (req, res, next) => {
     req.user = { ...decoded, role: user.role, name: user.name, username: user.username };
     next();
   } catch (err) {
-    res.status(401).json({ message: 'Token is not valid' });
+    // jwt.verify 失败（主要是 Token 过期）：返回 TOKEN_EXPIRED 错误码，
+    // 前端据此弹出「登录状态已失效」提示并引导重新登录，避免静默登出让用户困惑
+    res.status(401).json({ message: '登录状态已失效，请重新登录', code: 'TOKEN_EXPIRED' });
   }
 };
 

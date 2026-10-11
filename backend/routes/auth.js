@@ -131,11 +131,14 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
   if (!systemSettings.allowMultiDevice && previousSession) {
     const io = req.app.get('io');
     if (io) {
+      // 浏览器 / 操作系统 / 设备类型分字段下发，前端「对方设备」提示可分开准确展示
       io.to(`user:${user.id}`).emit('session_invalidated', {
         reason: '您的账号已在其他设备登录',
         timestamp: new Date().toLocaleString('zh-CN'),
         newLoginIp: ip,
-        newLoginBrowser: browserInfo.summary
+        newLoginBrowser: browserInfo.browser,
+        newLoginOs: browserInfo.os,
+        newLoginDevice: browserInfo.device
       });
     }
     await db.appendLoginLogEntry({
@@ -229,9 +232,28 @@ router.get('/validate', asyncHandler(async (req, res) => {
 
     res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name }, forcePasswordChange: user.forcePasswordChange || false });
   } catch {
-    res.status(401).json({ valid: false, message: 'Token is not valid' });
+    // jwt.verify 失败（主要是 Token 过期）：给出 TOKEN_EXPIRED 错误码，
+    // 前端据此提示「登录状态已失效」而不是静默踢回登录页
+    res.status(401).json({ valid: false, message: '登录状态已失效，请重新登录', code: 'TOKEN_EXPIRED' });
   }
 }));
+
+// 解析 JWT 有效期配置（如 '3d'、'12h'、'30m'）为中文展示文案，
+// 登录页据此动态展示「每 X 需要重新登录一次」的会话限制政策
+const formatJwtExpiresIn = (expiresIn) => {
+  const match = /^(\d+)\s*(d|h|m|s)$/i.exec(String(expiresIn || '').trim());
+  if (!match) return '3 天';
+  const unitText = { d: '天', h: '小时', m: '分钟', s: '秒' }[match[2].toLowerCase()];
+  return `${parseInt(match[1], 10)} ${unitText}`;
+};
+
+// 会话有效期政策（无需鉴权：登录页展示重新登录周期提示时读取）
+router.get('/session-policy', (req, res) => {
+  res.json({
+    expiresIn: securityConfig.jwt.expiresIn,
+    displayText: formatJwtExpiresIn(securityConfig.jwt.expiresIn)
+  });
+});
 
 router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHandler(async (req, res) => {
   const { error } = changePasswordSchema.validate(req.body);

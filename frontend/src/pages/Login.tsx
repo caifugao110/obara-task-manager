@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { LogIn, User, Lock, AlertCircle, Eye, EyeOff } from 'lucide-react';
+import { LogIn, User, Lock, AlertCircle, Eye, EyeOff, CheckCircle, ShieldCheck } from 'lucide-react';
 import { sanitizeRedirect } from '../utils/redirect';
 
 const Login = () => {
@@ -11,10 +11,25 @@ const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [sessionPolicy, setSessionPolicy] = useState<{ displayText: string } | null>(null);
   const { login } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirectTarget = sanitizeRedirect(searchParams.get('redirect'));
+
+  useEffect(() => {
+    // 退出登录提示：由 AuthContext 登出时写入 sessionStorage，读取一次即清除
+    const authNotice = sessionStorage.getItem('authNotice');
+    if (authNotice) {
+      setNotice(authNotice);
+      sessionStorage.removeItem('authNotice');
+    }
+    // 会话有效期政策：读取后端配置（JWT_EXPIRES_IN），动态展示重新登录周期
+    axios.get('/api/auth/session-policy')
+      .then(res => setSessionPolicy(res.data))
+      .catch(() => setSessionPolicy({ displayText: '3 天' }));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,6 +71,13 @@ const Login = () => {
               <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-lg mb-6 flex items-start gap-3">
                 <AlertCircle size={20} className="mt-0.5 shrink-0" />
                 <div className="text-sm font-bold">{error}</div>
+              </div>
+            )}
+
+            {notice && !error && (
+              <div className="bg-green-50 border border-green-200 text-green-700 p-4 rounded-lg mb-6 flex items-start gap-3">
+                <CheckCircle size={20} className="mt-0.5 shrink-0" />
+                <div className="text-sm font-bold">{notice}</div>
               </div>
             )}
 
@@ -120,6 +142,13 @@ const Login = () => {
                 )}
               </button>
             </form>
+
+            {sessionPolicy && (
+              <p className="mt-5 text-xs text-gray-400 flex items-center justify-center gap-1.5">
+                <ShieldCheck size={14} className="shrink-0" />
+                <span>为保障账号安全，系统每 {sessionPolicy.displayText}需要重新登录一次</span>
+              </p>
+            )}
           </div>
         </div>
       </div>

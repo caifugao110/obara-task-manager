@@ -1,8 +1,8 @@
-﻿﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
+﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { axiosInstance } from '../services/api';
 import { io, Socket } from 'socket.io-client';
-import { buildLoginUrl } from '../utils/redirect';
+import { notifySessionExpired } from '../utils/redirect';
 
 interface User {
   id: string;
@@ -39,6 +39,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     localStorage.removeItem('forcePasswordChange');
+    // 写入退出提示，登录页读取后展示「您已安全退出登录」横幅（读取一次即清除）
+    sessionStorage.setItem('authNotice', '您已安全退出登录');
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
@@ -73,6 +75,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('token', newToken);
     localStorage.setItem('user', JSON.stringify(newUser));
     localStorage.setItem('forcePasswordChange', String(forceChange || false));
+    sessionStorage.removeItem('authNotice');
   };
 
   useEffect(() => {
@@ -103,12 +106,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
     socketRef.current = socket;
 
-    socket.on('session_invalidated', (data: { reason?: string }) => {
-      alert(data?.reason || '您的账号已在其他设备登录');
-      // 必须等登出请求发完再跳转，否则导航会中断 /api/auth/logout 的吊销请求
-      void logout().finally(() => {
-        window.location.href = buildLoginUrl();
-      });
+    socket.on('session_invalidated', (data: { reason?: string; timestamp?: string; newLoginIp?: string; newLoginBrowser?: string; newLoginOs?: string; newLoginDevice?: string }) => {
+      // notifySessionExpired 自带防重复：等登出请求发完再跳转，
+      // 否则导航会中断 /api/auth/logout 的吊销请求
+      // 浏览器 / 系统分开展示更准确；桌面端类型（Windows/macOS 已隐含）仅在移动端时提示
+      const details = [
+        data?.timestamp ? `对方登录时间：${data.timestamp}` : '',
+        data?.newLoginIp ? `对方 IP：${data.newLoginIp}` : '',
+        data?.newLoginBrowser && !data.newLoginBrowser.startsWith('Unknown') ? `对方浏览器：${data.newLoginBrowser}` : '',
+        data?.newLoginOs && !data.newLoginOs.startsWith('Unknown') ? `对方系统：${data.newLoginOs}` : '',
+        data?.newLoginDevice === 'Mobile' ? '对方设备类型：移动端' : ''
+      ].filter(Boolean);
+      notifySessionExpired(
+        data?.reason || '您的账号已在其他设备登录',
+        logout,
+        details.length ? details : undefined
+      );
     });
 
     return () => {
@@ -150,16 +163,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch (err: any) {
         const code = err.response?.data?.code;
-        if (code === 'SESSION_INVALIDATED' || code === 'ACCOUNT_DISABLED') {
-          if (code === 'ACCOUNT_DISABLED') {
-            alert('您的账号已被禁用，请联系管理员');
-          } else {
-            alert(err.response?.data?.message || '您的账号已在其他设备登录');
-          }
-          // 同上：等吊销请求结束后再跳转
-          await logout();
-          window.location.href = buildLoginUrl();
+        // notifySessionExpired 自带防重复：与响应拦截器、socket 推送同时触发时只弹一次；
+        // 传入 logout 保证登出吊销请求发完再跳转
+        if (code === 'SESSION_INVALIDATED') {
+          notifySessionExpired(err.response?.data?.message || '您的账号已在其他设备登录', logout);
+        } else if (code === 'ACCOUNT_DISABLED') {
+          notifySessionExpired('您的账号已被禁用，请联系管理员', logout);
         }
+        // TOKEN_EXPIRED 等其他 401 已由 axiosInstance 响应拦截器统一提示并跳转
       }
     };
 

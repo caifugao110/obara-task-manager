@@ -4,7 +4,7 @@
  */
 
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
-import { buildLoginUrl } from '../utils/redirect';
+import { notifySessionExpired } from '../utils/redirect';
 import type {
   LoginCredentials,
   LoginResponse,
@@ -80,20 +80,27 @@ axiosInstance.interceptors.response.use(
       if (data?.code === 'ACCOUNT_DISABLED') {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
-        alert('您的账号已被禁用，请联系管理员');
-        window.location.href = buildLoginUrl();
+        notifySessionExpired('您的账号已被禁用，请联系管理员');
       }
     }
     
-    // 处理 Token 过期
+    // 处理 401：会话已失效（Token 过期 / 被顶下线 / 账号禁用）。
+    // 原来静默清理后跳转，Token 到期被登出时用户毫无感知；
+    // 现在统一弹出原因提示后再跳转登录页（notifySessionExpired 自带防重复）
     if (error.response?.status === 401) {
+      const data = error.response.data as any;
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      // 已在登录页/改密页时不再跳转，否则会以当前 URL 为回跳目标造成重定向死循环
+      // 已在登录页/改密页时不再提示与跳转，否则会以当前 URL 为回跳目标造成重定向死循环
       const { pathname } = window.location;
       const onAuthPage = pathname.endsWith('/login') || pathname.endsWith('/change-password');
       if (!onAuthPage) {
-        window.location.href = buildLoginUrl();
+        const msg = data?.code === 'ACCOUNT_DISABLED'
+          ? '您的账号已被禁用，请联系管理员'
+          : data?.code === 'SESSION_INVALIDATED'
+            ? (data?.message || '您的账号已在其他设备登录')
+            : '登录状态已失效，请重新登录';
+        notifySessionExpired(msg);
       }
     }
     

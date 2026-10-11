@@ -969,7 +969,9 @@ const StatusTracking = () => {
 
     newSocket.on('session_invalidated', (data) => {
       console.log('Session invalidated:', data);
-      addToast(`账号已在其他设备登录！\n时间: ${data.timestamp}\nIP: ${data.newLoginIp}\n设备: ${data.newLoginBrowser}`, 'error');
+      // 浏览器与系统分字段展示，替代原来笼统的 summary
+      const deviceInfo = [data.newLoginBrowser, data.newLoginOs].filter(Boolean).join(' / ');
+      addToast(`账号已在其他设备登录！\n时间: ${data.timestamp}\nIP: ${data.newLoginIp}\n浏览器/系统: ${deviceInfo}`, 'error');
       setTimeout(() => {
         logout();
       }, 3000);
