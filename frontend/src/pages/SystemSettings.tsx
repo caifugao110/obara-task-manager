@@ -39,6 +39,16 @@ interface Toast {
   id: number;
 }
 
+// 通用二次确认弹窗的状态（替代原生 window.confirm）
+interface ConfirmDialogState {
+  title: string;
+  tone: 'red' | 'amber';
+  warning: string;
+  message: React.ReactNode;
+  confirmText: string;
+  onConfirm: () => Promise<void>;
+}
+
 interface IpBlacklistEntry {
   id: string;
   ip: string;
@@ -200,6 +210,12 @@ const SystemSettings = () => {
   const [cleanupStMode, setCleanupStMode] = useState<'production' | 'delivery'>('production');
   const [cleanupStBeforeMonth, setCleanupStBeforeMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [cleanupStProcessing, setCleanupStProcessing] = useState(false);
+  // 清理弹窗内嵌二次确认步骤（替代原生 confirm）
+  const [cleanupTasksConfirming, setCleanupTasksConfirming] = useState(false);
+  const [cleanupStConfirming, setCleanupStConfirming] = useState(false);
+  // 通用二次确认弹窗（替代原生 window.confirm）
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [confirmRunning, setConfirmRunning] = useState(false);
   // 焊枪编号台账导出：分类摘要 / 已选分类 / 加载中
   const [gunLedgerCats, setGunLedgerCats] = useState<{ category: string; tables: number; rows: number }[]>([]);
   const [gunExportCats, setGunExportCats] = useState<string[]>([]);
@@ -230,6 +246,18 @@ const SystemSettings = () => {
     const id = Date.now();
     setToasts(prev => [...prev, { message, type, id }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  };
+
+  // 执行通用确认弹窗的动作：执行期间禁用按钮并显示加载，结束后关闭弹窗
+  const runConfirmDialog = async () => {
+    if (!confirmDialog || confirmRunning) return;
+    setConfirmRunning(true);
+    try {
+      await confirmDialog.onConfirm();
+      setConfirmDialog(null);
+    } finally {
+      setConfirmRunning(false);
+    }
   };
 
   // 网络错误（断网/服务不可达）时标记离线，触发页面禁止编辑
@@ -755,11 +783,19 @@ const SystemSettings = () => {
     if (data) addToast(`编号台账已导出：共 ${data.gunLedgerExport.categories} 个分类合并为一个工作簿`, 'success');
   };
 
-  const handleCleanupBackupsNow = async () => {
+  const handleCleanupBackupsNow = () => {
     if (guardOffline()) return;
-    if (!window.confirm('将按各项保留天数，清理数据库备份、任务表格导出、编号台账导出、关机备份四个目录中的过期文件。是否继续？')) return;
-    const data = await runMaintenanceAction('/api/system/maintenance/cleanup-backups');
-    if (data) addToast(`过期文件清理完成，共删除 ${data.cleanup.removedCount} 个文件`, 'success');
+    setConfirmDialog({
+      title: '清理过期文件',
+      tone: 'amber',
+      warning: '将按保留天数删除过期文件',
+      message: '将按各项保留天数，清理数据库备份、任务表格导出、编号台账导出、关机备份四个目录中的过期文件。是否继续？',
+      confirmText: '确认清理',
+      onConfirm: async () => {
+        const data = await runMaintenanceAction('/api/system/maintenance/cleanup-backups');
+        if (data) addToast(`过期文件清理完成，共删除 ${data.cleanup.removedCount} 个文件`, 'success');
+      },
+    });
   };
 
   const yearlySkipReasonText: Record<string, string> = {
@@ -769,19 +805,27 @@ const SystemSettings = () => {
     'already-completed': '本年度清理已完成'
   };
 
-  const handleYearlyCleanupNow = async () => {
+  const handleYearlyCleanupNow = () => {
     if (guardOffline()) return;
-    if (!window.confirm('将忽略检测月份、月初检测窗口及"每年仅执行一次"的限制，立即按当前保留年数执行清理检测：早于临界年份的任务工作表会先永久归档为 JSON，再从数据库删除，此操作不可恢复。是否继续？')) return;
-    const data = await runMaintenanceAction('/api/system/maintenance/yearly-cleanup', { force: true });
-    if (!data) return;
-    const result = data.yearlyCleanup;
-    if (result.skipped) {
-      addToast(`年度清理检测已跳过：${yearlySkipReasonText[result.reason || ''] || result.reason}`, 'success');
-    } else if (!result.removedSheets) {
-      addToast('年度清理检测完成：没有需要归档清理的任务数据', 'success');
-    } else {
-      addToast(`年度清理完成：归档并删除 ${result.removedSheets} 个工作表（${result.removedTaskItems || 0} 条任务记录）`, 'success');
-    }
+    setConfirmDialog({
+      title: '强制执行年度清理',
+      tone: 'red',
+      warning: '此操作不可恢复',
+      message: '将忽略检测月份、月初检测窗口及"每年仅执行一次"的限制，立即按当前保留年数执行清理检测：早于临界年份的任务工作表会先永久归档为 JSON，再从数据库删除。是否继续？',
+      confirmText: '确认执行',
+      onConfirm: async () => {
+        const data = await runMaintenanceAction('/api/system/maintenance/yearly-cleanup', { force: true });
+        if (!data) return;
+        const result = data.yearlyCleanup;
+        if (result.skipped) {
+          addToast(`年度清理检测已跳过：${yearlySkipReasonText[result.reason || ''] || result.reason}`, 'success');
+        } else if (!result.removedSheets) {
+          addToast('年度清理检测完成：没有需要归档清理的任务数据', 'success');
+        } else {
+          addToast(`年度清理完成：归档并删除 ${result.removedSheets} 个工作表（${result.removedTaskItems || 0} 条任务记录）`, 'success');
+        }
+      },
+    });
   };
 
   const handleManualTaskExport = async () => {
@@ -789,44 +833,50 @@ const SystemSettings = () => {
     if (data) addToast(`任务表格已导出：${data.taskExport.taskSheets} 个工作表、${data.taskExport.taskItems} 条任务记录`, 'success');
   };
 
-  const handleClearLogs = async () => {
+  const handleClearLogs = () => {
     if (guardOffline()) return;
     if (!token) return;
-    if (!window.confirm('确定要清空所有登录日志和操作日志吗？此操作不可恢复！')) return;
-    setMaintenanceLoading(true);
-    try {
-      const res = await axios.post('/api/system/maintenance/clear-logs', {}, authHeader);
-      addToast(`已清空登录日志 ${res.data.loginLogsCount} 条、操作日志 ${res.data.auditLogsCount} 条`, 'success');
-      await fetchLoginLogs();
-    } catch (err: any) {
-      addToast(err.response?.data?.message || '清空日志失败', 'error');
-    } finally {
-      setMaintenanceLoading(false);
-    }
+    setConfirmDialog({
+      title: '清空日志',
+      tone: 'red',
+      warning: '此操作不可恢复',
+      message: '确定要清空所有登录日志和操作日志吗？清空后无法恢复，请谨慎操作。',
+      confirmText: '确认清空',
+      onConfirm: async () => {
+        setMaintenanceLoading(true);
+        try {
+          const res = await axios.post('/api/system/maintenance/clear-logs', {}, authHeader);
+          addToast(`已清空登录日志 ${res.data.loginLogsCount} 条、操作日志 ${res.data.auditLogsCount} 条`, 'success');
+          await fetchLoginLogs();
+        } catch (err: any) {
+          addToast(err.response?.data?.message || '清空日志失败', 'error');
+        } finally {
+          setMaintenanceLoading(false);
+        }
+      },
+    });
   };
 
+  // 清理任务数据：由弹窗内嵌二次确认步骤触发（确认后才会调用）
   const handleCleanupTasks = async () => {
     if (guardOffline()) return;
     if (!token) return;
-    let confirmMsg = '';
     let payload: any = {};
-    
+
     if (cleanupTasksMode === 'single') {
-      confirmMsg = `确定要清理 ${cleanupTasksMonth} 的所有任务数据吗？此操作不可恢复！`;
       const [year, month] = cleanupTasksMonth.split('-').map(Number);
       payload = { year, month };
     } else {
-      confirmMsg = `确定要清理 ${cleanupTasksBeforeMonth} 之前的所有任务数据吗？此操作不可恢复！`;
       const [year, month] = cleanupTasksBeforeMonth.split('-').map(Number);
       payload = { beforeYear: year, beforeMonth: month };
     }
 
-    if (!window.confirm(confirmMsg)) return;
     setCleanupTasksProcessing(true);
     try {
       const res = await axios.post('/api/system/maintenance/cleanup-tasks', payload, authHeader);
       addToast(`已清理 ${res.data.removedCount} 条任务数据，剩余 ${res.data.remainingCount} 条`, 'success');
       setShowCleanupTasksModal(false);
+      setCleanupTasksConfirming(false);
     } catch (err: any) {
       addToast(err.response?.data?.message || '清理任务数据失败', 'error');
     } finally {
@@ -834,17 +884,17 @@ const SystemSettings = () => {
     }
   };
 
+  // 清理状态跟踪数据：由弹窗内嵌二次确认步骤触发（确认后才会调用）
   const handleCleanupStatusTracking = async () => {
     if (guardOffline()) return;
     if (!token) return;
-    const confirmMsg = `确定要清理 ${cleanupStBeforeMonth} 之前的状态跟踪数据吗？（按${cleanupStMode === 'production' ? '添加时间月份' : '纳期月份'}）此操作不可恢复！`;
-    if (!window.confirm(confirmMsg)) return;
     setCleanupStProcessing(true);
     try {
       const [year, month] = cleanupStBeforeMonth.split('-').map(Number);
       const res = await axios.post('/api/status-tracking/cleanup', { beforeYear: year, beforeMonth: month, mode: cleanupStMode }, authHeader);
       addToast(`已清理 ${res.data.removedCount} 条状态跟踪数据，剩余 ${res.data.remainingCount} 条`, 'success');
       setShowCleanupStModal(false);
+      setCleanupStConfirming(false);
     } catch (err: any) {
       addToast(err.response?.data?.message || '清理状态跟踪数据失败', 'error');
     } finally {
@@ -1087,7 +1137,7 @@ const SystemSettings = () => {
                 </h3>
                 <p className="text-sm text-gray-500 mt-1">选择清理方式，此操作不可恢复。</p>
               </div>
-              <button onClick={() => setShowCleanupTasksModal(false)} className="p-1 hover:bg-gray-100 rounded">
+              <button onClick={() => { setShowCleanupTasksModal(false); setCleanupTasksConfirming(false); }} className="p-1 hover:bg-gray-100 rounded">
                 <X size={20} />
               </button>
             </div>
@@ -1098,7 +1148,7 @@ const SystemSettings = () => {
               <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => setCleanupTasksMode('single')}
+                  onClick={() => { setCleanupTasksMode('single'); setCleanupTasksConfirming(false); }}
                   className={`px-4 py-2 text-sm font-medium transition ${
                     cleanupTasksMode === 'single'
                       ? 'bg-red-600 text-white'
@@ -1109,7 +1159,7 @@ const SystemSettings = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setCleanupTasksMode('batch')}
+                  onClick={() => { setCleanupTasksMode('batch'); setCleanupTasksConfirming(false); }}
                   className={`px-4 py-2 text-sm font-medium border-l border-gray-300 transition ${
                     cleanupTasksMode === 'batch'
                       ? 'bg-red-600 text-white'
@@ -1127,6 +1177,7 @@ const SystemSettings = () => {
                   type="month"
                   value={cleanupTasksMode === 'single' ? cleanupTasksMonth : cleanupTasksBeforeMonth}
                   onChange={(e) => {
+                    setCleanupTasksConfirming(false);
                     if (cleanupTasksMode === 'single') {
                       setCleanupTasksMonth(e.target.value);
                     } else {
@@ -1137,22 +1188,47 @@ const SystemSettings = () => {
                 />
               </div>
             </div>
-            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
-              <button
-                onClick={() => setShowCleanupTasksModal(false)}
-                disabled={cleanupTasksProcessing}
-                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleCleanupTasks}
-                disabled={cleanupTasksProcessing || (!cleanupTasksMonth && !cleanupTasksBeforeMonth)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {cleanupTasksProcessing && <RefreshCw size={16} className="animate-spin" />}
-                确认清理
-              </button>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end items-center gap-3">
+              {cleanupTasksConfirming ? (
+                <>
+                  <span className="mr-auto flex items-center gap-1.5 text-xs font-bold text-red-600">
+                    <AlertCircle size={14} />
+                    确认清理{cleanupTasksMode === 'single' ? ` ${cleanupTasksMonth} ` : ` ${cleanupTasksBeforeMonth} 之前的`}所有任务数据？此操作不可恢复！
+                  </span>
+                  <button
+                    onClick={() => setCleanupTasksConfirming(false)}
+                    disabled={cleanupTasksProcessing}
+                    className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+                  >
+                    返回
+                  </button>
+                  <button
+                    onClick={handleCleanupTasks}
+                    disabled={cleanupTasksProcessing}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {cleanupTasksProcessing && <RefreshCw size={16} className="animate-spin" />}
+                    {cleanupTasksProcessing ? '清理中...' : '确认执行清理'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowCleanupTasksModal(false)}
+                    disabled={cleanupTasksProcessing}
+                    className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => setCleanupTasksConfirming(true)}
+                    disabled={cleanupTasksProcessing || (!cleanupTasksMonth && !cleanupTasksBeforeMonth)}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    确认清理
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -1169,7 +1245,7 @@ const SystemSettings = () => {
                 </h3>
                 <p className="text-sm text-gray-500 mt-1">选择清理时间点和方式，此操作不可恢复。</p>
               </div>
-              <button onClick={() => setShowCleanupStModal(false)} className="p-1 hover:bg-gray-100 rounded">
+              <button onClick={() => { setShowCleanupStModal(false); setCleanupStConfirming(false); }} className="p-1 hover:bg-gray-100 rounded">
                 <X size={20} />
               </button>
             </div>
@@ -1180,7 +1256,7 @@ const SystemSettings = () => {
               <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => setCleanupStMode('production')}
+                  onClick={() => { setCleanupStMode('production'); setCleanupStConfirming(false); }}
                   className={`px-4 py-2 text-sm font-medium transition ${
                     cleanupStMode === 'production'
                       ? 'bg-purple-600 text-white'
@@ -1191,7 +1267,7 @@ const SystemSettings = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setCleanupStMode('delivery')}
+                  onClick={() => { setCleanupStMode('delivery'); setCleanupStConfirming(false); }}
                   className={`px-4 py-2 text-sm font-medium border-l border-gray-300 transition ${
                     cleanupStMode === 'delivery'
                       ? 'bg-purple-600 text-white'
@@ -1208,26 +1284,103 @@ const SystemSettings = () => {
                 <input
                   type="month"
                   value={cleanupStBeforeMonth}
-                  onChange={(e) => setCleanupStBeforeMonth(e.target.value)}
+                  onChange={(e) => { setCleanupStBeforeMonth(e.target.value); setCleanupStConfirming(false); }}
                   className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-200 focus:border-purple-400 outline-none"
                 />
               </div>
             </div>
-            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end items-center gap-3">
+              {cleanupStConfirming ? (
+                <>
+                  <span className="mr-auto flex items-center gap-1.5 text-xs font-bold text-purple-700">
+                    <AlertCircle size={14} />
+                    确认清理 {cleanupStBeforeMonth} 之前的状态跟踪数据（按{cleanupStMode === 'production' ? '添加时间' : '纳期'}月份）？此操作不可恢复！
+                  </span>
+                  <button
+                    onClick={() => setCleanupStConfirming(false)}
+                    disabled={cleanupStProcessing}
+                    className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+                  >
+                    返回
+                  </button>
+                  <button
+                    onClick={handleCleanupStatusTracking}
+                    disabled={cleanupStProcessing}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {cleanupStProcessing && <RefreshCw size={16} className="animate-spin" />}
+                    {cleanupStProcessing ? '清理中...' : '确认执行清理'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowCleanupStModal(false)}
+                    disabled={cleanupStProcessing}
+                    className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => setCleanupStConfirming(true)}
+                    disabled={cleanupStProcessing || !cleanupStBeforeMonth}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    确认清理
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 通用二次确认弹窗（替代原生 window.confirm，与系统其他确认弹窗风格一致） */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => !confirmRunning && setConfirmDialog(null)}
+          />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className={`px-5 py-4 bg-gradient-to-r ${confirmDialog.tone === 'red' ? 'from-red-500 to-red-600' : 'from-amber-500 to-amber-600'} text-white flex items-center justify-between`}>
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <AlertCircle size={20} />
+                {confirmDialog.title}
+              </div>
               <button
-                onClick={() => setShowCleanupStModal(false)}
-                disabled={cleanupStProcessing}
-                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60"
+                className="p-1 rounded hover:bg-white/20 transition disabled:opacity-50"
+                onClick={() => setConfirmDialog(null)}
+                disabled={confirmRunning}
+                title="关闭"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className={`flex items-start gap-3 p-3 rounded-lg border ${confirmDialog.tone === 'red' ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                <AlertCircle size={22} className={`${confirmDialog.tone === 'red' ? 'text-red-500' : 'text-amber-500'} shrink-0 mt-0.5`} />
+                <div className="text-sm text-gray-700 leading-relaxed">
+                  <div className={`font-bold mb-1 ${confirmDialog.tone === 'red' ? 'text-red-700' : 'text-amber-700'}`}>{confirmDialog.warning}</div>
+                  <div>{confirmDialog.message}</div>
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                onClick={() => setConfirmDialog(null)}
+                disabled={confirmRunning}
               >
                 取消
               </button>
               <button
-                onClick={handleCleanupStatusTracking}
-                disabled={cleanupStProcessing || !cleanupStBeforeMonth}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
+                className={`px-5 py-2 rounded-lg text-white font-bold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 ${confirmDialog.tone === 'red' ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700'}`}
+                onClick={runConfirmDialog}
+                disabled={confirmRunning}
               >
-                {cleanupStProcessing && <RefreshCw size={16} className="animate-spin" />}
-                确认清理
+                {confirmRunning && <RefreshCw size={14} className="animate-spin" />}
+                {confirmRunning ? '执行中...' : confirmDialog.confirmText}
               </button>
             </div>
           </div>

@@ -324,6 +324,9 @@ const DesignStandards: React.FC = () => {
   const [showLinkKb, setShowLinkKb] = useState(false);
   const [linkKbId, setLinkKbId] = useState('');
   const [linkingKb, setLinkingKb] = useState(false);
+  // 取消关联知识库：确认弹窗目标 + 进行中标记
+  const [unlinkKbId, setUnlinkKbId] = useState('');
+  const [unlinkingKb, setUnlinkingKb] = useState(false);
 
   // 规范检索 / 智能问答使用的知识库范围（由用户手动选择已关联的知识库）
   const [searchKbIds, setSearchKbIds] = useState<string[]>([]);
@@ -334,6 +337,8 @@ const DesignStandards: React.FC = () => {
   const [promptKbId, setPromptKbId] = useState('');
   const [promptDraft, setPromptDraft] = useState('');
   const [promptSaving, setPromptSaving] = useState(false);
+  // 清除答复约束提示词：确认弹窗目标（嵌套在提示词模态框之上）
+  const [clearPromptKbId, setClearPromptKbId] = useState('');
   const promptFileRef = useRef<HTMLInputElement | null>(null);
   // 答复约束提示词设置弹窗：由右上角超管名字左侧的按钮触发，在页面中央静态展示
   const [showPromptModal, setShowPromptModal] = useState(false);
@@ -759,9 +764,16 @@ const DesignStandards: React.FC = () => {
     }
   };
 
-  const handleUnlinkKb = async (kbId: string) => {
-    const kb = status?.knowledgeBases?.find(k => k.id === kbId);
-    if (!window.confirm(`确认取消关联知识库「${kb?.name || kbId}」？该操作仅移除本系统的关联记录，不会删除 WeKnora 中的知识库。`)) return;
+  // 打开取消关联确认弹窗（统一系统弹窗样式，替代原生 confirm）
+  const handleUnlinkKb = (kbId: string) => {
+    setUnlinkKbId(kbId);
+  };
+
+  // 确认取消关联（实际执行）
+  const confirmUnlinkKb = async () => {
+    const kbId = unlinkKbId;
+    if (!kbId || unlinkingKb) return;
+    setUnlinkingKb(true);
     try {
       await axios.delete(`/api/design-standards/knowledge-bases/${kbId}`, authHeader);
       addToast('已取消关联', 'success');
@@ -774,8 +786,11 @@ const DesignStandards: React.FC = () => {
       setSearchKbIds(prev => prev.filter(id => id !== kbId));
       setChatKbIds(prev => prev.filter(id => id !== kbId));
       await fetchStatus();
+      setUnlinkKbId('');
     } catch (err: any) {
       addToast(err?.response?.data?.message || '取消关联失败', 'error');
+    } finally {
+      setUnlinkingKb(false);
     }
   };
 
@@ -867,11 +882,16 @@ const DesignStandards: React.FC = () => {
     );
   };
 
-  const handleClearPrompt = async (kbId: string) => {
+  // 打开清除提示词确认弹窗（统一系统弹窗样式，替代原生 confirm）
+  const handleClearPrompt = (kbId: string) => {
+    setClearPromptKbId(kbId);
+  };
+
+  // 确认清除提示词（实际执行）
+  const confirmClearPrompt = async () => {
+    const kbId = clearPromptKbId;
+    if (!kbId || promptSaving) return;
     const kbName = status?.knowledgeBases.find(kb => kb.id === kbId)?.name || '该知识库';
-    if (!window.confirm(`确认清除「${kbName}」的答复约束提示词？清除后该库将恢复默认回答风格。`)) {
-      return;
-    }
     const nextKbs = { ...promptConfig.knowledgeBases };
     delete nextKbs[kbId];
     const ok = await persistPromptConfig(
@@ -879,6 +899,7 @@ const DesignStandards: React.FC = () => {
       `已清除「${kbName}」的答复约束提示词`
     );
     if (ok && promptKbId === kbId) setPromptDraft('');
+    if (ok) setClearPromptKbId('');
   };
 
   const handleTogglePromptEnabled = async (enabled: boolean) => {
@@ -1857,6 +1878,112 @@ const DesignStandards: React.FC = () => {
                 )}
               </div>
             </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 取消关联知识库确认弹窗（与系统其他确认弹窗风格一致） */}
+        {unlinkKbId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !unlinkingKb && setUnlinkKbId('')} />
+            <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
+              <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2 font-bold text-lg">
+                  <Unlink size={20} />
+                  取消关联知识库
+                </div>
+                <button
+                  className="p-1 rounded hover:bg-white/20 transition disabled:opacity-50"
+                  onClick={() => setUnlinkKbId('')}
+                  disabled={unlinkingKb}
+                  title="关闭"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <AlertCircle size={22} className="text-amber-500 shrink-0 mt-0.5" />
+                  <div className="text-sm text-gray-700 leading-relaxed">
+                    <div className="font-bold text-amber-700 mb-1">仅移除关联，不会删除知识库</div>
+                    <div>
+                      确定要取消关联知识库 <span className="font-bold text-gray-900 bg-white px-1.5 py-0.5 rounded border border-gray-200">{status?.knowledgeBases?.find(k => k.id === unlinkKbId)?.name || unlinkKbId}</span>？
+                      <br />
+                      该操作仅移除本系统的关联记录，不会删除 WeKnora 中的知识库，之后可重新关联。
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+                <button
+                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                  onClick={() => setUnlinkKbId('')}
+                  disabled={unlinkingKb}
+                >
+                  取消
+                </button>
+                <button
+                  className="px-5 py-2 rounded-lg bg-amber-600 text-white font-bold hover:bg-amber-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  onClick={confirmUnlinkKb}
+                  disabled={unlinkingKb}
+                >
+                  {unlinkingKb && <RefreshCw size={14} className="animate-spin" />}
+                  {unlinkingKb ? '取消关联中...' : '确认取消关联'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 清除答复约束提示词确认弹窗（嵌套在提示词模态框之上，故 z-[60]） */}
+        {clearPromptKbId && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !promptSaving && setClearPromptKbId('')} />
+            <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
+              <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2 font-bold text-lg">
+                  <Trash2 size={20} />
+                  清除答复约束提示词
+                </div>
+                <button
+                  className="p-1 rounded hover:bg-white/20 transition disabled:opacity-50"
+                  onClick={() => setClearPromptKbId('')}
+                  disabled={promptSaving}
+                  title="关闭"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <AlertCircle size={22} className="text-red-500 shrink-0 mt-0.5" />
+                  <div className="text-sm text-gray-700 leading-relaxed">
+                    <div className="font-bold text-red-700 mb-1">清除后不可恢复</div>
+                    <div>
+                      确定要清除 <span className="font-bold text-gray-900 bg-white px-1.5 py-0.5 rounded border border-gray-200">{status?.knowledgeBases.find(kb => kb.id === clearPromptKbId)?.name || '该知识库'}</span> 的答复约束提示词？
+                      <br />
+                      清除后该库将恢复默认回答风格，已保存的提示词内容将被删除。
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+                <button
+                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                  onClick={() => setClearPromptKbId('')}
+                  disabled={promptSaving}
+                >
+                  取消
+                </button>
+                <button
+                  className="px-5 py-2 rounded-lg bg-red-600 text-white font-bold hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  onClick={confirmClearPrompt}
+                  disabled={promptSaving}
+                >
+                  {promptSaving && <RefreshCw size={14} className="animate-spin" />}
+                  {promptSaving ? '清除中...' : '确认清除'}
+                </button>
               </div>
             </div>
           </div>
