@@ -201,7 +201,7 @@ router.put('/workday-overrides', [authMiddleware, adminMiddleware, asyncHandler(
 const defaultLeaderRules = [
   { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },
   { leader: '张啸', members: ['李守健', '邓明江', '贾银鑫', '熊飞'] },
-  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '梁科研', '吴方盛'] },
+  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '梁科研', '吴方盛', '许华俊'] },
   { leader: '陈青松', members: ['张广奇', '李劲日', '曹圩圩', '许孟涵'] }
 ];
 
@@ -242,7 +242,7 @@ router.post('/leader-rules/reset', [authMiddleware, superAdminMiddleware], async
 // 工厂规则：将营业担当人员映射到对应工厂，未命中规则时使用默认工厂
 const factoryOptions = ['O/NJG', 'O/SHA'];
 const defaultFactoryRules = [
-  { factory: 'O/SHA', members: ['吴露鹭', '茅舒', '沈雨帆', '梁科研', '张晟隽'] }
+  { factory: 'O/SHA', members: ['吴露鹭', '茅舒', '沈雨帆', '梁科研', '张晟隽', '许华俊'] }
 ];
 const defaultFactory = 'O/NJG';
 
