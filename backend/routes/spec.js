@@ -158,10 +158,6 @@ function findLatestSpecPdf(n) {
   return latest;
 }
 
-function isValidDate(yy, mo, dd) {
-  return yy >= 2000 && yy <= 2100 && mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31;
-}
-
 function isSkipDataLine(line) {
   var s = (line || '').trim();
   if (!s) return true;
@@ -188,73 +184,6 @@ function parseDateQuantityLine(line) {
     if (/^\d+$/.test(last)) qtyStr = last;
   }
   return {dateStr: dateStr, qtyStr: qtyStr};
-}
-
-async function extractDeliveryDateFromPdf(p) {
-  try {
-    var buf = fs2.readFileSync(p);
-    var ParseClass = await getPdfParse();
-    var pdf = new ParseClass({data: buf});
-    var textResult = await pdf.getText();
-    var t = (textResult && textResult.text) || '';
-
-    var keywords = ['纳期', '绾虫湡'];
-    for (var ki = 0; ki < keywords.length; ki++) {
-      var kw = keywords[ki];
-      var kwIndex = t.indexOf(kw);
-      if (kwIndex >= 0) {
-        var afterKw = t.substring(kwIndex + kw.length);
-        var nqPats = [
-          /^\s*(\d{4})[-年\.](\d{1,2})[-月\.](\d{1,2})/,
-          /^\s*(\d{4})(\d{2})(\d{2})/,
-          /\s*(\d{4})[-年\.](\d{1,2})[-月\.](\d{1,2})/,
-          /\s*(\d{4})(\d{2})(\d{2})/
-        ];
-        for (var ni = 0; ni < nqPats.length; ni++) {
-          var nm = afterKw.match(nqPats[ni]);
-          if (nm) {
-            var nyy = parseInt(nm[1], 10);
-            var nmo = parseInt(nm[2], 10);
-            var ndd = parseInt(nm[3], 10);
-            if (isValidDate(nyy, nmo, ndd)) {
-              return {year: nyy, month: nmo, day: ndd};
-            }
-          }
-        }
-      }
-    }
-
-    var cd = t.replace(/(\d)\s+(?=\d)/g, '$1').replace(/(\d)\s+([-\/\.\u5e74]|\u6708)/g, '$1$2').replace(/([-\/\.\u5e74]|\u6708)\s+(\d)/g, '$1$2');
-    var st = t.replace(/\s+/g, '');
-    var texts = [t, cd, st];
-
-    var bestDate = null;
-    var bestYear = 0;
-    var pats = [
-      /(\d{4})[-\/\u5e74\.](\d{1,2})[-\/\u6708\.](\d{1,2})/g,
-      /(\d{4})\u5e74(\d{1,2})\u6708(\d{1,2})\u65e5/g,
-      /(\d{4})\.(\d{1,2})\.(\d{1,2})/g,
-      /\b(\d{4})(\d{2})(\d{2})\b/g
-    ];
-
-    for (var ti = 0; ti < texts.length; ti++) {
-      var txt = texts[ti]; if (!txt) continue;
-      for (var pi = 0; pi < pats.length; pi++) {
-        var pat = new RegExp(pats[pi].source, 'g');
-        var m;
-        while ((m = pat.exec(txt)) !== null) {
-          var yy = parseInt(m[1], 10);
-          var mo = parseInt(m[2], 10);
-          var dd = parseInt(m[3], 10);
-          if (isValidDate(yy, mo, dd) && yy > bestYear) {
-            bestYear = yy;
-            bestDate = {year: yy, month: mo, day: dd};
-          }
-        }
-      }
-    }
-    return bestDate;
-  } catch(e) { return null; }
 }
 
 async function extractSpecInfoFromPdf(p) {
@@ -432,13 +361,6 @@ async function extractSpecInfoFromPdf(p) {
       }
     }
 
-    if (!info.deliveryDate) {
-      var deliveryDate = await extractDeliveryDateFromPdf(p);
-      if (deliveryDate) {
-        info.deliveryDate = deliveryDate;
-      }
-    }
-
     return info;
   } catch(e) {
     console.error('extractSpecInfoFromPdf error:', e);
@@ -469,9 +391,13 @@ router.post('/delivery-date', [authMiddleware, adminMiddleware], asyncHandler(as
 
         if (!pdf) return {success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'};
 
-        var d = await extractDeliveryDateFromPdf(pdf);
+        // 使用与 /spec/info 相同的解析逻辑（专用类别规则 + 数据表行），
+        // 保证与"相同仕样号同步更新"结果一致
+        var info = await extractSpecInfoFromPdf(pdf);
 
-        if (!d) return {success: false, message: '未在PDF中找到纳期信息'};
+        if (!info || !info.deliveryDate) return {success: false, message: '未在PDF中找到纳期信息'};
+
+        var d = info.deliveryDate;
 
         return {success: true, date: d.year + '-' + String(d.month).padStart(2, '0') + '-' + String(d.day).padStart(2, '0')};
 

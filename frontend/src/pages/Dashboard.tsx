@@ -1538,10 +1538,10 @@ const Dashboard = () => {
       if (specInfo.success && specInfo.clientName?.trim()) {
         const clientName = getDesignPlanClientName(specInfo, specNumber);
         setAddModeTaskName(current => current.trim() === specNumber ? clientName : current);
-        // 如果已勾选"显示纳期"，同步查询并预览纳期
+        // 如果已勾选"显示纳期"，优先复用仕样信息中的纳期，仅在缺失时单独查询
         if (showDeadline && !manualDeadline) {
-          const result = await fetchSpecDeliveryDate(specNumber);
-          const suffix = result.success ? getDeliveryDateSuffix(result.date) : null;
+          const deliveryDate = specInfo.deliveryDate || (await fetchSpecDeliveryDate(specNumber)).date;
+          const suffix = getDeliveryDateSuffix(deliveryDate);
           setAddModeDeadlineTag(suffix);
         }
         return;
