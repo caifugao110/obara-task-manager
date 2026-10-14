@@ -997,7 +997,8 @@ const Dashboard = () => {
     }, 120);
   }, [jumpTarget, loading, sheets, designers]);
 
-  // 打开主页面时自动将今日任务内容滚动到视图中央展示
+  // 打开主页面时自动将今日列滚动到视图中央展示
+  // 日期表头始终渲染且带有 data-date，当日无任务（或分组全部折叠）时也能定位到今日列
   const todayColumnScrolledRef = useRef(false);
   useEffect(() => {
     if (todayColumnScrolledRef.current) return;
@@ -3282,7 +3283,7 @@ const Dashboard = () => {
                 <tr className="bg-[#f8f9fa] text-gray-600 h-16 table-header-row">
                   <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 w-24 min-w-[6rem] font-bold text-center shadow-[1px_0_0_0_#d1d5db] z-50">设计员</th>
                   {days.map(d => (
-                    <th key={d.fullDate} colSpan={2} className={`group/date sticky top-0 border border-gray-300 min-w-[336px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
+                    <th key={d.fullDate} data-date={d.fullDate} colSpan={2} className={`group/date sticky top-0 border border-gray-300 min-w-[336px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
                       <div className="text-[10px] opacity-60">{d.dayName}</div>
                       <div>{d.dayNum}</div>
                       {isAdmin && (

@@ -283,7 +283,7 @@ const StatusTracking = () => {
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
   const [offlineWarning, setOfflineWarning] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [sortConfig, setSortConfig] = useState<{ key: 'deliveryDate' | 'designDeliveryDays'; direction: 'asc' | 'desc' } | null>({ key: 'deliveryDate', direction: 'asc' });
+  const [sortConfig, setSortConfig] = useState<{ key: 'deliveryDate' | 'designDeliveryDays'; direction: 'asc' | 'desc' } | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dateInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
 
