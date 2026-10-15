@@ -308,11 +308,13 @@ start.bat
 
 详细步骤、迁移方法、踩坑记录见 **[weknora/README.md](weknora/README.md)**。注意：`backend/.env` 中 `WEKNORA_*` 变更后需重启后端才生效（生产环境后端以 `node server.js` 子进程运行，没有 nodemon 热重载）。
 
+安全默认值（v2026-10-15 起）：WeKnora 不再内置任何默认管理员口令——`setup.js` 未取到 `--password` / `WEKNORA_ADMIN_PASSWORD` 时会交互询问或随机生成 20 位强口令（仅显示一次并回写 `weknora/.env`）；控制台/API 端口默认只绑定 `127.0.0.1`（`BIND_ADDRESS` 可改），开放注册默认关闭（`DISABLE_REGISTRATION=true`）。因此初始化完成前，局域网其他机器无法直连控制台。
+
 ### 知识库按 ID 关联
 
 后端不再自动建库或上传文档。知识库在 WeKnora 控制台创建后，需要在本系统显式关联：
 
-1. 在 WeKnora 知识库管理页面（默认 `http://<服务器>:8080/platform/knowledge-bases`）打开知识库，从 URL 或列表中复制知识库 ID。
+1. 在部署本机打开 WeKnora 知识库管理页面（默认 `http://localhost/platform/knowledge-bases`；端口默认仅监听回环地址，需局域网直连时在 `weknora/.env` 设置 `BIND_ADDRESS=0.0.0.0`），打开知识库，从 URL 或列表中复制知识库 ID。
 2. 登录本系统进入「设计规范知识库」页面 → 知识库管理标签页（需要一般管理员及以上），粘贴 ID 完成关联。
 3. 关联仅保存 ID 映射，不会复制或移动 WeKnora 数据；取消关联也不会删除 WeKnora 中的知识库。
 
@@ -420,7 +422,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
-| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、仕样号位数（`specNumberDigits`，5 或 6）；完成状态标记开关缺失时默认开启，仕样号位数缺失时默认 5 |
+| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、仕样号位数（`specNumberDigits`，5 或 6）、设计计划标记颜色随机（`randomDesignPlanColor`）、默认工时规则（`defaultGunHours`，确认/设计/确认修改三类工时的 C/X 值）；完成状态标记开关缺失时默认开启，仕样号位数缺失时默认 5，颜色随机缺失时默认关闭，默认工时规则缺失时按内置默认值补齐 |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
 除上述键值集合外，三类高写入量数据存放在独立的关系表中（首次升级自动从 `kv_store` 搬迁，幂等）：
@@ -907,4 +909,4 @@ backend/
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
 6. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-10-11
+最后更新：2026-10-15

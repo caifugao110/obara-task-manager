@@ -192,9 +192,15 @@ const ensureLoginLogTable = () => {
       browserInfo TEXT,
       success INTEGER,
       reason TEXT,
-      action TEXT
+      action TEXT,
+      deviceIndex INTEGER
     );
   `);
+  // 旧表迁移：补充多设备登录序号列
+  const loginLogColumns = database.prepare('PRAGMA table_info(login_logs)').all();
+  if (!loginLogColumns.some(col => col.name === 'deviceIndex')) {
+    database.exec('ALTER TABLE login_logs ADD COLUMN deviceIndex INTEGER');
+  }
   database.exec('CREATE INDEX IF NOT EXISTS idx_login_logs_ts ON login_logs(timestamp)');
   return database;
 };
@@ -211,7 +217,8 @@ const serializeLoginEntry = (entry = {}) => ({
   browserInfo: entry.browserInfo ? JSON.stringify(entry.browserInfo) : null,
   success: entry.success === undefined || entry.success === null ? null : (entry.success ? 1 : 0),
   reason: entry.reason ?? null,
-  action: entry.action ?? null
+  action: entry.action ?? null,
+  deviceIndex: entry.deviceIndex ?? null
 });
 
 const deserializeLoginRow = (row) => {
@@ -237,8 +244,8 @@ const appendLoginLogEntry = (entry) => {
   const database = ensureLoginLogTable();
   database
     .prepare(`
-      INSERT INTO login_logs (id, timestamp, userId, username, name, role, ip, userAgent, browserInfo, success, reason, action)
-      VALUES (@id, @timestamp, @userId, @username, @name, @role, @ip, @userAgent, @browserInfo, @success, @reason, @action)
+      INSERT INTO login_logs (id, timestamp, userId, username, name, role, ip, userAgent, browserInfo, success, reason, action, deviceIndex)
+      VALUES (@id, @timestamp, @userId, @username, @name, @role, @ip, @userAgent, @browserInfo, @success, @reason, @action, @deviceIndex)
     `)
     .run(serializeLoginEntry(entry));
   trimLoginLogs(database);

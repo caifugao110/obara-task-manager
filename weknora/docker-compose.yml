@@ -12,6 +12,9 @@
 # 说明：
 #   - 全部使用官方预构建镜像，无需本地构建；
 #   - 配置项全部来自同目录 .env（由 .env.example 生成，脚本可自动补齐密钥）；
+#   - 控制台/API 端口默认只绑定宿主机回环地址 127.0.0.1（经本系统后端访问，
+#     不暴露到内网）；确需让局域网其他机器直连时，在 .env 设置
+#     BIND_ADDRESS=0.0.0.0，并务必已修改管理员口令、关闭开放注册；
 #   - 数据持久化在命名卷 postgres-data / data-files / docreader-tmp，
 #     compose 项目名取本目录名（weknora），与原 E:\My Trae\WeKnora 部署
 #     的卷名一致，可无缝复用已有数据。
@@ -22,7 +25,7 @@ services:
     image: wechatopenai/weknora-ui:${WEKNORA_VERSION:-latest}
     container_name: WeKnora-frontend
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-80}:80"
     environment:
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
       - MAX_SKILL_BUNDLE_SIZE_MB=${MAX_SKILL_BUNDLE_SIZE_MB:-256}
@@ -40,7 +43,7 @@ services:
     image: wechatopenai/weknora-app:${WEKNORA_VERSION:-latest}
     container_name: WeKnora-app
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
     volumes:
       - data-files:/data/files
       - docreader-tmp:/tmp/docreader:ro
@@ -60,7 +63,8 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
       - WEKNORA_LANGUAGE=${WEKNORA_LANGUAGE:-zh-CN}
       - AUTO_MIGRATE=${AUTO_MIGRATE:-true}
-      - DISABLE_REGISTRATION=${DISABLE_REGISTRATION:-false}
+      # 默认关闭开放注册，避免内网任意人自行注册账号；确需自助注册时在 .env 显式置 false
+      - DISABLE_REGISTRATION=${DISABLE_REGISTRATION:-true}
       # ---------- 数据库 ----------
       - DB_DRIVER=${DB_DRIVER:-postgres}
       - DB_HOST=${DB_HOST:-postgres}

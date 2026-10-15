@@ -8,7 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
-const { authMiddleware, isSessionValid } = require('../middleware/auth');
+const { authMiddleware, isSessionValid, getSessionEntryId, isSessionEntryExpired } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
@@ -127,6 +127,32 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
   const sessionId = crypto.randomUUID();
   const userIndex = data.users.findIndex(u => u.id === user.id);
   const previousSession = data.users[userIndex].sessionToken;
+  let loggedAsForcedLogout = false;
+
+  // 先签发令牌以获取真实过期时间，会话记录的 expiresAt 与 JWT 生命周期严格对齐
+  const payload = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    name: user.name,
+    sessionId
+  };
+  const token = jwt.sign(payload, JWT_SECRET, {
+    expiresIn: securityConfig.jwt.expiresIn,
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE
+  });
+  const sessionExpiresAt = jwt.decode(token).exp * 1000;
+
+  // 登录时清理僵尸会话：已过期的记录清除；旧版字符串格式无过期时间记录，无法判断，
+  // 一并清除（其对应 JWT 若仍在有效期，设备重新登录一次即可恢复为新格式记录）
+  const now = Date.now();
+  const activeTokens = (data.users[userIndex].sessionTokens || [])
+    .filter(t => typeof t === 'string' ? false : !isSessionEntryExpired(t, now));
+  // 登录时刻的设备序号：基于清理后的真实活跃会话数（上限 10，超出淘汰最早会话）；单设备模式恒为 1
+  const deviceIndex = systemSettings.allowMultiDevice
+    ? Math.min(activeTokens.length + 1, 10)
+    : 1;
 
   if (!systemSettings.allowMultiDevice && previousSession) {
     const io = req.app.get('io');
@@ -147,52 +173,44 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
       name: user.name,
       role: user.role,
       success: true,
-      action: 'forced_previous_logout'
+      action: 'forced_previous_logout',
+      deviceIndex
     });
+    // 该日志已含「登录成功 + 踢出旧会话」完整语义，跳过下方重复的 login 日志
+    loggedAsForcedLogout = true;
   }
 
   if (systemSettings.allowMultiDevice) {
     // 多设备模式：追加而非覆盖会话，各设备互不挤下线；
     // 上限 10 个（超出时淘汰最早会话），防止 JSON 库中的会话列表无限增长
-    const tokens = [...(data.users[userIndex].sessionTokens || []), sessionId];
-    data.users[userIndex].sessionTokens = tokens.slice(-10);
+    data.users[userIndex].sessionTokens = [...activeTokens, { id: sessionId, expiresAt: sessionExpiresAt }].slice(-10);
   } else {
-    data.users[userIndex].sessionTokens = [sessionId];
+    data.users[userIndex].sessionTokens = [{ id: sessionId, expiresAt: sessionExpiresAt }];
   }
   // sessionToken 始终指向最近一次登录的会话：从多设备切回单设备时仅保留最新会话
   data.users[userIndex].sessionToken = sessionId;
 
-  db.appendLoginLogEntry({
-    ...logBase,
-    userId: user.id,
-    name: user.name,
-    role: user.role,
-    success: true,
-    action: 'login'
-  });
+  // 仅在未以 forced_previous_logout 记录时写入普通登录日志，避免同一秒出现两条成功记录
+  if (!loggedAsForcedLogout) {
+    db.appendLoginLogEntry({
+      ...logBase,
+      userId: user.id,
+      name: user.name,
+      role: user.role,
+      success: true,
+      action: 'login',
+      deviceIndex
+    });
+  }
   await db.writeDb(data);
 
-  const payload = {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    name: user.name,
-    sessionId
-  };
-
-  const token = jwt.sign(payload, JWT_SECRET, { 
-    expiresIn: securityConfig.jwt.expiresIn,
-    issuer: JWT_ISSUER,
-    audience: JWT_AUDIENCE
-  });
-
-  res.json({ 
-    token, 
-    user: { 
-      id: user.id, 
-      username: user.username, 
-      role: user.role, 
-      name: user.name 
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      name: user.name
     },
     forcePasswordChange: user.forcePasswordChange || false
   });
@@ -287,14 +305,6 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
   }
 
   const newSessionId = crypto.randomUUID();
-  data.users[userIndex].password = bcrypt.hashSync(newPassword, 10);
-  data.users[userIndex].forcePasswordChange = false;
-  // 改密后吊销所有设备会话（安全惯例），仅当前设备凭签发的新令牌保持登录
-  data.users[userIndex].sessionToken = newSessionId;
-  data.users[userIndex].sessionTokens = [newSessionId];
-  
-  await db.writeDb(data);
-
   const payload = {
     id: user.id,
     username: user.username,
@@ -302,12 +312,21 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
     name: user.name,
     sessionId: newSessionId
   };
-  const newToken = jwt.sign(payload, JWT_SECRET, { 
+  const newToken = jwt.sign(payload, JWT_SECRET, {
     expiresIn: securityConfig.jwt.expiresIn,
     issuer: JWT_ISSUER,
     audience: JWT_AUDIENCE
   });
-  
+  const newSessionExpiresAt = jwt.decode(newToken).exp * 1000;
+
+  data.users[userIndex].password = bcrypt.hashSync(newPassword, 10);
+  data.users[userIndex].forcePasswordChange = false;
+  // 改密后吊销所有设备会话（安全惯例），仅当前设备凭签发的新令牌保持登录
+  data.users[userIndex].sessionToken = newSessionId;
+  data.users[userIndex].sessionTokens = [{ id: newSessionId, expiresAt: newSessionExpiresAt }];
+
+  await db.writeDb(data);
+
   res.json({ message: '密码修改成功', token: newToken });
 }));
 
@@ -319,11 +338,15 @@ router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
     const targetUser = data.users[userIndex];
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
     if (systemSettings.allowMultiDevice && Array.isArray(targetUser.sessionTokens) && targetUser.sessionTokens.length > 0) {
-      // 多设备模式：仅吊销当前设备的会话，其他设备保持在线
-      targetUser.sessionTokens = targetUser.sessionTokens.filter(t => t !== req.user.sessionId);
+      // 多设备模式：仅吊销当前设备的会话，其他设备保持在线；
+      // 顺带清除已过期的僵尸会话与无法判断有效期的旧版字符串条目
+      const now = Date.now();
+      targetUser.sessionTokens = targetUser.sessionTokens
+        .filter(t => getSessionEntryId(t) !== req.user.sessionId)
+        .filter(t => typeof t === 'string' ? false : !isSessionEntryExpired(t, now));
       if (targetUser.sessionToken === req.user.sessionId) {
         // 当前设备是「最新会话」时，将 sessionToken 指向剩余会话；全部离线则置随机值
-        targetUser.sessionToken = targetUser.sessionTokens[0] || crypto.randomUUID();
+        targetUser.sessionToken = targetUser.sessionTokens[0]?.id || crypto.randomUUID();
       }
     } else {
       // 单设备模式：重新生成 sessionToken 使该账号所有旧令牌失效

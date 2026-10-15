@@ -10,6 +10,7 @@ const fs = require('fs');
 
 const securityConfig = require('./config/security');
 const { socketAuthMiddleware, requireSocketAuth, requireSocketRole } = require('./middleware/socketAuth');
+const { hasAccessSettings } = require('./middleware/auth');
 
 const app = express();
 
@@ -314,6 +315,13 @@ io.on('connection', (socket) => {
       // 否则普通用户可向全体客户端伪造「正在编辑」提示干扰他人
       if (!['admin', 'superadmin'].includes(authenticatedUser.role)) {
         socket.emit('error', { message: 'Insufficient permissions' });
+        return;
+      }
+
+      // 与 HTTP 写接口对齐：模块被超管关闭或收回管理员访问时，
+      // 禁止占用「正在编辑」广播（hasAccessSettings 内部对超管恒放行）
+      if (!hasAccessSettings(authenticatedUser, 'statusTracking')) {
+        socket.emit('error', { message: '无权访问' });
         return;
       }
 

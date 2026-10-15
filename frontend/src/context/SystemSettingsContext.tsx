@@ -17,6 +17,7 @@ export interface SystemSettingsData {
   allowUserDesignPlanColorMark: boolean;
   allowUserEditOwnTaskColor: boolean;
   specNumberDigits: number;
+  randomDesignPlanColor: boolean;
   defaultGunHours?: DefaultGunHours;
 }
 
@@ -31,6 +32,7 @@ const defaultSettings: SystemSettingsData = {
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTaskColor: true,
   specNumberDigits: 5,
+  randomDesignPlanColor: false,
   defaultGunHours
 };
 

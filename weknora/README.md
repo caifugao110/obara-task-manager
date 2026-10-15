@@ -68,9 +68,11 @@ cd weknora && bash start.sh
 
 | 地址 | 说明 |
 |------|------|
-| http://localhost | WeKnora 管理控制台（admin@obara.local / Obara@WeKnora2026） |
-| http://localhost:8080 | WeKnora API（健康检查 /health） |
+| http://localhost | WeKnora 管理控制台（账号默认 admin@obara.local） |
+| http://localhost:8080 | WeKnora API（健康检查 /health，默认仅本机回环可达） |
 | http://localhost:5173/design-standards | 本系统设计规范知识库页面 |
+
+**管理员口令（无内置默认口令）**：`setup.js` 按以下顺序解析——`--password` 参数 / `WEKNORA_ADMIN_PASSWORD` 环境变量 / `weknora/.env` 同名项 → 交互终端手动输入（回车则随机生成）→ 非交互场景随机生成 20 位强口令。随机口令会在初始化输出中**显示一次**并回写到 `weknora/.env` 的 `WEKNORA_ADMIN_PASSWORD`（保证脚本幂等重跑），首次登录后请尽快在控制台修改。
 
 > 若 `backend/.env` 有变更，**必须重启本系统后端**（`node server.js`，非热重载）。
 
@@ -94,6 +96,7 @@ node scripts/setup.js \
 |------|------|
 | `--no-env` | 跳过写入 `backend/.env` |
 | `--base-url <url>` | WeKnora 在其他主机时指定 API 地址 |
+| `--email <邮箱>` / `--password <口令>` | 指定管理员账号；均缺省时交互/随机生成口令（见第 3 节） |
 
 ## 5. 目录结构
 
@@ -166,11 +169,21 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 8. 本系统后端是 `node server.js`（非 nodemon），**改 backend 代码或 backend/.env 后必须重启后端**。
 9. **问答不允许跨工作空间**：检索可以跨空间分组扇出再合并排序，但知识库问答的会话是空间级资源，所选知识库必须同属一个工作空间；跨空间勾选时前端禁用发送，后端也会在 SSE 建连前返回 `400 WEKNORA_MULTI_TENANT`。配置答复约束提示词时，若该空间没有 KnowledgeQA 问答模型则返回 `503 WEKNORA_NO_QA_MODEL`。
 
-## 9. 安全建议（生产）
+## 9. 安全说明与生产建议
 
-- 立即修改 WeKnora 管理员密码（默认 `Obara@WeKnora2026`）与本系统默认管理员密码；
-- `weknora/.env` 中 `DB_PASSWORD` / `REDIS_PASSWORD` 改为强口令；
-- 生产建议在 `weknora/.env` 增加 `DISABLE_REGISTRATION=true` 禁止公开注册；
+当前默认值已按最小暴露面配置：
+
+- **无默认管理员口令**：初始化时必须显式提供或随机生成（随机口令仅显示一次并写入 `weknora/.env`），首次登录后请尽快修改；
+- **端口默认仅绑定回环地址**：`BIND_ADDRESS` 默认为 `127.0.0.1`，WeKnora 控制台/API 不暴露到内网，只供本系统后端在本机调用；
+- **默认关闭开放注册**：`DISABLE_REGISTRATION` 默认为 `true`，内网其他人员无法自行注册账号；
+- `JWT_SECRET` / `SYSTEM_AES_KEY` 由 `gen-env.js` 随机生成；模型 API Key 加密存入 WeKnora 数据库，仅保存在服务端，不下发浏览器；
 - 不要把 `.env`、`backend/.env` 提交到 git（已在 .gitignore 中）。
 
-最后更新：2026-10-10
+如需让局域网其他机器**直连** WeKnora 控制台（不推荐，优先使用本系统页面）：
+
+1. 在 `weknora/.env` 设置 `BIND_ADDRESS=0.0.0.0` 后重新 `docker compose up -d`；
+2. 确认管理员口令已从随机初始口令改为强口令；
+3. 保持 `DISABLE_REGISTRATION=true`；
+4. 全新部署可把 `DB_PASSWORD` / `REDIS_PASSWORD` 改为强口令（**已有数据卷的部署勿改**，会导致数据库/Redis 无法登录）。
+
+最后更新：2026-10-15

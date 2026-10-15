@@ -107,6 +107,7 @@ Authorization: Bearer <token>
 - 用户不存在与密码错误均返回相同的 `401` 响应 `用户名或密码错误`，避免通过响应差异枚举有效用户名。
 - 账号禁用时返回 `403` 和 `ACCOUNT_DISABLED`。
 - 关闭多设备登录时，新登录会使旧会话失效。开启多设备登录时，同一账号的多个会话并存（每账号上限 10 个，超出淘汰最早会话），新登录不会使旧设备下线；登出仅吊销当前设备的会话。
+- 关闭多设备登录且新登录触发旧会话踢出时，本次登录只记录一条 `action=forced_previous_logout`（登录并踢出旧会话）的成功日志，不再额外重复记录普通登录成功日志。
 - `forcePasswordChange=true` 时前端需引导用户到 `/change-password` 修改密码。
 - **未修改初始密码期间的 API 拦截**：`forcePasswordChange` 标记未清除前，除 `POST /api/auth/change-password` 和 `POST /api/auth/logout` 外的所有已登录接口一律返回 `403`（`code=FORCE_PASSWORD_CHANGE`）。
 - 登录接口受三层速率限制：第一层按 IP 15 分钟内最多 300 次尝试（`LOGIN_IP_RATE_LIMIT_MAX` 可调整，堵密码喷洒缺口）；第二层按「IP + 用户名」15 分钟内最多 20 次尝试（防止单账号爆破），两层均超限返回 HTTP `429` 与消息 `登录尝试过于频繁，请15分钟后再试`；此外还受全局 API 限流（默认每 IP 15 分钟 3000 次）约束。
@@ -1098,7 +1099,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 [
   { "leader": "陈大仪", "members": ["郭涛", "王兴龙", "王会永", "李广亮"] },
   { "leader": "张啸", "members": ["李守健", "邓明江", "贾银鑫", "熊飞"] },
-  { "leader": "张明", "members": ["吴露鹭", "茅舒", "沈雨帆", "张晟隽", "刘知新", "梁科研", "吴方盛"] },
+  { "leader": "张明", "members": ["吴露鹭", "茅舒", "沈雨帆", "张晟隽", "梁科研", "吴方盛", "许华俊"] },
   { "leader": "陈青松", "members": ["张广奇", "李劲日", "曹圩圩", "许孟涵"] }
 ]
 ```
@@ -1144,7 +1145,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 {
   "defaultFactory": "O/NJG",
   "rules": [
-    { "factory": "O/SHA", "members": ["吴露鹭", "茅舒", "沈雨帆", "梁科研", "张晟隽"] }
+    { "factory": "O/SHA", "members": ["吴露鹭", "茅舒", "沈雨帆", "梁科研", "张晟隽", "许华俊"] }
   ]
 }
 ```
@@ -1181,7 +1182,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：仅 `superadmin`
 
-说明：将工厂规则重置为系统默认值（默认工厂 `O/NJG`；规则 `O/SHA → 吴露鹭、茅舒、沈雨帆、梁科研、张晟隽`）。
+说明：将工厂规则重置为系统默认值（默认工厂 `O/NJG`；规则 `O/SHA → 吴露鹭、茅舒、沈雨帆、梁科研、张晟隽、许华俊`）。
 
 响应：返回默认工厂规则对象，结构同 `GET /api/settings/factory-rules`。
 
@@ -2081,7 +2082,13 @@ PUT 请求：
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
   "allowUserEditOwnTaskColor": true,
-  "specNumberDigits": 5
+  "specNumberDigits": 5,
+  "randomDesignPlanColor": false,
+  "defaultGunHours": {
+    "confirm": { "C": 1.5, "X": 2 },
+    "design": { "C": 2.5, "X": 3 },
+    "confirmModify": { "C": 0.5, "X": 0.75 }
+  }
 }
 ```
 
@@ -2091,6 +2098,8 @@ PUT 请求：
 - `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划完成状态。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
+- `randomDesignPlanColor` 为设计计划标记颜色随机开关，缺失时默认 `false`；开启后主页面新增任务的默认标记颜色从预设颜色中随机选择（不含「无」）。
+- `defaultGunHours` 为默认工时规则：`confirm`（确认工时）、`design`（设计工时）、`confirmModify`（确认修改工时）三类，每类含 C/X 两种机型（数值 0-24）；字段缺失时按内置默认值补齐。
 
 ### 更新系统设置
 
@@ -2104,7 +2113,8 @@ PUT 请求：
 {
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
-  "specNumberDigits": 6
+  "specNumberDigits": 6,
+  "randomDesignPlanColor": false
 }
 ```
 
@@ -2112,6 +2122,7 @@ PUT 请求：
 
 - 所有字段含义同 `GET /api/system/settings`。
 - `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
+- `randomDesignPlanColor` 可选，布尔值；`defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留原值或使用内置默认值。
 
 ### 获取系统版本信息
 
@@ -3602,4 +3613,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-10-11
+最后更新：2026-10-15

@@ -23,12 +23,15 @@ export interface LoginLog extends LogWithBrowser {
   action?: string;
   reason?: string;
   timestamp: string;
+  deviceIndex?: number | null;
 }
 
 export const getActionLabel = (log: LoginLog) => {
   if (!log.success) return log.reason || '登录失败';
-  if (log.action === 'forced_previous_logout') return '登录（踢出其他设备）';
-  return '登录成功';
+  const base = log.action === 'forced_previous_logout' ? '登录（踢出其他设备）' : '登录成功';
+  // 多设备模式下标注登录时刻的设备序号（首台设备不显示，避免冗余）
+  if (log.deviceIndex && log.deviceIndex > 1) return `${base}（第 ${log.deviceIndex} 台设备）`;
+  return base;
 };
 
 export const getRoleLabel = (role?: string) => {

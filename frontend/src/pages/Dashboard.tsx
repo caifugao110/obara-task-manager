@@ -1159,7 +1159,11 @@ const Dashboard = () => {
     setAddModeTripPlace('');
     setAddModeHours('');
     setAddModeGuns([]);
-    setAddModeColor('#86efac');
+    setAddModeColor(
+      systemSettings.randomDesignPlanColor
+        ? (() => { const pool = PRESET_COLORS.filter(c => c.value); return pool[Math.floor(Math.random() * pool.length)].value; })()
+        : '#86efac'
+    );
     setAddModeTaskType('none');
     setShowDeadline(false);
     setAddModeDeadlineTag(null);
@@ -3096,6 +3100,16 @@ const Dashboard = () => {
       ? '就绪'
       : '离线';
 
+  // 任务类型非"设计计划"时隐藏批量操作/显示纳期/手动输入（新增+编辑模式均适用）
+  // 新增模式：selectedTaskType !== 'none'；编辑模式：正在编辑的任务带有 leaveType
+  const editingItemForOptions = !isAddMode && focusTarget?.itemId && modalDesignerId && modalDate
+    ? getAllItems(modalDesignerId, modalDate).find(i => i.id === focusTarget.itemId) || null
+    : null;
+  const editingItemLeaveType = editingItemForOptions ? getItemWithPendingChanges(editingItemForOptions).leaveType : null;
+  const hideTaskTypeOptions = isAddMode
+    ? selectedTaskType !== 'none'
+    : !!editingItemLeaveType;
+
   return (
     <div className="h-screen overflow-hidden bg-[#f3f3f3] flex flex-col font-sans">
       {/* Toast（下移至标题栏下方，避免遮挡顶部标题栏） */}
@@ -3558,7 +3572,7 @@ const Dashboard = () => {
                 <div className="text-xs opacity-80">{modalDate}</div>
               </div>
               <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-3">
-                {canEditTasks && (
+                {canEditTasks && !hideTaskTypeOptions && (
                   <button
                     onClick={() => { void openBatchReplaceDialog(); }}
                     className="px-4 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded text-sm font-bold transition"
@@ -3566,6 +3580,7 @@ const Dashboard = () => {
                     批量操作
                   </button>
                 )}
+                {!hideTaskTypeOptions && (
                 <label className={`flex items-center gap-1.5 text-sm font-bold select-none ${isAddMode && extractSpecNumber(addModeTaskName)?.length !== specNumberDigits ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
                   <input
                     type="checkbox"
@@ -3576,7 +3591,8 @@ const Dashboard = () => {
                   />
                   显示纳期
                 </label>
-                {showDeadline && (
+                )}
+                {showDeadline && !hideTaskTypeOptions && (
                   <label className="flex items-center gap-1.5 text-sm font-bold select-none cursor-pointer">
                     <input
                       type="checkbox"

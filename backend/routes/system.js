@@ -27,6 +27,7 @@ const defaultSystemSettings = {
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTask: true,
   specNumberDigits: 5,
+  randomDesignPlanColor: false,
   defaultGunHours: {
     confirm: { C: 1.5, X: 2 },
     design: { C: 2.5, X: 3 },
@@ -59,6 +60,7 @@ const systemSettingsSchema = Joi.object({
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
   allowUserEditOwnTaskColor: Joi.boolean().optional(),
   specNumberDigits: Joi.number().integer().valid(5, 6).optional(),
+  randomDesignPlanColor: Joi.boolean().optional(),
   defaultGunHours: Joi.object({
     confirm: gunHoursTypeSchema.required(),
     design: gunHoursTypeSchema.required(),
@@ -109,6 +111,7 @@ const normalizeSystemSettings = (settings = {}) => {
     ...merged,
     allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
     allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
+    randomDesignPlanColor: Boolean(merged.randomDesignPlanColor),
     defaultGunHours: {
       confirm: normalizeGunHours(rawGunHours.confirm, fallbackGunHours.confirm),
       design: normalizeGunHours(rawGunHours.design, fallbackGunHours.design),

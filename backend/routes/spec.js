@@ -413,7 +413,9 @@ router.post('/delivery-date', [authMiddleware, adminMiddleware], asyncHandler(as
 
     if (e.message === 'T') return res.json({success: false, message: '获取纳期超时(超过9秒)'});
 
-    return res.json({success: false, message: '获取纳期失败: ' + e.message});
+    // 不向客户端回传内部错误细节（可能含上游 URL / 文件路径），详细信息仅写服务端日志
+    console.warn('[spec] 获取纳期失败:', e.message);
+    return res.json({success: false, message: '获取纳期失败，请稍后重试或检查网络后联系管理员'});
 
   }
 
@@ -440,7 +442,8 @@ router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(as
 
     return res.json({success: true, lines: lines, rawText: t});
   } catch(e) {
-    return res.json({success: false, message: '获取原始文本失败: ' + e.message});
+    console.warn('[spec] 获取原始文本失败:', e.message);
+    return res.json({success: false, message: '获取原始文本失败，请确认仕样书存在或联系管理员'});
   }
 }));
 
@@ -543,7 +546,9 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
     if (e.message === 'T') return res.json({success: false, message: '获取仕样信息超时(超过15秒)'});
 
-    return res.json({success: false, message: '获取仕样信息失败: ' + e.message});
+    // 不向客户端回传内部错误细节（可能含上游 URL / 文件路径），详细信息仅写服务端日志
+    console.warn('[spec] 获取仕样信息失败:', e.message);
+    return res.json({success: false, message: '获取仕样信息失败，请稍后重试或检查网络后联系管理员'});
 
   }
 

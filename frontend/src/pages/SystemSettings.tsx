@@ -165,6 +165,7 @@ const defaultSettings: SystemSettingsData = {
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTaskColor: true,
   specNumberDigits: 5,
+  randomDesignPlanColor: false,
   defaultGunHours: {
     confirm: { C: 1.5, X: 2 },
     design: { C: 2.5, X: 3 },
@@ -2323,6 +2324,23 @@ const SystemSettings = () => {
               </div>
               <div className="text-xs text-gray-400">
                 当前配置：仕样号需输入 <span className="font-bold text-blue-600">{settings.specNumberDigits}</span> 位数字
+              </div>
+
+              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
+                <div>
+                  <div className="font-bold text-gray-700">设计计划标记颜色随机</div>
+                  <div className="text-xs text-gray-400 mt-1">主页面新增任务设计计划时，默认标记颜色不再固定为「深绿」，而是随机选择一个颜色</div>
+                </div>
+                <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                  <input
+                    type="checkbox"
+                    checked={settings.randomDesignPlanColor}
+                    onChange={(e) => updateSettings({ randomDesignPlanColor: e.target.checked })}
+                    disabled={!isSuperAdmin}
+                    className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                  />
+                  <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings.randomDesignPlanColor ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                </div>
               </div>
 
               <div className="p-5 bg-gray-50 rounded-xl border border-gray-100">

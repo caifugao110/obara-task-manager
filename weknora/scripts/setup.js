@@ -25,12 +25,21 @@
  * 可选参数：
  *   --base-url <url>        WeKnora API 根地址（默认 http://127.0.0.1:8080/api/v1）
  *   --backend-env <path>    目标 backend/.env 路径（默认 ../../backend/.env）
- *   --email / --password    管理员账号（默认 admin@obara.local / Obara@WeKnora2026）
+ *   --email / --password    管理员账号（默认 admin@obara.local）
+ *
+ * 管理员口令（不再内置任何可用默认口令）解析优先级：
+ *   1. --password 参数 / WEKNORA_ADMIN_PASSWORD 环境变量 / weknora/.env
+ *   2. 交互终端下手动输入（直接回车则随机生成）
+ *   3. 非交互场景：随机生成 20 位强口令，仅显示一次并持久化到
+ *      weknora/.env 的 WEKNORA_ADMIN_PASSWORD（保证本脚本幂等重跑），
+ *      部署后应尽快登录控制台修改
+ *
  *   --no-env                跳过写入 backend/.env
  */
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const readline = require('readline');
 
 /* ==================== 参数 ==================== */
@@ -76,7 +85,13 @@ const BACKEND_ENV = path.resolve(args['backend-env'] || path.join(PROJECT_ROOT, 
 
 const ADMIN_USERNAME = cfg('username', 'WEKNORA_ADMIN_USERNAME', null, 'admin');
 const ADMIN_EMAIL = cfg('email', 'WEKNORA_ADMIN_EMAIL', null, 'admin@obara.local');
-const ADMIN_PASSWORD = cfg('password', 'WEKNORA_ADMIN_PASSWORD', null, 'Obara@WeKnora2026');
+// 注意：刻意不提供可用默认口令。--password 单独出现（无值）时按未提供处理。
+const ADMIN_PASSWORD_PROVIDED =
+  (args['password'] && args['password'] !== 'true' ? args['password'] : '')
+  || process.env.WEKNORA_ADMIN_PASSWORD
+  || fileEnv.WEKNORA_ADMIN_PASSWORD
+  || '';
+const WEKNORA_ENV_FILE = path.join(DIR, '.env');
 
 const DEEPSEEK_MODEL = args['deepseek-model'] || 'deepseek-flash';
 const EMBEDDING_MODEL = args['embedding-model'] || 'embedding-3';
@@ -150,6 +165,49 @@ function upsertEnvFile(file, entries) {
   fs.writeFileSync(file, content, 'utf-8');
 }
 
+/** 生成 20 位强随机口令：大小写字母/数字/符号各保证至少一个（避开易混字符 0/O/1/l） */
+function generateAdminPassword() {
+  const sets = {
+    upper: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
+    lower: 'abcdefghijkmnpqrstuvwxyz',
+    digit: '23456789',
+    symbol: '!@#$%^*-_=+',
+  };
+  const all = Object.values(sets).join('');
+  const pickOne = (alphabet) => alphabet[crypto.randomInt(alphabet.length)];
+  const chars = [pickOne(sets.upper), pickOne(sets.lower), pickOne(sets.digit), pickOne(sets.symbol)];
+  for (let i = chars.length; i < 20; i++) chars.push(pickOne(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+/**
+ * 解析管理员口令：显式配置 > 交互输入 > 随机生成。
+ * 随机生成时持久化到 weknora/.env，保证脚本幂等重跑仍可登录。
+ */
+async function resolveAdminPassword() {
+  if (ADMIN_PASSWORD_PROVIDED) {
+    return { password: ADMIN_PASSWORD_PROVIDED, generated: false };
+  }
+
+  let password = '';
+  if (process.stdin.isTTY) {
+    password = await promptSecret(
+      '请设置 WeKnora 管理员口令（直接回车则随机生成；也可预先写入 weknora/.env 的 WEKNORA_ADMIN_PASSWORD）: '
+    );
+  }
+
+  if (!password) {
+    password = generateAdminPassword();
+    upsertEnvFile(WEKNORA_ENV_FILE, { WEKNORA_ADMIN_PASSWORD: password });
+    return { password, generated: true };
+  }
+  return { password, generated: false };
+}
+
 /** 从 backend/.env 读取已有的 WEKNORA_API_KEY（用于复用判断） */
 function readExistingEnv(file) {
   if (!fs.existsSync(file)) return {};
@@ -186,6 +244,7 @@ async function main() {
 
   // ---------- 1. 注册 / 登录 ----------
   log('\n[1/4] 准备管理员账号...');
+  const { password: ADMIN_PASSWORD, generated: passwordGenerated } = await resolveAdminPassword();
   const reg = await api('/auth/register', {
     method: 'POST',
     body: { username: ADMIN_USERNAME, email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
@@ -196,7 +255,14 @@ async function main() {
     method: 'POST',
     body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
-  if (!login.ok) fail(`登录失败：HTTP ${login.status} ${JSON.stringify(login.data).slice(0, 300)}`);
+  if (!login.ok) {
+    fail(
+      `登录失败：HTTP ${login.status} ${JSON.stringify(login.data).slice(0, 300)}\n`
+      + '若管理员账号此前已用其他口令初始化过（例如旧版本的固定口令），\n'
+      + '请把现有口令写入 weknora/.env 的 WEKNORA_ADMIN_PASSWORD（或用 --password 传入）后重试；\n'
+      + '遗忘口令时需在 WeKnora 控制台/数据库中重置管理员密码。'
+    );
+  }
   const token = pick(login.data, 'data.token', 'token', 'data.access_token');
   if (!token) fail(`登录响应中没有 token：${JSON.stringify(login.data).slice(0, 300)}`);
   log('  ✔ 登录成功');
@@ -317,8 +383,15 @@ async function main() {
   // ---------- 摘要 ----------
   log('\n' + '-'.repeat(64));
   log('初始化完成：');
-  log(`  WeKnora 控制台 : http://localhost:${process.env.FRONTEND_PORT || 80}`);
-  log(`  管理员账号     : ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
+  log(`  WeKnora 控制台 : http://localhost:${process.env.FRONTEND_PORT || 80}（默认仅监听本机回环地址）`);
+  log(`  管理员账号     : ${ADMIN_EMAIL}`);
+  if (passwordGenerated) {
+    log(`  管理员初始口令 : ${ADMIN_PASSWORD}`);
+    log('                   （随机生成，仅显示本次；同时已保存到 weknora/.env 的');
+    log('                     WEKNORA_ADMIN_PASSWORD，请登录后尽快在控制台修改）');
+  } else {
+    log('  管理员口令     : 来自 --password / WEKNORA_ADMIN_PASSWORD 环境变量 / weknora/.env');
+  }
   log(`  API Key        : ${apiKey.slice(0, 10)}…（已写入 backend/.env）`);
   log('');
   log('  下一步：在 WeKnora 控制台创建知识库，然后在 obara-task-manager 的');
@@ -326,4 +399,9 @@ async function main() {
   log('-'.repeat(64));
 }
 
-main().catch((e) => fail(e && e.stack ? e.stack : String(e)));
+// 直接执行时才运行主流程（被 require 时仅导出工具函数，便于测试复用）
+if (require.main === module) {
+  main().catch((e) => fail(e && e.stack ? e.stack : String(e)));
+}
+
+module.exports = { generateAdminPassword, resolveAdminPassword };

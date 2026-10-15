@@ -99,7 +99,7 @@ router.get('/items', [authMiddleware, accessSettingsMiddleware('statusTracking')
   res.json(items);
 }));
 
-router.post('/items', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+router.post('/items', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
   
@@ -130,7 +130,7 @@ router.post('/items', [authMiddleware, adminMiddleware], asyncHandler(async (req
   res.json(withDynamicDesignDeliveryDays(newItem));
 }));
 
-router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+router.put('/items/:id', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
   
@@ -169,7 +169,7 @@ router.put('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (
   res.json(dynamicItem);
 }));
 
-router.delete('/items/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+router.delete('/items/:id', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
   
@@ -195,7 +195,7 @@ router.post('/sync', [authMiddleware, accessSettingsMiddleware('statusTracking')
   res.json(items);
 }));
 
-router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+router.post('/items/bulk', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const items = req.body;
   if (!Array.isArray(items)) {
     return res.status(400).json({ message: '输入必须是数组' });
@@ -255,7 +255,7 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware], asyncHandler(async
   res.json(dynamicItems);
 }));
 
-router.get('/export', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const { month, deliveryMonth, factory, searchTerm, fullTableSearch, showOutdatedDelivery } = req.query;
   
   const data = db.readDb();

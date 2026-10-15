@@ -123,6 +123,24 @@ const updateItemSchema = Joi.object({
   gunIndex: Joi.number().integer().min(0).optional()
 });
 
+// 批量粘贴创建：与 createItemSchema 字段保持一致（条目的 id 由服务端重新生成，
+// 忽略客户端传入值）；通过 Joi 白名单校验避免手工校验漏字段
+const batchCreateItemSchema = Joi.object({
+  taskName: Joi.string().allow('').default(''),
+  hours: Joi.number().min(0).default(0),
+  color: Joi.string().allow('').default(''),
+  guns: Joi.array().items(gunSchema).default([]),
+  leaveType: Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null).default(null),
+  fontSize: Joi.string().allow('').default(''),
+  textColor: Joi.string().allow('').default('')
+});
+
+const batchCreateSchema = Joi.object({
+  designerId: Joi.string().required(),
+  date: Joi.string().isoDate().required(),
+  items: Joi.array().items(batchCreateItemSchema).min(1).required()
+});
+
 const deleteItemSchema = Joi.object({
   designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
@@ -256,11 +274,12 @@ router.get('/', authMiddleware, asyncHandler(async (req, res) => {
 }));
 
 router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
-  const { designerId, date: rawDate, items: pasteItems } = req.body;
-  if (!designerId || !rawDate || !Array.isArray(pasteItems)) {
-    return res.status(400).json({ message: '输入参数不正确' });
+  const { error, value: validated } = batchCreateSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
+  const { designerId, date: rawDate, items: pasteItems } = validated;
   const date = normalizeDate(rawDate);
   const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
   if (!isAdmin) {
@@ -281,13 +300,13 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
 
     const newItem = withCreateMeta({
       id: `item-${Date.now().toString()}${Math.random().toString(36).slice(2, 9)}`,
-      taskName: item.taskName || '',
-      hours: typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0),
-      color: item.color || '',
-      guns: Array.isArray(item.guns) ? item.guns : [],
-      leaveType: item.leaveType || null,
-      fontSize: item.fontSize || '',
-      textColor: item.textColor || ''
+      taskName: item.taskName,
+      hours: item.hours,
+      color: item.color,
+      guns: item.guns,
+      leaveType: item.leaveType,
+      fontSize: item.fontSize,
+      textColor: item.textColor
     }, req.user);
     sheet.days[date].push(newItem);
     addedItems.push(newItem);

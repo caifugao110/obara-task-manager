@@ -4,8 +4,11 @@
 #
 # 步骤：
 #   1. 生成 weknora/.env（含随机密钥，已存在则跳过）
-#   2. docker compose up -d 启动 5 个容器并等待健康
-#   3. 运行 scripts/setup.js 完成初始化（账号/模型/知识库/API Key/默认文档/写 backend/.env）
+#   2. docker compose up -d 启动 5 个容器并等待健康（端口默认仅绑定 127.0.0.1）
+#   3. 运行 scripts/setup.js 完成初始化（管理员口令/模型/API Key/写 backend/.env）
+#
+# 管理员口令：无内置默认口令。可预先写入 weknora/.env 的 WEKNORA_ADMIN_PASSWORD；
+#            未提供时按提示设置，直接回车则随机生成（仅显示一次，注意保存）。
 #
 # 模型 API Key 三选一（setup.js 按此优先级读取，全缺才交互询问）：
 #   1. 写入 weknora/.env 的 DEEPSEEK_API_KEY / BIGMODEL_API_KEY（推荐，一次配置永久生效）
@@ -47,13 +50,14 @@ for i in $(seq 1 36); do
 done
 
 echo
-echo "[3/3] 初始化（账号/模型/知识库/API Key/默认文档）..."
+echo "[3/3] 初始化（管理员口令/模型/API Key）..."
 node scripts/setup.js
 
 echo
 echo "==============================================="
-echo " WeKnora 就绪"
+echo " WeKnora 就绪（端口仅本机回环可达）"
 echo "  控制台: http://localhost"
 echo "  API:    http://localhost:8080"
+echo "  管理员口令见上方初始化输出（随机生成时仅显示一次）"
 echo "  若 backend/.env 有变更，请重启本系统后端服务。"
 echo "==============================================="

@@ -12,10 +12,23 @@ const JWT_AUDIENCE = securityConfig.jwt.audience;
 //   列表为空时回退到单 token 校验（兼容历史数据及管理员重置密码后的全吊销状态）
 // - 单设备模式：仅认可 sessionToken 对应的最新会话；
 //   sessionToken 为空视为未启用会话校验（兼容从未登录过的历史账号）
-const isSessionValid = (user, sessionId, allowMultiDevice) => {
+//
+// sessionTokens 条目格式：
+// - 旧格式：字符串 sessionId（无过期时间记录，默认视为有效，行为与历史版本一致）
+// - 新格式：{ id, expiresAt }（毫秒时间戳，与 JWT 实际过期时间对齐），
+//   已过期的条目校验不通过，并在登录/退出时被顺带清除
+const getSessionEntryId = (entry) => (typeof entry === 'string' ? entry : entry?.id);
+
+const isSessionEntryExpired = (entry, now = Date.now()) =>
+  typeof entry !== 'string' && Number(entry?.expiresAt) > 0 && entry.expiresAt < now;
+
+const isSessionValid = (user, sessionId, allowMultiDevice, now = Date.now()) => {
   if (allowMultiDevice) {
     const tokens = user.sessionTokens || [];
-    if (tokens.length > 0) return tokens.includes(sessionId);
+    if (tokens.length > 0) {
+      const entry = tokens.find(t => getSessionEntryId(t) === sessionId);
+      return Boolean(entry) && !isSessionEntryExpired(entry, now);
+    }
   }
   return !user.sessionToken || user.sessionToken === sessionId;
 };
@@ -126,5 +139,7 @@ module.exports = {
   hasAccessSettings,
   normalizeAccessSettings,
   defaultAccessSettings,
-  isSessionValid
+  isSessionValid,
+  getSessionEntryId,
+  isSessionEntryExpired
 };
