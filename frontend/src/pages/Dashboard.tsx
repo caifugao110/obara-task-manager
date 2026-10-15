@@ -1010,11 +1010,11 @@ const Dashboard = () => {
   }, [jumpTarget, loading, sheets, designers]);
 
   // 打开主页面时自动将今日列滚动到视图中央展示
-  // 日期表头始终渲染且带有 data-date，当日无任务（或分组全部折叠）时也能定位到今日列
+  // 日期表头始终渲染且带有 data-date，整月无任务（sheets 为空）、当日无任务或分组全部折叠时也能定位到今日列
   const todayColumnScrolledRef = useRef(false);
   useEffect(() => {
     if (todayColumnScrolledRef.current) return;
-    if (loading || sheets.length === 0 || designers.length === 0) return;
+    if (loading) return;
     if (jumpTarget) return; // 带 URL 跳转参数时由跳转逻辑负责定位
     const now = new Date();
     if (currentDate.getFullYear() !== now.getFullYear() || currentDate.getMonth() !== now.getMonth()) return;
