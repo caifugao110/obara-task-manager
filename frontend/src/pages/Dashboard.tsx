@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
@@ -541,6 +541,17 @@ const Dashboard = () => {
   // 点击"定位"后模态框临时半透明，方便透过模态框查看底部表格中的目标任务
   const [batchLocateDimmed, setBatchLocateDimmed] = useState(false);
   const batchLocateRestoreTimerRef = useRef<number | null>(null);
+
+  // 修改密码模态框
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [visiblePasswords, setVisiblePasswords] = useState({ old: false, new: false, confirm: false });
+  const [changePasswordError, setChangePasswordError] = useState('');
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState('');
+  const [changePasswordLoading, setChangePasswordLoading] = useState(false);
+
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isOfflineMode = !isOnline || offlineCacheUsed;
   const canEditTasks = isAdmin && !isOfflineMode;
@@ -3241,9 +3252,22 @@ const Dashboard = () => {
           )}
           {user && (
             <>
-              <div className="flex flex-col items-end">
-                <span className="text-sm font-bold text-red-500">{user.name}</span>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setOldPassword('');
+                  setNewPassword('');
+                  setConfirmPassword('');
+                  setVisiblePasswords({ old: false, new: false, confirm: false });
+                  setChangePasswordError('');
+                  setChangePasswordSuccess('');
+                  setChangePasswordOpen(true);
+                }}
+                title="点击可进行密码修改"
+                className="text-sm font-bold text-red-500 hover:text-red-300 transition cursor-pointer px-1 py-0.5 rounded"
+              >
+                {user.name}
+              </button>
               {canShowSystemSettingsLink() && (
                 <Link to="/system-settings" target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-[#1a5c38] rounded transition" title="系统设置">
                   <Settings size={20} className="text-purple-200" />
@@ -5058,6 +5082,183 @@ const Dashboard = () => {
                 {batchReplaceLoading ? '处理中...' : '替换'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {changePasswordOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
+          />
+          <div className="relative w-[480px] max-w-[94vw] bg-white rounded-lg shadow-2xl border-2 border-gray-200 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 bg-[#217346] text-white">
+              <div className="flex items-center gap-2">
+                <Lock size={18} />
+                <span className="font-bold text-base">修改密码</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
+                disabled={changePasswordLoading}
+                className="p-1 hover:bg-red-600 rounded transition disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setChangePasswordError('');
+                setChangePasswordSuccess('');
+
+                if (!oldPassword || !newPassword) {
+                  setChangePasswordError('请填写所有字段');
+                  return;
+                }
+                if (newPassword !== confirmPassword) {
+                  setChangePasswordError('两次输入的密码不一致');
+                  return;
+                }
+
+                setChangePasswordLoading(true);
+                try {
+                  await axiosInstance.post('/auth/change-password', {
+                    oldPassword,
+                    newPassword
+                  });
+                  setChangePasswordSuccess('密码修改成功');
+                  setOldPassword('');
+                  setNewPassword('');
+                  setConfirmPassword('');
+                  setVisiblePasswords({ old: false, new: false, confirm: false });
+                  setTimeout(() => setChangePasswordOpen(false), 1500);
+                } catch (err: any) {
+                  setChangePasswordError(err.response?.data?.message || '密码修改失败');
+                } finally {
+                  setChangePasswordLoading(false);
+                }
+              }}
+              className="p-5 space-y-4"
+            >
+              {changePasswordError && (
+                <div className="bg-red-50 border border-red-200 text-red-600 p-3 rounded-lg flex items-start gap-2">
+                  <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                  <div className="text-sm font-medium">{changePasswordError}</div>
+                </div>
+              )}
+              {changePasswordSuccess && (
+                <div className="bg-green-50 border border-green-200 text-green-600 p-3 rounded-lg flex items-start gap-2">
+                  <CheckCircle size={18} className="mt-0.5 shrink-0" />
+                  <div className="text-sm font-medium">{changePasswordSuccess}</div>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">当前密码</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <Lock size={16} />
+                  </div>
+                  <input
+                    type={visiblePasswords.old ? 'text' : 'password'}
+                    className="w-full pl-10 pr-11 py-2.5 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+                    value={oldPassword}
+                    onChange={(e) => setOldPassword(e.target.value)}
+                    placeholder="请输入当前密码"
+                    required
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 outline-none transition"
+                    onClick={() => setVisiblePasswords((c) => ({ ...c, old: !c.old }))}
+                    onMouseDown={(e) => e.preventDefault()}
+                    tabIndex={-1}
+                  >
+                    {visiblePasswords.old ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">新密码</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <Lock size={16} />
+                  </div>
+                  <input
+                    type={visiblePasswords.new ? 'text' : 'password'}
+                    className="w-full pl-10 pr-11 py-2.5 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="请输入新密码"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 outline-none transition"
+                    onClick={() => setVisiblePasswords((c) => ({ ...c, new: !c.new }))}
+                    onMouseDown={(e) => e.preventDefault()}
+                    tabIndex={-1}
+                  >
+                    {visiblePasswords.new ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">确认新密码</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <Lock size={16} />
+                  </div>
+                  <input
+                    type={visiblePasswords.confirm ? 'text' : 'password'}
+                    className="w-full pl-10 pr-11 py-2.5 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="请再次输入新密码"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 outline-none transition"
+                    onClick={() => setVisiblePasswords((c) => ({ ...c, confirm: !c.confirm }))}
+                    onMouseDown={(e) => e.preventDefault()}
+                    tabIndex={-1}
+                  >
+                    {visiblePasswords.confirm ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
+                  disabled={changePasswordLoading}
+                  className="px-4 py-2 text-sm font-bold text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-100 transition disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={changePasswordLoading}
+                  className={`px-5 py-2 text-sm font-bold text-white bg-[#217346] rounded-lg hover:bg-[#1a5c38] transition flex items-center gap-2 ${changePasswordLoading ? 'opacity-70 cursor-not-allowed' : ''}`}
+                >
+                  {changePasswordLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>修改中...</span>
+                    </>
+                  ) : (
+                    <span>确认修改</span>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

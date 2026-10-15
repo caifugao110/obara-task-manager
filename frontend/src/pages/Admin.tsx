@@ -199,6 +199,15 @@ const generateInitialPassword = (): string => {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 };
 
+// 生成12位强随机密码（排除易混淆字符 0/O/1/l/I），满足后端最少6位要求
+const generateRandomPassword = (): string => {
+  const chars = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*';
+  const length = 12;
+  const bytes = new Uint8Array(length);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => chars[b % chars.length]).join('');
+};
+
 const Admin = () => {
   const { token, logout, user: currentUser, authReady } = useAuth();
   const [users, setUsers] = useState<UserData[]>([]);
@@ -210,6 +219,7 @@ const Admin = () => {
   const [newPassword, setNewPassword] = useState('');
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState<'admin' | 'user'>('admin');
+  const [showNewPassword, setShowNewPassword] = useState(true);
   
   // Designer Form
   const [newDesignerName, setNewDesignerName] = useState('');
@@ -219,6 +229,7 @@ const Admin = () => {
   const [resetPasswordUserId, setResetPasswordUserId] = useState<string | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
   const [resetPasswordSubmitting, setResetPasswordSubmitting] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [setRoleUserId, setSetRoleUserId] = useState<string | null>(null);
   const [setRoleValue, setSetRoleValue] = useState<'admin' | 'user'>('user');
   const [setRoleSubmitting, setSetRoleSubmitting] = useState(false);
@@ -510,6 +521,7 @@ const Admin = () => {
       setNewPassword('');
       setNewName('');
       setNewRole('admin');
+      setShowNewPassword(true);
       fetchData();
     } catch (err: any) {
       markOfflineIfNetworkError(err);
@@ -691,7 +703,8 @@ const Admin = () => {
     if (guardOffline()) return;
     if (!isSuperAdmin) return;
     setResetPasswordUserId(id);
-    setResetPasswordValue('');
+    setResetPasswordValue(generateRandomPassword());
+    setShowResetPassword(true);
   };
 
   const handleToggleUserDisabled = async (id: string) => {
@@ -731,12 +744,13 @@ const Admin = () => {
       const isSelf = resetPasswordUserId === currentUser?.id;
       await axiosInstance.put(`/users/${resetPasswordUserId}`, { password: resetPasswordValue });
       addToast(
-        isSelf ? '密码已重置，请使用新密码重新登录并修改密码' : '密码已重置',
+        isSelf ? '密码已重置，请使用新密码重新登录' : '密码已重置，对方可直接用新密码登录',
         'success'
       );
       setResetPasswordUserId(null);
       setResetPasswordValue('');
-      // 重置本人密码会吊销当前令牌并置为强制改密：跳转登录页重新认证
+      setShowResetPassword(false);
+      // 重置本人密码会吊销当前令牌：跳转登录页重新认证
       if (isSelf) {
         setTimeout(() => { window.location.href = buildLoginUrl(); }, 800);
       }
@@ -866,6 +880,7 @@ const Admin = () => {
               if (resetPasswordSubmitting) return;
               setResetPasswordUserId(null);
               setResetPasswordValue('');
+              setShowResetPassword(false);
             }} 
           />
           <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
@@ -879,6 +894,7 @@ const Admin = () => {
                   if (resetPasswordSubmitting) return;
                   setResetPasswordUserId(null);
                   setResetPasswordValue('');
+                  setShowResetPassword(false);
                 }}
               >
                 ×
@@ -886,14 +902,37 @@ const Admin = () => {
             </div>
             <div className="p-5">
               <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">新密码</label>
-              <input
-                type="password"
-                className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                value={resetPasswordValue}
-                onChange={(e) => setResetPasswordValue(e.target.value)}
-                placeholder="至少6位"
-                disabled={resetPasswordSubmitting}
-              />
+              <div className="relative">
+                <input
+                  type={showResetPassword ? 'text' : 'password'}
+                  className="w-full p-3 pr-20 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
+                  value={resetPasswordValue}
+                  onChange={(e) => setResetPasswordValue(e.target.value)}
+                  placeholder="至少6位"
+                  disabled={resetPasswordSubmitting}
+                />
+                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="p-1.5 rounded hover:bg-gray-200 text-gray-500"
+                    title={showResetPassword ? '隐藏' : '显示'}
+                    onClick={() => setShowResetPassword(v => !v)}
+                    disabled={resetPasswordSubmitting}
+                  >
+                    {showResetPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                  <button
+                    type="button"
+                    className="p-1.5 rounded hover:bg-gray-200 text-gray-500"
+                    title="重新生成随机密码"
+                    onClick={() => setResetPasswordValue(generateRandomPassword())}
+                    disabled={resetPasswordSubmitting}
+                  >
+                    <RefreshCw size={16} />
+                  </button>
+                </div>
+              </div>
+              <p className="mt-2 text-[11px] text-gray-400 ml-1">已生成随机密码，可直接确认或手动修改</p>
             </div>
             <div className="px-5 py-4 bg-white border-t border-gray-200 flex items-center justify-end gap-2">
               <button
@@ -902,6 +941,7 @@ const Admin = () => {
                   if (resetPasswordSubmitting) return;
                   setResetPasswordUserId(null);
                   setResetPasswordValue('');
+                  setShowResetPassword(false);
                 }}
                 disabled={resetPasswordSubmitting}
               >
@@ -1486,25 +1526,53 @@ const Admin = () => {
               </div>
               <div>
                 <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">登录用户名</label>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
                   value={newUsername}
                   onChange={(e) => setNewUsername(e.target.value)}
+                  onBlur={() => {
+                    if (newUsername.trim() && !newPassword) {
+                      setNewPassword(generateRandomPassword());
+                    }
+                  }}
                   placeholder="登录账号"
                   required
                 />
               </div>
               <div>
                 <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">登录密码</label>
-                <input 
-                  type="password" 
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="至少6位"
-                  required
-                />
+                <div className="relative">
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    className="w-full p-3 pr-20 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="输入用户名后自动生成"
+                    required
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <button
+                      type="button"
+                      className="p-1.5 rounded hover:bg-gray-200 text-gray-500"
+                      title={showNewPassword ? '隐藏' : '显示'}
+                      onClick={() => setShowNewPassword(v => !v)}
+                    >
+                      {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="p-1.5 rounded hover:bg-gray-200 text-gray-500"
+                      title="重新生成随机密码"
+                      onClick={() => setNewPassword(generateRandomPassword())}
+                    >
+                      <RefreshCw size={16} />
+                    </button>
+                  </div>
+                </div>
+                {newPassword && (
+                  <p className="mt-2 text-[11px] text-gray-400 ml-1">已生成随机密码，可直接创建或手动修改</p>
+                )}
               </div>
               <div>
                 <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">角色权限</label>

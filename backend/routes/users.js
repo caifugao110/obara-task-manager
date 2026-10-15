@@ -140,10 +140,17 @@ router.put('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, r
   if (username) targetUser.username = username;
   if (password) {
     targetUser.password = bcrypt.hashSync(password, 10);
-    targetUser.forcePasswordChange = true;
+    // 超级管理员重置密码后可直接用新密码登录，不强制改密；其他场景仍要求下次登录修改密码
+    if (req.user.role !== 'superadmin') {
+      targetUser.forcePasswordChange = true;
+    } else {
+      targetUser.forcePasswordChange = false;
+    }
     // 重置密码后吊销该账号已签发的令牌，旧会话立即失效（对齐改密接口的行为）
     targetUser.sessionToken = crypto.randomUUID();
     targetUser.sessionTokens = [];
+    // 记录会话失效原因：旧会话下次校验时据此返回准确提示，而非误报“在其他设备登录”
+    targetUser.sessionInvalidationReason = 'password_reset';
   }
   if (role && req.user.role === 'superadmin') targetUser.role = role;
   if (name) targetUser.name = name;

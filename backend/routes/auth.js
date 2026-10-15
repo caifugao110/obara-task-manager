@@ -47,8 +47,15 @@ const changePasswordLimiter = rateLimit({
 });
 
 const changePasswordSchema = Joi.object({
-  oldPassword: Joi.string().required(),
-  newPassword: Joi.string().min(6).required()
+  oldPassword: Joi.string().required().messages({
+    'string.empty': '请输入当前密码',
+    'any.required': '请输入当前密码'
+  }),
+  newPassword: Joi.string().min(6).required().messages({
+    'string.empty': '请输入新密码',
+    'any.required': '请输入新密码',
+    'string.min': '新密码长度不能少于 6 位'
+  })
 });
 
 const loginSchema = Joi.object({
@@ -189,6 +196,8 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
   }
   // sessionToken 始终指向最近一次登录的会话：从多设备切回单设备时仅保留最新会话
   data.users[userIndex].sessionToken = sessionId;
+  // 新会话建立即清除一次性失效原因，避免后续被顶下线时误报为密码重置
+  data.users[userIndex].sessionInvalidationReason = undefined;
 
   // 仅在未以 forced_previous_logout 记录时写入普通登录日志，避免同一秒出现两条成功记录
   if (!loggedAsForcedLogout) {
@@ -253,7 +262,16 @@ router.get('/validate', asyncHandler(async (req, res) => {
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
     // 会话校验：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
     if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
-      const message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
+      // 优先使用一次性失效原因（如密码被重置），给出准确提示，而非统一误报“在其他设备登录”
+      let message;
+      if (user.sessionInvalidationReason === 'password_reset') {
+        message = '密码已被管理员重置，请使用新密码重新登录';
+        // 一次性原因：读后即清，避免后续登录被顶下线时仍误报为密码重置
+        user.sessionInvalidationReason = undefined;
+        await db.writeDb(data);
+      } else {
+        message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
+      }
       return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message });
     }
 
@@ -283,9 +301,9 @@ router.get('/session-policy', (req, res) => {
 });
 
 router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHandler(async (req, res) => {
-  const { error } = changePasswordSchema.validate(req.body);
+  const { error } = changePasswordSchema.validate(req.body, { abortEarly: true });
   if (error) {
-    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+    return res.status(400).json({ message: error.details[0].message });
   }
 
   const { oldPassword, newPassword } = req.body;
@@ -301,7 +319,10 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
   const isMatch = bcrypt.compareSync(oldPassword, user.password);
   
   if (!isMatch) {
-    return res.status(401).json({ message: '旧密码不正确' });
+    // 旧密码错误属于请求数据校验失败（400），而非认证/会话失效（401）。
+    // 若返回 401，前端全局拦截器会误判为会话过期而清除 token、强制登出，
+    // 导致用户在修改密码弹窗里输错一次旧密码就被踢出登录。
+    return res.status(400).json({ message: '旧密码不正确' });
   }
 
   const newSessionId = crypto.randomUUID();

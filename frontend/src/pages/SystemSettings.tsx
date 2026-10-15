@@ -166,6 +166,7 @@ const defaultSettings: SystemSettingsData = {
   allowUserEditOwnTaskColor: true,
   specNumberDigits: 5,
   randomDesignPlanColor: false,
+  randomAssignmentColor: false,
   defaultGunHours: {
     confirm: { C: 1.5, X: 2 },
     design: { C: 2.5, X: 3 },
@@ -2340,6 +2341,23 @@ const SystemSettings = () => {
                     className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
                   />
                   <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings.randomDesignPlanColor ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
+                <div>
+                  <div className="font-bold text-gray-700">焊枪台账分配任务标记颜色随机</div>
+                  <div className="text-xs text-gray-400 mt-1">在焊枪编号台账「任务分配模式」中批量分配确认图任务时，标记颜色不再固定为「深绿」，而是随机选择一个颜色</div>
+                </div>
+                <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                  <input
+                    type="checkbox"
+                    checked={settings.randomAssignmentColor}
+                    onChange={(e) => updateSettings({ randomAssignmentColor: e.target.checked })}
+                    disabled={!isSuperAdmin}
+                    className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                  />
+                  <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings.randomAssignmentColor ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
                 </div>
               </div>
 

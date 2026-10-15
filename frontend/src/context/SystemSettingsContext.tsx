@@ -18,6 +18,7 @@ export interface SystemSettingsData {
   allowUserEditOwnTaskColor: boolean;
   specNumberDigits: number;
   randomDesignPlanColor: boolean;
+  randomAssignmentColor: boolean;
   defaultGunHours?: DefaultGunHours;
 }
 
@@ -33,6 +34,7 @@ const defaultSettings: SystemSettingsData = {
   allowUserEditOwnTaskColor: true,
   specNumberDigits: 5,
   randomDesignPlanColor: false,
+  randomAssignmentColor: false,
   defaultGunHours
 };
 

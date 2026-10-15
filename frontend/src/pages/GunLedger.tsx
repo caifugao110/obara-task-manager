@@ -37,6 +37,8 @@ interface Toast { message: string; type: 'success' | 'error'; id: number; center
 
 interface UserMeta { id: string; username: string; name: string; }
 
+interface Designer { id: string; name: string; group?: string; hidden?: boolean; }
+
 interface GunRow {
   id: string;
   serialNumber: number;
@@ -100,6 +102,15 @@ const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3'];
 
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 const PLACEHOLDER_COUNT = 10;
+
+// 预设颜色池（与主页面 Dashboard 一致），用于随机标记颜色
+const PRESET_COLORS = [
+  '#fee2e2', '#ffe4e6', '#ffedd5', '#fef3c7', '#fef9c3', '#ecfccb', '#dcfce7', '#d1fae5',
+  '#cffafe', '#e0f2fe', '#dbeafe', '#e0e7ff', '#f3e8ff', '#fce7f3', '#f5e6d3', '#f1f5f9',
+  '#fca5a5', '#f87171', '#fb7185', '#fdba74', '#fb923c', '#fbbf24', '#fde047', '#a3e635',
+  '#86efac', '#34d399', '#67e8f9', '#22d3ee', '#38bdf8', '#93c5fd', '#818cf8', '#d8b4fe',
+  '#f9a8d4', '#f472b6', '#c08457', '#94a3b8', '#e5e7eb', '#6b7280',
+];
 const newRowId = () => `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 // 焊枪名自动生成规则：分类 → 表名 → { prefix, 起始编号, 编号位数 }
@@ -182,7 +193,7 @@ const EDITABLE_COLS = ['gunName', 'customer', 'time', 'responsiblePerson', 'rema
 
 const GunLedger: React.FC = () => {
   const { user, token, logout } = useAuth();
-  const { specNumberDigits } = useSystemSettings();
+  const { specNumberDigits, settings: systemSettings } = useSystemSettings();
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
@@ -227,6 +238,15 @@ const GunLedger: React.FC = () => {
   const [addTableOpen, setAddTableOpen] = useState(false);
   const [addTableValue, setAddTableValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // 任务分配模式：勾选焊枪名后批量给设计人员创建确认图任务
+  const [assignmentMode, setAssignmentMode] = useState(false);
+  const [selectedGunRowIds, setSelectedGunRowIds] = useState<Set<string>>(new Set());
+  const [showAssignPanel, setShowAssignPanel] = useState(false);
+  const [assignDesignerId, setAssignDesignerId] = useState('');
+  const [assignDate, setAssignDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [designers, setDesigners] = useState<Designer[]>([]);
+  const [assigning, setAssigning] = useState(false);
 
   // 分类导出弹窗：选中的分类 / 导出请求中
   const [showExportPanel, setShowExportPanel] = useState(false);
@@ -351,6 +371,38 @@ const GunLedger: React.FC = () => {
     if (canAccess) fetchUsedGunNames();
   }, [canAccess, fetchUsedGunNames]);
 
+  // 获取设计人员列表（任务分配模式下拉用）
+  const fetchDesigners = useCallback(async () => {
+    try {
+      const res = await axiosInstance.get('/designers', authHeader);
+      const list = Array.isArray(res.data) ? res.data : [];
+      setDesigners(list.filter((d: Designer) => !d.hidden));
+    } catch {
+      // 静默失败，下拉为空时按钮禁用
+    }
+  }, [authHeader]);
+
+  useEffect(() => {
+    if (canAccess && isAdmin) fetchDesigners();
+  }, [canAccess, isAdmin, fetchDesigners]);
+
+  // 焊枪名类型判断（复制自主页面 Dashboard）：取首个 '-' 前一字符，C/X
+  const getGunTypeFromName = (gunName: string): 'C' | 'X' | null => {
+    const name = String(gunName || '').trim();
+    const dashIdx = name.indexOf('-');
+    if (dashIdx <= 0) return null;
+    const ch = name.charAt(dashIdx - 1).toUpperCase();
+    return ch === 'C' || ch === 'X' ? ch : null;
+  };
+
+  // 确认图默认工时：从 systemSettings.defaultGunHours.confirm 取值
+  const getDefaultConfirmHours = (gunName: string): number => {
+    const gunType = getGunTypeFromName(gunName);
+    if (!gunType) return 0;
+    const configured = systemSettings.defaultGunHours?.confirm?.[gunType];
+    return typeof configured === 'number' && Number.isFinite(configured) ? configured : 0;
+  };
+
   // 当前分类的表
   const tables = useMemo<GunTable[]>(() => {
     if (!ledger) return [];
@@ -377,6 +429,13 @@ const GunLedger: React.FC = () => {
 
   // 当前表是否处于只读打开状态（表被他人锁定时的只读模式：不申请表级锁、禁用所有编辑）
   const activeTableReadOnly = Boolean(activeTable && readonlyTableId === activeTable.id);
+
+  // 切换表或进入只读模式时重置任务分配状态
+  useEffect(() => {
+    setAssignmentMode(false);
+    setSelectedGunRowIds(new Set());
+    setShowAssignPanel(false);
+  }, [activeTableId, activeTableReadOnly]);
 
   // 表底部状态条：无任何提示内容时不渲染，使台账区白底与底部 footer 无缝衔接（与左侧表列表一致）
   const tableEditingSessions = activeTable
@@ -532,6 +591,63 @@ const GunLedger: React.FC = () => {
     setReadonlyTableId(null);
     setActiveCategory(cat);
   }, [activeCategory, stopRowLock]);
+
+  // 任务分配：按客户分组构建确认图任务，批量创建到指定设计人员的指定日期
+  const handleConfirmAssign = useCallback(async () => {
+    if (!activeTable || !assignDesignerId || !assignDate) {
+      addToast('请选择设计人员和日期', 'error');
+      return;
+    }
+    // 从真实行中按 ID 取选中行
+    const selectedRows = (activeTable.rows || []).filter(r => selectedGunRowIds.has(r.id));
+    if (selectedRows.length === 0) {
+      addToast('未选中任何焊枪名', 'error');
+      return;
+    }
+    // 按客户分组（空 → "未命名"）
+    const groups = new Map<string, typeof selectedRows>();
+    selectedRows.forEach(r => {
+      const customer = String(r.customer || '').trim() || '未命名';
+      if (!groups.has(customer)) groups.set(customer, []);
+      groups.get(customer)!.push(r);
+    });
+    // 构建批量创建 items
+    const items = Array.from(groups.entries()).map(([customer, rows]) => {
+      const guns = rows.map(r => {
+        const hours = getDefaultConfirmHours(r.gunName);
+        return { id: `gun-assign-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: r.gunName.trim(), hours };
+      });
+      const hours = guns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
+      const color = systemSettings.randomAssignmentColor
+        ? PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)]
+        : '#86efac';
+      return {
+        taskName: `${customer} 确认图`,
+        hours,
+        color,
+        guns,
+        leaveType: null,
+      };
+    });
+    setAssigning(true);
+    try {
+      await axiosInstance.post('/tasks/item/batch', {
+        designerId: assignDesignerId,
+        date: assignDate,
+        items,
+      }, authHeader);
+      socketRef.current?.emit('task_updated');
+      fetchUsedGunNames();
+      addToast(`已为 ${designers.find(d => d.id === assignDesignerId)?.name || '设计人员'} 创建 ${items.length} 个确认图任务`, 'success');
+      setSelectedGunRowIds(new Set());
+      setShowAssignPanel(false);
+      setAssignmentMode(false);
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '任务分配失败', 'error');
+    } finally {
+      setAssigning(false);
+    }
+  }, [activeTable, assignDesignerId, assignDate, selectedGunRowIds, getDefaultConfirmHours, authHeader, fetchUsedGunNames, addToast, designers, systemSettings]);
 
   // 更新本地某张表（跨分类查找）
   const patchTable = useCallback((tableId: string, updater: (t: GunTable) => GunTable) => {
@@ -2122,7 +2238,31 @@ const GunLedger: React.FC = () => {
                   )}
                   <span className="text-xs font-normal text-gray-400 ml-2">序号自动递增 · 预留 {PLACEHOLDER_COUNT} 个未取号行</span>
                 </h3>
+                {isAdmin && !activeTableReadOnly && (
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={assignmentMode}
+                      onChange={e => {
+                        setAssignmentMode(e.target.checked);
+                        setSelectedGunRowIds(new Set());
+                        setShowAssignPanel(false);
+                      }}
+                      className="w-4 h-4 accent-blue-600 border-gray-300 rounded focus:ring-blue-400"
+                    />
+                    <span className="text-xs font-bold text-blue-600">启用任务分配模式</span>
+                  </label>
+                )}
                 <div className="flex items-center gap-2">
+                  {isAdmin && !activeTableReadOnly && assignmentMode && selectedGunRowIds.size > 0 && (
+                    <button
+                      onClick={() => setShowAssignPanel(true)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded border text-blue-700 bg-blue-50 hover:bg-blue-500 hover:text-white border-blue-200 hover:border-blue-500 transition"
+                      title="将选中的焊枪名按客户分组，批量创建确认图任务"
+                    >
+                      <ClipboardList size={13} />为这些枪名分配确认图任务（{selectedGunRowIds.size}）
+                    </button>
+                  )}
                   {isAdmin && renamingTableId !== activeTable.id && !activeTableReadOnly && (
                     <button
                       onClick={handleFinishEditing}
@@ -2225,18 +2365,37 @@ const GunLedger: React.FC = () => {
                                     </button>
                                   </>
                                 ) : (
-                                  <input
-                                    ref={el => { inputRefs.current[refKey] = el; }}
-                                    type="text"
-                                    value={value}
-                                    disabled={disabled}
-                                    placeholder={field === 'gunName' ? (isPlaceholder ? '取号...' : '') : field === 'customer' ? '手动填写客户名或输入仕样号自动获取客户名' : ''}
-                                    onChange={e => handleCellChange(row, field, e.target.value)}
-                                    onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
-                                    onBlur={handleCellBlur}
-                                    onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                    className={`w-full px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
-                                  />
+                                  <>
+                                    <input
+                                      ref={el => { inputRefs.current[refKey] = el; }}
+                                      type="text"
+                                      value={value}
+                                      disabled={disabled}
+                                      placeholder={field === 'gunName' ? (isPlaceholder ? '取号...' : '') : field === 'customer' ? '手动填写客户名或输入仕样号自动获取客户名' : ''}
+                                      onChange={e => handleCellChange(row, field, e.target.value)}
+                                      onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
+                                      onBlur={handleCellBlur}
+                                      onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
+                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
+                                    />
+                                    {assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && (
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedGunRowIds.has(row.id)}
+                                        onChange={e => {
+                                          setSelectedGunRowIds(prev => {
+                                            const next = new Set(prev);
+                                            if (e.target.checked) next.add(row.id);
+                                            else next.delete(row.id);
+                                            return next;
+                                          });
+                                        }}
+                                        onClick={e => e.stopPropagation()}
+                                        className="absolute right-1 top-1/2 -translate-y-1/2 w-4 h-4 accent-blue-600 cursor-pointer"
+                                        title="选中此枪名以分配确认图任务"
+                                      />
+                                    )}
+                                  </>
                                 )}
                               </td>
                             );
@@ -2319,6 +2478,78 @@ const GunLedger: React.FC = () => {
           </div>
         </div>
       </footer>
+
+      {/* 任务分配面板 */}
+      {showAssignPanel && activeTable && (() => {
+        const selectedRows = (activeTable.rows || []).filter(r => selectedGunRowIds.has(r.id));
+        const customerSet = new Set(selectedRows.map(r => String(r.customer || '').trim() || '未命名'));
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !assigning && setShowAssignPanel(false)} />
+            <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] border border-gray-200 overflow-hidden">
+              <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2 font-bold text-lg">
+                  <ClipboardList size={20} />
+                  分配确认图任务
+                </div>
+                <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowAssignPanel(false)} disabled={assigning}>
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="p-5 flex flex-col gap-4">
+                <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm text-blue-700">
+                  已选 <span className="font-bold">{selectedRows.length}</span> 个枪名，按客户分为 <span className="font-bold">{customerSet.size}</span> 组
+                  {customerSet.size > 0 && (
+                    <div className="mt-1 text-xs text-blue-500">
+                      {Array.from(customerSet).map(c => `「${c}」`).join('、')}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-bold text-gray-500 uppercase">设计人员</label>
+                  <select
+                    value={assignDesignerId}
+                    onChange={e => setAssignDesignerId(e.target.value)}
+                    disabled={assigning}
+                    className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                  >
+                    <option value="">请选择设计人员</option>
+                    {designers.map(d => (
+                      <option key={d.id} value={d.id}>{d.name}{d.group ? `（${d.group}）` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-bold text-gray-500 uppercase">日期</label>
+                  <input
+                    type="date"
+                    value={assignDate}
+                    onChange={e => setAssignDate(e.target.value)}
+                    disabled={assigning}
+                    className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                  />
+                </div>
+              </div>
+              <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setShowAssignPanel(false)}
+                  disabled={assigning}
+                  className="px-4 py-2 text-sm font-semibold rounded-lg border border-gray-300 text-gray-600 bg-white hover:bg-gray-100 transition disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleConfirmAssign}
+                  disabled={!assignDesignerId || !assignDate || assigning || designers.length === 0}
+                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {assigning ? '分配中...' : '确认分配'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 新增分类弹窗 */}
       {addCategoryOpen && (
