@@ -522,7 +522,7 @@ const getInitialDb = () => ({
     workdayOverrides: {},
     designStandardsLinkedKbIds: [],
     designStandardsPrompt: { enabled: false, knowledgeBases: {} },
-    system: { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 }
+    system: { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5 }
   }
 });
 
@@ -660,7 +660,7 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.designStandardsPrompt.knowledgeBases = {};
   }
   if (!parsed.settings.system) {
-    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, specNumberDigits: 5 };
+    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5 };
   }
   // IP 黑名单：{ enabled: boolean, entries: [{ id, ip, note, createdAt, createdBy }] }
   if (!parsed.settings.ipBlacklist || typeof parsed.settings.ipBlacklist !== 'object' || Array.isArray(parsed.settings.ipBlacklist)) {

@@ -44,6 +44,7 @@ Authorization: Bearer <token>
 | 管理设计人员 | 否 | 是 | 是 |
 | 管理登录用户 | 否 | 只能创建/维护普通用户 | 是 |
 | 批量删除登录用户 | 否 | 否 | 是 |
+| 批量重置登录用户密码 | 否 | 否 | 是 |
 | 页面权限设置 | 否 | 否 | 是 |
 | 系统设置登录管理、日志管理 | 否 | 否 | 是 |
 | 系统设置数据管理导出 | 否 | 取决于 `systemSettings.allowAdmins` | 是 |
@@ -131,15 +132,16 @@ Authorization: Bearer <token>
 }
 ```
 
-会话失效时：
+会话失效时返回 `401`（`code=SESSION_INVALIDATED`），`message` 按失效原因区分：
 
-```json
-{
-  "valid": false,
-  "code": "SESSION_INVALIDATED",
-  "message": "您的账号已在其他设备登录"
-}
-```
+| 场景 | message |
+|------|---------|
+| 关闭多设备登录，新登录顶掉旧会话 | `您的账号已在其他设备登录` |
+| 开启多设备登录，会话过期或被吊销（登出/禁用等） | `会话已过期，请重新登录` |
+| 用户自助修改密码后，旧会话被吊销 | `密码已修改，请使用新密码重新登录` |
+| 密码被管理员重置（单个重置或批量重置） | `密码已被管理员重置，请使用新密码重新登录` |
+
+> 密码修改/重置原因是**一次性**记录：账号重新登录建立新会话时会自动清除，避免此后被顶下线时误报为「密码已修改/重置」。
 
 Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失效，请重新登录`），前端据此提示重新登录；用户不存在或已禁用时返回 `401`（`code=USER_NOT_FOUND` / `ACCOUNT_DISABLED`，无 `message` 字段）。
 
@@ -193,9 +195,10 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 修改成功后会自动清除 `forcePasswordChange` 标记。
 - 修改成功后返回新的 JWT Token，前端应使用新 Token 更新本地存储。
 - 修改密码后会更新 sessionId，使旧 Token 失效（防止会话固定攻击）。
-- 旧密码不正确时返回 `401`。
+- 旧密码不正确时返回 `400`（消息 `旧密码不正确`），而非 `401`——避免被前端全局拦截器误判为「会话过期」而强制登出。
+- 参数校验失败返回 `400`，`message` 为单条中文提示（如 `请输入当前密码`、`请输入新密码`、`新密码长度不能少于 6 位`）。
 - 接口受独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次尝试），超限返回 HTTP `429` 与消息 `密码修改尝试过于频繁，请15分钟后再试`。
-- 超级管理员重置用户密码后，该用户 `forcePasswordChange` 会被设置为 `true`，下次登录需修改密码。
+- 超级管理员在用户管理中重置密码（单个 `PUT /api/users/:id` 或批量 `POST /api/users/batch-reset-password`）后，账号可直接用新密码登录（不强制改密），但旧会话立即失效，旧会话校验时会收到「密码已被管理员重置」提示；一般管理员修改自己的密码会设置 `forcePasswordChange` 为 `true`，下次登录需修改密码。任何角色通过 `PUT /api/users/:id` 修改**本人**密码时均须提供当前密码（`oldPassword`）。
 
 ### 登出
 
@@ -322,7 +325,9 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 说明：
 
-- 修改 `password` 时会同时将 `forcePasswordChange` 设置为 `true`，该用户下次登录需修改密码。
+- 修改 `password` 会同时吊销该账号已签发的令牌，旧会话立即失效（旧会话下次校验时收到「密码已被管理员重置，请使用新密码重新登录」提示）。
+- 自助修改密码（请求目标 `id` 为本人且携带 `password`）必须同时提供 `oldPassword`（当前密码）：未提供返回 `400`（`请输入当前密码`），校验失败返回 `400`（`旧密码不正确`）；该场景另有独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次），超限返回 `429`。`superadmin` 重置**他人**密码无需 `oldPassword`。
+- 仅 `superadmin` 修改 `password` 时（重置他人或自己），重置后可直接用新密码登录；普通管理员修改自己密码时会设置 `forcePasswordChange` 为 `true`，下次登录需修改密码。
 - 仅 `superadmin` 可修改 `role` 和 `disabled`（禁用/启用账号与角色变更同级，一般管理员无法操作）。
 - `admin` 只能更新自己的信息。
 
@@ -352,6 +357,49 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 {
   "message": "已删除 2 个登录用户",
   "deletedCount": 2
+}
+```
+
+### 批量重置登录用户密码
+
+`POST /api/users/batch-reset-password`
+
+权限：仅 `superadmin`
+
+规则：
+
+- 需要登录且角色为超级管理员。
+- 不能包含当前登录账号（请使用单账号重置 `PUT /api/users/:id`）。
+- 不能包含超级管理员账号。
+- 单次写库整体生效；`ids` 中存在无效用户时返回 `400`，需刷新列表后重试。
+- 重置后每个账号的已签发令牌被吊销，旧会话立即失效；账号可直接用新密码登录（与超级管理员单账号重置行为一致，不强制改密）。
+- 新密码仅在本次响应中明文返回一次，落库前已 bcrypt 加密，请立即线下分发给本人。
+
+请求：
+
+```json
+{
+  "ids": ["user-id-1", "user-id-2"],
+  "mode": "manual",
+  "password": "unified-password"
+}
+```
+
+字段说明：
+
+- `mode`：`manual`（手动统一密码，所有选中账号改为同一密码）或 `auto`（服务端为每个账号随机生成 12 位独立密码）。
+- `password`：仅 `mode=manual` 时必填，至少 6 位；`mode=auto` 时禁止携带。
+
+响应（`auto` 模式示例）：
+
+```json
+{
+  "message": "已重置 2 个账号的密码",
+  "resetCount": 2,
+  "credentials": [
+    { "id": "user-id-1", "username": "user001", "name": "普通用户A", "password": "xK9mP2qR7sT4" },
+    { "id": "user-id-2", "username": "user002", "name": "普通用户B", "password": "aB3nD6fH8jL1" }
+  ]
 }
 ```
 
@@ -674,6 +722,14 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
   "sheet": { ... }
 }
 ```
+
+说明：
+
+- 请求体经 Joi 白名单校验（`stripUnknown`）：`designerId` 必填；`date` 必填且为 ISO 日期；`items` 必填且至少 1 条，未知字段会被丢弃。
+- 每条条目仅接受以下字段：`taskName`（字符串，默认空）、`hours`（数值 ≥ 0，默认 0）、`color`（标记颜色）、`guns`（枪名数组，结构同创建任务接口）、`leaveType`（`sick`/`vacation`/`illness`/`trip` 或 `null`）、`fontSize`、`textColor`；条目 `id` 由服务端重新生成，忽略客户端传入值。
+- 校验失败返回 `400`（`message=输入格式不正确`，附 `details`）；枪名存在但工时为 0 时返回 `400`。
+- 普通用户调用返回 `403`（`只有管理员可以编辑表格`）。
+- 焊枪台账「任务分配模式」通过本接口批量创建确认图任务：按客户分组（空客户归入「未命名」），每组生成一条 `taskName` 为 `<客户> 确认图` 的任务，组内每个焊枪名作为任务的枪名行，枪名工时按系统设置 `defaultGunHours.confirm`（按枪名机型 C/X 取值）填充，任务工时为枪名工时之和。
 
 ### 更新任务字段
 
@@ -1264,7 +1320,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `POST /api/status-tracking/items`
 
-权限：`admin`、`superadmin`
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验（页面关闭「一般管理员」时一般管理员请求返回 `403`）。
 
 请求：
 
@@ -1296,7 +1352,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `PUT /api/status-tracking/items/:id`
 
-权限：`admin`、`superadmin`
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
 
 请求：请求体为需要更新的字段集合（字段同记录字段表），例如：
 
@@ -1319,7 +1375,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `DELETE /api/status-tracking/items/:id`
 
-权限：`admin`、`superadmin`
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
 
 响应：
 
@@ -1337,7 +1393,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `POST /api/status-tracking/items/bulk`
 
-权限：`admin`、`superadmin`
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
 
 请求：
 
@@ -1381,7 +1437,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `GET /api/status-tracking/export`
 
-权限：`admin`、`superadmin`。
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
 
 查询参数：
 
@@ -2084,6 +2140,7 @@ PUT 请求：
   "allowUserEditOwnTaskColor": true,
   "specNumberDigits": 5,
   "randomDesignPlanColor": false,
+  "randomAssignmentColor": false,
   "defaultGunHours": {
     "confirm": { "C": 1.5, "X": 2 },
     "design": { "C": 2.5, "X": 3 },
@@ -2099,6 +2156,7 @@ PUT 请求：
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划完成状态。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
 - `randomDesignPlanColor` 为设计计划标记颜色随机开关，缺失时默认 `false`；开启后主页面新增任务的默认标记颜色从预设颜色中随机选择（不含「无」）。
+- `randomAssignmentColor` 为焊枪台账分配任务标记颜色随机开关，缺失时默认 `false`；开启后在焊枪台账「任务分配模式」中批量分配确认图任务时，任务标记颜色从预设颜色中随机选择，关闭时固定为浅绿（`#86efac`）。
 - `defaultGunHours` 为默认工时规则：`confirm`（确认工时）、`design`（设计工时）、`confirmModify`（确认修改工时）三类，每类含 C/X 两种机型（数值 0-24）；字段缺失时按内置默认值补齐。
 
 ### 更新系统设置
@@ -2114,7 +2172,8 @@ PUT 请求：
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
   "specNumberDigits": 6,
-  "randomDesignPlanColor": false
+  "randomDesignPlanColor": false,
+  "randomAssignmentColor": false
 }
 ```
 
@@ -2122,7 +2181,7 @@ PUT 请求：
 
 - 所有字段含义同 `GET /api/system/settings`。
 - `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
-- `randomDesignPlanColor` 可选，布尔值；`defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留原值或使用内置默认值。
+- `randomDesignPlanColor` / `randomAssignmentColor` 可选，布尔值；`defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留原值或使用内置默认值。
 
 ### 获取系统版本信息
 
@@ -3224,7 +3283,7 @@ PUT 请求：
 
 - `specNumber` 必须为纯数字，且位数需与系统设置 `specNumberDigits` 一致（5 或 6 位，默认 5）。
 - 系统会查找 `仕样书$\12345.PDF` 及 `12345.01.PDF` ～ `12345.99.PDF` 等版本文件，取最新版本。
-- 从 PDF 中搜索“纳期”关键词，提取日期信息。
+- 纳期提取使用与「获取仕样详细信息」一致的解析逻辑（7 类专用类别规则优先、未命中回退通用规则，见 README「仕样书 PDF 专用解析规则」），保证纳期获取与「相同仕样号同步更新纳期」的结果一致。
 - 请求超时时间为 9 秒。
 - 需要能够访问共享目录（网络权限）。
 
@@ -3256,6 +3315,7 @@ PUT 请求：
 | `未找到仕样号 N 的PDF文件` | 共享目录中无对应 PDF |
 | `未在PDF中找到纳期信息` | PDF 中未找到日期 |
 | `获取纳期超时(超过9秒)` | 解析超时 |
+| `获取纳期失败，请稍后重试或检查网络后联系管理员` | 其他内部错误（不回传错误细节，详细信息仅记录服务端日志） |
 
 ### 获取仕样详细信息
 
@@ -3308,9 +3368,11 @@ PUT 请求：
 ```json
 {
   "success": false,
-  "message": "获取仕样信息失败: 错误详情"
+  "message": "获取仕样信息失败，请稍后重试或检查网络后联系管理员"
 }
 ```
+
+> 接口失败时不向客户端回传内部错误细节（可能含上游 URL / 文件路径），详细信息仅写服务端日志。
 
 ### 获取仕样 PDF 原始文本
 
@@ -3338,6 +3400,15 @@ PUT 请求：
     { "line": 2, "text": "项目名称 XXX" }
   ],
   "rawText": "计划编号 12345\n项目名称 XXX\n..."
+}
+```
+
+响应（失败）：
+
+```json
+{
+  "success": false,
+  "message": "获取原始文本失败，请确认仕样书存在或联系管理员"
 }
 ```
 
@@ -3533,7 +3604,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 7. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置；通配符模式下自动不启用 credentials）。**生产环境强制要求显式白名单**，未配置将导致服务启动失败（`process.exit(1)`），开发环境未配置才允许回退为通配符 `*`
 8. **账号禁用**：支持禁用账号，禁用后无法登录
 9. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
-10. **强制修改密码**：新建用户或被重置密码后，下次登录需修改密码；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）
+10. **强制修改密码与会话吊销**：新建用户首次登录需修改密码，一般管理员修改自己密码后下次登录需再次修改；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。超级管理员重置用户密码（单个或批量）后不强制改密，但会吊销旧令牌并记录一次性失效原因，旧会话校验时收到「密码已被管理员重置」提示
 11. **操作审计**：自动记录所有已登录用户的 API 请求，最多保留 2000 条；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
 12. **登录失败全量留痕与防枚举**：登录成功与失败均写登录日志，失败日志含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`）；对客户端统一返回 `用户名或密码错误`，不暴露用户名是否存在
 13. **Excel 依赖本地化**：Excel 解析使用随仓库分发的 `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，`file:` 协议安装），修复旧版 0.18.5 的 CVE-2023-30533 与 CVE-2024-22363

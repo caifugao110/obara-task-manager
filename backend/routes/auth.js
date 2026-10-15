@@ -8,7 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
-const { authMiddleware, isSessionValid, getSessionEntryId, isSessionEntryExpired } = require('../middleware/auth');
+const { authMiddleware, isSessionValid, getSessionInvalidationMessage, getSessionEntryId, isSessionEntryExpired } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
@@ -262,15 +262,12 @@ router.get('/validate', asyncHandler(async (req, res) => {
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
     // 会话校验：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
     if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
-      // 优先使用一次性失效原因（如密码被重置），给出准确提示，而非统一误报“在其他设备登录”
-      let message;
-      if (user.sessionInvalidationReason === 'password_reset') {
-        message = '密码已被管理员重置，请使用新密码重新登录';
-        // 一次性原因：读后即清，避免后续登录被顶下线时仍误报为密码重置
+      // 优先返回一次性失效原因（如密码被修改/重置）的准确提示，而非统一误报「在其他设备登录」
+      const message = getSessionInvalidationMessage(user, systemSettings.allowMultiDevice);
+      if (user.sessionInvalidationReason) {
+        // 一次性原因：读后即清，避免后续被顶下线时仍误报为密码修改/重置
         user.sessionInvalidationReason = undefined;
         await db.writeDb(data);
-      } else {
-        message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
       }
       return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message });
     }
@@ -301,6 +298,12 @@ router.get('/session-policy', (req, res) => {
 });
 
 router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHandler(async (req, res) => {
+  // 「允许用户自主改密」关闭时（默认关闭），拒绝所有用户自助改密
+  const systemSettings = db.readDb().settings?.system || {};
+  if (systemSettings.allowUserChangePassword !== true) {
+    return res.status(403).json({ message: '系统已禁用自主修改密码，请联系管理员' });
+  }
+
   const { error } = changePasswordSchema.validate(req.body, { abortEarly: true });
   if (error) {
     return res.status(400).json({ message: error.details[0].message });
@@ -345,6 +348,8 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
   // 改密后吊销所有设备会话（安全惯例），仅当前设备凭签发的新令牌保持登录
   data.users[userIndex].sessionToken = newSessionId;
   data.users[userIndex].sessionTokens = [{ id: newSessionId, expiresAt: newSessionExpiresAt }];
+  // 记录失效原因：未携带新令牌的旧会话下次校验时据此返回准确提示，而非误报「在其他设备登录」
+  data.users[userIndex].sessionInvalidationReason = 'password_changed';
 
   await db.writeDb(data);
 

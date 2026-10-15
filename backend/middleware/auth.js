@@ -33,6 +33,14 @@ const isSessionValid = (user, sessionId, allowMultiDevice, now = Date.now()) => 
   return !user.sessionToken || user.sessionToken === sessionId;
 };
 
+// 会话失效提示文案：优先使用一次性失效原因（如密码被修改/重置），
+// 避免统一误报「在其他设备登录」；鉴权中间件与 /verify 校验共用
+const getSessionInvalidationMessage = (user, allowMultiDevice) => {
+  if (user?.sessionInvalidationReason === 'password_reset') return '密码已被管理员重置，请使用新密码重新登录';
+  if (user?.sessionInvalidationReason === 'password_changed') return '密码已修改，请使用新密码重新登录';
+  return allowMultiDevice ? '会话已过期，请重新登录' : '您的账号已在其他设备登录';
+};
+
 const authMiddleware = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
   if (!token) {
@@ -61,7 +69,10 @@ const authMiddleware = (req, res, next) => {
     const systemSettings = data.settings?.system || { allowMultiDevice: true };
     // 会话校验：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
     if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
-      const message = !systemSettings.allowMultiDevice ? '您的账号已在其他设备登录' : '会话已过期，请重新登录';
+      // 优先返回一次性失效原因（如密码被修改/重置）的准确提示；
+      // 此处保持同步、不做读后即清（账号重新登录时会统一清除），
+      // 避免被踢设备的普通请求仍误报「在其他设备登录」
+      const message = getSessionInvalidationMessage(user, systemSettings.allowMultiDevice);
       return res.status(401).json({ message, code: 'SESSION_INVALIDATED' });
     }
 
@@ -140,6 +151,7 @@ module.exports = {
   normalizeAccessSettings,
   defaultAccessSettings,
   isSessionValid,
+  getSessionInvalidationMessage,
   getSessionEntryId,
   isSessionEntryExpired
 };

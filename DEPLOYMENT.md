@@ -422,7 +422,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
-| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、仕样号位数（`specNumberDigits`，5 或 6）、设计计划标记颜色随机（`randomDesignPlanColor`）、默认工时规则（`defaultGunHours`，确认/设计/确认修改三类工时的 C/X 值）；完成状态标记开关缺失时默认开启，仕样号位数缺失时默认 5，颜色随机缺失时默认关闭，默认工时规则缺失时按内置默认值补齐 |
+| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、仕样号位数（`specNumberDigits`，5 或 6）、设计计划标记颜色随机（`randomDesignPlanColor`）、焊枪台账分配任务标记颜色随机（`randomAssignmentColor`）、默认工时规则（`defaultGunHours`，确认/设计/确认修改三类工时的 C/X 值）；完成状态标记开关缺失时默认开启，仕样号位数缺失时默认 5，两个颜色随机开关缺失时默认关闭，默认工时规则缺失时按内置默认值补齐 |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
 除上述键值集合外，三类高写入量数据存放在独立的关系表中（首次升级自动从 `kv_store` 搬迁，幂等）：

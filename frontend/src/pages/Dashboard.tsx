@@ -489,6 +489,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [systemSettingsLoaded, setSystemSettingsLoaded] = useState(false);
   const [allowUserDesignPlanColorMark, setAllowUserDesignPlanColorMark] = useState(true);
+  const [allowUserChangePassword, setAllowUserChangePassword] = useState(false);
   const [leaderboardAccess, setLeaderboardAccess] = useState(defaultAccessSettings);
   const [workHoursAccess, setWorkHoursAccess] = useState(defaultAccessSettings);
   const [statusTrackingAccess, setStatusTrackingAccess] = useState(defaultAccessSettings);
@@ -2121,6 +2122,7 @@ const Dashboard = () => {
     ])
       .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes, designStandardsRes, gunLedgerRes]) => {
         setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? true);
+        setAllowUserChangePassword(systemRes.data.allowUserChangePassword === true);
         setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
         setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
         setStatusTrackingAccess(statusTrackingRes.data || defaultAccessSettings);
@@ -3252,22 +3254,28 @@ const Dashboard = () => {
           )}
           {user && (
             <>
-              <button
-                type="button"
-                onClick={() => {
-                  setOldPassword('');
-                  setNewPassword('');
-                  setConfirmPassword('');
-                  setVisiblePasswords({ old: false, new: false, confirm: false });
-                  setChangePasswordError('');
-                  setChangePasswordSuccess('');
-                  setChangePasswordOpen(true);
-                }}
-                title="点击可进行密码修改"
-                className="text-sm font-bold text-red-500 hover:text-red-300 transition cursor-pointer px-1 py-0.5 rounded"
-              >
-                {user.name}
-              </button>
+              {allowUserChangePassword ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOldPassword('');
+                    setNewPassword('');
+                    setConfirmPassword('');
+                    setVisiblePasswords({ old: false, new: false, confirm: false });
+                    setChangePasswordError('');
+                    setChangePasswordSuccess('');
+                    setChangePasswordOpen(true);
+                  }}
+                  title="点击可进行密码修改"
+                  className="text-sm font-bold text-red-500 hover:text-red-300 transition cursor-pointer px-1 py-0.5 rounded"
+                >
+                  {user.name}
+                </button>
+              ) : (
+                <span className="text-sm font-bold text-red-500 px-1 py-0.5 cursor-default select-none">
+                  {user.name}
+                </span>
+              )}
               {canShowSystemSettingsLink() && (
                 <Link to="/system-settings" target="_blank" rel="noopener noreferrer" className="p-1.5 hover:bg-[#1a5c38] rounded transition" title="系统设置">
                   <Settings size={20} className="text-purple-200" />

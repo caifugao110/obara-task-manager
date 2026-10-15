@@ -164,6 +164,7 @@ const defaultSettings: SystemSettingsData = {
   allowMultiDevice: true,
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTaskColor: true,
+  allowUserChangePassword: false,
   specNumberDigits: 5,
   randomDesignPlanColor: false,
   randomAssignmentColor: false,
@@ -2050,7 +2051,8 @@ const SystemSettings = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {[
                 { label: '允许多设备同时在线', detail: 'Multi Device', key: 'allowMultiDevice' as const },
-                { label: '允许登录用户修改本人设计计划完成状态', detail: 'Own Design Plan Status', key: 'allowUserDesignPlanColorMark' as const }
+                { label: '允许登录用户修改本人设计计划完成状态', detail: 'Own Design Plan Status', key: 'allowUserDesignPlanColorMark' as const },
+                { label: '允许用户自主改密', detail: 'Self Password Change', key: 'allowUserChangePassword' as const }
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
                   <div>

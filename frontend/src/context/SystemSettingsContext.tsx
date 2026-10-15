@@ -16,6 +16,7 @@ export interface SystemSettingsData {
   allowMultiDevice: boolean;
   allowUserDesignPlanColorMark: boolean;
   allowUserEditOwnTaskColor: boolean;
+  allowUserChangePassword: boolean;
   specNumberDigits: number;
   randomDesignPlanColor: boolean;
   randomAssignmentColor: boolean;
@@ -32,6 +33,7 @@ const defaultSettings: SystemSettingsData = {
   allowMultiDevice: true,
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTaskColor: true,
+  allowUserChangePassword: false,
   specNumberDigits: 5,
   randomDesignPlanColor: false,
   randomAssignmentColor: false,

@@ -228,8 +228,16 @@ const Admin = () => {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [resetPasswordUserId, setResetPasswordUserId] = useState<string | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
+  // 重置本人密码时必填的当前密码（后端自助改密强制校验旧密码）
+  const [resetPasswordOldValue, setResetPasswordOldValue] = useState('');
   const [resetPasswordSubmitting, setResetPasswordSubmitting] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
+  // 批量重置密码弹窗（仅超级管理员）
+  const [batchResetModalOpen, setBatchResetModalOpen] = useState(false);
+  const [batchResetMode, setBatchResetMode] = useState<'manual' | 'auto'>('auto');
+  const [batchResetPassword, setBatchResetPassword] = useState('');
+  const [batchResetShowPassword, setBatchResetShowPassword] = useState(false);
+  const [batchResetSubmitting, setBatchResetSubmitting] = useState(false);
   const [setRoleUserId, setSetRoleUserId] = useState<string | null>(null);
   const [setRoleValue, setSetRoleValue] = useState<'admin' | 'user'>('user');
   const [setRoleSubmitting, setSetRoleSubmitting] = useState(false);
@@ -260,10 +268,17 @@ const Admin = () => {
   const [initialCredentials, setInitialCredentials] = useState<Array<{
     username: string; name: string; role: string; password: string; ok: boolean;
   }>>([]);
+  // 凭据展示弹窗来源：init=初始化登录用户，batchReset=批量重置密码（仅影响弹窗文案）
+  const [credentialKind, setCredentialKind] = useState<'init' | 'batchReset'>('init');
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const canInitializeDesigners = isSuperAdmin && designers.length === 0;
   const canInitializeUsers = isSuperAdmin && users.filter(u => u.role !== 'superadmin').length === 0;
+
+  // 凭据展示弹窗文案：初始化建号 vs 批量重置密码共用同一弹窗
+  const credentialMeta = credentialKind === 'batchReset'
+    ? { title: '批量重置后的新密码', passwordHeader: '新密码', okLabel: '已重置', copyLabel: '新密码', copyToast: '已复制全部新密码' }
+    : { title: '初始登录密码', passwordHeader: '初始密码', okLabel: '已创建', copyLabel: '初始密码', copyToast: '已复制成功用户的初始密码' };
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -610,6 +625,7 @@ const Admin = () => {
         failCount === 0 ? `已初始化 ${okCount} 个登录用户` : `已初始化 ${okCount} 个，${failCount} 个失败`,
         failCount === 0 ? 'success' : 'error'
       );
+      setCredentialKind('init');
       setInitialCredentials(credentials);
       fetchData();
     } catch (err: any) {
@@ -704,6 +720,7 @@ const Admin = () => {
     if (!isSuperAdmin) return;
     setResetPasswordUserId(id);
     setResetPasswordValue(generateRandomPassword());
+    setResetPasswordOldValue('');
     setShowResetPassword(true);
   };
 
@@ -739,16 +756,25 @@ const Admin = () => {
       addToast('密码至少6位', 'error');
       return;
     }
+    const isSelf = resetPasswordUserId === currentUser?.id;
+    // 自助改密后端强制校验旧密码：本人重置必须提供当前密码
+    if (isSelf && !resetPasswordOldValue) {
+      addToast('请输入当前密码', 'error');
+      return;
+    }
     setResetPasswordSubmitting(true);
     try {
-      const isSelf = resetPasswordUserId === currentUser?.id;
-      await axiosInstance.put(`/users/${resetPasswordUserId}`, { password: resetPasswordValue });
+      await axiosInstance.put(`/users/${resetPasswordUserId}`, {
+        password: resetPasswordValue,
+        ...(isSelf ? { oldPassword: resetPasswordOldValue } : {})
+      });
       addToast(
         isSelf ? '密码已重置，请使用新密码重新登录' : '密码已重置，对方可直接用新密码登录',
         'success'
       );
       setResetPasswordUserId(null);
       setResetPasswordValue('');
+      setResetPasswordOldValue('');
       setShowResetPassword(false);
       // 重置本人密码会吊销当前令牌：跳转登录页重新认证
       if (isSelf) {
@@ -759,6 +785,69 @@ const Admin = () => {
       addToast(err.response?.data?.message || '重置失败', 'error');
     } finally {
       setResetPasswordSubmitting(false);
+    }
+  };
+
+  // 批量重置密码：打开模式选择弹窗
+  const handleBatchResetPassword = () => {
+    if (guardOffline()) return;
+    if (!isSuperAdmin) return;
+    if (selectedUserIds.length === 0) {
+      addToast('请先选择要重置密码的登录用户', 'error');
+      return;
+    }
+    setBatchResetMode('auto');
+    setBatchResetPassword('');
+    setBatchResetShowPassword(false);
+    setBatchResetModalOpen(true);
+  };
+
+  const closeBatchResetModal = () => {
+    if (batchResetSubmitting) return;
+    setBatchResetModalOpen(false);
+    setBatchResetPassword('');
+    setBatchResetShowPassword(false);
+  };
+
+  const submitBatchResetPassword = async () => {
+    if (guardOffline()) return;
+    if (!isSuperAdmin) return;
+    if (selectedUserIds.length === 0) {
+      addToast('请先选择要重置密码的登录用户', 'error');
+      return;
+    }
+    if (batchResetMode === 'manual' && batchResetPassword.length < 6) {
+      addToast('密码至少6位', 'error');
+      return;
+    }
+    setBatchResetSubmitting(true);
+    try {
+      const resp = await axiosInstance.post('/users/batch-reset-password', {
+        ids: selectedUserIds,
+        mode: batchResetMode,
+        ...(batchResetMode === 'manual' ? { password: batchResetPassword } : {})
+      });
+      const credentials: Array<{ id: string; username: string; name: string; password: string }> =
+        resp.data?.credentials || [];
+      setCredentialKind('batchReset');
+      setInitialCredentials(credentials.map(c => ({
+        username: c.username,
+        name: c.name,
+        role: '',
+        password: c.password,
+        ok: true
+      })));
+      setBatchResetModalOpen(false);
+      setBatchResetPassword('');
+      setBatchResetShowPassword(false);
+      setSelectedUserIds([]);
+      addToast(`已重置 ${credentials.length} 个账号的密码`, 'success');
+      fetchData();
+    } catch (err: any) {
+      markOfflineIfNetworkError(err);
+      addToast(err.response?.data?.message || '批量重置失败', 'error');
+    } finally {
+      setBatchResetSubmitting(false);
     }
   };
 
@@ -880,8 +969,9 @@ const Admin = () => {
               if (resetPasswordSubmitting) return;
               setResetPasswordUserId(null);
               setResetPasswordValue('');
+              setResetPasswordOldValue('');
               setShowResetPassword(false);
-            }} 
+            }}
           />
           <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
@@ -894,6 +984,7 @@ const Admin = () => {
                   if (resetPasswordSubmitting) return;
                   setResetPasswordUserId(null);
                   setResetPasswordValue('');
+                  setResetPasswordOldValue('');
                   setShowResetPassword(false);
                 }}
               >
@@ -901,6 +992,19 @@ const Admin = () => {
               </button>
             </div>
             <div className="p-5">
+              {resetPasswordUserId === currentUser?.id && (
+                <div className="mb-4">
+                  <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">当前密码</label>
+                  <input
+                    type="password"
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
+                    value={resetPasswordOldValue}
+                    onChange={(e) => setResetPasswordOldValue(e.target.value)}
+                    placeholder="重置本人密码需验证当前密码"
+                    disabled={resetPasswordSubmitting}
+                  />
+                </div>
+              )}
               <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">新密码</label>
               <div className="relative">
                 <input
@@ -941,6 +1045,7 @@ const Admin = () => {
                   if (resetPasswordSubmitting) return;
                   setResetPasswordUserId(null);
                   setResetPasswordValue('');
+                  setResetPasswordOldValue('');
                   setShowResetPassword(false);
                 }}
                 disabled={resetPasswordSubmitting}
@@ -953,6 +1058,111 @@ const Admin = () => {
                 disabled={resetPasswordSubmitting}
               >
                 确认重置
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量重置密码弹窗（仅超级管理员）：手动统一密码 / 自动逐个随机 */}
+      {batchResetModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={closeBatchResetModal}
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <div className="font-bold text-gray-800">
+                批量重置密码（已选 {selectedUserIds.length} 个账号）
+              </div>
+              <button
+                className="p-1 rounded hover:bg-gray-100 text-gray-500"
+                onClick={closeBatchResetModal}
+                disabled={batchResetSubmitting}
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setBatchResetMode('auto')}
+                  disabled={batchResetSubmitting}
+                  className={`text-left p-3 rounded-lg border-2 transition ${
+                    batchResetMode === 'auto'
+                      ? 'border-purple-500 bg-purple-50'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  } disabled:opacity-60`}
+                >
+                  <div className="flex items-center gap-1.5 text-sm font-bold text-gray-800">
+                    <RefreshCw size={14} className={batchResetMode === 'auto' ? 'text-purple-600' : 'text-gray-400'} />
+                    自动生成随机密码
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-500">为每个账号生成独立随机密码，结果仅展示一次</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBatchResetMode('manual')}
+                  disabled={batchResetSubmitting}
+                  className={`text-left p-3 rounded-lg border-2 transition ${
+                    batchResetMode === 'manual'
+                      ? 'border-purple-500 bg-purple-50'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  } disabled:opacity-60`}
+                >
+                  <div className="flex items-center gap-1.5 text-sm font-bold text-gray-800">
+                    <Key size={14} className={batchResetMode === 'manual' ? 'text-purple-600' : 'text-gray-400'} />
+                    手动设置统一密码
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-500">所有选中账号改为同一个密码</p>
+                </button>
+              </div>
+              {batchResetMode === 'manual' && (
+                <div>
+                  <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">统一新密码</label>
+                  <div className="relative">
+                    <input
+                      type={batchResetShowPassword ? 'text' : 'password'}
+                      className="w-full p-3 pr-12 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
+                      value={batchResetPassword}
+                      onChange={(e) => setBatchResetPassword(e.target.value)}
+                      placeholder="至少6位"
+                      disabled={batchResetSubmitting}
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded hover:bg-gray-200 text-gray-500"
+                      title={batchResetShowPassword ? '隐藏' : '显示'}
+                      onClick={() => setBatchResetShowPassword(v => !v)}
+                      disabled={batchResetSubmitting}
+                    >
+                      {batchResetShowPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+              )}
+              <p className="text-xs text-red-600 font-bold">
+                重置后这些账号的当前登录会话将立即失效，需使用新密码重新登录。
+                {batchResetMode === 'auto' && ' 新密码仅展示一次，请提前准备保存方式。'}
+              </p>
+            </div>
+            <div className="px-5 py-4 bg-white border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-50 transition"
+                onClick={closeBatchResetModal}
+                disabled={batchResetSubmitting}
+              >
+                取消
+              </button>
+              <button
+                className="px-4 py-2 rounded-lg bg-purple-600 text-white font-bold hover:bg-purple-700 transition disabled:opacity-50"
+                onClick={submitBatchResetPassword}
+                disabled={batchResetSubmitting || (batchResetMode === 'manual' && batchResetPassword.length < 6)}
+              >
+                {batchResetSubmitting ? '重置中...' : '确认重置'}
               </button>
             </div>
           </div>
@@ -1319,7 +1529,7 @@ const Admin = () => {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[48px] lg:self-start">
+          <div className={`bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky ${isOffline ? 'lg:top-[81px]' : 'lg:top-[48px]'} lg:self-start`}>
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <UserPlus size={20} className="mr-2 text-blue-600" /> 添加设计人员
@@ -1395,6 +1605,16 @@ const Admin = () => {
                 </button>
                 <button
                   type="button"
+                  onClick={handleBatchResetPassword}
+                  disabled={!isSuperAdmin || selectedUserIds.length === 0}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-600 hover:bg-amber-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!isSuperAdmin ? '仅超级管理员可使用' : '批量重置选中用户的密码'}
+                >
+                  <Key size={14} />
+                  批量重置密码
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     setBulkImportType('users');
                     setBulkImportText('');
@@ -1412,17 +1632,19 @@ const Admin = () => {
               <table className="w-full text-left">
                 <thead>
                   <tr className="bg-white text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
-                    <th className="px-6 py-4 w-12">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                        checked={selectableUserIds.length > 0 && selectableUserIds.every(id => selectedUserIds.includes(id))}
-                        onChange={(e) => {
-                          setSelectedUserIds(e.target.checked ? selectableUserIds : []);
-                        }}
-                        disabled={!isSuperAdmin || selectableUserIds.length === 0}
-                      />
-                    </th>
+                    {isSuperAdmin && (
+                      <th className="px-6 py-4 w-12">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                          checked={selectableUserIds.length > 0 && selectableUserIds.every(id => selectedUserIds.includes(id))}
+                          onChange={(e) => {
+                            setSelectedUserIds(e.target.checked ? selectableUserIds : []);
+                          }}
+                          disabled={selectableUserIds.length === 0}
+                        />
+                      </th>
+                    )}
                     <th className="px-6 py-4">姓名</th>
                     <th className="px-6 py-4">用户名</th>
                     <th className="px-6 py-4">权限</th>
@@ -1432,17 +1654,19 @@ const Admin = () => {
                 <tbody className="text-sm divide-y divide-gray-50">
                   {users.map(u => (
                     <tr key={u.id} className="hover:bg-purple-50/30 transition group">
-                      <td className="px-6 py-4">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 disabled:opacity-40"
-                          checked={selectedUserIds.includes(u.id)}
-                          onChange={(e) => {
-                            setSelectedUserIds(prev => e.target.checked ? [...prev, u.id] : prev.filter(id => id !== u.id));
-                          }}
-                          disabled={!isSuperAdmin || u.id === currentUser?.id || u.role === 'superadmin'}
-                        />
-                      </td>
+                      {isSuperAdmin && (
+                        <td className="px-6 py-4">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 disabled:opacity-40"
+                            checked={selectedUserIds.includes(u.id)}
+                            onChange={(e) => {
+                              setSelectedUserIds(prev => e.target.checked ? [...prev, u.id] : prev.filter(id => id !== u.id));
+                            }}
+                            disabled={u.id === currentUser?.id || u.role === 'superadmin'}
+                          />
+                        </td>
+                      )}
                       <td className="px-6 py-4 font-bold text-gray-700">{u.name}</td>
                       <td className="px-6 py-4 text-gray-500 font-medium">{u.username}</td>
                       <td className="px-6 py-4">
@@ -1505,7 +1729,7 @@ const Admin = () => {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky lg:top-[48px] lg:self-start">
+          <div className={`bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky ${isOffline ? 'lg:top-[81px]' : 'lg:top-[48px]'} lg:self-start`}>
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
               <h2 className="text-lg font-bold text-gray-800 flex items-center">
                 <Shield size={20} className="mr-2 text-purple-600" /> 新增登录用户
@@ -1737,7 +1961,7 @@ const Admin = () => {
             <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                  <Key size={18} className="text-emerald-600" /> 初始登录密码
+                  <Key size={18} className="text-emerald-600" /> {credentialMeta.title}
                 </h3>
                 <p className="text-xs text-red-600 font-bold mt-1">密码仅显示这一次，关闭后无法再次查看，请立即复制并线下分发给本人。</p>
               </div>
@@ -1756,7 +1980,7 @@ const Admin = () => {
                   <tr className="text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
                     <th className="py-2 pr-2 text-left">姓名</th>
                     <th className="py-2 pr-2 text-left">用户名</th>
-                    <th className="py-2 pr-2 text-left">初始密码</th>
+                    <th className="py-2 pr-2 text-left">{credentialMeta.passwordHeader}</th>
                     <th className="py-2 text-left">结果</th>
                   </tr>
                 </thead>
@@ -1770,7 +1994,7 @@ const Admin = () => {
                       </td>
                       <td className="py-2">
                         {c.ok
-                          ? <span className="text-green-600 text-xs font-bold">已创建</span>
+                          ? <span className="text-green-600 text-xs font-bold">{credentialMeta.okLabel}</span>
                           : <span className="text-red-600 text-xs font-bold">失败</span>}
                       </td>
                     </tr>
@@ -1784,10 +2008,10 @@ const Admin = () => {
                 onClick={() => {
                   const text = initialCredentials
                     .filter(c => c.ok)
-                    .map(c => `${c.name} ${c.username} 初始密码:${c.password}`)
+                    .map(c => `${c.name} ${c.username} ${credentialMeta.copyLabel}:${c.password}`)
                     .join('\n');
                   navigator.clipboard.writeText(text);
-                  addToast('已复制成功用户的初始密码', 'success');
+                  addToast(credentialMeta.copyToast, 'success');
                 }}
                 className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 transition"
               >

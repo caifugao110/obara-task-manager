@@ -124,7 +124,7 @@ const Login = () => {
                     {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
-                <p className="text-xs text-gray-500 ml-1">首次登录后，系统会要求您重置密码。</p>
+                <p className="text-xs text-gray-500 ml-1">首次登录或密码被管理员重置后，系统会要求您设置新密码。</p>
               </div>
 
               <button 

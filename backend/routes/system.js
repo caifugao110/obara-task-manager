@@ -26,6 +26,7 @@ const defaultSystemSettings = {
   allowMultiDevice: true,
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTask: true,
+  allowUserChangePassword: false,
   specNumberDigits: 5,
   randomDesignPlanColor: false,
   randomAssignmentColor: false,
@@ -60,6 +61,7 @@ const systemSettingsSchema = Joi.object({
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
   allowUserEditOwnTaskColor: Joi.boolean().optional(),
+  allowUserChangePassword: Joi.boolean().optional(),
   specNumberDigits: Joi.number().integer().valid(5, 6).optional(),
   randomDesignPlanColor: Joi.boolean().optional(),
   randomAssignmentColor: Joi.boolean().optional(),
@@ -115,6 +117,7 @@ const normalizeSystemSettings = (settings = {}) => {
     allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
     randomDesignPlanColor: Boolean(merged.randomDesignPlanColor),
     randomAssignmentColor: Boolean(merged.randomAssignmentColor),
+    allowUserChangePassword: merged.allowUserChangePassword === true,
     defaultGunHours: {
       confirm: normalizeGunHours(rawGunHours.confirm, fallbackGunHours.confirm),
       design: normalizeGunHours(rawGunHours.design, fallbackGunHours.design),
