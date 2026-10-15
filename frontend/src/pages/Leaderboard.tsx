@@ -29,7 +29,7 @@ interface TaskSearchResult {
   taskName: string;
   color: string;
   date: string;
-  guns: { name: string; hours: number | string }[];
+  guns: { name: string; hours: number | string; color?: string }[];
 }
 
 interface GunSearchResult extends TaskSearchResult {
@@ -42,6 +42,12 @@ interface Toast {
   type: 'success' | 'error';
   id: number;
 }
+
+// 白色标记 = 已完成状态（与后端 isWhiteColor 规则一致）
+const isCompletedColor = (value?: string | null) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === '#ffffff' || normalized === '#fff' || normalized === 'white';
+};
 
 const Leaderboard = () => {
   const { user, token, logout } = useAuth();
@@ -59,8 +65,8 @@ const Leaderboard = () => {
   const [specFullSearch, setSpecFullSearch] = useState(false);
   // 新增：获取仕样号所有枪名列表模式开关
   const [specGunListMode, setSpecGunListMode] = useState(false);
-  // 新增：存储仕样号对应的枪名列表
-  const [specGunList, setSpecGunList] = useState<string[]>([]);
+  // 新增：未标记完成状态任务开关（开启后去除已完成的主任务/枪名）
+  const [specHideCompleted, setSpecHideCompleted] = useState(false);
 
 
   const [gunName, setGunName] = useState('');
@@ -126,12 +132,26 @@ const Leaderboard = () => {
     return match ? match[0] : null;
   };
 
-  const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean, gunListModeOverride?: boolean) => {
+  // 按“未标记完成状态任务”开关过滤：去除已完成（白色标记）的主任务与枪名
+  const specResultsFiltered = useMemo(() => {
+    if (!specHideCompleted) return specResults;
+    return specResults
+      .filter(result => !isCompletedColor(result.color))
+      .map(result => ({
+        ...result,
+        guns: (result.guns || []).filter(gun => !isCompletedColor(gun.color))
+      }));
+  }, [specResults, specHideCompleted]);
+
+  const specGunListFiltered = useMemo(() => {
+    if (!specGunListMode) return [];
+    return extractGunNames(specResultsFiltered);
+  }, [specGunListMode, specResultsFiltered]);
+
+  const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean) => {
     const targetSpec = currentSpec !== undefined ? currentSpec : specNumber;
-    const gunListMode = gunListModeOverride !== undefined ? gunListModeOverride : specGunListMode;
     if (targetSpec.length !== specNumberDigits) {
       setSpecResults([]);
-      setSpecGunList([]);
       return;
     }
 
@@ -156,9 +176,10 @@ const Leaderboard = () => {
                 taskName: item.taskName,
                 guns: (item.guns || []).map((gun: any) => ({
                   name: String(gun.name || '').trim() || '未命名枪名',
-                  hours: gun.hours || 0
+                  hours: gun.hours || 0,
+                  color: gun.color || ''
                 })),
-                color: item.color || '#ffffff',
+                color: item.color || '',
                 date
               });
             }
@@ -168,17 +189,12 @@ const Leaderboard = () => {
 
       const sortedResults = sortByDateAsc(results);
       setSpecResults(sortedResults);
-      if (gunListMode) {
-        setSpecGunList(extractGunNames(sortedResults));
-      } else {
-        setSpecGunList([]);
-      }
     } catch (err: any) {
       console.error('Error searching spec:', err);
       markOfflineIfNetworkError(err);
       addToast('搜索失败', 'error');
     }
-  }, [specNumber, currentDate, designers, token, specFullSearch, specGunListMode, specNumberDigits, markOfflineIfNetworkError]);
+  }, [specNumber, currentDate, designers, token, specFullSearch, specNumberDigits, markOfflineIfNetworkError]);
 
   const searchByGunName = useCallback(async (currentGunName?: string, fullSearchOverride?: boolean) => {
     const targetGunName = (currentGunName !== undefined ? currentGunName : gunName).trim();
@@ -210,7 +226,7 @@ const Leaderboard = () => {
                   guns: item.guns || [],
                   gunName: currentName,
                   gunHours: gun.hours || 0,
-                  color: item.color || '#ffffff',
+                  color: item.color || '',
                   date
                 });
               }
@@ -629,16 +645,25 @@ const Leaderboard = () => {
               </h2>
               <div className="flex items-center gap-6">
                 <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
+                  <span>未标记完成状态任务</span>
+                  <span className="relative inline-flex h-5 w-9 items-center">
+                    <input
+                      type="checkbox"
+                      checked={specHideCompleted}
+                      onChange={(e) => setSpecHideCompleted(e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
+                    <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4 peer-checked:bg-blue-600"></span>
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
                   <span>获取仕样号所有枪名列表</span>
                   <span className="relative inline-flex h-5 w-9 items-center">
                     <input
                       type="checkbox"
                       checked={specGunListMode}
-                      onChange={(e) => {
-                        const next = e.target.checked;
-                        setSpecGunListMode(next);
-                        if (specNumber.length === specNumberDigits) searchBySpecNumber(specNumber, undefined, next);
-                      }}
+                      onChange={(e) => setSpecGunListMode(e.target.checked)}
                       className="peer sr-only"
                     />
                     <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
@@ -694,15 +719,15 @@ const Leaderboard = () => {
 
             {specResults.length > 0 ? (
               <div className="space-y-4">
-                {specGunListMode && specGunList.length > 0 ? (
+                {specGunListFiltered.length > 0 ? (
                   <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
                     <div className="mb-3">
                       <span className="text-sm font-bold text-gray-700">
-                        该仕样号存在以下枪名 (共 <span className="text-blue-600">{specGunList.length}</span> 个)
+                        该仕样号存在以下枪名 (共 <span className="text-blue-600">{specGunListFiltered.length}</span> 个)
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {specGunList.map((gunName, index) => (
+                      {specGunListFiltered.map((gunName, index) => (
                         <div
                           key={`gun-${index}`}
                           className="px-3 py-1.5 bg-white border-2 border-blue-300 rounded-lg text-sm font-bold text-blue-700 hover:bg-blue-100 transition"
@@ -715,11 +740,11 @@ const Leaderboard = () => {
                 ) : null}
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-bold text-gray-600">
-                    找到 <span className="text-blue-600">{specResults.length}</span> 个匹配任务
+                    找到 <span className="text-blue-600">{specResultsFiltered.length}</span> 个匹配任务
                   </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {specResults.map((result, index) => (
+                  {specResultsFiltered.map((result, index) => (
                     <Link
                       key={`${result.designerId}-${result.date}-${index}`}
                       to={buildTaskLink(result)}
