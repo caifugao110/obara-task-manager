@@ -174,7 +174,7 @@ const initialLoginUsers = [
   { username: 'hougy', name: '侯桂英', role: 'user' },
   { username: 'zhangx', name: '张啸', role: 'admin' },
   { username: 'shelm', name: '佘鲁明', role: 'user' },
-  { username: 'zhuhy', name: '朱海洋', role: 'user' },
+  { username: 'zhuhy', name: '朱海洋', role: 'admin' },
   { username: 'yuy', name: '郁钰', role: 'user' },
   { username: 'dingdy', name: '丁代远', role: 'user' },
   { username: 'zhouh', name: '周骅', role: 'user' },

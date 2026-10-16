@@ -3,6 +3,7 @@
 // 每个工作表结构：第 0 行列表头（序号/焊枪名/客户/时间/担当/备注），其余为数据行。
 const XLSX = require('xlsx');
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
+const { createZipBuffer } = require('./simpleZip');
 
 const HEADERS = ['序号', '焊枪名', '客户', '时间', '担当', '备注'];
 const COL_WIDTHS = [
@@ -314,6 +315,27 @@ const buildCombinedBuffer = (gunLedger) => {
   return writeWorkbook(sheetInfoMap, workbook);
 };
 
+// 多个分类 → ZIP 条目列表（每个分类一个独立 xls）。
+// 分类名仅拦截 / 与 \，safeFilePart 后不同分类可能重名（如 a:b 与 a?b），重名追加 ~n 去重。
+const buildCategoryZipEntries = (gunLedger, categoryNames, timestamp) => {
+  const usedNames = new Set();
+  return categoryNames.map((categoryName) => {
+    const safe = safeFilePart(categoryName);
+    let fileName = `gun-ledger-${safe}-${timestamp}.xls`;
+    let seq = 1;
+    while (usedNames.has(fileName)) {
+      fileName = `gun-ledger-${safe}-${timestamp}~${seq}.xls`;
+      seq += 1;
+    }
+    usedNames.add(fileName);
+    return { name: fileName, data: buildCategoryBuffer(gunLedger, categoryName) };
+  });
+};
+
+// 多个分类 → ZIP Buffer（每个分类一个独立 xls）
+const buildCategoriesZipBuffer = (gunLedger, categoryNames, timestamp) =>
+  createZipBuffer(buildCategoryZipEntries(gunLedger, categoryNames, timestamp));
+
 // 轻量摘要：供系统设置页面列出分类
 const buildSummary = (gunLedger) => getCategories(gunLedger).map((categoryName) => {
   const tables = gunLedger?.categories?.[categoryName] || [];
@@ -402,6 +424,8 @@ module.exports = {
   getCategories,
   buildSummary,
   buildCategoryBuffer,
+  buildCategoryZipEntries,
+  buildCategoriesZipBuffer,
   buildCombinedBuffer,
   parseImportedWorkbook,
   sanitizeImportText

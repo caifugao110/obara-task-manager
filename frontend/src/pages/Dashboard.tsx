@@ -9,6 +9,7 @@ import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, Che
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
+import { resolveGunHours, GunLocation } from '../utils/gunHoursRules';
 import {
     DndContext,
     rectIntersection,
@@ -1119,25 +1120,33 @@ const Dashboard = () => {
     };
   }, []);
 
-  // 从枪名提取类型标识：枪名首个「-」前的字符（SRTC->C, SRTX->X, SRTV->V...）
-  const getGunTypeFromName = (gunName: string): 'C' | 'X' | null => {
-    const name = String(gunName || '').trim();
-    const dashIdx = name.indexOf('-');
-    if (dashIdx <= 0) return null;
-    const ch = name.charAt(dashIdx - 1).toUpperCase();
-    return ch === 'C' || ch === 'X' ? ch : null;
-  };
+  // 枪名 → 所在台账分类/表 的索引（打开弹窗时刷新），用于匹配该表专用默认工时
+  const [gunLocations, setGunLocations] = useState<Record<string, GunLocation>>({});
 
-  // 根据任务类型 + 枪名类型获取配置的默认工时；未配置或类型不匹配返回 null
+  const fetchGunLocations = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await axiosInstance.get(
+        '/gun-ledger/gun-name-locations',
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const locations = res.data?.locations;
+      if (locations && typeof locations === 'object') setGunLocations(locations);
+    } catch {
+      // 无台账访问权限或拉取失败时静默降级为 C/X 回退 + 兜底
+    }
+  }, [token]);
+
+  // 根据任务类型 + 枪名获取默认工时：
+  // 枪名所在表专用规则 → C/X 机型回退 → 固定兜底（2 / 0.75 / 3）；非三类任务返回 null
   const getDefaultGunHoursFor = (
     taskType: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange',
     gunName: string
   ): number | null => {
     if (taskType !== 'confirm' && taskType !== 'design' && taskType !== 'confirmModify') return null;
-    const gunType = getGunTypeFromName(gunName);
-    if (!gunType) return null;
-    const configured = systemSettings.defaultGunHours?.[taskType]?.[gunType];
-    return typeof configured === 'number' && Number.isFinite(configured) ? configured : null;
+    const name = String(gunName || '').trim();
+    const location = name ? (gunLocations[name] || null) : null;
+    return resolveGunHours(taskType, name, location, systemSettings);
   };
 
   // 新增任务模式下：按当前任务类型给单个枪名应用默认工时
@@ -1161,6 +1170,8 @@ const Dashboard = () => {
       return;
     }
     if (warnIfCellLocked(designerId, date)) return;
+    // 刷新枪名所在表索引，保证专用工时规则匹配到最新台账
+    fetchGunLocations();
     startEditingCell(designerId, date);
     setModalDesignerId(designerId);
     setModalDate(date);

@@ -115,9 +115,9 @@ const resolveManagedDir = (relativeDir) => {
 
 // 可被「清理过期备份」删除的文件类型白名单。
 // 四个维护目录只应存放数据库备份（.db 及其 WAL/SHM 伴随文件）、
-// 表格导出（.xls/.xlsx）与年度归档（.json）。加上白名单后，即使某个目录
-// 被指向了混合内容的文件夹，也只会删除这些产物，不会误删无关文件。
-const MANAGED_FILE_PATTERN = /\.(db|db-shm|db-wal|xlsx?|json)$/i;
+// 表格导出（.xls/.xlsx）、编号台账打包导出（.zip）与年度归档（.json）。加上白名单后，
+// 即使某个目录被指向了混合内容的文件夹，也只会删除这些产物，不会误删无关文件。
+const MANAGED_FILE_PATTERN = /\.(db|db-shm|db-wal|xlsx?|zip|json)$/i;
 
 const ensureDir = (dirPath) => {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -310,7 +310,7 @@ const exportTaskData = (options = {}) => {
   };
 };
 
-// 焊枪编号台账导出：所有分类的表导出到一个大 xls（每张表一个工作表）
+// 焊枪编号台账导出：所有分类打包为一个 zip（每个分类一个独立 xls）
 const exportGunLedgerData = (options = {}) => {
   const { data, settings } = getMaintenanceSettings();
   const exportDir = resolveManagedDir(options.dir || settings.gunLedgerExportDir);
@@ -329,8 +329,9 @@ const exportGunLedgerData = (options = {}) => {
     return result;
   }
 
-  const buffer = gunExport.buildCombinedBuffer(gunLedger);
-  const fileName = `gun-ledger-all-${toTimestamp()}.xls`;
+  const timestamp = toTimestamp();
+  const buffer = gunExport.buildCategoriesZipBuffer(gunLedger, categories, timestamp);
+  const fileName = `gun-ledger-all-${timestamp}.zip`;
   const filePath = path.join(exportDir, fileName);
   fs.writeFileSync(filePath, buffer);
   return {

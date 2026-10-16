@@ -1,5 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { axiosInstance } from '../services/api';
+import {
+  BUILTIN_TABLE_GUN_HOURS,
+  TableGunHoursMap,
+  GunHoursCell,
+} from '../utils/gunHoursRules';
 
 export interface GunHoursByType {
   C: number;
@@ -21,6 +26,8 @@ export interface SystemSettingsData {
   randomDesignPlanColor: boolean;
   randomAssignmentColor: boolean;
   defaultGunHours?: DefaultGunHours;
+  // 分类 → 表名 → 专用工时（内置值 + 超管覆盖值的合并结果）
+  tableGunHours?: TableGunHoursMap;
 }
 
 const defaultGunHours: DefaultGunHours = {
@@ -37,7 +44,35 @@ const defaultSettings: SystemSettingsData = {
   specNumberDigits: 5,
   randomDesignPlanColor: false,
   randomAssignmentColor: false,
-  defaultGunHours
+  defaultGunHours,
+  tableGunHours: BUILTIN_TABLE_GUN_HOURS
+};
+
+// 专用工时归一化：以内置值为底，覆盖服务端返回值；非法/缺失单元格回退内置值
+const normalizeTableGunHours = (raw: unknown): TableGunHoursMap => {
+  const source = raw && typeof raw === 'object' ? (raw as TableGunHoursMap) : {};
+  const result: TableGunHoursMap = {};
+  const categories = new Set([...Object.keys(BUILTIN_TABLE_GUN_HOURS), ...Object.keys(source)]);
+  categories.forEach(category => {
+    const builtinTables = BUILTIN_TABLE_GUN_HOURS[category] || {};
+    const rawTables = source[category] || {};
+    const tableNames = new Set([...Object.keys(builtinTables), ...Object.keys(rawTables)]);
+    const categoryMap: Record<string, GunHoursCell> = {};
+    tableNames.forEach(tableName => {
+      const rawCell = rawTables[tableName];
+      const isValid = rawCell
+        && typeof rawCell.confirm === 'number' && Number.isFinite(rawCell.confirm)
+        && typeof rawCell.confirmModify === 'number' && Number.isFinite(rawCell.confirmModify)
+        && typeof rawCell.design === 'number' && Number.isFinite(rawCell.design);
+      if (isValid) {
+        categoryMap[tableName] = { ...rawCell };
+      } else if (builtinTables[tableName]) {
+        categoryMap[tableName] = { ...builtinTables[tableName] };
+      }
+    });
+    if (Object.keys(categoryMap).length > 0) result[category] = categoryMap;
+  });
+  return result;
 };
 
 interface SystemSettingsContextValue {
@@ -85,7 +120,8 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
           confirm: mergeGunType('confirm'),
           design: mergeGunType('design'),
           confirmModify: mergeGunType('confirmModify')
-        }
+        },
+        tableGunHours: normalizeTableGunHours(res.data.tableGunHours)
       });
     } catch {
       // 静默失败，保留默认值

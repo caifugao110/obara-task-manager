@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
-import { useSystemSettings, SystemSettingsData, DefaultGunHours, GunHoursByType } from '../context/SystemSettingsContext';
+import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
 
 interface Toast {
@@ -783,7 +783,7 @@ const SystemSettings = () => {
 
   const handleManualGunLedgerExport = async () => {
     const data = await runMaintenanceAction('/api/system/maintenance/export-gun-ledger');
-    if (data) addToast(`编号台账已导出：共 ${data.gunLedgerExport.categories} 个分类合并为一个工作簿`, 'success');
+    if (data) addToast(`编号台账已导出：${data.gunLedgerExport.fileName}（共 ${data.gunLedgerExport.categories} 个分类，已打包为 ZIP，每个分类一个 xls）`, 'success');
   };
 
   const handleCleanupBackupsNow = () => {
@@ -1775,7 +1775,7 @@ const SystemSettings = () => {
                     <div className="flex items-center gap-2 font-bold text-gray-800"><ClipboardList size={17} className="text-emerald-600" />编号台账导出</div>
                     <input type="checkbox" checked={maintenanceSettings.dailyGunLedgerExportEnabled} onChange={(e) => updateMaintenanceField('dailyGunLedgerExportEnabled', e.target.checked)} className="w-5 h-5 accent-emerald-600" />
                   </div>
-                  <p className="text-xs text-gray-500 leading-relaxed mb-3 min-h-[48px]">所有焊枪编号台账分类合并导出为一个 xls，每张台账表对应一个工作表。</p>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-3 min-h-[48px]">所有焊枪编号台账分类打包导出为一个 zip，每个分类对应一个独立的 xls 工作簿（分类下每张台账表对应一个工作表）。</p>
                   <label className="block mb-2">
                     <span className="text-xs font-bold text-gray-600">导出文件保留天数</span>
                     <input type="number" min={1} max={3650} value={maintenanceSettings.gunLedgerExportRetentionDays} onChange={(e) => updateMaintenanceField('gunLedgerExportRetentionDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-400" />
@@ -2360,75 +2360,6 @@ const SystemSettings = () => {
                     className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
                   />
                   <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings.randomAssignmentColor ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
-                </div>
-              </div>
-
-              <div className="p-5 bg-gray-50 rounded-xl border border-gray-100">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <div className="font-bold text-gray-700">默认工时规则</div>
-                    <div className="text-xs text-gray-400 mt-1">
-                      主页面新增任务时，勾选「确认图 / 设计 / 确认图修改」后，按枪名首个「-」前字符（C / X）自动填充默认工时
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => updateSettings({ defaultGunHours: { confirm: { C: 1.5, X: 2 }, design: { C: 2.5, X: 3 }, confirmModify: { C: 0.5, X: 0.75 } } })}
-                    disabled={!isSuperAdmin}
-                    className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${
-                      isSuperAdmin
-                        ? 'bg-white text-gray-600 border border-gray-200 hover:border-blue-300 hover:text-blue-600'
-                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    }`}
-                  >
-                    恢复默认
-                  </button>
-                </div>
-                <div className="overflow-hidden rounded-xl border border-gray-200">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-gray-100 text-gray-600">
-                        <th className="px-4 py-2.5 text-left font-bold">任务类型</th>
-                        <th className="px-4 py-2.5 text-center font-bold">C 类枪名</th>
-                        <th className="px-4 py-2.5 text-center font-bold">X 类枪名</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {([
-                        { key: 'confirm' as const, label: '确认图' },
-                        { key: 'design' as const, label: '设计' },
-                        { key: 'confirmModify' as const, label: '确认图修改' }
-                      ]).map(row => (
-                        <tr key={row.key} className="border-t border-gray-200">
-                          <td className="px-4 py-2.5 font-bold text-gray-700">{row.label}</td>
-                          {(['C', 'X'] as const).map(type => (
-                            <td key={type} className="px-4 py-2.5 text-center">
-                              <input
-                                type="number"
-                                step="0.25"
-                                min="0"
-                                max="24"
-                                value={settings.defaultGunHours?.[row.key]?.[type] ?? ''}
-                                onChange={(e) => {
-                                  const num = parseFloat(e.target.value);
-                                  if (!Number.isFinite(num) || num < 0 || num > 24) return;
-                                  const current: DefaultGunHours = settings.defaultGunHours || defaultSettings.defaultGunHours!;
-                                  const typeRow: GunHoursByType = { ...current[row.key], [type]: num };
-                                  updateSettings({
-                                    defaultGunHours: { ...current, [row.key]: typeRow }
-                                  });
-                                }}
-                                disabled={!isSuperAdmin}
-                                className={`w-20 h-9 text-center bg-white border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${!isSuperAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}
-                              />
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="text-xs text-gray-400 mt-2">
-                  枪名示例：<span className="font-mono text-gray-600">SRTC-2C-15001</span>（首个「-」前为 C）、<span className="font-mono text-gray-600">SRTX-2C-25001</span>（首个「-」前为 X）
                 </div>
               </div>
             </div>

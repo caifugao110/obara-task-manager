@@ -120,6 +120,64 @@ const GUN_NAME_PATTERNS = {
     'C': { prefix: 'SDZC-3C', start: 30500, pad: 5 },
     'X': { prefix: 'SDZX-3C', start: 30500, pad: 5 },
   },
+  'GLOBAL': {
+    'RBC': { prefix: 'RBC', start: 14000, pad: 5 },
+    'LAW': { prefix: 'LAW', start: 24080, pad: 5 },
+  },
+  'TOYOTA': {
+    'C01': { prefix: 'C01-C', start: 500,  pad: 4 },
+    'C02': { prefix: 'C02-C', start: 120,  pad: 4 },
+    'C03': { prefix: 'C03-C', start: 130,  pad: 4 },
+    'C04': { prefix: 'C04-C', start: 620,  pad: 4 },
+    'C05': { prefix: 'C05-C', start: 180,  pad: 4 },
+    'C06': { prefix: 'C06-C', start: 50,   pad: 4 },
+    'C07': { prefix: 'C07-C', start: 30,   pad: 4 },
+    'C08': { prefix: 'C08-C', start: 10,   pad: 4 },
+    'C09': { prefix: 'C09-C', start: 10,   pad: 4 },
+    'C10': { prefix: 'C10-C', start: 1,    pad: 4 },
+    'X01': { prefix: 'X01-C', start: 30,   pad: 4 },
+    'X02': { prefix: 'X02-C', start: 40,   pad: 4 },
+    'X03': { prefix: 'X03-C', start: 1420, pad: 4 },
+    'X04': { prefix: 'X04-C', start: 700,  pad: 4 },
+    'X05': { prefix: 'X05-C', start: 380,  pad: 4 },
+    'X06': { prefix: 'X06-C', start: 200,  pad: 4 },
+    'X07': { prefix: 'X07-C', start: 180,  pad: 4 },
+    'X08': { prefix: 'X08-C', start: 210,  pad: 4 },
+    'X09': { prefix: 'X09-C', start: 120,  pad: 4 },
+    'X10': { prefix: 'X10-C', start: 50,   pad: 4 },
+    'X11': { prefix: 'X11-C', start: 1,    pad: 4 },
+    'X12': { prefix: 'X12-C', start: 10,   pad: 4 },
+  },
+  'PSW': {
+    'UC':  { prefix: 'UC-C',  start: 12700, pad: 5 },
+    'UX':  { prefix: 'UX-C',  start: 11500, pad: 5 },
+    'UCR': { prefix: 'UCR-C', start: 1050,  pad: 4 },
+    'UXR': { prefix: 'UXR-C', start: 950,   pad: 4 },
+    'NOC': { prefix: 'NOC-C', start: 2130,  pad: 4 },
+    'NOX': { prefix: 'NOX-C', start: 2320,  pad: 4 },
+  },
+  'IT': {
+    'PTC':     { prefix: 'PTC-C',   start: 3750,  pad: 4 },
+    'PTX':     { prefix: 'PTX-C',   start: 4960,  pad: 4 },
+    'PTC-ALC': { prefix: 'PTC-ALC', start: 30,    pad: 4 },
+    'PTX-ALC': { prefix: 'PTX-ALC', start: 30,    pad: 4 },
+  },
+  'ROBOT': {
+    'RTC': { prefix: 'RTC-C', start: 2350, pad: 4 },
+    'RTX': { prefix: 'RTX-C', start: 2400, pad: 4 },
+    'RC':  { prefix: 'RC-C',  start: 25,   pad: 4 },
+    'RX':  { prefix: 'RX-C',  start: 35,   pad: 4 },
+  },
+  'EQ': {
+    'PE1':  { prefix: 'PE1-C',  start: 1550, pad: 4 },
+    'PE2':  { prefix: 'PE2-C',  start: 250,  pad: 4 },
+    'R':    { prefix: 'R-C',    start: 260,  pad: 4 },
+    'RR':   { prefix: 'RR-C',   start: 5,    pad: 4 },
+    'SEN':  { prefix: 'SEN-C',  start: 150,  pad: 4 },
+    'SEU':  { prefix: 'SEU-C',  start: 6,    pad: 4 },
+    'SET':  { prefix: 'SET-C',  start: 11,   pad: 4 },
+    'STUD': { prefix: 'STUD-C', start: 65,   pad: 4 },
+  },
 };
 
 // 获取表的生效焊枪名规则：优先表级 gunNameRule，其次内置默认模式（与前端一致）
@@ -147,8 +205,30 @@ const cleanUserMeta = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? 
 // GET /api/gun-ledger —— 取全部数据
 router.get('/', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+  const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
   res.json(gunLedger);
+}));
+
+// GET /api/gun-ledger/gun-name-locations —— 枪名 → 所在分类/表 的轻量索引
+// 仅统计真实行（不含前端占位预留行）；同名枪名以分类/表顺序首次出现位置为准。
+// 供主页面按枪名所在表匹配专用默认工时规则。
+router.get('/gun-name-locations', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const categories = data.gunLedger?.categories || {};
+  const locations = {};
+  Object.keys(categories).forEach(category => {
+    const list = Array.isArray(categories[category]) ? categories[category] : [];
+    list.forEach(table => {
+      const tableName = String(table?.name || '');
+      (Array.isArray(table?.rows) ? table.rows : []).forEach(row => {
+        const gunName = String(row?.gunName || '').trim();
+        if (gunName && !Object.prototype.hasOwnProperty.call(locations, gunName)) {
+          locations[gunName] = { category, tableName };
+        }
+      });
+    });
+  });
+  res.json({ locations });
 }));
 
 // 下载文件名时间戳：YYYYMMDD-HHmmss
@@ -201,10 +281,7 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('gunLedger')], a
     return res.send(buffer);
   }
 
-  const entries = names.map((category) => ({
-    name: `gun-ledger-${gunExport.safeFilePart(category)}-${timestamp}.xls`,
-    data: gunExport.buildCategoryBuffer(gunLedger, category)
-  }));
+  const entries = gunExport.buildCategoryZipEntries(gunLedger, names, timestamp);
   const zipBuffer = createZipBuffer(entries);
   const zipName = `gun-ledger-export-${timestamp}.zip`;
   res.setHeader('Content-Type', 'application/zip');
@@ -275,9 +352,9 @@ router.post('/import',
 
     const data = db.readDb();
     if (!data.gunLedger) {
-      data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+      data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
     }
-    if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] };
+    if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] };
 
     const isNewCategory = !Object.prototype.hasOwnProperty.call(data.gunLedger.categories, targetCategory);
     const oldTables = isNewCategory ? [] : (data.gunLedger.categories[targetCategory] || []);
@@ -364,8 +441,8 @@ router.post('/categories', [authMiddleware, adminMiddleware, accessSettingsMiddl
     return res.status(400).json({ message: '分类名含非法字符' });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
-  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] };
 
   // 分类名唯一（大小写敏感）
   const exists = Object.prototype.hasOwnProperty.call(data.gunLedger.categories, name);
@@ -395,8 +472,8 @@ router.delete('/categories/:category', [authMiddleware, superAdminMiddleware, ac
   if (!Object.prototype.hasOwnProperty.call(data.gunLedger.categories, category)) {
     return res.status(404).json({ message: '分类未找到' });
   }
-  // 默认三大分类不允许删除
-  if (['X2C', 'X2C-V2', 'X2C-V3'].includes(category)) {
+  // 默认分类不允许删除
+  if (['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA'].includes(category)) {
     return res.status(400).json({ message: '默认分类不允许删除' });
   }
   // 释放该分类下所有表的编辑锁
@@ -425,8 +502,8 @@ router.post('/categories/:category/tables', [authMiddleware, adminMiddleware, ac
     return res.status(400).json({ message: '表名不能为空', details: error.details.map(d => d.message) });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
-  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] };
   if (!Array.isArray(data.gunLedger.categories[category])) data.gunLedger.categories[category] = [];
 
   // 同类下表名唯一
@@ -487,6 +564,50 @@ router.patch('/tables/order', [authMiddleware, adminMiddleware, accessSettingsMi
   if (io) io.emit('gun_ledger_updated', { action: 'reorder_tables', category: value.category, order: value.order });
 
   res.json({ category: value.category, order: value.order });
+}));
+
+// POST /api/gun-ledger/tables/order/default —— 恢复某分类下表格的默认顺序（仅超管）
+// 默认分类按其内置表名顺序排列；自定义表排在默认表之后，保持当前相对顺序
+router.post('/tables/order/default', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const schema = Joi.object({ category: Joi.string().min(1).max(30).required() });
+  const { error, value } = schema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '分类数据不正确', details: error.details.map(d => d.message) });
+  }
+  if (!isValidCategoryName(value.category)) {
+    return res.status(400).json({ message: '分类名含非法字符' });
+  }
+  const defaultNames = db.getDefaultGunTables(value.category);
+  if (!defaultNames) {
+    return res.status(400).json({ message: '该分类无默认表格顺序' });
+  }
+  const data = db.readDb();
+  if (!data.gunLedger || !data.gunLedger.categories) {
+    return res.status(404).json({ message: '台账数据未找到' });
+  }
+  const list = data.gunLedger.categories[value.category];
+  if (!Array.isArray(list)) {
+    return res.status(404).json({ message: '分类未找到' });
+  }
+  // 默认表按内置表名顺序在前，其余表保持当前相对顺序在后
+  const byName = new Map(list.map(t => [String(t && t.name), t]));
+  const used = new Set();
+  const orderedList = [];
+  for (const name of defaultNames) {
+    const t = byName.get(name);
+    if (t && !used.has(t.id)) { orderedList.push(t); used.add(t.id); }
+  }
+  for (const t of list) {
+    if (t && !used.has(t.id)) { orderedList.push(t); used.add(t.id); }
+  }
+  data.gunLedger.categories[value.category] = orderedList;
+  await db.writeDb(data);
+
+  const order = orderedList.map(t => t.id);
+  const io = req.app.get('io');
+  if (io) io.emit('gun_ledger_updated', { action: 'reorder_tables', category: value.category, order });
+
+  res.json({ category: value.category, order });
 }));
 
 // PATCH /api/gun-ledger/tables/:tableId —— 改表名
@@ -657,6 +778,33 @@ router.patch('/categories/order', [authMiddleware, adminMiddleware, accessSettin
   res.json({ order: value.order });
 }));
 
+// POST /api/gun-ledger/categories/order/default —— 恢复分类默认顺序（仅超管）
+// 默认分类按内置顺序在前；自定义分类排在默认分类之后，保持当前相对顺序
+router.post('/categories/order/default', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  if (!data.gunLedger || !data.gunLedger.categories) {
+    return res.status(404).json({ message: '台账数据未找到' });
+  }
+  const defaults = db.getDefaultGunCategories();
+  const current = Object.keys(data.gunLedger.categories);
+  const ordered = [];
+  for (const cat of defaults) {
+    if (current.includes(cat)) ordered.push(cat);
+  }
+  for (const cat of current) {
+    if (!defaults.includes(cat)) ordered.push(cat);
+  }
+  const rebuilt = {};
+  ordered.forEach(name => { rebuilt[name] = data.gunLedger.categories[name]; });
+  data.gunLedger.categories = rebuilt;
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  if (io) io.emit('gun_ledger_updated', { action: 'reorder_categories', order: ordered });
+
+  res.json({ order: ordered });
+}));
+
 // GET /api/gun-ledger/default-persons —— 默认担当人员
 router.get('/default-persons', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
@@ -673,7 +821,7 @@ router.put('/default-persons', [authMiddleware, superAdminMiddleware], asyncHand
     return res.status(400).json({ message: '默认担当人员格式不正确', details: error.details.map(d => d.message) });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: [] };
   const persons = value.map(p => String(p).trim()).filter(Boolean);
   data.gunLedger.defaultResponsiblePersons = persons;
   await db.writeDb(data);
@@ -687,7 +835,7 @@ router.put('/default-persons', [authMiddleware, superAdminMiddleware], asyncHand
 // POST /api/gun-ledger/default-persons/reset —— 重置为系统默认担当人员（超管）
 router.post('/default-persons/reset', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [] }, defaultResponsiblePersons: [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: [] };
   data.gunLedger.defaultResponsiblePersons = [...DEFAULT_RESPONSIBLE_PERSONS];
   await db.writeDb(data);
 

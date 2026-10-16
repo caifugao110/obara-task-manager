@@ -393,13 +393,33 @@ const buildDefaultGunLedger = () => {
     categories: {
       'X2C': tables(['SRTC', 'SRTX', 'SRTV', 'SRTC-ALA-DC', 'SRTX-ALA-DC', 'SRTD', 'SRTS'], 0),
       'X2C-V2': tables(['C', 'X'], 100),
-      'X2C-V3': tables(['C', 'X'], 200)
+      'X2C-V3': tables(['C', 'X'], 200),
+      'GLOBAL': tables(['RBC', 'LAW'], 250),
+      'PSW': tables(['UC', 'UX', 'UCR', 'UXR', 'NOC', 'NOX'], 400),
+      'IT': tables(['PTC', 'PTX', 'PTC-ALC', 'PTX-ALC'], 500),
+      'ROBOT': tables(['RTC', 'RTX', 'RC', 'RX'], 600),
+      'EQ': tables(['PE1', 'PE2', 'R', 'RR', 'SEN', 'SEU', 'SET', 'STUD'], 700),
+      'TOYOTA': tables(
+        ['C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
+         'X01', 'X02', 'X03', 'X04', 'X05', 'X06', 'X07', 'X08', 'X09', 'X10', 'X11', 'X12'],
+        300
+      )
     },
     defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪']
   };
 };
 
-const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3'];
+const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA'];
+
+// 各默认分类的内置默认表名顺序（供「恢复默认排序」使用；分类间顺序与 DEFAULT_CATEGORIES 一致）
+const DEFAULT_GUN_TABLES = (() => {
+  const base = buildDefaultGunLedger();
+  const map = {};
+  for (const cat of Object.keys(base.categories)) {
+    map[cat] = base.categories[cat].map(t => t.name);
+  }
+  return map;
+})();
 
 // 焊枪名自动生成规则（台账初始化设置，超管可按表配置）
 const normalizeGunNameRule = (rule) => {
@@ -475,11 +495,14 @@ const normalizeGunLedger = (gunLedger) => {
   const categories = gunLedger.categories && typeof gunLedger.categories === 'object' && !Array.isArray(gunLedger.categories)
     ? gunLedger.categories
     : {};
-  // 保留所有已有分类（含用户新增），并确保三个默认分类存在
+  // 保留所有已有分类（含用户新增），并确保默认分类存在；
+  // 存量数据中缺失的默认分类（如新增的 TOYOTA）自动播种其默认表结构
   const merged = {};
   // 先放入默认分类，保证顺序
   for (const cat of DEFAULT_CATEGORIES) {
-    merged[cat] = normalizeTableList(categories[cat]);
+    merged[cat] = Object.prototype.hasOwnProperty.call(categories, cat)
+      ? normalizeTableList(categories[cat])
+      : normalizeTableList(base.categories[cat]);
   }
   // 再放入用户新增的分类（非默认分类）
   for (const cat of Object.keys(categories)) {
@@ -856,6 +879,9 @@ module.exports = {
   getRawDb,
   getDbPath,
   init,
+  // 台账默认结构（供「恢复默认排序」等使用）
+  getDefaultGunCategories: () => [...DEFAULT_CATEGORIES],
+  getDefaultGunTables: (category) => (DEFAULT_GUN_TABLES[category] ? [...DEFAULT_GUN_TABLES[category]] : undefined),
   // 操作日志独立表（避免每请求整库读写）
   appendAuditLogEntry,
   listAuditLogs,

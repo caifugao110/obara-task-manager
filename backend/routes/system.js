@@ -22,6 +22,76 @@ const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
+// TOYOTA 分类专用工时：C01-C10 同 C01（确认图 1 / 确认图修改 1 / 设计 2），
+// X01-X12 同 X01（确认图 1 / 确认图修改 1 / 设计 2.5）
+const buildToyotaTableGunHours = () => {
+  const map = {};
+  for (let i = 1; i <= 10; i += 1) {
+    map[`C${String(i).padStart(2, '0')}`] = { confirm: 1, confirmModify: 1, design: 2 };
+  }
+  for (let i = 1; i <= 12; i += 1) {
+    map[`X${String(i).padStart(2, '0')}`] = { confirm: 1, confirmModify: 1, design: 2.5 };
+  }
+  return map;
+};
+
+// 各分类下每张台账表的专用默认工时（确认图 / 确认图修改 / 设计，单位 h）。
+// 枪名命中所在表时直接使用该表数值；表名需与焊枪台账中的实际表名一致。
+const BUILTIN_TABLE_GUN_HOURS = {
+  X2C: {
+    SRTC: { confirm: 1.5, confirmModify: 0.5, design: 2.5 },
+    SRTX: { confirm: 2, confirmModify: 0.75, design: 3 },
+    SRTV: { confirm: 2, confirmModify: 0.75, design: 3 },
+    'SRTC-ALA-DC': { confirm: 1.5, confirmModify: 0.5, design: 3 },
+    'SRTX-ALA-DC': { confirm: 2, confirmModify: 0.75, design: 3.5 },
+    SRTD: { confirm: 3, confirmModify: 1, design: 3 },
+    SRTS: { confirm: 2.5, confirmModify: 0.75, design: 3 }
+  },
+  'X2C-V2': {
+    C: { confirm: 1.5, confirmModify: 0.5, design: 2.5 },
+    X: { confirm: 2, confirmModify: 0.75, design: 3 }
+  },
+  'X2C-V3': {
+    C: { confirm: 1.5, confirmModify: 0.5, design: 2.5 },
+    X: { confirm: 2, confirmModify: 0.75, design: 3 }
+  },
+  GLOBAL: {
+    RBC: { confirm: 2, confirmModify: 0.75, design: 3 },
+    LAW: { confirm: 2, confirmModify: 0.75, design: 3 }
+  },
+  PSW: {
+    UC: { confirm: 1.5, confirmModify: 0.5, design: 2 },
+    UX: { confirm: 2, confirmModify: 0.5, design: 2.5 },
+    UCR: { confirm: 1.5, confirmModify: 1, design: 2.5 },
+    UXR: { confirm: 2, confirmModify: 1, design: 3 },
+    NOC: { confirm: 2, confirmModify: 1.5, design: 2.5 },
+    NOX: { confirm: 2, confirmModify: 1.5, design: 3 }
+  },
+  IT: {
+    PTC: { confirm: 1.5, confirmModify: 0.5, design: 2 },
+    PTX: { confirm: 1.5, confirmModify: 0.5, design: 2.5 },
+    'PTC-ALC': { confirm: 1.5, confirmModify: 0.5, design: 2 },
+    'PTX-ALC': { confirm: 1.5, confirmModify: 0.5, design: 2.5 }
+  },
+  ROBOT: {
+    RTC: { confirm: 4, confirmModify: 2, design: 4 },
+    RTX: { confirm: 6, confirmModify: 2.5, design: 8 },
+    RC: { confirm: 4, confirmModify: 2, design: 4 },
+    RX: { confirm: 6, confirmModify: 2.5, design: 8 }
+  },
+  EQ: {
+    PE1: { confirm: 2, confirmModify: 1, design: 3 },
+    PE2: { confirm: 2.5, confirmModify: 1.5, design: 4 },
+    R: { confirm: 2, confirmModify: 1, design: 3 },
+    RR: { confirm: 2.5, confirmModify: 1.5, design: 4 },
+    SEN: { confirm: 2, confirmModify: 1, design: 3 },
+    SEU: { confirm: 2, confirmModify: 1, design: 3 },
+    SET: { confirm: 2, confirmModify: 1, design: 3 },
+    STUD: { confirm: 2, confirmModify: 1, design: 3 }
+  },
+  TOYOTA: buildToyotaTableGunHours()
+};
+
 const defaultSystemSettings = {
   allowMultiDevice: true,
   allowUserDesignPlanColorMark: true,
@@ -34,7 +104,9 @@ const defaultSystemSettings = {
     confirm: { C: 1.5, X: 2 },
     design: { C: 2.5, X: 3 },
     confirmModify: { C: 0.5, X: 0.75 }
-  }
+  },
+  // 分类 → 表名 → { confirm, confirmModify, design }，未配置的表回退 defaultGunHours
+  tableGunHours: BUILTIN_TABLE_GUN_HOURS
 };
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
@@ -57,6 +129,13 @@ const gunHoursTypeSchema = Joi.object({
   X: Joi.number().min(0).max(24).required()
 });
 
+// 单张台账表的专用工时：确认图 / 确认图修改 / 设计（h，0-24）
+const tableGunHoursCellSchema = Joi.object({
+  confirm: Joi.number().min(0).max(24).required(),
+  confirmModify: Joi.number().min(0).max(24).required(),
+  design: Joi.number().min(0).max(24).required()
+});
+
 const systemSettingsSchema = Joi.object({
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
@@ -69,7 +148,11 @@ const systemSettingsSchema = Joi.object({
     confirm: gunHoursTypeSchema.required(),
     design: gunHoursTypeSchema.required(),
     confirmModify: gunHoursTypeSchema.required()
-  }).optional()
+  }).optional(),
+  tableGunHours: Joi.object().pattern(
+    Joi.string().trim().min(1).max(30),
+    Joi.object().pattern(Joi.string().trim().min(1).max(50), tableGunHoursCellSchema)
+  ).optional()
 });
 
 const maintenanceSettingsSchema = Joi.object({
@@ -102,6 +185,45 @@ const normalizeGunHours = (raw, fallback) => {
   };
 };
 
+const isValidHoursCell = (cell) => {
+  if (!cell || typeof cell !== 'object') return false;
+  return ['confirm', 'confirmModify', 'design'].every(
+    key => typeof cell[key] === 'number' && Number.isFinite(cell[key]) && cell[key] >= 0 && cell[key] <= 24
+  );
+};
+
+// 专用工时归一化：以内置值为底，再覆盖超管已保存的覆盖项（含用户自建表的配置）；
+// 非法单元格回退内置值（无内置值则丢弃，不下发）
+const normalizeTableGunHours = (raw) => {
+  const result = {};
+  const mergedCategories = new Set([
+    ...Object.keys(BUILTIN_TABLE_GUN_HOURS),
+    ...(raw && typeof raw === 'object' ? Object.keys(raw) : [])
+  ]);
+  mergedCategories.forEach(category => {
+    const builtinTables = BUILTIN_TABLE_GUN_HOURS[category] || {};
+    const rawTables = raw && typeof raw === 'object' && raw[category] && typeof raw[category] === 'object'
+      ? raw[category]
+      : {};
+    const tableNames = new Set([...Object.keys(builtinTables), ...Object.keys(rawTables)]);
+    const categoryMap = {};
+    tableNames.forEach(tableName => {
+      const rawCell = rawTables[tableName];
+      if (isValidHoursCell(rawCell)) {
+        categoryMap[tableName] = {
+          confirm: rawCell.confirm,
+          confirmModify: rawCell.confirmModify,
+          design: rawCell.design
+        };
+      } else if (builtinTables[tableName]) {
+        categoryMap[tableName] = { ...builtinTables[tableName] };
+      }
+    });
+    if (Object.keys(categoryMap).length > 0) result[category] = categoryMap;
+  });
+  return result;
+};
+
 const normalizeSystemSettings = (settings = {}) => {
   const merged = { ...defaultSystemSettings, ...settings };
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(settings, 'allowUserDesignPlanColorMark');
@@ -122,7 +244,8 @@ const normalizeSystemSettings = (settings = {}) => {
       confirm: normalizeGunHours(rawGunHours.confirm, fallbackGunHours.confirm),
       design: normalizeGunHours(rawGunHours.design, fallbackGunHours.design),
       confirmModify: normalizeGunHours(rawGunHours.confirmModify, fallbackGunHours.confirmModify)
-    }
+    },
+    tableGunHours: normalizeTableGunHours(merged.tableGunHours)
   };
 };
 

@@ -186,4 +186,4 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 3. 保持 `DISABLE_REGISTRATION=true`；
 4. 全新部署可把 `DB_PASSWORD` / `REDIS_PASSWORD` 改为强口令（**已有数据卷的部署勿改**，会导致数据库/Redis 无法登录）。
 
-最后更新：2026-10-15
+最后更新：2026-10-16

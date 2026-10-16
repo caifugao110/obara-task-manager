@@ -27,11 +27,21 @@ import {
   Zap,
   FolderOpen,
   Clock,
+  RotateCcw,
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import { useSystemSettings } from '../context/SystemSettingsContext';
+import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsContext';
 import { useDebounce } from '../utils/debounce';
+import {
+  BUILTIN_TABLE_GUN_HOURS,
+  FALLBACK_GUN_HOURS,
+  GUN_HOURS_TASK_LABELS,
+  GunHoursTaskType,
+  TableGunHoursMap,
+  getEffectiveTableGunHours,
+  resolveGunHours,
+} from '../utils/gunHoursRules';
 
 interface Toast { message: string; type: 'success' | 'error'; id: number; center?: boolean }
 
@@ -60,6 +70,11 @@ interface GunNameRule {
   start: number;
   pad: number;
 }
+
+// 默认工时规则弹窗中的单元格草稿：空串代表未配置（仅可能出现在用户自建表）
+type HoursDraftValue = number | '';
+interface HoursDraftCell { confirm: HoursDraftValue; confirmModify: HoursDraftValue; design: HoursDraftValue }
+type TableHoursDraft = Record<string, Record<string, HoursDraftCell>>;
 
 interface GunTable { id: string; name: string; rows: GunRow[]; gunNameRule?: GunNameRule | null; }
 
@@ -98,7 +113,7 @@ interface TableLockSession {
 }
 
 // 默认分类（用于排序与删除保护）
-const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3'];
+const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA'];
 
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 const PLACEHOLDER_COUNT = 10;
@@ -131,6 +146,64 @@ const GUN_NAME_PATTERNS: Record<string, Record<string, { prefix: string; start: 
   'X2C-V3': {
     'C': { prefix: 'SDZC-3C', start: 30500, pad: 5 },
     'X': { prefix: 'SDZX-3C', start: 30500, pad: 5 },
+  },
+  'GLOBAL': {
+    'RBC': { prefix: 'RBC', start: 14000, pad: 5 },
+    'LAW': { prefix: 'LAW', start: 24080, pad: 5 },
+  },
+  'TOYOTA': {
+    'C01': { prefix: 'C01-C', start: 500,  pad: 4 },
+    'C02': { prefix: 'C02-C', start: 120,  pad: 4 },
+    'C03': { prefix: 'C03-C', start: 130,  pad: 4 },
+    'C04': { prefix: 'C04-C', start: 620,  pad: 4 },
+    'C05': { prefix: 'C05-C', start: 180,  pad: 4 },
+    'C06': { prefix: 'C06-C', start: 50,   pad: 4 },
+    'C07': { prefix: 'C07-C', start: 30,   pad: 4 },
+    'C08': { prefix: 'C08-C', start: 10,   pad: 4 },
+    'C09': { prefix: 'C09-C', start: 10,   pad: 4 },
+    'C10': { prefix: 'C10-C', start: 1,    pad: 4 },
+    'X01': { prefix: 'X01-C', start: 30,   pad: 4 },
+    'X02': { prefix: 'X02-C', start: 40,   pad: 4 },
+    'X03': { prefix: 'X03-C', start: 1420, pad: 4 },
+    'X04': { prefix: 'X04-C', start: 700,  pad: 4 },
+    'X05': { prefix: 'X05-C', start: 380,  pad: 4 },
+    'X06': { prefix: 'X06-C', start: 200,  pad: 4 },
+    'X07': { prefix: 'X07-C', start: 180,  pad: 4 },
+    'X08': { prefix: 'X08-C', start: 210,  pad: 4 },
+    'X09': { prefix: 'X09-C', start: 120,  pad: 4 },
+    'X10': { prefix: 'X10-C', start: 50,   pad: 4 },
+    'X11': { prefix: 'X11-C', start: 1,    pad: 4 },
+    'X12': { prefix: 'X12-C', start: 10,   pad: 4 },
+  },
+  'PSW': {
+    'UC':  { prefix: 'UC-C',  start: 12700, pad: 5 },
+    'UX':  { prefix: 'UX-C',  start: 11500, pad: 5 },
+    'UCR': { prefix: 'UCR-C', start: 1050,  pad: 4 },
+    'UXR': { prefix: 'UXR-C', start: 950,   pad: 4 },
+    'NOC': { prefix: 'NOC-C', start: 2130,  pad: 4 },
+    'NOX': { prefix: 'NOX-C', start: 2320,  pad: 4 },
+  },
+  'IT': {
+    'PTC':     { prefix: 'PTC-C',   start: 3750,  pad: 4 },
+    'PTX':     { prefix: 'PTX-C',   start: 4960,  pad: 4 },
+    'PTC-ALC': { prefix: 'PTC-ALC', start: 30,    pad: 4 },
+    'PTX-ALC': { prefix: 'PTX-ALC', start: 30,    pad: 4 },
+  },
+  'ROBOT': {
+    'RTC': { prefix: 'RTC-C', start: 2350, pad: 4 },
+    'RTX': { prefix: 'RTX-C', start: 2400, pad: 4 },
+    'RC':  { prefix: 'RC-C',  start: 25,   pad: 4 },
+    'RX':  { prefix: 'RX-C',  start: 35,   pad: 4 },
+  },
+  'EQ': {
+    'PE1':  { prefix: 'PE1-C',  start: 1550, pad: 4 },
+    'PE2':  { prefix: 'PE2-C',  start: 250,  pad: 4 },
+    'R':    { prefix: 'R-C',    start: 260,  pad: 4 },
+    'RR':   { prefix: 'RR-C',   start: 5,    pad: 4 },
+    'SEN':  { prefix: 'SEN-C',  start: 150,  pad: 4 },
+    'SEU':  { prefix: 'SEU-C',  start: 6,    pad: 4 },
+    'SET':  { prefix: 'SET-C',  start: 11,   pad: 4 },
+    'STUD': { prefix: 'STUD-C', start: 65,   pad: 4 },
   },
 };
 
@@ -186,14 +259,14 @@ const COLUMNS: { key: keyof GunRow | 'serialNumber' | 'clear'; label: string; wi
   { key: 'customer', label: '客户', width: 'w-96 min-w-[24rem]' },
   { key: 'time', label: '时间', width: 'w-24 min-w-[6rem]' },
   { key: 'responsiblePerson', label: '担当', width: 'w-24 min-w-[6rem]' },
-  { key: 'remarks', label: '备注', width: 'w-64 min-w-[16rem]' },
+  { key: 'remarks', label: '焊枪规格或备注', width: 'w-64 min-w-[16rem]' },
   { key: 'clear', label: '操作', width: 'w-24 min-w-[6rem]' },
 ];
 const EDITABLE_COLS = ['gunName', 'customer', 'time', 'responsiblePerson', 'remarks'] as const;
 
 const GunLedger: React.FC = () => {
   const { user, token, logout } = useAuth();
-  const { specNumberDigits, settings: systemSettings } = useSystemSettings();
+  const { specNumberDigits, settings: systemSettings, setSettings } = useSystemSettings();
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
@@ -230,6 +303,12 @@ const GunLedger: React.FC = () => {
   // 一键初始化（全部 / 某分类）：进行中标记 + 二次确认目标
   const [batchInitializing, setBatchInitializing] = useState(false);
   const [confirmBatch, setConfirmBatch] = useState<BatchInitTarget | null>(null);
+  // 默认工时规则弹窗（仅超管）：分类选择 → 分类详情两级；表专用规则草稿 + C/X 回退草稿
+  const [showHoursPanel, setShowHoursPanel] = useState(false);
+  const [hoursPanelCategory, setHoursPanelCategory] = useState<string | null>(null);
+  const [tableHoursDraft, setTableHoursDraft] = useState<TableHoursDraft>({});
+  const [fallbackHoursDraft, setFallbackHoursDraft] = useState<DefaultGunHours | null>(null);
+  const [hoursSaving, setHoursSaving] = useState(false);
   const [specLookupLoading, setSpecLookupLoading] = useState(false);
   // 已被主任务使用的焊枪名集合：命中者枪名显示天蓝色
   const [usedGunNames, setUsedGunNames] = useState<Set<string>>(new Set());
@@ -238,6 +317,10 @@ const GunLedger: React.FC = () => {
   const [addTableOpen, setAddTableOpen] = useState(false);
   const [addTableValue, setAddTableValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // 恢复默认排序确认弹窗：'categories' 恢复分类顺序；'tables' 恢复当前分类下表格顺序
+  const [restoreTarget, setRestoreTarget] = useState<'categories' | 'tables' | null>(null);
+  const [restoring, setRestoring] = useState(false);
 
   // 任务分配模式：勾选焊枪名后批量给设计人员创建确认图任务
   const [assignmentMode, setAssignmentMode] = useState(false);
@@ -388,21 +471,10 @@ const GunLedger: React.FC = () => {
     if (canAccess && isAdmin) fetchDesigners();
   }, [canAccess, isAdmin, fetchDesigners]);
 
-  // 焊枪名类型判断（复制自主页面 Dashboard）：取首个 '-' 前一字符，C/X
-  const getGunTypeFromName = (gunName: string): 'C' | 'X' | null => {
-    const name = String(gunName || '').trim();
-    const dashIdx = name.indexOf('-');
-    if (dashIdx <= 0) return null;
-    const ch = name.charAt(dashIdx - 1).toUpperCase();
-    return ch === 'C' || ch === 'X' ? ch : null;
-  };
-
-  // 确认图默认工时：从 systemSettings.defaultGunHours.confirm 取值
+  // 确认图默认工时：优先枪名所在表（当前打开表）的专用规则，未命中走 C/X 回退与兜底
   const getDefaultConfirmHours = (gunName: string): number => {
-    const gunType = getGunTypeFromName(gunName);
-    if (!gunType) return 0;
-    const configured = systemSettings.defaultGunHours?.confirm?.[gunType];
-    return typeof configured === 'number' && Number.isFinite(configured) ? configured : 0;
+    const location = activeTable ? { category: activeCategory, tableName: activeTable.name } : null;
+    return resolveGunHours('confirm', gunName, location, systemSettings) ?? 0;
   };
 
   // 当前分类的表
@@ -1261,6 +1333,146 @@ const GunLedger: React.FC = () => {
     }
   }, [authHeader, addToast, warnIfOffline]);
 
+  // ===== 默认工时规则：按表专用规则 + C/X 机型回退规则 =====
+  // 打开弹窗：按台账实际存在的表生成草稿，已配置覆盖值优先，否则预填内置专用规则；
+  // 用户自建且未配置过的表三个输入框留空（保存时跳过，运行时回退 C/X 规则）
+  const openHoursPanel = useCallback(() => {
+    if (warnIfOffline()) return;
+    if (!ledger) return;
+    const draft: TableHoursDraft = {};
+    Object.keys(ledger.categories).forEach(cat => {
+      draft[cat] = {};
+      (ledger.categories[cat] || []).forEach(t => {
+        const cell = getEffectiveTableGunHours(systemSettings.tableGunHours, cat, t.name);
+        draft[cat][t.name] = cell
+          ? { confirm: cell.confirm, confirmModify: cell.confirmModify, design: cell.design }
+          : { confirm: '', confirmModify: '', design: '' };
+      });
+    });
+    const fb = systemSettings.defaultGunHours;
+    setTableHoursDraft(draft);
+    setFallbackHoursDraft(fb
+      ? {
+          confirm: { ...fb.confirm },
+          design: { ...fb.design },
+          confirmModify: { ...fb.confirmModify },
+        }
+      : null);
+    setHoursPanelCategory(null);
+    setShowHoursPanel(true);
+  }, [ledger, systemSettings, warnIfOffline]);
+
+  const updateTableHoursDraft = (
+    category: string,
+    tableName: string,
+    key: GunHoursTaskType,
+    raw: string
+  ) => {
+    setTableHoursDraft(prev => {
+      const current = prev[category]?.[tableName];
+      if (!current) return prev;
+      let value: HoursDraftValue = '';
+      if (raw !== '') {
+        const num = parseFloat(raw);
+        if (!Number.isFinite(num) || num < 0 || num > 24) return prev;
+        value = num;
+      }
+      return {
+        ...prev,
+        [category]: {
+          ...prev[category],
+          [tableName]: { ...current, [key]: value },
+        },
+      };
+    });
+  };
+
+  const updateFallbackHoursDraft = (
+    key: GunHoursTaskType,
+    gunType: 'C' | 'X',
+    raw: string
+  ) => {
+    const num = parseFloat(raw);
+    if (!Number.isFinite(num) || num < 0 || num > 24) return;
+    setFallbackHoursDraft(prev => prev ? { ...prev, [key]: { ...prev[key], [gunType]: num } } : prev);
+  };
+
+  // 某分类恢复为内置专用规则（无内置值的自建表清空）
+  const resetCategoryHoursDraft = (category: string) => {
+    if (!ledger) return;
+    setTableHoursDraft(prev => {
+      const next: TableHoursDraft = { ...prev, [category]: {} };
+      (ledger.categories[category] || []).forEach(t => {
+        const cell = BUILTIN_TABLE_GUN_HOURS[category]?.[t.name];
+        next[category][t.name] = cell
+          ? { confirm: cell.confirm, confirmModify: cell.confirmModify, design: cell.design }
+          : { confirm: '', confirmModify: '', design: '' };
+      });
+      return next;
+    });
+  };
+
+  // 全部恢复内置：表专用规则 + C/X 回退规则
+  const resetAllHoursDraft = () => {
+    if (!ledger) return;
+    const draft: TableHoursDraft = {};
+    Object.keys(ledger.categories).forEach(cat => {
+      draft[cat] = {};
+      (ledger.categories[cat] || []).forEach(t => {
+        const cell = BUILTIN_TABLE_GUN_HOURS[cat]?.[t.name];
+        draft[cat][t.name] = cell
+          ? { confirm: cell.confirm, confirmModify: cell.confirmModify, design: cell.design }
+          : { confirm: '', confirmModify: '', design: '' };
+      });
+    });
+    setTableHoursDraft(draft);
+    setFallbackHoursDraft({
+      confirm: { C: 1.5, X: 2 },
+      design: { C: 2.5, X: 3 },
+      confirmModify: { C: 0.5, X: 0.75 },
+    });
+  };
+
+  const saveHoursRules = useCallback(async () => {
+    if (warnIfOffline()) return;
+    if (!fallbackHoursDraft) return;
+    const tableGunHours: TableGunHoursMap = {};
+    for (const category of Object.keys(tableHoursDraft)) {
+      for (const [tableName, cell] of Object.entries(tableHoursDraft[category] || {})) {
+        const values = [cell.confirm, cell.confirmModify, cell.design];
+        const allEmpty = values.every(v => v === '');
+        if (allEmpty) continue;
+        if (values.some(v => v === '' || !Number.isFinite(v))) {
+          addToast(`表「${category} / ${tableName}」三个工时需全部填写或全部留空`, 'error', true);
+          setHoursPanelCategory(category);
+          return;
+        }
+        if (!tableGunHours[category]) tableGunHours[category] = {};
+        tableGunHours[category][tableName] = {
+          confirm: Number(cell.confirm),
+          confirmModify: Number(cell.confirmModify),
+          design: Number(cell.design),
+        };
+      }
+    }
+    setHoursSaving(true);
+    try {
+      const updated = {
+        ...systemSettings,
+        defaultGunHours: fallbackHoursDraft,
+        tableGunHours,
+      };
+      await axiosInstance.put('/system/settings', updated, authHeader);
+      setSettings(updated);
+      addToast('默认工时规则已保存', 'success');
+      setShowHoursPanel(false);
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '默认工时规则保存失败', 'error');
+    } finally {
+      setHoursSaving(false);
+    }
+  }, [fallbackHoursDraft, tableHoursDraft, systemSettings, authHeader, setSettings, addToast, warnIfOffline]);
+
   // 默认担当人员管理
   const handleAddPerson = useCallback(async (person: string) => {
     if (warnIfOffline()) return;
@@ -1352,6 +1564,45 @@ const GunLedger: React.FC = () => {
     axiosInstance.patch('/gun-ledger/tables/order', { category: activeCategory, order: nextOrder }, authHeader)
       .catch(() => addToast('表格顺序保存失败', 'error'));
   }, [ledger, activeCategory, authHeader, addToast, warnIfOffline]);
+
+  // 恢复默认排序（仅超管）：弹窗确认后调用后端接口，并用响应数据更新本地状态
+  const confirmRestoreDefaultOrder = useCallback(async () => {
+    if (!restoreTarget || warnIfOffline()) return;
+    setRestoring(true);
+    try {
+      if (restoreTarget === 'categories') {
+        const res = await axiosInstance.post('/gun-ledger/categories/order/default', {}, authHeader);
+        const order: string[] = res.data?.order || [];
+        setLedger(prev => {
+          if (!prev) return prev;
+          const rebuilt: Record<string, GunTable[]> = {};
+          order.forEach(k => { rebuilt[k] = prev.categories[k] || []; });
+          Object.keys(prev.categories).forEach(k => { if (!(k in rebuilt)) rebuilt[k] = prev.categories[k]; });
+          return { ...prev, categories: rebuilt };
+        });
+        addToast('分类顺序已恢复为默认排序', 'success');
+      } else {
+        const res = await axiosInstance.post('/gun-ledger/tables/order/default', { category: activeCategory }, authHeader);
+        const order: string[] = res.data?.order || [];
+        setLedger(prev => {
+          if (!prev) return prev;
+          const categories = { ...prev.categories };
+          const oldList = categories[activeCategory] || [];
+          const byId = new Map(oldList.map(t => [t.id, t]));
+          const reordered = order.map(id => byId.get(id)).filter(Boolean) as GunTable[];
+          oldList.forEach(t => { if (!order.includes(t.id)) reordered.push(t); });
+          categories[activeCategory] = reordered;
+          return { ...prev, categories };
+        });
+        addToast('表格顺序已恢复为默认排序', 'success');
+      }
+      setRestoreTarget(null);
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '恢复默认排序失败', 'error');
+    } finally {
+      setRestoring(false);
+    }
+  }, [restoreTarget, activeCategory, authHeader, addToast, warnIfOffline]);
 
   // 打开分类导出弹窗：默认勾选当前分类
   const openExportPanel = useCallback(() => {
@@ -1688,7 +1939,7 @@ const GunLedger: React.FC = () => {
 
   // Esc 关闭弹窗
   useEffect(() => {
-    if (!addCategoryOpen && !addTableOpen && !deleteCategoryTarget && !deleteTableTarget && !showPersonPanel && !showAccessPanel && !showInitPanel && !showExportPanel) return;
+    if (!addCategoryOpen && !addTableOpen && !deleteCategoryTarget && !deleteTableTarget && !showPersonPanel && !showAccessPanel && !showInitPanel && !showExportPanel && !restoreTarget) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (!submitting) { setAddCategoryOpen(false); setAddTableOpen(false); }
@@ -1699,11 +1950,12 @@ const GunLedger: React.FC = () => {
         setConfirmClearId(null);
         setConfirmBatch(null);
         if (!exporting) setShowExportPanel(false);
+        if (!restoring) setRestoreTarget(null);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget, showPersonPanel, showAccessPanel, showInitPanel, showExportPanel, submitting, deleting, exporting]);
+  }, [addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget, showPersonPanel, showAccessPanel, showInitPanel, showExportPanel, restoreTarget, submitting, deleting, exporting, restoring]);
 
   const closeAddModals = () => {
     if (!submitting) {
@@ -1788,6 +2040,11 @@ const GunLedger: React.FC = () => {
   // 详情界面：仅当分类仍存在时进入，否则留在分类选择界面
   const initDetailCategory = initPanelCategory && ledger?.categories[initPanelCategory] ? initPanelCategory : null;
   const initDetailTables = initDetailCategory ? (ledger?.categories[initDetailCategory] || []) : [];
+
+  // ===== 默认工时规则面板派生数据 =====
+  // 详情界面：仅当分类仍存在时进入，否则留在分类选择界面
+  const hoursDetailCategory = hoursPanelCategory && ledger?.categories[hoursPanelCategory] ? hoursPanelCategory : null;
+  const hoursDetailTables = hoursDetailCategory ? (ledger?.categories[hoursDetailCategory] || []) : [];
 
   // 台账初始化详情中的单表卡片（规则开关/前缀/起始/位数/保存/单表初始化）
   const renderInitTableCard = (t: GunTable) => {
@@ -1991,6 +2248,16 @@ const GunLedger: React.FC = () => {
         </div>
         {user && (
           <div className="flex items-center space-x-4">
+            {/* 默认工时规则：按台账表配置专用工时，超管专用 */}
+            {isSuperAdmin && (
+              <button
+                onClick={openHoursPanel}
+                className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
+                title="默认工时规则：按分类/表设置确认图、确认图修改、设计的默认工时"
+              >
+                <Clock size={18} /><span>默认工时规则</span>
+              </button>
+            )}
             {/* 台账初始化：按表配置焊枪名生成规则、焊枪名初始化 */}
             {isSuperAdmin && (
               <button
@@ -2053,15 +2320,26 @@ const GunLedger: React.FC = () => {
           <div className="shrink-0 p-3 border-b border-gray-200">
             <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide flex items-center justify-between">
               <span>分类</span>
-              {isAdmin && (
-                <button
-                  onClick={() => { if (warnIfOffline()) return; setAddCategoryValue(''); setAddCategoryOpen(true); }}
-                  className="text-emerald-600 hover:text-emerald-700"
-                  title="新增分类"
-                >
-                  <Plus size={16} />
-                </button>
-              )}
+              <div className="flex items-center gap-1">
+                {isSuperAdmin && (
+                  <button
+                    onClick={() => { if (warnIfOffline()) return; setRestoreTarget('categories'); }}
+                    className="text-gray-400 hover:text-emerald-600"
+                    title="恢复默认排序"
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                )}
+                {isAdmin && (
+                  <button
+                    onClick={() => { if (warnIfOffline()) return; setAddCategoryValue(''); setAddCategoryOpen(true); }}
+                    className="text-emerald-600 hover:text-emerald-700"
+                    title="新增分类"
+                  >
+                    <Plus size={16} />
+                  </button>
+                )}
+              </div>
             </div>
             <div className="flex flex-col gap-1">
               {Object.keys(ledger?.categories || {}).map((cat, idx, arr) => {
@@ -2121,11 +2399,23 @@ const GunLedger: React.FC = () => {
           <div className="flex-1 overflow-auto p-3">
             <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide flex items-center justify-between">
               <span>表格列表</span>
-              {isAdmin && (
-                <button onClick={() => { if (warnIfOffline()) return; setAddTableValue(''); setAddTableOpen(true); }} className="text-emerald-600 hover:text-emerald-700" title="新增表">
-                  <Plus size={16} />
-                </button>
-              )}
+              <div className="flex items-center gap-1">
+                {isSuperAdmin && (
+                  <button
+                    onClick={() => { if (warnIfOffline()) return; setRestoreTarget('tables'); }}
+                    disabled={!DEFAULT_CATEGORIES.includes(activeCategory)}
+                    className={`${DEFAULT_CATEGORIES.includes(activeCategory) ? 'text-gray-400 hover:text-emerald-600' : 'text-gray-300 cursor-not-allowed'}`}
+                    title={DEFAULT_CATEGORIES.includes(activeCategory) ? '恢复默认排序' : '自定义分类无默认表格顺序'}
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                )}
+                {isAdmin && (
+                  <button onClick={() => { if (warnIfOffline()) return; setAddTableValue(''); setAddTableOpen(true); }} className="text-emerald-600 hover:text-emerald-700" title="新增表">
+                    <Plus size={16} />
+                  </button>
+                )}
+              </div>
             </div>
             <div className="flex flex-col gap-1">
               {tables.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">暂无表格</div>}
@@ -2813,6 +3103,61 @@ const GunLedger: React.FC = () => {
         </div>
       )}
 
+      {/* 恢复默认排序确认弹窗（仅超管） */}
+      {restoreTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!restoring) setRestoreTarget(null); }} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <RotateCcw size={20} />
+                恢复默认排序
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => { if (!restoring) setRestoreTarget(null); }} disabled={restoring}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-start gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+                <AlertCircle size={22} className="text-emerald-500 shrink-0 mt-0.5" />
+                <div className="text-sm text-gray-700 leading-relaxed">
+                  {restoreTarget === 'categories' ? (
+                    <div>
+                      确定要将<span className="font-bold text-gray-900">分类顺序</span>恢复为系统默认排序吗？
+                      <br />
+                      自定义分类将排在默认分类之后，并保持当前相对顺序。
+                    </div>
+                  ) : (
+                    <div>
+                      确定要将分类 <span className="font-bold text-gray-900 bg-white px-1.5 py-0.5 rounded border border-gray-200">{activeCategory}</span> 下的<span className="font-bold text-gray-900">表格顺序</span>恢复为系统默认排序吗？
+                      <br />
+                      自定义表格将排在默认表格之后，并保持当前相对顺序。
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                onClick={() => setRestoreTarget(null)}
+                disabled={restoring}
+              >
+                取消
+              </button>
+              <button
+                className="px-5 py-2 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                onClick={confirmRestoreDefaultOrder}
+                disabled={restoring}
+              >
+                {restoring && <RefreshCw size={14} className="animate-spin" />}
+                {restoring ? '恢复中...' : '确认恢复'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 删除表确认弹窗 */}
       {deleteTableTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -2988,6 +3333,214 @@ const GunLedger: React.FC = () => {
                 onClick={() => setShowInitPanel(false)}
               >
                 完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 默认工时规则弹窗：先选分类，再逐表编辑专用工时；首页可编辑 C/X 回退规则 */}
+      {showHoursPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!hoursSaving) setShowHoursPanel(false); }} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[860px] max-w-[94vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2 font-bold text-lg min-w-0">
+                {hoursDetailCategory ? (
+                  <button
+                    onClick={() => setHoursPanelCategory(null)}
+                    className="p-1 rounded hover:bg-white/20 transition -ml-1"
+                    title="返回分类选择"
+                  >
+                    <ChevronLeft size={20} />
+                  </button>
+                ) : (
+                  <Clock size={20} />
+                )}
+                <span className="truncate">默认工时规则{hoursDetailCategory ? ` · ${hoursDetailCategory}` : ''}</span>
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition shrink-0" onClick={() => setShowHoursPanel(false)} disabled={hoursSaving}>
+                <X size={20} />
+              </button>
+            </div>
+
+            {hoursDetailCategory === null ? (
+              /* ===== 首页：规则说明 + C/X 回退规则 + 分类入口 ===== */
+              <div className="p-5 overflow-auto">
+                {/* 取值优先级说明 */}
+                <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 mb-4">
+                  <div className="font-bold text-sky-800 text-sm mb-2">自动填充工时的取值顺序</div>
+                  <ol className="text-xs text-sky-900/90 leading-relaxed space-y-1 list-decimal list-inside">
+                    <li>枪名存在于台账某张表中时，直接使用该表的<span className="font-bold">专用规则</span>；</li>
+                    <li>未匹配到专用规则时，按枪名首个「-」前字符（C / X）使用下方<span className="font-bold">机型回退规则</span>；</li>
+                    <li>
+                      仍无法匹配时使用固定兜底值：确认图
+                      <span className="font-bold"> {FALLBACK_GUN_HOURS.confirm}h</span>、确认图修改
+                      <span className="font-bold"> {FALLBACK_GUN_HOURS.confirmModify}h</span>、设计
+                      <span className="font-bold"> {FALLBACK_GUN_HOURS.design}h</span>。
+                    </li>
+                  </ol>
+                </div>
+
+                {/* C/X 机型回退规则 */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">机型回退规则（按枪名首个「-」前字符 C / X）</div>
+                  <button
+                    onClick={resetAllHoursDraft}
+                    disabled={hoursSaving}
+                    className="text-xs font-semibold text-gray-500 hover:text-emerald-600 disabled:opacity-50"
+                    title="表专用规则与机型回退规则全部恢复为系统内置值"
+                  >
+                    全部恢复内置默认
+                  </button>
+                </div>
+                <div className="overflow-hidden rounded-xl border border-gray-200 mb-5">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-100 text-gray-600">
+                        <th className="px-4 py-2.5 text-left font-bold">任务类型</th>
+                        <th className="px-4 py-2.5 text-center font-bold">C 类枪名</th>
+                        <th className="px-4 py-2.5 text-center font-bold">X 类枪名</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {GUN_HOURS_TASK_LABELS.map(row => (
+                        <tr key={row.key} className="border-t border-gray-200">
+                          <td className="px-4 py-2.5 font-bold text-gray-700">{row.label}</td>
+                          {(['C', 'X'] as const).map(type => (
+                            <td key={type} className="px-4 py-2.5 text-center">
+                              <input
+                                type="number"
+                                step="0.25"
+                                min="0"
+                                max="24"
+                                value={fallbackHoursDraft?.[row.key]?.[type] ?? ''}
+                                onChange={(e) => updateFallbackHoursDraft(row.key, type, e.target.value)}
+                                disabled={hoursSaving}
+                                className="w-20 h-9 text-center bg-white border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-400 font-bold text-emerald-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 ml-1">选择分类编辑各表专用规则</div>
+                {initCategoryNames.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">暂无分类</div>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {initCategoryNames.map(cat => {
+                    const stat = initCategoryStats[cat] || { tables: 0, rows: 0 };
+                    return (
+                      <div key={cat} className="group rounded-xl border border-gray-200 bg-gray-50/70 hover:border-emerald-300 hover:bg-emerald-50/60 transition overflow-hidden">
+                        <button
+                          onClick={() => setHoursPanelCategory(cat)}
+                          className="w-full p-4 flex items-center gap-3 text-left"
+                        >
+                          <span className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                            <FolderOpen size={18} />
+                          </span>
+                          <span className="flex-1 min-w-0">
+                            <span className="block font-bold text-gray-800 text-sm truncate">{cat}</span>
+                            <span className="block text-xs text-gray-400 mt-0.5">{stat.tables} 张表</span>
+                          </span>
+                          <ChevronRight size={18} className="text-gray-300 group-hover:text-emerald-600 transition shrink-0" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              /* ===== 分类详情：逐表专用工时编辑 ===== */
+              <div className="p-5 overflow-auto">
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                  <span className="text-xs text-gray-400">共 {hoursDetailTables.length} 张表，单位：小时（h）</span>
+                  <button
+                    onClick={() => resetCategoryHoursDraft(hoursDetailCategory)}
+                    disabled={hoursSaving}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-lg transition disabled:opacity-40"
+                    title="将本分类全部表的专用工时恢复为系统内置值"
+                  >
+                    <RotateCcw size={13} />
+                    本分类恢复内置默认
+                  </button>
+                </div>
+                <div className="overflow-hidden rounded-xl border border-gray-200">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-100 text-gray-600">
+                        <th className="px-4 py-2.5 text-left font-bold">表格</th>
+                        <th className="px-4 py-2.5 text-center font-bold w-32">确认图</th>
+                        <th className="px-4 py-2.5 text-center font-bold w-32">确认图修改</th>
+                        <th className="px-4 py-2.5 text-center font-bold w-32">设计</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {hoursDetailTables.length === 0 && (
+                        <tr><td colSpan={4} className="px-4 py-6 text-center text-xs text-gray-400">该分类下暂无表格</td></tr>
+                      )}
+                      {hoursDetailTables.map(t => {
+                        const cell = tableHoursDraft[hoursDetailCategory]?.[t.name];
+                        const isBuiltin = Boolean(BUILTIN_TABLE_GUN_HOURS[hoursDetailCategory]?.[t.name]);
+                        return (
+                          <tr key={t.id} className="border-t border-gray-200">
+                            <td className="px-4 py-2.5">
+                              <span className="font-bold text-gray-700">{t.name}</span>
+                              {!isBuiltin && (
+                                <span className="ml-2 text-[10px] text-gray-400" title="无内置专用规则；三项全部留空时按机型回退规则取值">自建表{cell && (cell.confirm === '' && cell.confirmModify === '' && cell.design === '') ? '·留空走回退' : ''}</span>
+                              )}
+                            </td>
+                            {GUN_HOURS_TASK_LABELS.map(col => (
+                              <td key={col.key} className="px-4 py-2.5 text-center">
+                                <input
+                                  type="number"
+                                  step="0.25"
+                                  min="0"
+                                  max="24"
+                                  value={cell?.[col.key] ?? ''}
+                                  onChange={(e) => updateTableHoursDraft(hoursDetailCategory, t.name, col.key, e.target.value)}
+                                  disabled={hoursSaving}
+                                  className="w-20 h-9 text-center bg-white border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-400 font-bold text-emerald-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:opacity-50"
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-gray-400 mt-2 leading-relaxed">
+                  三项全部留空的表不启用专用规则，枪名工时按机型回退规则取值；部分填写无法保存。
+                </p>
+              </div>
+            )}
+
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2 shrink-0">
+              {hoursDetailCategory && (
+                <button
+                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition"
+                  onClick={() => setHoursPanelCategory(null)}
+                >
+                  返回分类选择
+                </button>
+              )}
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
+                onClick={() => setShowHoursPanel(false)}
+                disabled={hoursSaving}
+              >
+                取消
+              </button>
+              <button
+                className="px-5 py-2 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition disabled:opacity-50 flex items-center gap-1.5"
+                onClick={saveHoursRules}
+                disabled={hoursSaving}
+              >
+                {hoursSaving && <RefreshCw size={14} className="animate-spin" />}
+                {hoursSaving ? '保存中...' : '保存'}
               </button>
             </div>
           </div>

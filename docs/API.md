@@ -1580,7 +1580,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 ## 焊枪台账接口
 
-焊枪台账（`/gun-ledger`）采用**分类 → 表 → 行**三级结构。所有接口都受 `accessSettingsMiddleware('gunLedger')` 控制：需先满足 `settings.gunLedger` 权限配置，再满足各接口的角色要求。默认分类为 `X2C`、`X2C-V2`、`X2C-V3`。
+焊枪台账（`/gun-ledger`）采用**分类 → 表 → 行**三级结构。所有接口都受 `accessSettingsMiddleware('gunLedger')` 控制：需先满足 `settings.gunLedger` 权限配置，再满足各接口的角色要求。默认分类为 `X2C`、`X2C-V2`、`X2C-V3`、`GLOBAL`、`PSW`、`IT`、`ROBOT`、`EQ`、`TOYOTA`。
 
 ### 数据结构
 
@@ -1591,7 +1591,13 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
   "categories": {
     "X2C": [ { "id": "gun-tbl-xxx", "name": "SRTC", "rows": [...], "gunNameRule": {...} } ],
     "X2C-V2": [ ... ],
-    "X2C-V3": [ ... ]
+    "X2C-V3": [ ... ],
+    "GLOBAL": [ ... ],
+    "PSW": [ ... ],
+    "IT": [ ... ],
+    "ROBOT": [ ... ],
+    "EQ": [ ... ],
+    "TOYOTA": [ ... ]
   },
   "defaultResponsiblePersons": ["张啸", "张明", "陈青松", "陈大仪"]
 }
@@ -1655,6 +1661,30 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 ```
 
 用于系统设置「焊枪编号台账」卡片展示分类列表。
+
+### 获取枪名位置索引
+
+`GET /api/gun-ledger/gun-name-locations`
+
+权限：需要登录，并取决于 `settings.gunLedger` 权限配置。
+
+返回轻量的枪名 → 所在分类/表 索引。仅统计真实行（不含前端占位预留行）；同名枪名以分类/表顺序首次出现位置为准。供主页面在新增任务/台账任务分配时按枪名**所在台账表**匹配表级专用默认工时（优先级最高），无表级配置时再回退到 C/X 机型识别和固定兜底值。
+
+响应：
+
+```json
+{
+  "locations": {
+    "SRTC-2C00001": { "category": "X2C", "tableName": "SRTC" },
+    "SRTC-2C00002": { "category": "X2C", "tableName": "SRTC" },
+    "SRTC-X00001": { "category": "X2C", "tableName": "SRTCX" }
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `locations` | 枪名作为键，值为 `{ category, tableName }`；`category` 为分类名，`tableName` 为表名 |
 
 ### 导出分类
 
@@ -1743,7 +1773,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：仅 `superadmin`。
 
-说明：默认分类 `X2C`、`X2C-V2`、`X2C-V3` 不允许删除。删除会连同其下所有表一并删除，并释放所有表的编辑锁。
+说明：默认分类 `X2C`、`X2C-V2`、`X2C-V3`、`GLOBAL`、`PSW`、`IT`、`ROBOT`、`EQ`、`TOYOTA` 不允许删除。删除会连同其下所有表一并删除，并释放所有表的编辑锁。
 
 ### 分类排序
 
@@ -1758,6 +1788,14 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 ```
 
 说明：`order` 必须与现有分类集合完全一致（防止越权增删）。
+
+### 恢复分类默认排序
+
+`POST /api/gun-ledger/categories/order/default`
+
+权限：仅 `superadmin`。
+
+说明：将分类顺序恢复为系统默认顺序（默认分类在前，自定义分类保持当前相对顺序排在后面）。响应返回 `{ "order": [...] }`，并广播 `gun_ledger_updated`（`action: reorder_categories`）。
 
 ### 新增表
 
@@ -1786,6 +1824,20 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 ```
 
 说明：`order` 必须与该分类下现有表 id 集合完全一致。
+
+### 恢复表格默认排序
+
+`POST /api/gun-ledger/tables/order/default`
+
+权限：仅 `superadmin`。
+
+请求：
+
+```json
+{ "category": "X2C" }
+```
+
+说明：将指定默认分类下的表格恢复为系统内置表名顺序（自定义表格保持当前相对顺序排在默认表之后）。自定义分类无默认表格顺序，返回 400。响应返回 `{ "category": "...", "order": [...] }`，并广播 `gun_ledger_updated`（`action: reorder_tables`）。
 
 ### 重命名表
 
@@ -2844,13 +2896,11 @@ PUT 请求：
 {
   "message": "编号台账已导出",
   "gunLedgerExport": {
-    "fileName": "gun-ledger-all-20260710-103000.xls",
-    "filePath": "D:\\project\\backend\\backups\\gun-ledger-exports\\gun-ledger-all-20260710-103000.xls",
+    "fileName": "gun-ledger-all-20260710-103000.zip",
+    "filePath": "D:\\project\\backend\\backups\\gun-ledger-exports\\gun-ledger-all-20260710-103000.zip",
     "dir": "D:\\project\\backend\\backups\\gun-ledger-exports",
     "size": 262144,
     "categories": 3,
-    "tables": 11,
-    "rows": 150,
     "type": "manual-gun-ledger-export"
   }
 }
@@ -2858,7 +2908,7 @@ PUT 请求：
 
 说明：
 
-- 导出内容为全部焊枪编号台账的单个 `.xls`（每分类一个工作表），与 `GET /api/gun-ledger/export-all` 格式相同；每日定时自动导出的 `type` 为 `scheduled-gun-ledger-export`。
+- 导出内容为包含全部焊枪编号台账分类的单个 `.zip`，每个分类对应包内一个独立 `.xls`（文件名为 `gun-ledger-<分类名>-<时间戳>.xls`，分类下每张台账表对应一个工作表）；每日定时自动导出的文件名为 `gun-ledger-YYYYMMDD-HHmmss.zip`，`type` 为 `scheduled-gun-ledger-export`。
 - 没有任何台账数据时返回 `404` 和 `没有可导出的编号台账数据`。
 
 ### 清理过期备份
@@ -3684,4 +3734,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-10-15
+最后更新：2026-10-16
