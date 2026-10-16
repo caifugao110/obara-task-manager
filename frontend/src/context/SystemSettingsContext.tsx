@@ -23,6 +23,8 @@ export interface SystemSettingsData {
   allowUserEditOwnTaskColor: boolean;
   allowUserChangePassword: boolean;
   specNumberDigits: number;
+  // 操作日志保留条数（超限自动清理最旧记录）
+  auditLogMaxRows: number;
   randomDesignPlanColor: boolean;
   randomAssignmentColor: boolean;
   defaultGunHours?: DefaultGunHours;
@@ -42,6 +44,7 @@ const defaultSettings: SystemSettingsData = {
   allowUserEditOwnTaskColor: true,
   allowUserChangePassword: false,
   specNumberDigits: 5,
+  auditLogMaxRows: 5000,
   randomDesignPlanColor: false,
   randomAssignmentColor: false,
   defaultGunHours,
@@ -103,6 +106,8 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
       const allowOwnDesignPlanColor =
         res.data.allowUserDesignPlanColorMark ?? res.data.allowUserEditOwnTaskColor ?? true;
       const digits = res.data.specNumberDigits === 6 ? 6 : 5;
+      const rows = Number(res.data.auditLogMaxRows);
+      const auditLogMaxRows = Number.isInteger(rows) && rows >= 100 && rows <= 100000 ? rows : 5000;
       const rawGunHours = res.data.defaultGunHours && typeof res.data.defaultGunHours === 'object'
         ? res.data.defaultGunHours
         : {};
@@ -116,6 +121,7 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
         allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
         allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
         specNumberDigits: digits,
+        auditLogMaxRows,
         defaultGunHours: {
           confirm: mergeGunType('confirm'),
           design: mergeGunType('design'),

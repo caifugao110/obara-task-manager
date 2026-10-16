@@ -98,6 +98,8 @@ const defaultSystemSettings = {
   allowUserEditOwnTask: true,
   allowUserChangePassword: false,
   specNumberDigits: 5,
+  // 操作日志保留条数（超限自动清理最旧记录）
+  auditLogMaxRows: 5000,
   randomDesignPlanColor: false,
   randomAssignmentColor: false,
   defaultGunHours: {
@@ -142,6 +144,7 @@ const systemSettingsSchema = Joi.object({
   allowUserEditOwnTaskColor: Joi.boolean().optional(),
   allowUserChangePassword: Joi.boolean().optional(),
   specNumberDigits: Joi.number().integer().valid(5, 6).optional(),
+  auditLogMaxRows: Joi.number().integer().min(100).max(100000).optional(),
   randomDesignPlanColor: Joi.boolean().optional(),
   randomAssignmentColor: Joi.boolean().optional(),
   defaultGunHours: Joi.object({
@@ -165,7 +168,7 @@ const maintenanceSettingsSchema = Joi.object({
   offlineBackupRetentionDays: Joi.number().integer().min(1).max(3650).required(),
   taskExportRetentionDays: Joi.number().integer().min(1).max(3650).required(),
   gunLedgerExportRetentionDays: Joi.number().integer().min(1).max(3650).required(),
-  scheduleTime: Joi.string().pattern(/^\d{2}:\d{2}$/).required(),
+  scheduleTimes: Joi.array().items(Joi.string().pattern(/^\d{2}:\d{2}$/)).min(1).max(2).required(),
   yearlyCleanupEnabled: Joi.boolean().required(),
   yearlyCleanupMonth: Joi.number().integer().min(1).max(12).required(),
   yearlyCleanupCheckDays: Joi.number().integer().min(1).max(31).required(),
@@ -233,9 +236,14 @@ const normalizeSystemSettings = (settings = {}) => {
     : true;
   const fallbackGunHours = defaultSystemSettings.defaultGunHours;
   const rawGunHours = merged.defaultGunHours && typeof merged.defaultGunHours === 'object' ? merged.defaultGunHours : {};
+  const rawAuditLogMaxRows = Number(merged.auditLogMaxRows);
+  const auditLogMaxRows = Number.isInteger(rawAuditLogMaxRows) && rawAuditLogMaxRows >= 100 && rawAuditLogMaxRows <= 100000
+    ? rawAuditLogMaxRows
+    : defaultSystemSettings.auditLogMaxRows;
   return {
     ...merged,
     allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
+    auditLogMaxRows,
     allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
     randomDesignPlanColor: Boolean(merged.randomDesignPlanColor),
     randomAssignmentColor: Boolean(merged.randomAssignmentColor),

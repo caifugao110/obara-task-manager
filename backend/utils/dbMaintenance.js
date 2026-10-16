@@ -37,7 +37,7 @@ const defaultMaintenanceSettings = {
   offlineBackupRetentionDays: 7,
   taskExportRetentionDays: 30,
   gunLedgerExportRetentionDays: 30,
-  scheduleTime: '00:30',
+  scheduleTimes: ['00:30', '12:30'],
   yearlyCleanupEnabled: true,
   yearlyCleanupMonth: 1,
   yearlyCleanupCheckDays: 10,
@@ -55,37 +55,56 @@ let schedulerRunning = false;
 let lastSchedulerState = null;
 let lastOfflineBackupTime = 0;
 const OFFLINE_BACKUP_MIN_INTERVAL = 5 * 60 * 1000;
+// 每日自动维护最多可配置两个执行时间点
+const MAX_SCHEDULE_TIMES = 2;
 
 const pad = (value) => String(value).padStart(2, '0');
 const toTimestamp = (date = new Date()) => `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 const toDateKey = (date = new Date()) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
-const normalizeMaintenanceSettings = (settings = {}) => ({
-  ...defaultMaintenanceSettings,
-  ...settings,
-  enabled: settings.enabled ?? defaultMaintenanceSettings.enabled,
-  dailyBackupEnabled: settings.dailyBackupEnabled ?? defaultMaintenanceSettings.dailyBackupEnabled,
-  dailyTaskExportEnabled: settings.dailyTaskExportEnabled ?? defaultMaintenanceSettings.dailyTaskExportEnabled,
-  dailyGunLedgerExportEnabled: settings.dailyGunLedgerExportEnabled ?? defaultMaintenanceSettings.dailyGunLedgerExportEnabled,
-  offlineBackupEnabled: settings.offlineBackupEnabled ?? defaultMaintenanceSettings.offlineBackupEnabled,
-  yearlyCleanupEnabled: settings.yearlyCleanupEnabled ?? defaultMaintenanceSettings.yearlyCleanupEnabled,
-  backupRetentionDays: Math.max(1, parseInt(settings.backupRetentionDays, 10) || defaultMaintenanceSettings.backupRetentionDays),
-  offlineBackupRetentionDays: Math.max(1, parseInt(settings.offlineBackupRetentionDays, 10) || defaultMaintenanceSettings.offlineBackupRetentionDays),
-  taskExportRetentionDays: Math.max(1, parseInt(settings.taskExportRetentionDays, 10) || defaultMaintenanceSettings.taskExportRetentionDays),
-  gunLedgerExportRetentionDays: Math.max(1, parseInt(settings.gunLedgerExportRetentionDays, 10) || defaultMaintenanceSettings.gunLedgerExportRetentionDays),
-  yearlyCleanupMonth: Math.min(12, Math.max(1, parseInt(settings.yearlyCleanupMonth, 10) || defaultMaintenanceSettings.yearlyCleanupMonth)),
-  yearlyCleanupCheckDays: Math.min(31, Math.max(1, parseInt(settings.yearlyCleanupCheckDays, 10) || defaultMaintenanceSettings.yearlyCleanupCheckDays)),
-  yearlyTaskRetentionYears: Math.max(1, parseInt(settings.yearlyTaskRetentionYears, 10) || defaultMaintenanceSettings.yearlyTaskRetentionYears),
-  scheduleTime: /^\d{2}:\d{2}$/.test(String(settings.scheduleTime || '')) ? settings.scheduleTime : defaultMaintenanceSettings.scheduleTime,
-  backupDir: String(settings.backupDir || defaultMaintenanceSettings.backupDir).trim(),
-  taskExportDir: String(settings.taskExportDir || defaultMaintenanceSettings.taskExportDir).trim(),
-  gunLedgerExportDir: String(settings.gunLedgerExportDir || defaultMaintenanceSettings.gunLedgerExportDir).trim(),
-  yearlyArchiveDir: String(settings.yearlyArchiveDir || defaultMaintenanceSettings.yearlyArchiveDir).trim(),
-  offlineBackupDir: String(settings.offlineBackupDir || defaultMaintenanceSettings.offlineBackupDir).trim(),
-  yearlyCleanupHistory: settings.yearlyCleanupHistory && typeof settings.yearlyCleanupHistory === 'object' && !Array.isArray(settings.yearlyCleanupHistory)
-    ? settings.yearlyCleanupHistory
-    : {}
-});
+const normalizeScheduleTimes = (settings = {}) => {
+  // 每日自动维护时间：最多两个时间点。兼容旧配置里的单值 scheduleTime（历史数据迁移）。
+  const source = Array.isArray(settings.scheduleTimes)
+    ? settings.scheduleTimes
+    : (settings.scheduleTime ? [settings.scheduleTime] : []);
+  const cleaned = source
+    .map(value => String(value || '').trim())
+    .filter(value => /^\d{2}:\d{2}$/.test(value))
+    .slice(0, MAX_SCHEDULE_TIMES);
+  return cleaned.length > 0 ? cleaned : [...defaultMaintenanceSettings.scheduleTimes];
+};
+
+const normalizeMaintenanceSettings = (settings = {}) => {
+  const normalized = {
+    ...defaultMaintenanceSettings,
+    ...settings,
+    enabled: settings.enabled ?? defaultMaintenanceSettings.enabled,
+    dailyBackupEnabled: settings.dailyBackupEnabled ?? defaultMaintenanceSettings.dailyBackupEnabled,
+    dailyTaskExportEnabled: settings.dailyTaskExportEnabled ?? defaultMaintenanceSettings.dailyTaskExportEnabled,
+    dailyGunLedgerExportEnabled: settings.dailyGunLedgerExportEnabled ?? defaultMaintenanceSettings.dailyGunLedgerExportEnabled,
+    offlineBackupEnabled: settings.offlineBackupEnabled ?? defaultMaintenanceSettings.offlineBackupEnabled,
+    yearlyCleanupEnabled: settings.yearlyCleanupEnabled ?? defaultMaintenanceSettings.yearlyCleanupEnabled,
+    backupRetentionDays: Math.max(1, parseInt(settings.backupRetentionDays, 10) || defaultMaintenanceSettings.backupRetentionDays),
+    offlineBackupRetentionDays: Math.max(1, parseInt(settings.offlineBackupRetentionDays, 10) || defaultMaintenanceSettings.offlineBackupRetentionDays),
+    taskExportRetentionDays: Math.max(1, parseInt(settings.taskExportRetentionDays, 10) || defaultMaintenanceSettings.taskExportRetentionDays),
+    gunLedgerExportRetentionDays: Math.max(1, parseInt(settings.gunLedgerExportRetentionDays, 10) || defaultMaintenanceSettings.gunLedgerExportRetentionDays),
+    yearlyCleanupMonth: Math.min(12, Math.max(1, parseInt(settings.yearlyCleanupMonth, 10) || defaultMaintenanceSettings.yearlyCleanupMonth)),
+    yearlyCleanupCheckDays: Math.min(31, Math.max(1, parseInt(settings.yearlyCleanupCheckDays, 10) || defaultMaintenanceSettings.yearlyCleanupCheckDays)),
+    yearlyTaskRetentionYears: Math.max(1, parseInt(settings.yearlyTaskRetentionYears, 10) || defaultMaintenanceSettings.yearlyTaskRetentionYears),
+    scheduleTimes: normalizeScheduleTimes(settings),
+    backupDir: String(settings.backupDir || defaultMaintenanceSettings.backupDir).trim(),
+    taskExportDir: String(settings.taskExportDir || defaultMaintenanceSettings.taskExportDir).trim(),
+    gunLedgerExportDir: String(settings.gunLedgerExportDir || defaultMaintenanceSettings.gunLedgerExportDir).trim(),
+    yearlyArchiveDir: String(settings.yearlyArchiveDir || defaultMaintenanceSettings.yearlyArchiveDir).trim(),
+    offlineBackupDir: String(settings.offlineBackupDir || defaultMaintenanceSettings.offlineBackupDir).trim(),
+    yearlyCleanupHistory: settings.yearlyCleanupHistory && typeof settings.yearlyCleanupHistory === 'object' && !Array.isArray(settings.yearlyCleanupHistory)
+      ? settings.yearlyCleanupHistory
+      : {}
+  };
+  // 历史字段 scheduleTime 已被 scheduleTimes 取代，避免旧值残留到持久化数据中
+  delete normalized.scheduleTime;
+  return normalized;
+};
 
 const getMaintenanceSettings = () => {
   const data = db.readDb();
@@ -121,6 +140,25 @@ const MANAGED_FILE_PATTERN = /\.(db|db-shm|db-wal|xlsx?|zip|json)$/i;
 
 const ensureDir = (dirPath) => {
   fs.mkdirSync(dirPath, { recursive: true });
+};
+
+// 双备份地址：数据库备份除写入配置的备份目录外，固定再复制一份到该网络共享目录。
+// 仅数据库备份写入此处，且该目录内的文件不参与过期清理（永久保留）。
+// 该路径不受 resolveManagedDir 的 backend/ 边界限制：它是网络共享位置，需跳出本地目录树。
+const SECONDARY_BACKUP_DIR = String.raw`\\192.168.160.2\生产管理部3d\3D 资料\check\check27\Version control\obara-task-manager\backups`;
+
+// 将备份文件复制到固定双备份地址。网络共享可能因网络不通或权限不足不可达：
+// 失败时只记录告警并返回错误信息，不抛出异常，避免影响主备份结果。
+const copyBackupToSecondaryDir = (sourcePath, fileName) => {
+  try {
+    ensureDir(SECONDARY_BACKUP_DIR);
+    const targetPath = path.join(SECONDARY_BACKUP_DIR, fileName);
+    fs.copyFileSync(sourcePath, targetPath);
+    return { dir: SECONDARY_BACKUP_DIR, filePath: targetPath, size: fs.statSync(targetPath).size, success: true };
+  } catch (err) {
+    console.warn(`[backup] 双备份写入第二地址失败 (${SECONDARY_BACKUP_DIR}): ${err.message}`);
+    return { dir: SECONDARY_BACKUP_DIR, success: false, error: err.message };
+  }
 };
 
 const writeJsonFile = (filePath, payload) => {
@@ -230,7 +268,10 @@ const createDatabaseBackup = async (options = {}) => {
   await rawDb.backup(filePath);
   // 切换到 DELETE 日志模式，合并 WAL 并删除伴随文件，只保留单个 .db
   finalizeBackup(filePath);
-  return { fileName, filePath, dir: backupDir, size: fs.statSync(filePath).size };
+  const size = fs.statSync(filePath).size;
+  // 双备份：主备份完成后额外复制一份到固定网络地址
+  const secondaryBackup = copyBackupToSecondaryDir(filePath, fileName);
+  return { fileName, filePath, dir: backupDir, size, secondaryBackup };
 };
 
 const createOfflineBackup = (userId, username, options = {}) => {
@@ -447,12 +488,18 @@ const runYearlyTaskCleanup = async (options = {}) => {
   return { skipped: false, cutoffYear, archivedSheets: archive.taskSheets, removedSheets: archive.taskSheets, removedTaskItems: archive.taskItems, archive };
 };
 
-const getNextRunAt = (scheduleTime, fromDate = new Date()) => {
-  const [hours, minutes] = String(scheduleTime || defaultMaintenanceSettings.scheduleTime).split(':').map(part => parseInt(part, 10));
-  const nextRun = new Date(fromDate);
-  nextRun.setHours(hours || 0, minutes || 0, 0, 0);
-  if (nextRun <= fromDate) nextRun.setDate(nextRun.getDate() + 1);
-  return nextRun;
+// 计算下一次执行时刻：在配置的多个时间点中取最近的一个（不足两个时按实际数量计算）
+const getNextRunAt = (scheduleTimes, fromDate = new Date()) => {
+  const times = Array.isArray(scheduleTimes) && scheduleTimes.length > 0
+    ? scheduleTimes
+    : defaultMaintenanceSettings.scheduleTimes;
+  return times.reduce((earliest, time) => {
+    const [hours, minutes] = String(time).split(':').map(part => parseInt(part, 10));
+    const candidate = new Date(fromDate);
+    candidate.setHours(hours || 0, minutes || 0, 0, 0);
+    if (candidate <= fromDate) candidate.setDate(candidate.getDate() + 1);
+    return !earliest || candidate < earliest ? candidate : earliest;
+  }, null);
 };
 
 const runScheduledMaintenance = async () => {
@@ -487,7 +534,7 @@ const runScheduledMaintenance = async () => {
 
 const scheduleNextRun = () => {
   const { settings } = getMaintenanceSettings();
-  const nextRun = getNextRunAt(settings.scheduleTime);
+  const nextRun = getNextRunAt(settings.scheduleTimes);
   const delay = Math.max(1000, nextRun.getTime() - Date.now());
   if (schedulerTimer) clearTimeout(schedulerTimer);
   schedulerTimer = setTimeout(async () => {
@@ -549,7 +596,7 @@ const getMaintenanceStatus = () => {
     scheduler: {
       running: schedulerRunning,
       lastRun: lastSchedulerState,
-      nextRunAt: lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTime).toISOString()
+      nextRunAt: lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTimes).toISOString()
     }
   };
 };

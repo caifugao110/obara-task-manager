@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import axios from 'axios';
+import { axiosInstance } from '../services/api';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import {
@@ -72,8 +72,9 @@ const SystemLogs = () => {
   });
   const [showFilters, setShowFilters] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
-
-  const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+  // 离线状态：综合浏览器 online/offline 事件、后端可达性广播与请求失败判定
+  const [isOnline, setIsOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+  const isOffline = !isOnline;
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
@@ -81,15 +82,32 @@ const SystemLogs = () => {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
+  // 离线时统一拦截操作（本页为查看类页面，离线禁止导出、刷新、筛选等操作）
+  const guardOffline = () => {
+    if (!isOffline) return false;
+    addToast('当前离线，禁止操作', 'error');
+    return true;
+  };
+
+  // 请求失败且属于网络不可达时标记离线（页面已有数据时继续只读展示）
+  const markOfflineIfNetworkError = useCallback((err: any) => {
+    if (typeof navigator !== 'undefined' && (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error')) {
+      setIsOnline(false);
+      return true;
+    }
+    return false;
+  }, []);
+
   const fetchFilterOptions = useCallback(async () => {
     if (!token) return;
     try {
-      const res = await axios.get('/api/system/audit-logs/filter-options', authHeader);
+      const res = await axiosInstance.get('/system/audit-logs/filter-options');
       setFilterOptions(res.data);
-    } catch {
-      // ignore
+    } catch (err) {
+      // 离线/服务不可达时静默处理（离线提示条已说明状态）
+      markOfflineIfNetworkError(err);
     }
-  }, [token]);
+  }, [token, markOfflineIfNetworkError]);
 
   const fetchLogs = useCallback(async () => {
     if (!token) return;
@@ -100,15 +118,15 @@ const SystemLogs = () => {
         limit: String(pageSize),
         ...filters
       });
-      const res = await axios.get(`/api/system/audit-logs?${params}`, authHeader);
+      const res = await axiosInstance.get(`/system/audit-logs?${params}`);
       setLogs(res.data.logs);
       setTotal(res.data.total);
-    } catch {
-      addToast('无法加载日志', 'error');
+    } catch (err) {
+      if (!markOfflineIfNetworkError(err)) addToast('无法加载日志', 'error');
     } finally {
       setLoading(false);
     }
-  }, [token, page, pageSize, filters]);
+  }, [token, page, pageSize, filters, markOfflineIfNetworkError]);
 
   useEffect(() => {
     fetchFilterOptions();
@@ -117,6 +135,47 @@ const SystemLogs = () => {
   useEffect(() => {
     fetchLogs();
   }, [fetchLogs]);
+
+  // 网络恢复/断开（浏览器事件 + 后端可达性广播）：恢复到在线后自动重新加载
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      fetchLogs();
+      fetchFilterOptions();
+    };
+    const handleOffline = () => setIsOnline(false);
+    const handleServerUnreachable = () => setIsOnline(false);
+    const handleServerOnline = () => {
+      setIsOnline(true);
+      fetchLogs();
+      fetchFilterOptions();
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('server-unreachable', handleServerUnreachable);
+    window.addEventListener('server-online', handleServerOnline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('server-unreachable', handleServerUnreachable);
+      window.removeEventListener('server-online', handleServerOnline);
+    };
+  }, [fetchLogs, fetchFilterOptions]);
+
+  // 离线期间每 5 秒轻量探测后端是否恢复（成功时拦截器自动广播 server-online）
+  useEffect(() => {
+    if (!isOffline) return;
+    const timer = setInterval(() => {
+      axiosInstance.get('/auth/validate').catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [isOffline]);
+
+  // 进入离线状态：关闭筛选面板，避免离线期间产生无法生效的筛选操作
+  useEffect(() => {
+    if (isOnline) return;
+    setShowFilters(false);
+  }, [isOnline]);
 
   const getMethodColor = (method: string) => {
     const colors: Record<string, string> = {
@@ -137,22 +196,23 @@ const SystemLogs = () => {
   };
 
   const handleFilterChange = (key: keyof typeof filters, value: string) => {
+    if (guardOffline()) return;
     setFilters(prev => ({ ...prev, [key]: value }));
     setPage(1);
   };
 
   const handleResetFilters = () => {
+    if (guardOffline()) return;
     setFilters({ username: '', action: '', method: '', ip: '', from: '', to: '' });
     setPage(1);
   };
 
   const handleExport = async () => {
-    if (!token) return;
+    if (!token || guardOffline()) return;
     setExporting(true);
     try {
       const params = new URLSearchParams(filters);
-      const res = await axios.get(`/api/system/audit-logs/export?${params}`, {
-        ...authHeader,
+      const res = await axiosInstance.get(`/system/audit-logs/export?${params}`, {
         responseType: 'blob'
       });
       const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -188,19 +248,30 @@ const SystemLogs = () => {
         ))}
       </div>
 
-      <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
-        <div className="flex items-center space-x-4">
-          <Link to="/system-settings" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
-            <ChevronLeft size={20} />
-            <span>返回系统设置</span>
-          </Link>
-          <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
-          <h2 className="text-xl font-bold text-blue-600 flex items-center">
-            <History className="text-blue-500 mr-2" size={24} />
-            操作日志
-          </h2>
-        </div>
-      </header>
+      {/* 页头与离线提示条作为一个整体吸顶，向下滚动时保持固定可见 */}
+      <div className="sticky top-0 z-40">
+        <header className="bg-white shadow-md px-6 py-4 flex items-center justify-between border-b border-gray-200">
+          <div className="flex items-center space-x-4">
+            <Link to="/system-settings" className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 font-bold transition">
+              <ChevronLeft size={20} />
+              <span>返回系统设置</span>
+            </Link>
+            <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
+            <h2 className="text-xl font-bold text-blue-600 flex items-center">
+              <History className="text-blue-500 mr-2" size={24} />
+              操作日志
+            </h2>
+          </div>
+        </header>
+
+        {/* 离线禁止操作提示条（与其它页面样式一致） */}
+        {isOffline && (
+          <div className="bg-amber-500 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs font-medium border-b border-amber-600 shadow-sm">
+            <AlertCircle size={14} className="shrink-0" />
+            <span>当前处于离线模式，网络恢复后将自动加载最新数据，此页面禁止操作！</span>
+          </div>
+        )}
+      </div>
 
       <main className="flex-1 p-8 max-w-7xl mx-auto w-full">
         <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
@@ -214,8 +285,9 @@ const SystemLogs = () => {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => setShowFilters(!showFilters)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold transition ${showFilters || hasActiveFilters ? 'bg-blue-600 text-white' : 'border border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                onClick={() => { if (guardOffline()) return; setShowFilters(!showFilters); }}
+                disabled={isOffline}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold transition disabled:opacity-60 disabled:cursor-not-allowed ${showFilters || hasActiveFilters ? 'bg-blue-600 text-white' : 'border border-gray-200 text-gray-700 hover:bg-gray-100'}`}
               >
                 <Filter size={15} />
                 筛选
@@ -223,15 +295,16 @@ const SystemLogs = () => {
               </button>
               <button
                 onClick={handleExport}
-                disabled={exporting}
-                className="flex items-center gap-2 px-5 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                disabled={exporting || isOffline}
+                className="flex items-center gap-2 px-5 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold rounded-xl transition"
               >
                 {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
                 导出日志
               </button>
               <button
-                onClick={fetchLogs}
-                className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-100 transition"
+                onClick={() => { if (guardOffline()) return; fetchLogs(); }}
+                disabled={isOffline}
+                className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <RefreshCw size={15} />
                 刷新
@@ -407,8 +480,8 @@ const SystemLogs = () => {
           {!loading && total > pageSize && (
             <div className="mt-4 flex items-center justify-between">
               <button
-                onClick={() => setPage(p => Math.max(1, p - 1))}
-                disabled={page === 1}
+                onClick={() => { if (guardOffline()) return; setPage(p => Math.max(1, p - 1)); }}
+                disabled={page === 1 || isOffline}
                 className="px-4 py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 上一页
@@ -419,8 +492,9 @@ const SystemLogs = () => {
                   return (
                     <button
                       key={pageNum}
-                      onClick={() => setPage(pageNum)}
-                      className={`w-8 h-8 rounded-lg text-sm font-bold transition ${page === pageNum ? 'bg-blue-600 text-white' : 'border border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                      onClick={() => { if (guardOffline()) return; setPage(pageNum); }}
+                      disabled={isOffline}
+                      className={`w-8 h-8 rounded-lg text-sm font-bold transition disabled:opacity-60 disabled:cursor-not-allowed ${page === pageNum ? 'bg-blue-600 text-white' : 'border border-gray-200 text-gray-700 hover:bg-gray-100'}`}
                     >
                       {pageNum}
                     </button>
@@ -431,8 +505,8 @@ const SystemLogs = () => {
                 )}
               </div>
               <button
-                onClick={() => setPage(p => Math.min(Math.ceil(total / pageSize), p + 1))}
-                disabled={page >= Math.ceil(total / pageSize)}
+                onClick={() => { if (guardOffline()) return; setPage(p => Math.min(Math.ceil(total / pageSize), p + 1)); }}
+                disabled={page >= Math.ceil(total / pageSize) || isOffline}
                 className="px-4 py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 下一页

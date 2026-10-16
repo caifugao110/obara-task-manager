@@ -56,7 +56,7 @@ Authorization: Bearer <token>
 | 查看焊枪台账 | 取决于 `gunLedger.allowViewers`（只读） | 取决于 `gunLedger.allowAdmins` | 是 |
 | 编辑焊枪台账（分类/表/行） | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
 | 删除焊枪台账分类/表 | 否 | 否（按钮可见但拦截） | 是 |
-| 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当 | 否 | 否 | 是 |
+| 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当/配置默认工时规则（`tableGunHours`） | 否 | 否 | 是 |
 | 导入焊枪台账 | 否 | 否 | 是 |
 | 检索/问答/查看知识库文档清单 | 取决于 `designStandards.allowViewers` | 取决于 `designStandards.allowAdmins` | 是 |
 | 关联/取消关联知识库 | 否 | 是 | 是 |
@@ -198,6 +198,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 旧密码不正确时返回 `400`（消息 `旧密码不正确`），而非 `401`——避免被前端全局拦截器误判为「会话过期」而强制登出。
 - 参数校验失败返回 `400`，`message` 为单条中文提示（如 `请输入当前密码`、`请输入新密码`、`新密码长度不能少于 6 位`）。
 - 接口受独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次尝试），超限返回 HTTP `429` 与消息 `密码修改尝试过于频繁，请15分钟后再试`。
+- 受系统设置「允许用户自主改密」开关（`allowUserChangePassword`，默认 `false`）控制：开关未开启时任何角色调用本接口均返回 `403` 与消息 `系统已禁用自主修改密码，请联系管理员`。注意：强制改密中间件在 `forcePasswordChange` 期间仅放行本接口与登出接口，因此部署时若使用强制改密流程，应同时开启该开关（或由超管通过 `PUT /api/users/:id` 处理）；`PUT /api/users/:id` 的本人改密不受该开关限制。
 - 超级管理员在用户管理中重置密码（单个 `PUT /api/users/:id` 或批量 `POST /api/users/batch-reset-password`）后，账号可直接用新密码登录（不强制改密），但旧会话立即失效，旧会话校验时会收到「密码已被管理员重置」提示；一般管理员修改自己的密码会设置 `forcePasswordChange` 为 `true`，下次登录需修改密码。任何角色通过 `PUT /api/users/:id` 修改**本人**密码时均须提供当前密码（`oldPassword`）。
 
 ### 登出
@@ -729,7 +730,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 每条条目仅接受以下字段：`taskName`（字符串，默认空）、`hours`（数值 ≥ 0，默认 0）、`color`（标记颜色）、`guns`（枪名数组，结构同创建任务接口）、`leaveType`（`sick`/`vacation`/`illness`/`trip` 或 `null`）、`fontSize`、`textColor`；条目 `id` 由服务端重新生成，忽略客户端传入值。
 - 校验失败返回 `400`（`message=输入格式不正确`，附 `details`）；枪名存在但工时为 0 时返回 `400`。
 - 普通用户调用返回 `403`（`只有管理员可以编辑表格`）。
-- 焊枪台账「任务分配模式」通过本接口批量创建确认图任务：按客户分组（空客户归入「未命名」），每组生成一条 `taskName` 为 `<客户> 确认图` 的任务，组内每个焊枪名作为任务的枪名行，枪名工时按系统设置 `defaultGunHours.confirm`（按枪名机型 C/X 取值）填充，任务工时为枪名工时之和。
+- 焊枪台账「任务分配模式」通过本接口批量创建确认图任务：按客户分组（空客户归入「未命名」），每组生成一条 `taskName` 为 `<客户> 确认图` 的任务，组内每个焊枪名作为任务的枪名行；枪名工时由前端按默认工时规则解析后随请求提交，优先级为「枪名所在台账表的表级专用规则（`tableGunHours`，超管覆盖 → 内置）→ 枪名机型 C/X 的 `defaultGunHours.confirm` → 固定兜底 2h」，任务工时为枪名工时之和。
 
 ### 更新任务字段
 
@@ -1715,7 +1716,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：需要登录，并取决于 `settings.gunLedger` 权限配置。
 
-响应：单个 `.xls` 文件，文件名 `gun-ledger-all-<时间戳>.xls`，每个分类一个工作表（跨分类重名时使用「分类-表名」形式）。无数据时返回 `404`。
+响应：单个 `.xls` 文件，文件名 `gun-ledger-all-<时间戳>.xls`，每个分类一个工作表（跨分类重名时使用「分类-表名」形式）。无数据时返回 `404` 和 `没有可导出的数据`（注意与维护接口 `POST /api/system/maintenance/export-gun-ledger` 的提示文案不同，后者打包为 `.zip`）。
 
 ### 导入台账
 
@@ -2190,13 +2191,24 @@ PUT 请求：
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
   "allowUserEditOwnTaskColor": true,
+  "allowUserChangePassword": false,
   "specNumberDigits": 5,
+  "auditLogMaxRows": 5000,
   "randomDesignPlanColor": false,
   "randomAssignmentColor": false,
   "defaultGunHours": {
     "confirm": { "C": 1.5, "X": 2 },
     "design": { "C": 2.5, "X": 3 },
     "confirmModify": { "C": 0.5, "X": 0.75 }
+  },
+  "tableGunHours": {
+    "X2C": {
+      "SRTC": { "confirm": 1.5, "confirmModify": 0.5, "design": 2.5 },
+      "SRTX": { "confirm": 2, "confirmModify": 0.75, "design": 3 }
+    },
+    "TOYOTA": {
+      "C01": { "confirm": 1, "confirmModify": 1, "design": 2 }
+    }
   }
 }
 ```
@@ -2206,10 +2218,13 @@ PUT 请求：
 - 所有页面和接口均需登录，不提供未登录查看。
 - `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划完成状态。
+- `allowUserChangePassword` 为「允许用户自主改密」开关，缺失时默认 `false`：关闭时 `POST /api/auth/change-password` 返回 `403`（`系统已禁用自主修改密码，请联系管理员`）；该开关不影响超管经 `PUT /api/users/:id` 重置密码。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
+- `auditLogMaxRows` 为操作日志保留条数，取值 `100` ~ `100000` 的整数，缺失或非法时默认为 `5000`；操作日志条数超过该值时自动清理最旧的记录。由「系统设置 → 日志管理」维护。
 - `randomDesignPlanColor` 为设计计划标记颜色随机开关，缺失时默认 `false`；开启后主页面新增任务的默认标记颜色从预设颜色中随机选择（不含「无」）。
 - `randomAssignmentColor` 为焊枪台账分配任务标记颜色随机开关，缺失时默认 `false`；开启后在焊枪台账「任务分配模式」中批量分配确认图任务时，任务标记颜色从预设颜色中随机选择，关闭时固定为浅绿（`#86efac`）。
-- `defaultGunHours` 为默认工时规则：`confirm`（确认工时）、`design`（设计工时）、`confirmModify`（确认修改工时）三类，每类含 C/X 两种机型（数值 0-24）；字段缺失时按内置默认值补齐。
+- `defaultGunHours` 为按机型的默认工时回退规则：`confirm`（确认工时）、`design`（设计工时）、`confirmModify`（确认修改工时）三类，每类含 C/X 两种机型（数值 0-24）；字段缺失时按内置默认值补齐。
+- `tableGunHours` 为按焊枪编号台账表配置的专用工时，结构为 `{ 分类名: { 表名: { confirm, confirmModify, design } } }`（分类名 1-30 字符、表名 1-50 字符、工时数值 0-24，三类工时必须同时存在）；响应中以内置表规则为底，合并超级管理员的覆盖配置与用户自建表配置。前端解析枪名工时的优先级为「枪名所在表的专用规则（超管覆盖 → 内置）→ 枪名机型（首个「-」前一字符）C/X 的 `defaultGunHours` → 固定兜底（confirm 2 / confirmModify 0.75 / design 3）」。该字段由焊枪台账页面「默认工时规则」面板维护，随本接口保存。
 
 ### 更新系统设置
 
@@ -2223,9 +2238,21 @@ PUT 请求：
 {
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
+  "allowUserChangePassword": true,
   "specNumberDigits": 6,
+  "auditLogMaxRows": 5000,
   "randomDesignPlanColor": false,
-  "randomAssignmentColor": false
+  "randomAssignmentColor": false,
+  "defaultGunHours": {
+    "confirm": { "C": 1.5, "X": 2 },
+    "design": { "C": 2.5, "X": 3 },
+    "confirmModify": { "C": 0.5, "X": 0.75 }
+  },
+  "tableGunHours": {
+    "X2C": {
+      "SRTC": { "confirm": 1.5, "confirmModify": 0.5, "design": 2.5 }
+    }
+  }
 }
 ```
 
@@ -2233,7 +2260,11 @@ PUT 请求：
 
 - 所有字段含义同 `GET /api/system/settings`。
 - `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
-- `randomDesignPlanColor` / `randomAssignmentColor` 可选，布尔值；`defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留原值或使用内置默认值。
+- `auditLogMaxRows` 取值 `100` ~ `100000` 的整数，可选；传入其他值会被忽略并使用默认值 `5000`。
+- `randomDesignPlanColor` / `randomAssignmentColor` / `allowUserChangePassword` 可选，布尔值（自主改密开关仅在显式传 `true` 时开启）。
+- `defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留原值或使用内置默认值。
+- `tableGunHours` 可选，结构为 `{ 分类名: { 表名: { confirm, confirmModify, design } } }`（分类名 1-30 字符、表名 1-50 字符、各工时 0-24 且必填）；保存时以内置表规则为底合并：合法单元格采用提交值（即提交完整的内置表项即视为覆盖/重置），非法单元格回退内置值、无内置值则丢弃。
+- 请求体经 Joi 校验（`stripUnknown`），未声明字段自动过滤；校验失败返回 `400`（`message=输入格式不正确`，附 `details`）。
 
 ### 获取系统版本信息
 
@@ -2550,7 +2581,7 @@ PUT 请求：
 
 说明：
 
-- 操作日志最多保留 2000 条。
+- 操作日志最多保留 `auditLogMaxRows` 条（系统设置 → 日志管理，默认 5000），超过时自动清理最旧的记录。
 - 仅记录已登录用户的请求（匿名请求不记）；登录成功的请求会从登录响应中补取用户信息后记录。
 - `GET /api/system/login-logs*` 与 `/api/system/audit-logs*`（含查询、筛选选项、导出）本身不记录，避免日志自我膨胀；系统设置变更、维护等其他接口（如 `PUT /api/system/settings`）均正常记录。
 - GET 请求不记录响应消息，POST/PUT 请求记录请求体（最大 2000 字符）。
@@ -2684,7 +2715,7 @@ PUT 请求：
     "taskExportRetentionDays": 30,
     "gunLedgerExportRetentionDays": 30,
     "offlineBackupRetentionDays": 7,
-    "scheduleTime": "00:30",
+    "scheduleTimes": ["00:30", "12:30"],
     "yearlyCleanupEnabled": true,
     "yearlyCleanupMonth": 1,
     "yearlyCleanupCheckDays": 10,
@@ -2741,7 +2772,7 @@ PUT 请求：
 | `settings.taskExportRetentionDays` | 任务导出保留天数 |
 | `settings.gunLedgerExportRetentionDays` | 编号台账导出保留天数 |
 | `settings.offlineBackupRetentionDays` | 断网备份保留天数 |
-| `settings.scheduleTime` | 计划执行时间（HH:MM） |
+| `settings.scheduleTimes` | 计划执行时间列表（最多两个，格式 HH:MM，默认 `["00:30", "12:30"]`） |
 | `settings.yearlyCleanupEnabled` | 是否启用年度任务清理 |
 | `settings.yearlyCleanupMonth` | 年度清理月份 |
 | `settings.yearlyCleanupCheckDays` | 年度清理检查窗口天数 |
@@ -2793,7 +2824,7 @@ PUT 请求：
   "offlineBackupRetentionDays": 7,
   "taskExportRetentionDays": 30,
   "gunLedgerExportRetentionDays": 30,
-  "scheduleTime": "00:30",
+  "scheduleTimes": ["00:30", "12:30"],
   "yearlyCleanupEnabled": true,
   "yearlyCleanupMonth": 1,
   "yearlyCleanupCheckDays": 10,
@@ -2819,7 +2850,7 @@ PUT 请求：
 | `offlineBackupRetentionDays` | 是 | 断网备份保留天数（1-3650） |
 | `taskExportRetentionDays` | 是 | 任务导出保留天数（1-3650） |
 | `gunLedgerExportRetentionDays` | 是 | 编号台账导出保留天数（1-3650） |
-| `scheduleTime` | 是 | 计划执行时间（格式 HH:MM） |
+| `scheduleTimes` | 是 | 计划执行时间列表（1-2 项，格式 HH:MM，默认 `["00:30", "12:30"]`） |
 | `yearlyCleanupEnabled` | 是 | 是否启用年度任务清理 |
 | `yearlyCleanupMonth` | 是 | 年度清理月份（1-12） |
 | `yearlyCleanupCheckDays` | 是 | 年度清理检查窗口天数（1-31） |
@@ -2849,12 +2880,20 @@ PUT 请求：
     "fileName": "db-backup-20260710-103000.db",
     "filePath": "D:\\project\\backend\\backups\\database\\db-backup-20260710-103000.db",
     "dir": "D:\\project\\backend\\backups\\database",
-    "size": 1048576
+    "size": 1048576,
+    "secondaryBackup": {
+      "dir": "\\\\192.168.160.2\\生产管理部3d\\3D 资料\\check\\check27\\Version control\\obara-task-manager\\backups",
+      "filePath": "\\\\192.168.160.2\\生产管理部3d\\3D 资料\\check\\check27\\Version control\\obara-task-manager\\backups\\db-backup-20260710-103000.db",
+      "size": 1048576,
+      "success": true
+    }
   }
 }
 ```
 
 > 备份使用 SQLite 在线备份 API 生成，并会切换到 DELETE 日志模式把 WAL 内容合并进主文件，最终只保留单个干净的 `.db` 文件，不产生 `.db-wal`/`.db-shm` 伴随文件。
+
+> 双备份：数据库备份除写入配置的备份目录外，还会固定复制一份到上表 `secondaryBackup.dir` 指向的网络共享目录。该网络地址为固定值，仅接收数据库备份，且其中的文件不参与过期清理（永久保留）。网络不可达或权限不足时 `secondaryBackup.success` 为 `false` 并返回 `error`，不影响主备份结果。
 
 ### 手动导出任务数据
 
@@ -2908,8 +2947,8 @@ PUT 请求：
 
 说明：
 
-- 导出内容为包含全部焊枪编号台账分类的单个 `.zip`，每个分类对应包内一个独立 `.xls`（文件名为 `gun-ledger-<分类名>-<时间戳>.xls`，分类下每张台账表对应一个工作表）；每日定时自动导出的文件名为 `gun-ledger-YYYYMMDD-HHmmss.zip`，`type` 为 `scheduled-gun-ledger-export`。
-- 没有任何台账数据时返回 `404` 和 `没有可导出的编号台账数据`。
+- 导出内容为包含全部焊枪编号台账分类的单个 `.zip`，每个分类对应包内一个独立 `.xls`（文件名为 `gun-ledger-<分类名>-<时间戳>.xls`，分类下每张台账表对应一个工作表）；手动与每日定时自动导出的压缩包文件名均为 `gun-ledger-all-YYYYMMDD-HHmmss.zip`，定时导出的 `type` 为 `scheduled-gun-ledger-export`（手动为 `manual-gun-ledger-export`）。
+- 没有任何台账数据时返回 `404` 和 `没有可导出的焊枪编号台账数据`。
 
 ### 清理过期备份
 
@@ -3611,7 +3650,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 |------|----------|------|
 | 400 | `输入格式不正确` / `请指定清理时间点` 等 | 参数校验失败 |
 | 401 | `No token, authorization denied` / `Token is not valid` / `用户名或密码错误` | 未认证、Token 无效或登录凭证错误 |
-| 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` / `无权修改任务完成状态` / `无权修改枪名任务完成状态` / `您的 IP 已被列入黑名单，无法访问本系统`（`code=IP_BANNED`） | 权限不足（超管接口/管理员接口/页面权限开关未放行/无颜色标记权限）或来源 IP 命中黑名单 |
+| 403 | `超级管理员资源，访问被拒绝。` / `管理员资源，访问被拒绝。` / `无权访问` / `只有管理员可以编辑表格` / `无权修改任务完成状态` / `无权修改枪名任务完成状态` / `系统已禁用自主修改密码，请联系管理员`（`allowUserChangePassword` 关闭时调用修改密码接口） / `您的 IP 已被列入黑名单，无法访问本系统`（`code=IP_BANNED`） | 权限不足（超管接口/管理员接口/页面权限开关未放行/无颜色标记权限/自主改密开关关闭）或来源 IP 命中黑名单 |
 | 404 | `用户不存在` / `任务条目不存在` / `记录未找到` / `没有可导出的数据` 等 | 资源不存在 |
 | 409 | `该表正由「xxx」编辑，请等待其完成后再保存` / `焊枪名不可重复：「xxx」（序号 1、3）` / `该知识库已关联` | 资源冲突：编辑锁被占用、焊枪名重复或知识库重复关联 |
 | 429 | `请求过于频繁，请稍后再试` / `登录尝试过于频繁，请15分钟后再试` / `密码修改尝试过于频繁，请15分钟后再试` | 触发全局 API 限流、登录限流或修改密码限流 |
@@ -3655,7 +3694,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 8. **账号禁用**：支持禁用账号，禁用后无法登录
 9. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
 10. **强制修改密码与会话吊销**：新建用户首次登录需修改密码，一般管理员修改自己密码后下次登录需再次修改；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。超级管理员重置用户密码（单个或批量）后不强制改密，但会吊销旧令牌并记录一次性失效原因，旧会话校验时收到「密码已被管理员重置」提示
-11. **操作审计**：自动记录所有已登录用户的 API 请求，最多保留 2000 条；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
+11. **操作审计**：自动记录所有已登录用户的 API 请求，默认最多保留 5000 条（可在系统设置 → 日志管理中调整）；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
 12. **登录失败全量留痕与防枚举**：登录成功与失败均写登录日志，失败日志含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`）；对客户端统一返回 `用户名或密码错误`，不暴露用户名是否存在
 13. **Excel 依赖本地化**：Excel 解析使用随仓库分发的 `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，`file:` 协议安装），修复旧版 0.18.5 的 CVE-2023-30533 与 CVE-2024-22363
 14. **IP 黑名单**：超级管理员可在系统设置「登录管理」中配置（精确 IP / CIDR 网段 / IPv4 通配符，最多 500 条），命中的来源 IP 访问任意 `/api` 接口返回 `403`（`IP_BANNED`）；`OPTIONS` 预检与本机回环地址永不拦截，黑名单 IP 的登录尝试会写入失败原因为「IP 已被列入黑名单」的登录日志

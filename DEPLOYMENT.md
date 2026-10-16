@@ -422,7 +422,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
-| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、仕样号位数（`specNumberDigits`，5 或 6）、设计计划标记颜色随机（`randomDesignPlanColor`）、焊枪台账分配任务标记颜色随机（`randomAssignmentColor`）、默认工时规则（`defaultGunHours`，确认/设计/确认修改三类工时的 C/X 值）；完成状态标记开关缺失时默认开启，仕样号位数缺失时默认 5，两个颜色随机开关缺失时默认关闭，默认工时规则缺失时按内置默认值补齐 |
+| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、设计计划标记颜色随机（`randomDesignPlanColor`）、焊枪台账分配任务标记颜色随机（`randomAssignmentColor`）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，两个颜色随机开关缺失时默认关闭，默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
 除上述键值集合外，三类高写入量数据存放在独立的关系表中（首次升级自动从 `kv_store` 搬迁，幂等）：
@@ -431,7 +431,7 @@ GITEE_REPO_NAME=obara-task-manager
 |----|------|
 | `task_sheets` / `task_entries` | 任务工时表：每张工时表一行（`designer_id + year + month` 唯一索引），任务条目按行存放；写入只重写受影响的单张表，对外接口数据形状不变 |
 | `login_logs` | 登录日志独立表（含 IP、浏览器信息、登录结果），最多保留 2000 条 |
-| `audit_logs` | 操作日志独立表，最多保留 2000 条 |
+| `audit_logs` | 操作日志独立表，默认最多保留 5000 条（保留条数可在系统设置 → 日志管理中调整） |
 
 ### 从 JSON 自动迁移
 
@@ -478,7 +478,20 @@ GITEE_REPO_NAME=obara-task-manager
 POST /api/system/maintenance/backup
 ```
 
-系统也会在每日指定时间（默认 `00:30`）自动备份，并在服务关闭前自动生成断网备份。
+系统也会在每日配置的时间点（最多两个，默认 `00:30` 和 `12:30`）自动备份，并在服务关闭前自动生成断网备份。
+
+#### 数据库双备份（网络共享第二地址）
+
+手动备份与每日定时备份在主备份成功后，都会把同一个 `.db` 文件额外复制到固定网络共享地址：
+
+```text
+\\192.168.160.2\生产管理部3d\3D 资料\check\check27\Version control\obara-task-manager\backups
+```
+
+- 该第二地址写死在后端（`backend/utils/dbMaintenance.js` 的 `SECONDARY_BACKUP_DIR`），不通过环境变量或界面配置；部署前需确认运行后端服务的 Windows 账号对该共享有写入权限（建议在服务账号下预先挂载并保存凭据）。
+- 仅数据库备份双写；任务表导出、编号台账导出和关机时的断网备份不写入第二地址。
+- 第二地址不执行过期清理，备份文件永久保留，容量由共享存储侧管理。
+- 共享不可达或写入失败时不影响主备份：手动备份接口仍返回成功，响应体 `backup.secondaryBackup` 中 `success=false` 且带 `error`（页面会弹出「双备份地址写入失败」红色提示）；定时备份仅在后端日志输出告警。巡检时如看到该提示，应检查网络共享连通性与权限。
 
 手动复制数据库文件时**必须先停止后端服务**，否则可能复制到不一致的状态：
 
@@ -782,7 +795,7 @@ node --check backend\routes\settings.js
 
 1. **SQLite WAL 模式**：数据库启用 WAL（Write-Ahead Logging）模式，支持并发读取，写入通过事务持久化，单库上限 281 TB
 2. **内存缓存 + 关系表存储**：键值集合（用户、设计人员、设置等）加载到内存缓存并做脏检查，仅变更的集合落库；任务工时表拆分为 `task_sheets`/`task_entries` 关系表，查询走索引按需装配，写入只重写受影响的单张表，避免整库 JSON 反复序列化
-3. **数据库文件大小**：`loginLogs` 和 `auditLogs` 均最多保留 2000 条记录，自动清理旧日志
+3. **数据库文件大小**：`loginLogs` 最多保留 2000 条、`auditLogs` 默认最多保留 5000 条（保留条数可在系统设置 → 日志管理中调整）记录，自动清理旧日志
 4. **并发写入保护**：数据库写入采用队列机制，避免并发冲突
 5. **前端防抖**：任务字段变更采用 500ms 防抖保存，减少网络请求
 6. **离线缓存**：后端断开时自动切换到 localStorage 缓存数据
@@ -794,11 +807,11 @@ node --check backend\routes\settings.js
 
 ### 自动维护功能
 
-自动维护在每日指定时间（默认 `00:30`）执行以下任务：
+自动维护在每日配置的时间点执行（最多两个，默认 `00:30` 和 `12:30`，调度器自动选择距当前最近的时间点作为下次执行时间；至少需要配置一个）：
 
 | 任务 | 说明 | 默认状态 |
 |------|------|----------|
-| 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照 | 启用 |
+| 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照，成功后双写到网络共享第二地址（见「备份与恢复」） | 启用 |
 | 任务数据导出 | 导出渲染后的任务表为 `.xls` 文件（`task-export-YYYYMMDD-HHmmss.xls`） | 启用 |
 | 编号台账导出 | 将全部焊枪编号台账分类打包为一个 `.zip`（每个分类一个独立 `.xls`），文件名 `gun-ledger-all-YYYYMMDD-HHmmss.zip` | 启用 |
 | 过期备份清理 | 删除超过保留天数的旧备份（数据库备份/任务导出/编号台账导出按各自保留天数，断网备份按断网保留天数） | 自动执行 |
@@ -822,7 +835,7 @@ backend/
 
 - 触发时机：后端收到 `SIGINT`/`SIGTERM` 信号（即 `Ctrl+C` 或服务停止）时，会先创建一次断网备份再退出。
 - 防抖机制：同一次会话内 5 分钟内只生成一次，避免短时间内重复备份。
-- 存储位置：独立目录 `backups/offline/`，便于与日常备份区分。
+- 存储位置：独立目录 `backups/offline/`，便于与日常备份区分；断网备份不写入双备份网络共享地址。
 - 备份文件名：
   - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
   - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
@@ -844,7 +857,7 @@ backend/
   "taskExportRetentionDays": 30,
   "gunLedgerExportRetentionDays": 30,
   "offlineBackupRetentionDays": 7,
-  "scheduleTime": "00:30",
+  "scheduleTimes": ["00:30", "12:30"],
   "yearlyCleanupEnabled": true,
   "yearlyCleanupMonth": 1,
   "yearlyCleanupCheckDays": 10,
@@ -866,7 +879,7 @@ backend/
 |-----|------|------|------|
 | `/api/system/maintenance` | GET | 超级管理员 | 获取维护状态和配置 |
 | `/api/system/maintenance` | PUT | 超级管理员 | 更新维护配置 |
-| `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份 |
+| `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份；主备份成功后自动复制到双备份网络地址，响应 `backup.secondaryBackup` 含第二地址写入结果（失败不影响主备份） |
 | `/api/system/maintenance/offline-backup` | POST | 环回匿名 / 外部超管 | 手动触发断网备份 |
 | `/api/system/maintenance/export-tasks` | POST | 超级管理员 | 手动导出任务数据 |
 | `/api/system/maintenance/export-gun-ledger` | POST | 超级管理员 | 手动导出全部焊枪编号台账为单个 `.xls` |
@@ -907,6 +920,7 @@ backend/
 3. **设置合理的数据保留年限**：根据业务需求设置 `yearlyTaskRetentionYears`
 4. **定期手动备份**：在执行重大操作（如升级、批量导入）前手动执行备份
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
-6. **测试恢复流程**：定期测试从备份恢复数据的流程
+6. **检查双备份地址**：确认服务账号可访问 `\\192.168.160.2\...\backups` 共享；手动备份后如页面提示「双备份地址写入失败」，应排查网络/权限（第二地址不自动清理，还需在共享侧关注容量）
+7. **测试恢复流程**：定期测试从备份恢复数据的流程
 
 最后更新：2026-10-16

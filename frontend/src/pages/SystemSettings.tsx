@@ -88,7 +88,7 @@ interface MaintenanceSettings {
   offlineBackupRetentionDays: number;
   taskExportRetentionDays: number;
   gunLedgerExportRetentionDays: number;
-  scheduleTime: string;
+  scheduleTimes: string[];
   yearlyCleanupEnabled: boolean;
   yearlyCleanupMonth: number;
   yearlyCleanupCheckDays: number;
@@ -148,7 +148,7 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   offlineBackupRetentionDays: 7,
   taskExportRetentionDays: 30,
   gunLedgerExportRetentionDays: 30,
-  scheduleTime: '00:30',
+  scheduleTimes: ['00:30', '12:30'],
   yearlyCleanupEnabled: true,
   yearlyCleanupMonth: 1,
   yearlyCleanupCheckDays: 10,
@@ -166,6 +166,7 @@ const defaultSettings: SystemSettingsData = {
   allowUserEditOwnTaskColor: true,
   allowUserChangePassword: false,
   specNumberDigits: 5,
+  auditLogMaxRows: 5000,
   randomDesignPlanColor: false,
   randomAssignmentColor: false,
   defaultGunHours: {
@@ -204,6 +205,9 @@ const SystemSettings = () => {
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
   const [maintenanceSaving, setMaintenanceSaving] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // 操作日志保留条数草稿（日志管理）：输入后点保存才提交，避免逐字触发保存
+  const [logRetentionDraft, setLogRetentionDraft] = useState('5000');
+  const [logRetentionSaving, setLogRetentionSaving] = useState(false);
   const [showCleanupTasksModal, setShowCleanupTasksModal] = useState(false);
   const [cleanupTasksMode, setCleanupTasksMode] = useState<'single' | 'batch'>('single');
   const [cleanupTasksMonth, setCleanupTasksMonth] = useState(format(new Date(), 'yyyy-MM'));
@@ -448,6 +452,12 @@ const SystemSettings = () => {
     init();
   }, [fetchSettings, fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats]);
 
+  // 日志管理：设置加载完成后同步「操作日志保留条数」草稿
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    setLogRetentionDraft(String(settings.auditLogMaxRows));
+  }, [settingsLoaded, settings.auditLogMaxRows]);
+
   // 网络恢复后自动重新加载数据
   useEffect(() => {
     const handleOnline = () => {
@@ -516,6 +526,21 @@ const SystemSettings = () => {
     } catch {
       addToast('保存系统设置失败', 'error');
       fetchSettings();
+    }
+  };
+
+  // 保存操作日志保留条数（日志管理）：校验 100~100000 的整数后提交
+  const handleSaveLogRetention = async () => {
+    const rows = Number(logRetentionDraft);
+    if (!Number.isInteger(rows) || rows < 100 || rows > 100000) {
+      addToast('操作日志保留条数需为 100 ~ 100000 之间的整数', 'error');
+      return;
+    }
+    setLogRetentionSaving(true);
+    try {
+      await updateSettings({ auditLogMaxRows: rows });
+    } finally {
+      setLogRetentionSaving(false);
     }
   };
 
@@ -743,9 +768,22 @@ const SystemSettings = () => {
     setMaintenanceSettings(prev => ({ ...prev, [key]: value }));
   };
 
+  // 每日执行时间：最多两个时间点，空值自动剔除
+  const updateScheduleTime = (index: number, value: string) => {
+    setMaintenanceSettings(prev => {
+      const next = [prev.scheduleTimes?.[0] || '', prev.scheduleTimes?.[1] || ''];
+      next[index] = value;
+      return { ...prev, scheduleTimes: next.filter(Boolean).slice(0, 2) };
+    });
+  };
+
   const saveMaintenanceSettings = async () => {
     if (guardOffline()) return;
     if (!token) return;
+    if (!maintenanceSettings.scheduleTimes || maintenanceSettings.scheduleTimes.length === 0) {
+      addToast('请至少设置一个每日执行时间', 'error');
+      return;
+    }
     setMaintenanceSaving(true);
     try {
       const res = await axios.put('/api/system/maintenance', maintenanceSettings, authHeader);
@@ -778,7 +816,12 @@ const SystemSettings = () => {
 
   const handleBackupNow = async () => {
     const data = await runMaintenanceAction('/api/system/maintenance/backup');
-    if (data) addToast(`数据库备份已完成：${data.backup.fileName}（${formatFileSize(data.backup.size)}）`, 'success');
+    if (!data) return;
+    addToast(`数据库备份已完成：${data.backup.fileName}（${formatFileSize(data.backup.size)}）`, 'success');
+    const secondary = data.backup?.secondaryBackup;
+    if (secondary && !secondary.success) {
+      addToast(`双备份地址写入失败：${secondary.error}`, 'error');
+    }
   };
 
   const handleManualGunLedgerExport = async () => {
@@ -1702,7 +1745,7 @@ const SystemSettings = () => {
                     <Database className="mr-2 text-blue-600" size={22} />
                     数据库维护
                   </h3>
-                  <p className="text-sm text-gray-500 mt-1">每日 {maintenanceSettings.scheduleTime} 自动执行已开启的备份与导出任务、清理过期文件，并在年度检测窗口内执行任务归档清理。</p>
+                  <p className="text-sm text-gray-500 mt-1">每日 {(maintenanceSettings.scheduleTimes || []).join('、') || '—'} 自动执行已开启的备份与导出任务、清理过期文件。</p>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={fetchMaintenanceStatus} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 font-bold rounded-lg transition">
@@ -1727,10 +1770,11 @@ const SystemSettings = () => {
                     <span className="flex items-center gap-2"><Clock size={18} className="text-blue-600" />启用自动维护</span>
                     <input type="checkbox" checked={maintenanceSettings.enabled} onChange={(e) => updateMaintenanceField('enabled', e.target.checked)} className="w-5 h-5 accent-blue-600" />
                   </label>
-                  <label className="flex items-center justify-between md:justify-end gap-3 font-bold text-gray-700">
-                    <span>每日执行时间</span>
-                    <input type="time" value={maintenanceSettings.scheduleTime} onChange={(e) => updateMaintenanceField('scheduleTime', e.target.value)} className="w-40 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
-                  </label>
+                  <div className="flex items-center gap-2 font-bold text-gray-700">
+                    <span className="flex items-center gap-2 whitespace-nowrap">每日执行时间</span>
+                    <input type="time" value={maintenanceSettings.scheduleTimes?.[0] || ''} onChange={(e) => updateScheduleTime(0, e.target.value)} className="w-32 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
+                    <input type="time" value={maintenanceSettings.scheduleTimes?.[1] || ''} onChange={(e) => updateScheduleTime(1, e.target.value)} className="w-32 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
+                  </div>
                 </div>
                 <p className="text-xs text-gray-400 mt-3 leading-relaxed">到达执行时间后，按下方开关备份数据库、导出任务表格与编号台账，并按各项保留天数清理四个目录中的过期文件；总开关停用后所有计划任务跳过。</p>
               </div>
@@ -2221,6 +2265,39 @@ const SystemSettings = () => {
         )}
 
         {activeTab === 'logs' && (
+          <>
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 mb-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800 flex items-center mb-1">
+                  <History className="mr-2 text-blue-600" size={22} />
+                  操作日志保留条数
+                </h3>
+                <p className="text-xs text-gray-400">
+                  操作日志超过该条数时自动清理最旧的记录，默认 5000 条。
+                </p>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <input
+                  type="number"
+                  min={100}
+                  max={100000}
+                  value={logRetentionDraft}
+                  onChange={(e) => setLogRetentionDraft(e.target.value)}
+                  disabled={!isSuperAdmin || isOffline}
+                  className="w-32 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none disabled:bg-gray-100 disabled:text-gray-400"
+                />
+                <span className="text-sm text-gray-500">条</span>
+                <button
+                  onClick={handleSaveLogRetention}
+                  disabled={!isSuperAdmin || isOffline || logRetentionSaving}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition"
+                >
+                  {logRetentionSaving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
+          </div>
           <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
             <div className="flex items-center justify-between mb-4">
               <div>
@@ -2294,6 +2371,7 @@ const SystemSettings = () => {
               </table>
             </div>
           </div>
+          </>
         )}
 
         {activeTab === 'plan' && (

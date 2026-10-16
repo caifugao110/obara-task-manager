@@ -67,7 +67,20 @@ const openDatabase = () => {
 // 在每个 API 请求结束时都会写一次，写放大极为严重（P1-3）。
 // 改为独立表后，写日志只是一次 INSERT，不再触碰业务数据快照。
 // ---------------------------------------------------------------------------
-const AUDIT_LOG_MAX_ROWS = 2000;
+// 操作日志保留条数默认值。实际生效值取自「系统设置 → 日志管理」中的
+// auditLogMaxRows 配置项；未配置或非法时回退该默认值。
+const DEFAULT_AUDIT_LOG_MAX_ROWS = 5000;
+
+// 读取当前配置的操作日志保留条数。
+// _cache 尚未加载时（如启动阶段的日志迁移）回退默认值，保证始终可用。
+const getAuditLogMaxRows = () => {
+  const raw = _cache && _cache.settings && _cache.settings.system
+    ? _cache.settings.system.auditLogMaxRows
+    : undefined;
+  const rows = Number(raw);
+  if (!Number.isInteger(rows) || rows < 100 || rows > 100000) return DEFAULT_AUDIT_LOG_MAX_ROWS;
+  return rows;
+};
 
 const ensureAuditLogTable = () => {
   const database = openDatabase();
@@ -127,14 +140,14 @@ const deserializeAuditRow = (row) => {
   return { ...row, browserInfo };
 };
 
-// 只保留最近 AUDIT_LOG_MAX_ROWS 条。
+// 只保留最近 getAuditLogMaxRows() 条（默认 5000，可在系统设置中调整）。
 // 用 MAX(rowid) 定位而无须 COUNT(*)：rowid 单调递增，删除「小于等于 MAX-上限」的行
 // 即等价于保留最后写入的 N 条。表内不足 N 条时差值为负，不会误删任何行；
 // 未超限时该语句匹配 0 行，开销仅一次 rowid 末端查找，可忽略。
 const trimAuditLogs = (database) => {
   database
     .prepare('DELETE FROM audit_logs WHERE rowid <= (SELECT MAX(rowid) FROM audit_logs) - ?')
-    .run(AUDIT_LOG_MAX_ROWS);
+    .run(getAuditLogMaxRows());
 };
 
 const appendAuditLogEntry = (entry) => {
@@ -532,7 +545,7 @@ const getInitialDb = () => ({
       dailyBackupEnabled: true,
       dailyTaskExportEnabled: true,
       backupRetentionDays: 30,
-      scheduleTime: '00:30',
+      scheduleTimes: ['00:30', '12:30'],
       yearlyCleanupEnabled: true,
       yearlyCleanupMonth: 1,
       yearlyCleanupCheckDays: 10,
@@ -651,7 +664,6 @@ const applySettingsDefaults = (parsed) => {
     dailyBackupEnabled: true,
     dailyTaskExportEnabled: true,
     backupRetentionDays: 30,
-    scheduleTime: '00:30',
     yearlyCleanupEnabled: true,
     yearlyCleanupMonth: 1,
     yearlyCleanupCheckDays: 10,
@@ -683,7 +695,7 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.designStandardsPrompt.knowledgeBases = {};
   }
   if (!parsed.settings.system) {
-    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5 };
+    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5, auditLogMaxRows: DEFAULT_AUDIT_LOG_MAX_ROWS };
   }
   // IP 黑名单：{ enabled: boolean, entries: [{ id, ip, note, createdAt, createdBy }] }
   if (!parsed.settings.ipBlacklist || typeof parsed.settings.ipBlacklist !== 'object' || Array.isArray(parsed.settings.ipBlacklist)) {
@@ -706,6 +718,11 @@ const applySettingsDefaults = (parsed) => {
   parsed.settings.system.allowUserEditOwnTaskColor = allowOwnDesignPlanColor;
   if (![5, 6].includes(parsed.settings.system.specNumberDigits)) {
     parsed.settings.system.specNumberDigits = 5;
+  }
+  // 操作日志保留条数：缺失/非法时回填默认值（前端「系统设置 → 日志管理」可调整）
+  const auditLogMaxRows = Number(parsed.settings.system.auditLogMaxRows);
+  if (!Number.isInteger(auditLogMaxRows) || auditLogMaxRows < 100 || auditLogMaxRows > 100000) {
+    parsed.settings.system.auditLogMaxRows = DEFAULT_AUDIT_LOG_MAX_ROWS;
   }
   if (!parsed.statusTrackingItems) parsed.statusTrackingItems = [];
   // auditLogs / loginLogs 已迁出至独立表，tasks 已迁出至 taskStore 关系表，此处不再回填
