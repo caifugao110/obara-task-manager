@@ -11,7 +11,7 @@ export function useDebounce(callback: (...args: any[]) => void, delay: number) {
     };
   }, []);
 
-  return (...args: any[]) => {
+  const debounced = (...args: any[]) => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
     }
@@ -20,4 +20,14 @@ export function useDebounce(callback: (...args: any[]) => void, delay: number) {
       callback(...args);
     }, delay);
   };
+
+  // 取消尚未触发的防抖保存（如跨主任务移动枪名前，避免旧数据延迟回写覆盖移动结果）
+  debounced.cancel = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  };
+
+  return debounced;
 }

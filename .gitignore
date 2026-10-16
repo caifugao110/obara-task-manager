@@ -103,6 +103,9 @@ coverage/
 # Trae AI tool data
 .trae/
 
+# CodeBuddy
+.codebuddy/
+
 # WorkBuddy data
 .workbuddy/
 

@@ -142,6 +142,52 @@ docker compose pull && docker compose up -d   # 升级到 WEKNORA_VERSION 指定
 - **无需配置 `WEKNORA_KNOWLEDGE_BASE_IDS`**：检索与问答始终使用页面上显式关联/勾选的知识库 ID（请求体未传知识库 ID 时后端直接返回 `400`）；`backend/.env` 中的 `WEKNORA_KNOWLEDGE_BASE_IDS` 仅是早期版本遗留的兜底变量，当前流程不读取它，新增知识库只需在页面「关联知识库」即可。
 - **答复约束提示词**：由本系统超管在「设计规范知识库」页面底部的「答复约束提示词」面板中按知识库配置（支持整篇 Markdown，最长 20000 字符）；后端据此自动在知识库所属工作空间创建/更新受管自定义智能体，清空提示词则自动删除智能体。配置前提是该空间已有可用的 KnowledgeQA 问答模型。
 
+### 6.1 数据备份与恢复
+
+知识库全部数据都在 Docker 命名卷中（compose 项目名为 `weknora`）：
+
+| 卷 | 内容 | 是否必须备份 |
+|----|------|--------------|
+| `weknora_postgres-data` | PostgreSQL 数据库：知识库元数据、文档解析文本、向量索引、智能体与模型配置 | 是（核心） |
+| `weknora_data-files` | 上传的原始文档文件 | 是 |
+| `weknora_docreader-tmp` | 文档解析临时目录 | 否（可自动重建） |
+
+**推荐：使用 pg_dump 做逻辑备份（服务可在线运行）：**
+
+```bash
+cd weknora
+docker compose exec -T postgres pg_dump -U postgres -d WeKnora \
+  > backups/weknora-pg-$(date +%Y%m%d-%H%M%S).sql
+```
+
+Windows PowerShell 下等价命令（注意先建好 `backups` 目录）：
+
+```powershell
+cd weknora; if (!(Test-Path backups)) { New-Item -ItemType Directory backups | Out-Null }
+docker compose exec -T postgres pg_dump -U postgres -d WeKnora |
+  Out-File -Encoding ascii "backups/weknora-pg-$(Get-Date -Format yyyyMMdd-HHmmss).sql"
+```
+
+数据库用户名 / 库名取自 `weknora/.env`（默认 `postgres` / `WeKnora`）。原始文档文件可直接打包 `data-files` 卷备份：
+
+```bash
+docker run --rm -v weknora_data-files:/data -v "$PWD/backups:/backup" busybox \
+  tar czf /backup/weknora-files-$(date +%Y%m%d).tar.gz -C /data .
+```
+
+**恢复（全新环境 / 空卷时）：**
+
+```bash
+cd weknora
+docker compose up -d postgres           # 先只起数据库
+docker compose exec -T postgres psql -U postgres -d WeKnora < backups/weknora-pg-YYYYMMDD-HHMMSS.sql
+docker run --rm -v weknora_data-files:/data -v "$PWD/backups:/backup" busybox \
+  tar xzf /backup/weknora-files-YYYYMMDD.tar.gz -C /data
+docker compose up -d                    # 再启动其余服务
+```
+
+> 注意：pg_dump 备份与卷级备份都应**妥善保管 `weknora/.env`**——其中的 `SYSTEM_AES_KEY` 用于解密数据库内的模型 API Key，丢失后即使恢复了数据库，模型 Key 也无法解密（见第 8 节踩坑记录第 6 条）。
+
 ## 7. 从旧部署（E:\My Trae\WeKnora）迁移
 
 本目录的 compose 项目名与原部署一致（均为 `weknora`），**数据卷可直接复用**：
@@ -186,4 +232,4 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 3. 保持 `DISABLE_REGISTRATION=true`；
 4. 全新部署可把 `DB_PASSWORD` / `REDIS_PASSWORD` 改为强口令（**已有数据卷的部署勿改**，会导致数据库/Redis 无法登录）。
 
-最后更新：2026-10-16
+最后更新：2026-10-17

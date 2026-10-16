@@ -20,6 +20,16 @@ const isWhiteColor = (value) => {
   return normalized === '#ffffff' || normalized === '#fff' || normalized === 'white';
 };
 
+// 拷贝自已完成任务的白条目没有 colorBeforeUserMark 恢复记录，
+// 标记为未完成时从该色板随机取色（避开白色与淡色系）
+const RANDOM_TASK_COLORS = [
+  '#fca5a5', '#f87171', '#fb7185', '#fdba74', '#fb923c', '#fbbf24', '#fde047',
+  '#a3e635', '#86efac', '#34d399', '#67e8f9', '#22d3ee', '#38bdf8', '#93c5fd',
+  '#818cf8', '#d8b4fe', '#f9a8d4', '#f472b6', '#c08457'
+];
+
+const randomTaskColor = () => RANDOM_TASK_COLORS[Math.floor(Math.random() * RANDOM_TASK_COLORS.length)];
+
 const gunSchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().allow('').default(''),
@@ -42,6 +52,19 @@ const validateNamedGunHours = (guns) => {
     return hours <= 0;
   });
   return invalidGun ? '枪名存在时，每个枪名的工时都必须大于 0' : null;
+};
+
+// 同一主任务内不允许出现重复的非空枪名
+const validateDuplicateGunNames = (guns) => {
+  if (!Array.isArray(guns)) return null;
+  const seen = new Set();
+  for (const gun of guns) {
+    const name = String(gun?.name || '').trim();
+    if (!name) continue;
+    if (seen.has(name)) return `存在重复的枪名「${name}」，请修改后再保存`;
+    seen.add(name);
+  }
+  return null;
 };
 
 const getUserMeta = (user) => ({
@@ -153,6 +176,19 @@ const moveItemSchema = Joi.object({
   itemId: Joi.string().required(),
   targetDesignerId: Joi.string().required(),
   targetDate: Joi.string().isoDate().required(),
+  newIndex: Joi.number().integer().min(0).optional()
+});
+
+// 跨主任务移动单个枪名：从源主任务的 guns 中移除，插入目标主任务 guns 的 newIndex
+// 位置（未传则追加到最下面）；源与目标可为同一主任务（此时为重排）
+const moveGunSchema = Joi.object({
+  sourceDesignerId: Joi.string().required(),
+  sourceDate: Joi.string().isoDate().required(),
+  sourceItemId: Joi.string().required(),
+  gunId: Joi.string().required(),
+  targetDesignerId: Joi.string().required(),
+  targetDate: Joi.string().isoDate().required(),
+  targetItemId: Joi.string().required(),
   newIndex: Joi.number().integer().min(0).optional()
 });
 
@@ -293,7 +329,7 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
 
   const addedItems = [];
   for (const item of pasteItems) {
-    const gunError = validateNamedGunHours(item.guns);
+    const gunError = validateNamedGunHours(item.guns) || validateDuplicateGunNames(item.guns);
     if (gunError) {
       return res.status(400).json({ message: gunError });
     }
@@ -324,7 +360,7 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
 
   const { designerId, date: rawDate, taskName, hours, color, guns } = validated;
   const date = normalizeDate(rawDate);
-  const gunError = validateNamedGunHours(guns);
+  const gunError = validateNamedGunHours(guns) || validateDuplicateGunNames(guns);
   if (gunError) {
     return res.status(400).json({ message: gunError });
   }
@@ -495,22 +531,32 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
 
     if (isRestore) {
       const canRestore = isAdmin || canUserMarkDesignPlanColor(data, req.user, designerId, item) || item.colorMarkedBy?.id === req.user.id || item.colorMarkedBy?.id === 'auto';
-      if (
-        isWhiteColor(item.color) &&
-        canRestore &&
-        Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark')
-      ) {
-        // Restore all guns too (auto-marked or user-marked main task)
+      if (isWhiteColor(item.color) && canRestore) {
         const guns = Array.isArray(item.guns) ? item.guns : [];
-        guns.forEach(gun => {
-          if (isWhiteColor(gun.color) && Object.prototype.hasOwnProperty.call(gun, 'colorBeforeUserMark')) {
-            gun.color = gun.colorBeforeUserMark || '';
-            delete gun.colorBeforeUserMark;
-            delete gun.colorMarkedBy;
-          }
-        });
+        if (Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark')) {
+          // Restore all guns too (auto-marked or user-marked main task)
+          guns.forEach(gun => {
+            if (isWhiteColor(gun.color) && Object.prototype.hasOwnProperty.call(gun, 'colorBeforeUserMark')) {
+              gun.color = gun.colorBeforeUserMark || '';
+              delete gun.colorBeforeUserMark;
+              delete gun.colorMarkedBy;
+            }
+          });
+          item.color = item.colorBeforeUserMark || '';
+        } else {
+          // 拷贝自已完成任务的白条目没有恢复记录：标记为未完成时分配随机颜色
+          item.color = randomTaskColor();
+          guns.forEach(gun => {
+            if (isWhiteColor(gun.color)) {
+              gun.color = Object.prototype.hasOwnProperty.call(gun, 'colorBeforeUserMark')
+                ? (gun.colorBeforeUserMark || '')
+                : randomTaskColor();
+              delete gun.colorBeforeUserMark;
+              delete gun.colorMarkedBy;
+            }
+          });
+        }
         item.guns = guns;
-        item.color = item.colorBeforeUserMark || '';
         delete item.colorBeforeUserMark;
         delete item.colorMarkedBy;
       }
@@ -564,12 +610,13 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
 
     if (isRestore) {
       const canRestoreGun = isAdmin || canUserMarkGunColor(data, req.user, designerId, item) || targetGun.colorMarkedBy?.id === req.user.id || targetGun.colorMarkedBy?.id === 'auto';
-      if (
-        isWhiteColor(targetGun.color) &&
-        canRestoreGun &&
-        Object.prototype.hasOwnProperty.call(targetGun, 'colorBeforeUserMark')
-      ) {
-        targetGun.color = targetGun.colorBeforeUserMark || '';
+      if (isWhiteColor(targetGun.color) && canRestoreGun) {
+        if (Object.prototype.hasOwnProperty.call(targetGun, 'colorBeforeUserMark')) {
+          targetGun.color = targetGun.colorBeforeUserMark || '';
+        } else {
+          // 拷贝自已完成任务的白枪名没有恢复记录：标记为未完成时分配随机颜色
+          targetGun.color = randomTaskColor();
+        }
         delete targetGun.colorBeforeUserMark;
         delete targetGun.colorMarkedBy;
       }
@@ -613,7 +660,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   if (field === 'guns') {
-    const gunError = validateNamedGunHours(value);
+    const gunError = validateNamedGunHours(value) || validateDuplicateGunNames(value);
     if (gunError) {
       return res.status(400).json({ message: gunError });
     }
@@ -713,6 +760,104 @@ router.post('/move', authMiddleware, asyncHandler(async (req, res) => {
 
   taskStore.saveSheets(isSameSheet ? [sSheet] : [sSheet, tSheet]);
   res.json({ message: '任务已移动', sourceSheet: sSheet, targetSheet: tSheet });
+}));
+
+// 将单个枪名从一个主任务移动到另一个主任务（支持跨人员/跨日期）：
+// - 目标主任务已存在同名枪名时拒绝移动；
+// - newIndex 指定插入位置，未传则追加到最下面；源与目标可为同一主任务（重排）；
+// - 源主任务的最后一个枪名被移走后，整个源主任务一并删除
+router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
+  const { error, value: validated } = moveGunSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const { sourceDesignerId, sourceDate, sourceItemId, gunId, targetDesignerId, targetDate, targetItemId, newIndex } = validated;
+  const sDate = normalizeDate(sourceDate);
+  const tDate = normalizeDate(targetDate);
+
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以移动枪名' });
+  }
+
+  // Source
+  const sMY = getMonthYearFromDate(sDate);
+  const sSheet = taskStore.getOrCreateSheet(sourceDesignerId, sMY.month, sMY.year);
+  const sItems = Array.isArray(sSheet.days[sDate]) ? sSheet.days[sDate] : [];
+
+  const sourceItem = sItems.find(i => i.id === sourceItemId);
+  if (!sourceItem) {
+    return res.status(404).json({ message: '源主任务不存在' });
+  }
+  const sourceGuns = Array.isArray(sourceItem.guns) ? sourceItem.guns : [];
+  const gunIdx = sourceGuns.findIndex(g => g && g.id === gunId);
+  if (gunIdx === -1) {
+    return res.status(404).json({ message: '枪名不存在' });
+  }
+  const gun = sourceGuns[gunIdx];
+
+  // Target（先做全部校验，再统一变更）
+  const tMY = getMonthYearFromDate(tDate);
+  // 同一张表（同设计员同年同月）时必须复用源表对象，避免重新装配丢失刚才的修改
+  const isSameSheet = sourceDesignerId === targetDesignerId && sMY.month === tMY.month && sMY.year === tMY.year;
+  const tSheet = isSameSheet ? sSheet : taskStore.getOrCreateSheet(targetDesignerId, tMY.month, tMY.year);
+  const tItems = Array.isArray(tSheet.days[tDate]) ? tSheet.days[tDate] : [];
+  const targetItem = tItems.find(i => i.id === targetItemId);
+  if (!targetItem) {
+    return res.status(404).json({ message: '目标主任务不存在' });
+  }
+  if (targetItem.leaveType) {
+    return res.status(400).json({ message: '不能移动到请假/出差类任务' });
+  }
+  const targetGuns = Array.isArray(targetItem.guns) ? targetItem.guns : [];
+
+  // 目标主任务已存在同名枪名时禁止移动（同一主任务内重排时排除枪名自身）
+  const gunName = String(gun?.name || '').trim();
+  if (gunName) {
+    const dup = targetGuns.find(g => g && g.id !== gunId && String(g.name || '').trim() === gunName);
+    if (dup) {
+      return res.status(400).json({ message: `目标主任务已存在枪名「${gunName}」，无法移动` });
+    }
+  }
+
+  // 从源主任务移除该枪名
+  sourceGuns.splice(gunIdx, 1);
+  sourceItem.guns = sourceGuns;
+
+  const isSameItem = sourceDesignerId === targetDesignerId && sDate === tDate && sourceItemId === targetItemId;
+  // 源主任务只剩这一个枪名且被移走：整个源主任务一并删除
+  let sourceItemDeleted = false;
+  if (!isSameItem && sourceGuns.length === 0) {
+    const srcIdx = sItems.findIndex(i => i.id === sourceItemId);
+    if (srcIdx !== -1) sItems.splice(srcIdx, 1);
+    sourceItemDeleted = true;
+  } else {
+    touchItem(sourceItem, req.user);
+  }
+  if (sItems.length === 0) {
+    delete sSheet.days[sDate];
+  } else {
+    sSheet.days[sDate] = sItems;
+  }
+
+  // 插入到目标主任务
+  targetItem.guns = targetGuns;
+  if (typeof newIndex === 'number' && newIndex >= 0) {
+    const idx = Math.min(newIndex, targetItem.guns.length);
+    targetItem.guns.splice(idx, 0, gun);
+  } else {
+    targetItem.guns.push(gun);
+  }
+  touchItem(targetItem, req.user);
+
+  taskStore.saveSheets(isSameSheet ? [sSheet] : [sSheet, tSheet]);
+  res.json({
+    message: sourceItemDeleted ? '枪名已移动，源主任务已删除' : '枪名已移动',
+    sourceItemDeleted,
+    sourceSheet: sSheet,
+    targetSheet: tSheet
+  });
 }));
 
 module.exports = router;

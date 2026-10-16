@@ -87,6 +87,13 @@ interface SpecInfoResponse {
   isModification?: boolean;
 }
 
+// 已存在的相同仕样号任务（用于「添加到已有任务」合并分配）
+interface ExistingSpecTask {
+  itemId: string;
+  taskName: string;
+  guns: { id: string; name: string; hours: number | string }[];
+}
+
 interface GunLedgerData {
   categories: Record<string, GunTable[]>;
   defaultResponsiblePersons: string[];
@@ -330,6 +337,11 @@ const GunLedger: React.FC = () => {
   const [assignDate, setAssignDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [designers, setDesigners] = useState<Designer[]>([]);
   const [assigning, setAssigning] = useState(false);
+  // 相同仕样号检测：所选设计人员 + 日期下已存在的任务，及「添加到已有任务」复选框状态
+  const [existingSpecTasks, setExistingSpecTasks] = useState<ExistingSpecTask[]>([]);
+  const [specCheckLoading, setSpecCheckLoading] = useState(false);
+  const [mergeIntoExisting, setMergeIntoExisting] = useState(false);
+  const [mergeTargetItemId, setMergeTargetItemId] = useState('');
 
   // 分类导出弹窗：选中的分类 / 导出请求中
   const [showExportPanel, setShowExportPanel] = useState(false);
@@ -385,6 +397,14 @@ const GunLedger: React.FC = () => {
       return { success: false, message: '获取仕样信息超时' };
     }
   }, [authHeader]);
+
+  // 从文本中提取仕样号：与系统配置位数一致的独立数字段（台账客户列格式如「57908>O/客户名」）
+  const extractSpecNumbers = useCallback((text: string): string[] => {
+    const raw = String(text || '');
+    if (!raw.trim() || !specNumberDigits) return [];
+    const re = new RegExp(`(?<!\\d)\\d{${specNumberDigits}}(?!\\d)`, 'g');
+    return Array.from(new Set(raw.match(re) || []));
+  }, [specNumberDigits]);
 
   const sessionKey = (tableId: string, serialNumber: number) => `${tableId}::${serialNumber}`;
 
@@ -510,6 +530,39 @@ const GunLedger: React.FC = () => {
     setSelectedGunRowIds(new Set());
     setShowAssignPanel(false);
   }, [activeTableId, activeTableReadOnly]);
+
+  // 分配面板打开且选定设计人员 + 日期后，拉取该设计人员当月任务，找出该日期下已存在的任务（用于相同仕样号检测）
+  useEffect(() => {
+    setMergeIntoExisting(false);
+    setMergeTargetItemId('');
+    if (!showAssignPanel || !isAdmin || !assignDesignerId || !assignDate) {
+      setExistingSpecTasks([]);
+      return;
+    }
+    let cancelled = false;
+    setSpecCheckLoading(true);
+    const [yearStr, monthStr] = assignDate.split('-');
+    axiosInstance.get('/tasks', {
+      params: { designerId: assignDesignerId, month: parseInt(monthStr, 10), year: parseInt(yearStr, 10) },
+      ...authHeader,
+    })
+      .then((res: any) => {
+        if (cancelled) return;
+        const sheets = Array.isArray(res.data) ? res.data : [];
+        const sheet = sheets.find((s: any) => s.designerId === assignDesignerId);
+        const dayItems = Array.isArray(sheet?.days?.[assignDate]) ? sheet.days[assignDate] : [];
+        setExistingSpecTasks(dayItems
+          .filter((i: any) => !i.leaveType && i.id)
+          .map((i: any) => ({
+            itemId: String(i.id),
+            taskName: String(i.taskName || ''),
+            guns: Array.isArray(i.guns) ? i.guns : [],
+          })));
+      })
+      .catch(() => { if (!cancelled) setExistingSpecTasks([]); })
+      .finally(() => { if (!cancelled) setSpecCheckLoading(false); });
+    return () => { cancelled = true; };
+  }, [showAssignPanel, isAdmin, assignDesignerId, assignDate, authHeader]);
 
   // 表底部状态条：无任何提示内容时不渲染，使台账区白底与底部 footer 无缝衔接（与左侧表列表一致）
   const tableEditingSessions = activeTable
@@ -666,7 +719,22 @@ const GunLedger: React.FC = () => {
     setActiveCategory(cat);
   }, [activeCategory, stopRowLock]);
 
-  // 任务分配：按客户分组构建确认图任务，批量创建到指定设计人员的指定日期
+  // 选中枪名客户列中包含的仕样号，以及所选设计人员 + 日期下与之相同的已有任务
+  // 仅匹配「确认图」任务（任务名含「确认图」且不含「确认图修改」）
+  const selectedSpecNumbers = showAssignPanel && activeTable
+    ? Array.from(new Set((activeTable.rows || [])
+        .filter(r => selectedGunRowIds.has(r.id))
+        .flatMap(r => extractSpecNumbers(r.customer))))
+    : [];
+  const matchedExistingSpecTasks = selectedSpecNumbers.length === 0 || existingSpecTasks.length === 0
+    ? []
+    : existingSpecTasks.filter(t => {
+        if (!t.taskName.includes('确认图') || t.taskName.includes('确认图修改')) return false;
+        return extractSpecNumbers(t.taskName).some(s => selectedSpecNumbers.includes(s));
+      });
+
+  // 任务分配：按客户分组构建确认图任务，批量创建到指定设计人员的指定日期；
+  // 勾选「添加到已有任务」时，相同仕样号的枪名追加进已有任务而不新建
   const handleConfirmAssign = useCallback(async () => {
     if (warnIfOffline()) return;
     if (!activeTable || !assignDesignerId || !assignDate) {
@@ -686,12 +754,33 @@ const GunLedger: React.FC = () => {
       if (!groups.has(customer)) groups.set(customer, []);
       groups.get(customer)!.push(r);
     });
-    // 构建批量创建 items
-    const items = Array.from(groups.entries()).map(([customer, rows]) => {
-      const guns = rows.map(r => {
-        const hours = getDefaultConfirmHours(r.gunName);
-        return { id: `gun-assign-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: r.gunName.trim(), hours };
-      });
+    // 合并模式：勾选复选框并选定目标后，与目标任务仕样号相同的枪名追加进该任务，不新建
+    const mergeTarget = mergeIntoExisting && mergeTargetItemId
+      ? matchedExistingSpecTasks.find(t => t.itemId === mergeTargetItemId)
+      : null;
+    const mergeTargets = new Map<string, { item: ExistingSpecTask; guns: { id: string; name: string; hours: number }[] }>();
+    const buildGuns = (rows: typeof selectedRows) => rows.map(r => {
+      const hours = getDefaultConfirmHours(r.gunName);
+      return { id: `gun-assign-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: r.gunName.trim(), hours };
+    });
+    const createGroups: Array<[string, typeof selectedRows]> = [];
+    Array.from(groups.entries()).forEach(([customer, rows]) => {
+      const specs = extractSpecNumbers(customer);
+      const matched = mergeTarget && specs.length > 0
+        && extractSpecNumbers(mergeTarget.taskName).some(s => specs.includes(s))
+        ? mergeTarget
+        : null;
+      if (matched) {
+        const target = mergeTargets.get(matched.itemId) || { item: matched, guns: [] };
+        target.guns.push(...buildGuns(rows));
+        mergeTargets.set(matched.itemId, target);
+      } else {
+        createGroups.push([customer, rows]);
+      }
+    });
+    // 构建批量创建 items（仅未命中相同仕样号的组）
+    const items = createGroups.map(([customer, rows]) => {
+      const guns = buildGuns(rows);
       const hours = guns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
       const color = systemSettings.randomAssignmentColor
         ? PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)]
@@ -706,14 +795,44 @@ const GunLedger: React.FC = () => {
     });
     setAssigning(true);
     try {
-      await axiosInstance.post('/tasks/item/batch', {
-        designerId: assignDesignerId,
-        date: assignDate,
-        items,
-      }, authHeader);
+      // 追加枪名到已有任务，并同步任务总工时（有枪名时任务工时 = 枪名工时之和）
+      let mergedGunCount = 0;
+      for (const [itemId, target] of mergeTargets.entries()) {
+        const allGuns = [...target.item.guns, ...target.guns];
+        await axiosInstance.put('/tasks/item', {
+          designerId: assignDesignerId,
+          date: assignDate,
+          itemId,
+          field: 'guns',
+          value: allGuns,
+        }, authHeader);
+        const totalHours = allGuns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
+        await axiosInstance.put('/tasks/item', {
+          designerId: assignDesignerId,
+          date: assignDate,
+          itemId,
+          field: 'hours',
+          value: totalHours,
+        }, authHeader);
+        mergedGunCount += target.guns.length;
+      }
+      if (items.length > 0) {
+        await axiosInstance.post('/tasks/item/batch', {
+          designerId: assignDesignerId,
+          date: assignDate,
+          items,
+        }, authHeader);
+      }
       socketRef.current?.emit('task_updated');
       fetchUsedGunNames();
-      addToast(`已为 ${designers.find(d => d.id === assignDesignerId)?.name || '设计人员'} 创建 ${items.length} 个确认图任务`, 'success');
+      const designerLabel = designers.find(d => d.id === assignDesignerId)?.name || '设计人员';
+      if (mergedGunCount > 0 && items.length === 0) {
+        addToast(`已将 ${mergedGunCount} 个枪名添加到 ${mergeTargets.size} 个已有的相同仕样号任务`, 'success');
+      } else if (mergedGunCount > 0) {
+        addToast(`已创建 ${items.length} 个确认图任务，并将 ${mergedGunCount} 个枪名添加到 ${mergeTargets.size} 个已有任务`, 'success');
+      } else {
+        addToast(`已为 ${designerLabel} 创建 ${items.length} 个确认图任务`, 'success');
+      }
       setSelectedGunRowIds(new Set());
       setShowAssignPanel(false);
       setAssignmentMode(false);
@@ -722,7 +841,7 @@ const GunLedger: React.FC = () => {
     } finally {
       setAssigning(false);
     }
-  }, [activeTable, assignDesignerId, assignDate, selectedGunRowIds, getDefaultConfirmHours, authHeader, fetchUsedGunNames, addToast, designers, systemSettings, warnIfOffline]);
+  }, [activeTable, assignDesignerId, assignDate, selectedGunRowIds, getDefaultConfirmHours, authHeader, fetchUsedGunNames, addToast, designers, systemSettings, warnIfOffline, extractSpecNumbers, mergeIntoExisting, mergeTargetItemId, matchedExistingSpecTasks]);
 
   // 更新本地某张表（跨分类查找）
   const patchTable = useCallback((tableId: string, updater: (t: GunTable) => GunTable) => {
@@ -2831,6 +2950,54 @@ const GunLedger: React.FC = () => {
                     className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                   />
                 </div>
+                {/* 相同仕样号提醒：勾选后枪名添加到已有「确认图」任务；多个满足条件时可选择目标 */}
+                {specCheckLoading && (
+                  <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-gray-400">
+                    <RefreshCw size={13} className="animate-spin" />正在检测相同仕样号任务...
+                  </div>
+                )}
+                {!specCheckLoading && matchedExistingSpecTasks.length > 0 && (
+                  <div className={`rounded-lg border px-3 py-2.5 transition ${mergeIntoExisting ? 'border-amber-300 bg-amber-50 ring-1 ring-amber-200' : 'border-amber-200 bg-amber-50/70 hover:bg-amber-50'}`}>
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={mergeIntoExisting}
+                        disabled={assigning}
+                        onChange={e => {
+                          setMergeIntoExisting(e.target.checked);
+                          if (e.target.checked && !mergeTargetItemId && matchedExistingSpecTasks.length > 0) {
+                            setMergeTargetItemId(matchedExistingSpecTasks[0].itemId);
+                          }
+                        }}
+                        className="mt-0.5 w-4 h-4 accent-amber-500 cursor-pointer disabled:cursor-not-allowed"
+                      />
+                      <span className="text-xs text-amber-800 leading-snug">
+                        发现 <span className="font-bold">{matchedExistingSpecTasks.length}</span> 个相同仕样号的确认图任务，勾选后选中的枪名将
+                        <span className="font-bold">添加到已有任务</span>，不再新建
+                      </span>
+                    </label>
+                    {mergeIntoExisting && matchedExistingSpecTasks.length > 1 && (
+                      <div className="mt-2 ml-6 flex flex-col gap-1.5 border-l-2 border-amber-200 pl-3">
+                        <div className="text-[11px] font-bold text-amber-600">请选择添加到哪一个任务：</div>
+                        {matchedExistingSpecTasks.map(t => (
+                          <label key={t.itemId} className="flex items-center gap-2 cursor-pointer group">
+                            <input
+                              type="radio"
+                              name="merge-target-item"
+                              checked={mergeTargetItemId === t.itemId}
+                              disabled={assigning}
+                              onChange={() => setMergeTargetItemId(t.itemId)}
+                              className="w-3.5 h-3.5 accent-amber-500 cursor-pointer"
+                            />
+                            <span className={`text-xs truncate transition ${mergeTargetItemId === t.itemId ? 'text-amber-900 font-semibold' : 'text-amber-700 group-hover:text-amber-900'}`}>
+                              {t.taskName || '（无任务名）'}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
                 <button

@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Move } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
@@ -22,9 +22,11 @@ import {
     DragEndEvent,
     DragStartEvent,
     DragOverEvent,
+    DragMoveEvent,
     DragOverlay,
     defaultDropAnimationSideEffects,
     useDroppable,
+    useDraggable,
   } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -134,11 +136,81 @@ const normalizeTaskColor = (value?: string) => String(value || '').trim().toLowe
 const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
 const hasStoredUserMarkColor = (item: TaskItem | GunItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string }) => {
+// 模块级暂存：枪名拖拽手柄按下时直接量取所在枪名行（枪名格+工时格）的实测尺寸与位置，
+// 供 DragOverlay 等比复刻（避免 document.querySelector 命中未布局元素量出 0/NaN）
+let gunRowDragDims: { width: number; height: number; hoursWidth: number; x: number; y: number; handleX?: number; handleY?: number } | null = null;
+// 同时保留触发拖拽的枪名格 DOM，防止 drag 激活后鼠标已移开导致 elementFromPoint 找不到源行
+let gunRowDragOriginCell: HTMLElement | null = null;
+
+// 枪名跨主任务拖拽手柄：仅支持按住不放进行拖动（无点击等其它操作），
+// 落点判定由 Dashboard 的 handleDragEnd 通过指针位置命中 DOM 完成
+const GunDragHandle = ({ item, designerId, date, gunIndex, gun, disabled }: {
+  item: TaskItem;
+  designerId: string;
+  date: string;
+  gunIndex: number;
+  gun: GunItem;
+  disabled: boolean;
+}) => {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `gun-${designerId}-${date}-${item.id}-${gun.id}`,
+    data: { type: 'gun', item, designerId, date, gunIndex, gun },
+    disabled,
+  });
+
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      {...attributes}
+      onPointerDown={(e) => {
+        // 阻止冒泡到主任务行的拖拽/选中逻辑，仅启动枪名拖拽
+        e.stopPropagation();
+        // 直接量取本手柄所在的枪名行：枪名格 + 相邻工时格
+        const cell = (e.currentTarget as HTMLElement).closest('[data-gun-index]') as HTMLElement | null;
+        const hoursCell = cell?.nextElementSibling as HTMLElement | null;
+        if (cell) {
+          gunRowDragOriginCell = cell;
+          const r = cell.getBoundingClientRect();
+          const hr = hoursCell?.getBoundingClientRect();
+          // DragOverlay 根容器锚定在手柄按钮的初始矩形上，这里同帧量取手柄坐标用于平移对齐
+          const hb = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          gunRowDragDims = {
+            width: r.width + (hr?.width ?? 48),
+            height: r.height,
+            hoursWidth: hr?.width ?? 48,
+            x: r.x,
+            y: r.y,
+            handleX: hb.x,
+            handleY: hb.y,
+          };
+        } else {
+          gunRowDragDims = null;
+          gunRowDragOriginCell = null;
+        }
+        (listeners?.onPointerDown as any)?.(e);
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      className={`shrink-0 p-1 transition-all cursor-grab active:cursor-grabbing ${isDragging ? 'opacity-30' : 'opacity-0 group-hover/gun-row:opacity-100 text-gray-300 hover:text-blue-600'}`}
+      style={{ touchAction: 'none' }}
+      title="按住拖动到其他主任务"
+      tabIndex={-1}
+    >
+      <Move size={13} />
+    </button>
+  );
+};
+
+// 枪名拖拽时目标主任务的预选中状态：'valid' 可放置（绿），'invalid' 存在同名枪名（红）
+type GunDropTargetState = 'valid' | 'invalid' | null;
+
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState }) => {
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
   const isAutoMarked = item.colorMarkedBy?.id === 'auto';
-  const canRestoreColor = canMarkColor && isWhiteTaskColor(item.color) && item.colorMarkedBy && hasStoredUserMarkColor(item);
+  // 白色任务无 colorBeforeUserMark 记录时（如拷贝自已完成的任务），也允许恢复为未完成（后端随机配色）
+  const canRestoreColor = canMarkColor && isWhiteTaskColor(item.color) && (!hasStoredUserMarkColor(item) || item.colorMarkedBy);
   const showMarkWhite = canMarkColor && !isWhiteTaskColor(item.color);
 
   const {
@@ -238,6 +310,20 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       tabIndex={isAdmin ? 0 : -1}
       className={`relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
     >
+      {/* 枪名拖拽路径扫过时的预选中高亮：整条主任务描边变色（绿=可放置，红=重复不可放置） */}
+      {gunDropTarget && (
+        <div
+          className="absolute inset-0 z-20 pointer-events-none"
+          style={{
+            border: `2px solid ${gunDropTarget === 'invalid' ? '#ef4444' : '#16a34a'}`,
+            borderRadius: 3,
+            backgroundColor: gunDropTarget === 'invalid' ? 'rgba(239,68,68,0.16)' : 'rgba(22,163,74,0.14)',
+            boxShadow: gunDropTarget === 'invalid'
+              ? '0 0 0 1px rgba(239,68,68,0.45)'
+              : '0 0 0 1px rgba(22,163,74,0.45)',
+          }}
+        />
+      )}
       {/* Main Task Row */}
       <div
         className={`pl-2 pr-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
@@ -261,7 +347,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                   <button
                     type="button"
                     className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title={isAutoMarked ? '任务未完成（联动恢复主任务及所有枪名）' : '任务未完成'}
+                    title={isAutoMarked ? '任务未完成（联动恢复主任务及所有枪名）' : hasStoredUserMarkColor(item) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkColor(item, designerId, date, 'restore');
@@ -319,7 +405,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       {/* Gun Rows */}
       {(item.guns || []).map((gun, index) => {
         const gunIsWhite = isWhiteTaskColor(gun.color);
-        const gunCanRestore = canMarkColor && gunIsWhite && gun.colorMarkedBy && hasStoredUserMarkColor(gun);
+        const gunCanRestore = canMarkColor && gunIsWhite && (!hasStoredUserMarkColor(gun) || gun.colorMarkedBy);
         const gunShowMarkWhite = canMarkColor && !gunIsWhite;
         const gunCount = (item.guns || []).length;
         const canMoveUp = isAdmin && gunCount > 1 && index > 0;
@@ -327,7 +413,8 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
         
         return (
         <React.Fragment key={gun.id}>
-          <div 
+          <div
+            data-gun-index={index}
             className="border-r border-gray-200 px-2 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
             style={{ backgroundColor: gun.color || 'transparent' }}
           >
@@ -349,7 +436,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                   <button
                     type="button"
                     className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title="任务未完成"
+                    title={hasStoredUserMarkColor(gun) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkGunColor(item, designerId, date, index, 'restore');
@@ -363,9 +450,21 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             <div className="flex-1 flex items-center gap-1">
               <span>{gun.name || '未命名'}</span>
             </div>
+            {/* 枪名操作按钮组：拖动 / 上移 / 下移 / 删除，拉开间距避免相互干扰 */}
+            <div className="flex items-center gap-2 shrink-0 pl-1">
+            {isAdmin && (
+              <GunDragHandle
+                item={item}
+                designerId={designerId}
+                date={date}
+                gunIndex={index}
+                gun={gun}
+                disabled={!isAdmin}
+              />
+            )}
             {canMoveUp && (
               <button
-                className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-blue-600 transition-opacity"
                 title="上移"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -377,7 +476,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             )}
             {canMoveDown && (
               <button
-                className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-blue-600 transition-opacity"
                 title="下移"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -389,7 +488,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             )}
              {isAdmin && (
                <button
-                 className="opacity-0 group-hover/gun-row:opacity-100 p-0.5 text-gray-300 hover:text-red-500 transition-opacity"
+                 className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-red-500 transition-opacity"
                  onClick={(e) => {
                    e.stopPropagation();
                    onDeleteGun(item, designerId, date, index);
@@ -399,7 +498,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                </button>
              )}
             </div>
-          <div 
+            </div>
+          <div
+            data-gun-index={index}
             className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
             style={{ backgroundColor: gun.color || 'transparent' }}
           >
@@ -511,6 +612,14 @@ const Dashboard = () => {
     clipboardRef.current = clipboard;
   }, [clipboard]);
   const [activeTask, setActiveTask] = useState<{item: TaskItem, designerId: string, date: string, isCtrlDrag?: boolean} | null>(null);
+  // 正在拖拽的枪名（十字箭头手柄按住不放触发）；dims 为原枪名行两格（枪名格+工时格）的实测尺寸，用于浮层等比复刻
+  const [activeGun, setActiveGun] = useState<{gun: GunItem, item: TaskItem, designerId: string, date: string, gunIndex: number, dims?: {width: number, height: number, hoursWidth: number, offsetX?: number, offsetY?: number}} | null>(null);
+  // 枪名拖拽过程中，指针扫过的目标主任务（预选中反馈）：
+  // invalid = 目标已有同名枪名（红），isSelf = 扫过的是源主任务自身（不预选中、禁止拖拽调整）
+  const [gunDropTarget, setGunDropTarget] = useState<{ designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean } | null>(null);
+  const gunDropTargetRef = useRef<string>('');
+  const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);
+  const gunDropSelf = Boolean(gunDropTarget?.isSelf);
   const [focusTarget, setFocusTarget] = useState<{itemId: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number} | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isOverDelete, setIsOverDelete] = useState(false);
@@ -688,6 +797,7 @@ const Dashboard = () => {
     setSelectedCell(null);
     setSelectedTasks([]);
     setActiveTask(null);
+    setActiveGun(null);
     setIsDragging(false);
     setIsOverDelete(false);
     setPendingChanges([]);
@@ -724,7 +834,137 @@ const Dashboard = () => {
         isCtrlDrag,
       });
       setIsDragging(true);
+      return;
     }
+
+    if (data_current?.type === 'gun') {
+      if (warnIfCellLocked(data_current.designerId, data_current.date)) return;
+      setGunDropTargetState(null);
+      // 优先使用 pointerDown 时量取的源枪名行尺寸；若丢失（如拖拽激活前重渲染），
+      // 回退到保留的源 DOM 或事件坐标重新量取，最大限度保证 DragOverlay 与原行尺寸一致
+      let measured = gunRowDragDims;
+      if (!measured || !isFinite(measured.width) || !isFinite(measured.height) || measured.width <= 0 || measured.height <= 0) {
+        const cell =
+          (gunRowDragOriginCell?.isConnected ? gunRowDragOriginCell : null) ??
+          (() => {
+            const ev = event.activatorEvent as PointerEvent | MouseEvent | undefined;
+            if (!ev || !('clientX' in ev) || !('clientY' in ev)) return null;
+            const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+            return el?.closest('[data-gun-index]') as HTMLElement | null;
+          })();
+        const hoursCell = cell?.nextElementSibling as HTMLElement | null;
+        if (cell) {
+          const r = cell.getBoundingClientRect();
+          const hr = hoursCell?.getBoundingClientRect();
+          measured = {
+            width: r.width + (hr?.width ?? 0),
+            height: r.height,
+            hoursWidth: hr?.width ?? 0,
+            x: r.x,
+            y: r.y,
+          };
+        }
+      }
+      let dims: {width: number, height: number, hoursWidth: number, offsetX?: number, offsetY?: number} | undefined;
+      if (measured && isFinite(measured.width) && isFinite(measured.height) && measured.width > 0 && measured.height > 0) {
+        // DragOverlay 根容器宽高锁定为激活节点（手柄按钮，约 21x21），
+        // 浮层内容必须显式指定整行宽高，并按「源枪名格 − 手柄初始位置」平移对齐源行
+        const hasHandlePos = typeof measured.handleX === 'number' && typeof measured.handleY === 'number';
+        const offsetX = hasHandlePos && isFinite(measured.x) ? measured.x - (measured.handleX as number) : 0;
+        const offsetY = hasHandlePos && isFinite(measured.y) ? measured.y - (measured.handleY as number) : 0;
+        dims = {
+          width: Math.min(Math.max(measured.width, 80), 800),
+          height: Math.min(Math.max(measured.height, 18), 60),
+          hoursWidth: Math.min(Math.max(measured.hoursWidth, 24), 120),
+          offsetX: Math.min(Math.max(offsetX, -2000), 2000),
+          offsetY: Math.min(Math.max(offsetY, -2000), 2000),
+        };
+      }
+      gunRowDragDims = null;
+      gunRowDragOriginCell = null;
+      setActiveGun({
+        gun: data_current.gun,
+        item: data_current.item,
+        designerId: data_current.designerId,
+        date: data_current.date,
+        gunIndex: data_current.gunIndex,
+        dims,
+      });
+    }
+  };
+
+  // 更新「指针扫过的目标主任务 + 是否可放置」：同步 ref/state，并切换禁止放置光标
+  const setGunDropTargetState = (next: { designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean } | null) => {
+    const key = next
+      ? `${next.designerId}|${next.date}|${next.itemId}|${next.invalid ? '1' : '0'}|${next.isSelf ? '1' : '0'}`
+      : '';
+    if (gunDropTargetRef.current === key) return;
+    gunDropTargetRef.current = key;
+    setGunDropTarget(next);
+    // 扫过自身主任务或目标重名时都禁止放置
+    document.body.style.cursor = next && (next.invalid || next.isSelf) ? 'not-allowed' : '';
+  };
+
+  // 指针位置命中主任务容器（带 data-task-id 的元素）
+  const hitTestTaskContainer = (cx: number, cy: number): HTMLElement | null => {
+    const stack = document.elementsFromPoint(cx, cy);
+    for (const el of stack) {
+      if (!(el instanceof HTMLElement)) continue;
+      const t = el.closest('[data-task-id]');
+      if (t instanceof HTMLElement) return t;
+    }
+    return null;
+  };
+
+  // 判断目标主任务是否已存在同名枪名（同主任务内重排不算）
+  const isGunDropDuplicate = (taskEl: HTMLElement, sourceData: any): boolean => {
+    const dId = taskEl.getAttribute('data-designer-id') || '';
+    const dt = taskEl.getAttribute('data-date') || '';
+    const itemId = taskEl.getAttribute('data-task-id') || '';
+    if (!dId || !dt || !itemId) return false;
+    if (dId === sourceData.designerId && dt === sourceData.date && itemId === sourceData.item.id) return false;
+    const gunName = String(sourceData.gun?.name || '').trim();
+    if (!gunName) return false;
+    const targetItem = getAllItems(dId, dt).find(i => i.id === itemId);
+    return !!targetItem && (targetItem.guns || []).some(g => String(g?.name || '').trim() === gunName);
+  };
+
+  const handleDragMove = (event: DragMoveEvent) => {
+    const { active } = event;
+    const sourceData = active.data.current;
+    if (sourceData?.type !== 'gun') return;
+    const rect = active.rect.current.translated;
+    if (!rect) {
+      setGunDropTargetState(null);
+      return;
+    }
+    // 落点跟随指针（十字光标）实际位置：激活节点是枪名行右侧的拖动手柄，
+    // 其矩形中心即光标位置。不能用浮层整行中心——手柄偏向行右侧，整行中心
+    // 比光标偏左约半行宽，悬停在右格左半区时会误判到左侧相邻人员单元格。
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const taskEl = hitTestTaskContainer(cx, cy);
+    if (!taskEl) {
+      setGunDropTargetState(null);
+      return;
+    }
+    const designerId = taskEl.getAttribute('data-designer-id') || '';
+    const date = taskEl.getAttribute('data-date') || '';
+    const itemId = taskEl.getAttribute('data-task-id') || '';
+    if (!designerId || !date || !itemId) {
+      setGunDropTargetState(null);
+      return;
+    }
+    // 扫过的是源主任务自身：不做预选中高亮，且禁止拖拽调整顺序
+    // （同主任务内调整枪名顺序请使用行内的上移/下移箭头）
+    const isSelf = designerId === sourceData.designerId && date === sourceData.date && itemId === sourceData.item.id;
+    setGunDropTargetState({
+      designerId,
+      date,
+      itemId,
+      invalid: isSelf ? false : isGunDropDuplicate(taskEl, sourceData),
+      isSelf,
+    });
   };
 
   const handleDragOver = (event: DragOverEvent) => {
@@ -742,11 +982,82 @@ const Dashboard = () => {
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setIsDragging(false);
+    setActiveGun(null);
+    setGunDropTargetState(null);
 
     const sourceData = active.data.current;
     const targetData = over?.data.current;
 
     if (!canEditTasks) return;
+
+    // 枪名拖拽：可移动到任意人员的任意日期的任意主任务；
+    // 命中某条枪名则插入到该枪名上面，否则追加到该主任务最下面
+    if (sourceData?.type === 'gun') {
+      const translatedRect = active.rect.current.translated;
+      if (!translatedRect) return;
+      // 落点以指针（十字光标）实际位置为准：激活节点是枪名行右侧的拖动手柄，
+      // 其矩形中心即光标位置。不能用浮层整行中心——手柄偏向行右侧，整行中心
+      // 比光标偏左约半行宽，光标已进入右侧目标单元格时仍会误命中左边单元格。
+      // 注意：DragOverlay 浮层容器本身会出现在 elementsFromPoint 栈顶，但其无
+      // data-gun-index/data-task-id，closest 匹配为空后循环会继续穿透到下方真实行。
+      const cx = translatedRect.left + translatedRect.width / 2;
+      const cy = translatedRect.top + translatedRect.height / 2;
+      const stack = document.elementsFromPoint(cx, cy);
+      let gunTargetEl: HTMLElement | null = null;
+      let taskTargetEl: HTMLElement | null = null;
+      for (const el of stack) {
+        if (!(el instanceof HTMLElement)) continue;
+        if (!gunTargetEl) {
+          const g = el.closest('[data-gun-index]');
+          if (g instanceof HTMLElement) gunTargetEl = g;
+        }
+        if (!taskTargetEl) {
+          const t = el.closest('[data-task-id]');
+          if (t instanceof HTMLElement) taskTargetEl = t;
+        }
+        if (gunTargetEl && taskTargetEl) break;
+      }
+      // 命中的枪名必须属于同一个主任务容器
+      if (gunTargetEl && taskTargetEl && gunTargetEl.closest('[data-task-id]') !== taskTargetEl) gunTargetEl = null;
+      if (!taskTargetEl) return; // 未落在任何主任务上，取消移动
+
+      const targetDesignerId = taskTargetEl.getAttribute('data-designer-id') || '';
+      const targetDate = taskTargetEl.getAttribute('data-date') || '';
+      const targetItemId = taskTargetEl.getAttribute('data-task-id') || '';
+      if (!targetDesignerId || !targetDate || !targetItemId) return;
+      if (warnIfCellLocked(targetDesignerId, targetDate)) return;
+
+      const sameItem = sourceData.designerId === targetDesignerId && sourceData.date === targetDate && sourceData.item.id === targetItemId;
+      // 禁止拖拽调整自身主任务内的枪名顺序：请使用该枪名行的上移/下移箭头
+      if (sameItem) {
+        addToast('同一主任务内请使用枪名行的上移/下移箭头调整顺序', 'error');
+        return;
+      }
+      // 目标主任务存在同名枪名：前端直接拦截并提示（后端 /tasks/move-gun 同样有校验兜底）
+      const movingGunName = String(sourceData.gun?.name || '').trim();
+      if (movingGunName) {
+        const targetItemForCheck = getAllItems(targetDesignerId, targetDate).find(i => i.id === targetItemId);
+        if (targetItemForCheck && (targetItemForCheck.guns || []).some(g => String(g?.name || '').trim() === movingGunName)) {
+          addToast(`目标主任务已存在枪名「${movingGunName}」，无法移动`, 'error');
+          return;
+        }
+      }
+      const newIndex = gunTargetEl ? Number(gunTargetEl.getAttribute('data-gun-index')) : undefined;
+
+      await onMoveGunToTask({
+        sourceDesignerId: sourceData.designerId,
+        sourceDate: sourceData.date,
+        sourceItemId: sourceData.item.id,
+        sourceGunIndex: sourceData.gunIndex,
+        gunId: sourceData.gun.id,
+        targetDesignerId,
+        targetDate,
+        targetItemId,
+        newIndex,
+        sourceItemSnapshot: sourceData.item,
+      });
+      return;
+    }
 
     const isCtrlDrag = activeTask?.isCtrlDrag;
 
@@ -1376,6 +1687,79 @@ const Dashboard = () => {
     handleItemChange(designerId, date, item.id, 'guns', newGuns);
   };
 
+  // 移动单个枪名到其他主任务（支持跨人员/跨日期；newIndex 为空时追加到目标 guns 最下面）
+  const onMoveGunToTask = async (args: {
+    sourceDesignerId: string;
+    sourceDate: string;
+    sourceItemId: string;
+    sourceGunIndex: number;
+    gunId: string;
+    targetDesignerId: string;
+    targetDate: string;
+    targetItemId: string;
+    newIndex?: number;
+    sourceItemSnapshot?: TaskItem;
+  }) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
+    const { sourceDesignerId, sourceDate, sourceItemId, sourceGunIndex, gunId, targetDesignerId, targetDate, targetItemId, newIndex } = args;
+
+    // 先落盘源/目标单元格此前的挂起编辑，并取消尚未触发的防抖保存，
+    // 避免旧 guns 数组延迟回写覆盖本次移动结果
+    const flushCellPending = async (dId: string, dt: string) => {
+      const list = pendingChanges.filter(c => c.designerId === dId && c.date === dt);
+      for (const change of list) {
+        await saveItem(change.designerId, change.date, change.itemId, change.field, change.value);
+      }
+      if (list.length > 0) {
+        setPendingChanges(prev => prev.filter(c => !(c.designerId === dId && c.date === dt)));
+      }
+    };
+    await flushCellPending(sourceDesignerId, sourceDate);
+    if (targetDesignerId !== sourceDesignerId || targetDate !== sourceDate) {
+      await flushCellPending(targetDesignerId, targetDate);
+    }
+    debouncedSave.cancel();
+
+    try {
+      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axiosInstance.post('/tasks/move-gun', {
+        sourceDesignerId,
+        sourceDate,
+        sourceItemId,
+        gunId,
+        targetDesignerId,
+        targetDate,
+        targetItemId,
+        newIndex
+      }, authHeader);
+      if (res.data.sourceSheet) upsertSheet(res.data.sourceSheet);
+      if (res.data.targetSheet) upsertSheet(res.data.targetSheet);
+      addToHistory('moveGunBetweenItems', {
+        sourceDesignerId,
+        sourceDate,
+        sourceItemId,
+        sourceGunIndex,
+        targetDesignerId,
+        targetDate,
+        targetItemId,
+        gunId,
+        newIndex,
+        // 源主任务因最后一个枪名被移走而被删除时，记录快照供撤销重建
+        sourceItemDeleted: Boolean(res.data.sourceItemDeleted),
+        sourceItemSnapshot: res.data.sourceItemDeleted ? args.sourceItemSnapshot : undefined
+      });
+      socketRef.current?.emit('task_updated');
+      addToast(res.data.message || '枪名已移动到目标主任务', 'success');
+    } catch (err: any) {
+      console.error('移动枪名失败:', err?.response?.data || err);
+      addToast(err?.response?.data?.message || '移动失败', 'error');
+      fetchSheets();
+    }
+  };
+
   // 上移/下移主任务（同一天单元格内与相邻任务交换顺序）
   const onMoveTask = async (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => {
     if (!canEditTasks) {
@@ -1832,6 +2216,45 @@ const Dashboard = () => {
           addToast('操作已撤销', 'success');
           break;
 
+        case 'moveGunBetweenItems':
+          // 撤销跨主任务移动枪名：把枪名从目标主任务移回源主任务原位置；
+          // 若源主任务因最后一个枪名被移走而被删除，则先按快照重建（空 guns）再移回
+          {
+            const d = op.data;
+            let restoredSourceItemId = d.sourceItemId;
+            if (d.sourceItemDeleted && d.sourceItemSnapshot) {
+              const snap = d.sourceItemSnapshot;
+              const res = await axiosInstance.post('/tasks/item', {
+                designerId: d.sourceDesignerId,
+                date: d.sourceDate,
+                taskName: snap.taskName || '',
+                hours: snap.hours || 0,
+                color: snap.color || '',
+                guns: [],
+                leaveType: snap.leaveType || null
+              }, authHeader);
+              if (res.data.item?.id) {
+                restoredSourceItemId = res.data.item.id;
+                // 更新历史记录中的源任务 id，保证重做指向重建后的任务
+                d.sourceItemId = restoredSourceItemId;
+              }
+            }
+            await axiosInstance.post('/tasks/move-gun', {
+              sourceDesignerId: d.targetDesignerId,
+              sourceDate: d.targetDate,
+              sourceItemId: d.targetItemId,
+              gunId: d.gunId,
+              targetDesignerId: d.sourceDesignerId,
+              targetDate: d.sourceDate,
+              targetItemId: restoredSourceItemId,
+              newIndex: d.sourceGunIndex
+            }, authHeader);
+          }
+          fetchSheets();
+          socketRef.current?.emit('task_updated');
+          addToast('操作已撤销', 'success');
+          break;
+
         case 'fieldChange':
           // 撤销字段变更操作，恢复原始值
           {
@@ -1983,6 +2406,26 @@ const Dashboard = () => {
               itemId,
               field: 'guns',
               value: newGuns
+            }, authHeader);
+          }
+          fetchSheets();
+          socketRef.current?.emit('task_updated');
+          addToast('操作已重做', 'success');
+          break;
+
+        case 'moveGunBetweenItems':
+          // 重做跨主任务移动枪名
+          {
+            const d = op.data;
+            await axiosInstance.post('/tasks/move-gun', {
+              sourceDesignerId: d.sourceDesignerId,
+              sourceDate: d.sourceDate,
+              sourceItemId: d.sourceItemId,
+              gunId: d.gunId,
+              targetDesignerId: d.targetDesignerId,
+              targetDate: d.targetDate,
+              targetItemId: d.targetItemId,
+              newIndex: d.newIndex
             }, authHeader);
           }
           fetchSheets();
@@ -2513,6 +2956,18 @@ const Dashboard = () => {
     });
   };
 
+  // 同一主任务内是否存在重复的非空枪名（与后端 validateDuplicateGunNames 规则一致）
+  const hasDuplicateGunNames = (guns?: GunItem[]) => {
+    const seen = new Set<string>();
+    for (const gun of guns || []) {
+      const name = String(gun?.name || '').trim();
+      if (!name) continue;
+      if (seen.has(name)) return true;
+      seen.add(name);
+    }
+    return false;
+  };
+
   const getHoursInputValue = (value: number | string | null | undefined) => {
     if (value === null || value === undefined || value === '') return '';
     const numericValue = typeof value === 'number' ? value : parseFloat(String(value));
@@ -2611,7 +3066,9 @@ const Dashboard = () => {
           const hours = typeof g.hours === 'number' ? g.hours : (parseFloat(String(g.hours)) || 0);
           return hours <= 0;
         });
-        if (hasInvalid) {
+        // 枪名重复（后端会 400）时同样静默跳过保存：保留本地输入并标红，
+        // 避免「拒绝 -> 重新拉取」把用户输入的名字冲掉变成未命名枪名
+        if (hasInvalid || hasDuplicateGunNames(normalizedGuns)) {
           // 静默跳过本次保存：用户在保存按钮被禁用前不应看到错误提示
           setPendingChanges(prev => prev.filter(c => !(c.designerId === designerId && c.date === date && c.itemId === itemId && c.field === field)));
           return;
@@ -3324,11 +3781,13 @@ const Dashboard = () => {
       )}
 
 
-      <DndContext 
+      <DndContext
         sensors={sensors}
         collisionDetection={collisionDetection}
         onDragStart={handleDragStart}
+        onDragMove={handleDragMove}
         onDragEnd={handleDragEnd}
+        onDragCancel={() => setGunDropTargetState(null)}
       >
 
 
@@ -3440,7 +3899,6 @@ const Dashboard = () => {
                                                   String(d.name || '').trim() === String(user.name || '').trim())
                                               )
                                             );
-
                                             return (
                                               <SortableTask
                                                 key={item.id}
@@ -3460,6 +3918,7 @@ const Dashboard = () => {
                                                 onMarkGunColor={handleGunColorMark}
                                                 selectedTasks={selectedTasks}
                                                 metadataTitle={buildTaskMetadataTitle(item)}
+                                                gunDropTarget={gunDropTarget && !gunDropTarget.isSelf && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate && gunDropTarget.itemId === item.id ? (gunDropTarget.invalid ? 'invalid' : 'valid') : null}
                                                 onSelectTask={(itemId, designerId, date, append) => {
                                                   if (!canEditTasks) return;
                                                   if (warnIfCellLocked(designerId, date)) return;
@@ -3543,7 +4002,7 @@ const Dashboard = () => {
 
         <DragOverlay>
           {activeTask && (
-            <div className="flex border border-blue-400 shadow-2xl rounded opacity-90 scale-105 bg-white overflow-hidden">
+            <div className="flex border border-blue-400 shadow-2xl rounded opacity-90 scale-105 bg-white overflow-hidden pointer-events-none">
               <div className="w-[18rem] border-r border-gray-200 flex flex-col bg-white">
                 <div className="px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium">
                   {(() => {
@@ -3563,6 +4022,106 @@ const Dashboard = () => {
               <div className="w-12 flex flex-col bg-white">
                 <div className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold">
                   {activeTask.item.guns && activeTask.item.guns.length > 0 ? '' : activeTask.item.hours}
+                </div>
+              </div>
+            </div>
+          )}
+          {activeGun && (
+            <div
+              style={{
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                pointerEvents: 'none',
+                filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.22))',
+                // DragOverlay 根容器宽高锁定为激活节点（手柄按钮），必须显式给整行尺寸，
+                // 否则内容会被压缩成手柄大小（约 21px 宽的空白小矩形）
+                width: activeGun.dims ? activeGun.dims.width : 200,
+                height: activeGun.dims ? activeGun.dims.height : 24,
+                flexShrink: 0,
+                transform:
+                  activeGun.dims && (activeGun.dims.offsetX || activeGun.dims.offsetY)
+                    ? `translate(${activeGun.dims.offsetX || 0}px, ${activeGun.dims.offsetY || 0}px)`
+                    : undefined,
+              }}
+            >
+              {/* 禁止/重复提示：浮在拖拽枪名的正上方（而非右侧），更醒目 */}
+              {(gunDropInvalid || gunDropSelf) && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    bottom: '100%',
+                    marginBottom: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    flexShrink: 0,
+                    whiteSpace: 'nowrap',
+                    fontSize: 11,
+                    lineHeight: '16px',
+                    fontWeight: 700,
+                    color: '#ffffff',
+                    backgroundColor: gunDropSelf ? '#4b5563' : '#dc2626',
+                    border: `1px solid ${gunDropSelf ? '#374151' : '#b91c1c'}`,
+                    borderRadius: 4,
+                    padding: '1px 6px',
+                    boxShadow: gunDropSelf
+                      ? '0 2px 6px rgba(75,85,99,0.45)'
+                      : '0 2px 6px rgba(220,38,38,0.45)',
+                  }}
+                >
+                  <AlertCircle size={11} />
+                  {gunDropSelf ? '同任务内请用箭头' : '重复枪名'}
+                </div>
+              )}
+              {/* 等比复刻原枪名行：枪名格 + 工时格，宽高与原行一致，内容显示实际枪名与工时 */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  width: activeGun.dims ? activeGun.dims.width : 200,
+                  height: activeGun.dims ? activeGun.dims.height : 24,
+                  flexShrink: 0,
+                  backgroundColor: activeGun.gun.color && !isWhiteTaskColor(activeGun.gun.color) ? activeGun.gun.color : '#ffffff',
+                  border: `1px solid ${gunDropInvalid ? '#f87171' : gunDropSelf ? '#9ca3af' : '#93c5fd'}`,
+                  borderRadius: 3,
+                  overflow: 'hidden',
+                  fontSize: 11,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <div
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '0 8px',
+                    backgroundColor: 'transparent',
+                    fontWeight: 500,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', color: gunDropInvalid ? '#dc2626' : '#111827' }}>
+                    {activeGun.gun.name || '未命名'}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    width: activeGun.dims ? activeGun.dims.hoursWidth : 48,
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: 'transparent',
+                    borderLeft: '1px solid rgba(0,0,0,0.08)',
+                    fontFamily: 'monospace',
+                    color: '#1d4ed8',
+                    fontWeight: 700,
+                  }}
+                >
+                  {activeGun.gun.hours}
                 </div>
               </div>
             </div>
@@ -3973,13 +4532,18 @@ const Dashboard = () => {
                               )}
                             </div>
                           )}
-                          {addModeGuns.map((gun, gIdx) => (
+                          {addModeGuns.map((gun, gIdx) => {
+                            // 与其他枪名重复（非空）时标红并禁用保存
+                            const trimmedName = String(gun.name || '').trim();
+                            const isDuplicateName = trimmedName !== '' && addModeGuns.some((g, i) => i !== gIdx && String(g?.name || '').trim() === trimmedName);
+                            return (
                             <div key={gun.id} className="flex items-center gap-2 bg-gray-50/50 p-2 rounded-lg group/gun">
                               <input
                                 ref={el => inputRefs.current[`gun-new-${gIdx}`] = el}
-                                className="flex-1 h-8 px-2 bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs transition"
+                                className={`flex-1 h-8 px-2 bg-transparent border-b-2 outline-none text-xs transition ${isDuplicateName ? 'border-red-400 focus:border-red-500 text-red-600' : 'border-gray-200 focus:border-blue-400'}`}
                                 value={gun.name}
                                 placeholder="枪名..."
+                                title={isDuplicateName ? '枪名重复，请修改后再保存' : undefined}
                                 onChange={(e) => {
                                   const nextName = e.target.value;
                                   setAddModeGuns(prev => {
@@ -4019,7 +4583,8 @@ const Dashboard = () => {
                                 <X size={14} />
                               </button>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                         )}
 
@@ -4563,13 +5128,18 @@ const Dashboard = () => {
                                   )}
                                 </div>
                               )}
-                              {(currentItem.guns || []).map((gun, gIdx) => (
+                              {(currentItem.guns || []).map((gun, gIdx) => {
+                                // 与其他枪名重复（非空）时标红并禁用保存
+                                const trimmedName = String(gun.name || '').trim();
+                                const isDuplicateName = trimmedName !== '' && (currentItem.guns || []).some((g, i) => i !== gIdx && String(g?.name || '').trim() === trimmedName);
+                                return (
                                 <div key={gun.id} className="flex items-center gap-2 bg-gray-50/50 p-2 rounded-lg group/gun">
-                                  <input 
+                                  <input
                                     ref={el => inputRefs.current[`gun-${currentItem.id}-${gIdx}`] = el}
-                                    className="flex-1 h-8 px-2 bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs transition"
+                                    className={`flex-1 h-8 px-2 bg-transparent border-b-2 outline-none text-xs transition ${isDuplicateName ? 'border-red-400 focus:border-red-500 text-red-600' : 'border-gray-200 focus:border-blue-400'}`}
                                     value={gun.name}
                                     placeholder="枪名..."
+                                    title={isDuplicateName ? '枪名重复，请修改后再保存' : undefined}
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
                                       newGuns[gIdx] = { ...newGuns[gIdx], name: e.target.value };
@@ -4612,7 +5182,8 @@ const Dashboard = () => {
                                     <X size={14} />
                                   </button>
                                 </div>
-                              ))}
+                                );
+                              })}
                             </div>
                             )}
 
@@ -4909,13 +5480,16 @@ const Dashboard = () => {
                         const totalGunHours = addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0);
                         const parsedHours = parseFloat(addModeHours);
                         const hasValidHours = !isNaN(parsedHours) && parsedHours > 0;
-                        return !addModeTaskName.trim() || hasInvalidNamedGunHours(addModeGuns) || (addModeGuns.length > 0 ? totalGunHours === 0 : !hasValidHours);
+                        return !addModeTaskName.trim() || hasInvalidNamedGunHours(addModeGuns) || hasDuplicateGunNames(addModeGuns) || (addModeGuns.length > 0 ? totalGunHours === 0 : !hasValidHours);
                       }
                       const parsedHours = parseFloat(addModeHours);
                       return isNaN(parsedHours) || parsedHours <= 0;
                     }
+                    // 编辑模式：单元格内任一主任务（含挂起更改）存在重复枪名时禁止保存
+                    const cellItems = getAllItems(modalDesignerId, modalDate).map(i => getItemWithPendingChanges(i));
+                    if (cellItems.some(i => hasDuplicateGunNames(i.guns))) return true;
                     if (focusTarget && focusTarget.itemId) {
-                      const item = getAllItems(modalDesignerId, modalDate).find(i => i.id === focusTarget.itemId);
+                      const item = cellItems.find(i => i.id === focusTarget.itemId);
                       if (item) {
                         const hours = typeof item.hours === 'number' ? item.hours : parseFloat(item.hours as string);
                         const leaveType = item.leaveType;
@@ -4924,7 +5498,7 @@ const Dashboard = () => {
                         
                         if (hasGuns) {
                           const totalGunsHours = (item.guns || []).reduce((sum, g) => sum + (typeof g.hours === 'number' ? g.hours : (parseFloat(g.hours as string) || 0)), 0);
-                          return hasInvalidNamedGunHours(item.guns) || totalGunsHours === 0;
+                          return hasInvalidNamedGunHours(item.guns) || hasDuplicateGunNames(item.guns) || totalGunsHours === 0;
                         }
                         
                         const hasValidHours = !isNaN(hours) && hours > 0;
