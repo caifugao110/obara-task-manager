@@ -4,6 +4,22 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: process.env.NODE_ENV === 'production' ? '/obara-task-manager/' : '/',
+  build: {
+    // 按路由懒加载后页面 chunk 体积普遍偏大，放宽告警阈值避免噪音
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        // 依赖按稳定性分组：业务代码变更时用户无需重新下载这些 vendor chunk
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-dnd': ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
+          'vendor-socket': ['socket.io-client'],
+          'vendor-icons': ['lucide-react'],
+          'vendor-utils': ['axios', 'date-fns']
+        }
+      }
+    }
+  },
   server: {
     host: '0.0.0.0',
     // 本项目部署在网络驱动器上（F: 为映射的网络磁盘），Node 的 fs.watch

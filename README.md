@@ -30,6 +30,7 @@ Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管�
 - [操作日志](#操作日志)
 - [安全配置](#安全配置)
 - [项目结构](#项目结构)
+- [前端加载与构建产物](#前端加载与构建产物)
 - [数据库维护](#数据库维护)
 - [维护建议](#维护建议)
 - [Windows 服务控制台](#windows-服务控制台)
@@ -785,7 +786,14 @@ obara-task-manager/
 │       ├── pages/
 │       │   ├── Admin.tsx
 │       │   ├── ChangePassword.tsx
-│       │   ├── Dashboard.tsx
+│       │   ├── Dashboard/            # 主页面：按功能拆分的目录模块（体积最大，见「前端加载与构建产物」）
+│       │   │   ├── index.tsx         # 主页面容器（表格渲染、弹窗、任务编辑）
+│       │   │   ├── constants.ts      # 预设颜色、默认权限等常量
+│       │   │   ├── gunDragState.ts   # 枪名拖拽的模块级尺寸暂存
+│       │   │   ├── types.ts          # 主页面专用类型
+│       │   │   ├── utils.ts          # 任务/枪名纯函数（取仕样号、内容比对、工时等）
+│       │   │   ├── components/       # SortableTask、GunDragHandle、DroppableCell、SortableDesignerTbody
+│       │   │   └── hooks/            # useGunDragDrop、useTaskHistory、useEditingSessions
 │       │   ├── DesignStandards.tsx
 │       │   ├── GunLedger.tsx
 │       │   ├── Leaderboard.tsx
@@ -858,6 +866,44 @@ obara-task-manager/
 | 构建版本生成 | `control/ObaraServiceController.csproj` | MSBuild 编译前自动生成 `Properties/GeneratedVersion.cs`，版本号按构建日期生成，无需手工维护 |
 | 控制台主题 | `control/Utils/ThemeColors.cs` | 暗色科技风 UI 配色与渐变定义 |
 | CI/CD | `.github/workflows/build-and-deploy.yml` | 自动构建控制台 EXE 并发布 Release，同时把 README 与 docs/ 部署到 GitHub Pages |
+
+## 前端加载与构建产物
+
+### 路由加载策略
+
+页面按访问频率分为两类，配置在 `frontend/src/App.tsx`：
+
+| 类型 | 页面 | 加载方式 | 说明 |
+|------|------|----------|------|
+| 静态导入 | 登录 `/login`、主页面 `/` | 随主 chunk 同步加载 | 主页面是首页，静态导入可避免首屏多一次 chunk 往返；改为懒加载反而更慢 |
+| 懒加载 | 任务报表、工时管理、管理后台、修改密码、系统设置、操作日志、状态追踪、焊枪台账、设计规范知识库 | `React.lazy` + `Suspense`，进入路由时按需下载 | 首屏不下载这些页面的代码，切换路由时显示「加载中...」占位 |
+
+### 依赖分包
+
+`frontend/vite.config.ts` 通过 `build.rollupOptions.output.manualChunks` 把稳定依赖与业务代码分开，业务代码变更时用户无需重新下载 vendor chunk：
+
+| chunk | 包含依赖 |
+|-------|----------|
+| `vendor-react` | `react`、`react-dom`、`react-router-dom` |
+| `vendor-utils` | `axios`、`date-fns` |
+| `vendor-dnd` | `@dnd-kit/core`、`@dnd-kit/sortable`、`@dnd-kit/utilities` |
+| `vendor-socket` | `socket.io-client` |
+| `vendor-icons` | `lucide-react` |
+
+`build.chunkSizeWarningLimit` 设为 `1200`（KB）：路由拆分后页面 chunk 天然偏大，放宽阈值以免告警变成噪音。
+
+### 产物示例
+
+`npm run build` 后 `frontend/dist/assets/` 的典型构成（以下为 2026-10-17 构建的**未压缩**体积，仅作量级参考，会随代码和依赖版本变化）：
+
+- 首屏入口 `index-*.js`（含主页面）约 157 KB，另有 CSS 约 66 KB；5 个 vendor chunk 由 `modulepreload` 并行预加载，合计约 337 KB。
+- 懒加载页面 chunk：焊枪台账约 106 KB、系统设置约 83 KB、状态追踪约 57 KB、管理后台约 53 KB、设计规范知识库约 50 KB，其余页面均在 25 KB 以下。
+
+### 维护约定
+
+- 新增页面时，除首页外一律使用 `React.lazy` 注册路由，避免主 chunk 膨胀。
+- 新增体积较大的第三方依赖时，评估是否归入上表某个 vendor 分组（在 `vite.config.ts` 的 `manualChunks` 中补充），避免它与业务代码混在同一个 chunk。
+- 主页面（`frontend/src/pages/Dashboard/`）已按「容器 + 组件 + hooks + 纯函数」拆分，新增逻辑优先放入对应子模块，不要继续往 `index.tsx` 堆代码。
 
 ## 数据库维护
 

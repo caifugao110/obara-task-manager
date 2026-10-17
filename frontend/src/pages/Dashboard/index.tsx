@@ -1,586 +1,67 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { axiosInstance } from '../services/api';
+import { axiosInstance } from '../../services/api';
 import { isAxiosError } from 'axios';
 import { io, Socket } from 'socket.io-client';
-import { useAuth } from '../context/AuthContext';
-import { useSystemSettings } from '../context/SystemSettingsContext';
+import { useAuth } from '../../context/AuthContext';
+import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
 import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Move } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
-import { useDebounce } from '../utils/debounce';
-import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../utils/workdayOverrides';
-import { resolveGunHours, GunLocation } from '../utils/gunHoursRules';
+import { useDebounce } from '../../utils/debounce';
+import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
+import { resolveGunHours, GunLocation } from '../../utils/gunHoursRules';
 import {
     DndContext,
-    rectIntersection,
-    pointerWithin,
-    PointerSensor,
-    KeyboardSensor,
-    useSensor,
-    useSensors,
-    CollisionDetection,
-    DragEndEvent,
-    DragStartEvent,
-    DragOverEvent,
-    DragMoveEvent,
     DragOverlay,
-    defaultDropAnimationSideEffects,
-    useDroppable,
-    useDraggable,
   } from '@dnd-kit/core';
 import {
-  arrayMove,
   SortableContext,
   verticalListSortingStrategy,
-  useSortable,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-
-interface GunItem {
-  id: string;
-  name: string;
-  hours: number | string;
-  color?: string;
-  colorBeforeUserMark?: string;
-  colorMarkedBy?: { id: string; username: string; name: string };
-}
-
-interface TaskItem {
-  id: string;
-  taskName: string;
-  hours: number | string;
-  color?: string;
-  colorBeforeUserMark?: string;
-  colorMarkedBy?: { id: string; username: string; name: string };
-  guns?: GunItem[];
-  leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
-  createdAt?: string;
-  createdBy?: { id: string; username: string; name: string };
-  updatedAt?: string;
-  updatedBy?: { id: string; username: string; name: string };
-}
-
-interface TaskSheet {
-  id: string;
-  designerId: string;
-  month: number;
-  year: number;
-  days: Record<string, TaskItem[]>;
-}
-
-interface SpecInfoResponse {
-  success: boolean;
-  message?: string;
-  specNumber?: string;
-  clientName?: string;
-  deliveryDate?: string | null;
-  isModification?: boolean;
-}
-
-interface Designer {
-  id: string;
-  name: string;
-  group?: string;
-  hidden?: boolean;
-}
-
-interface User {
-  id: string;
-  username: string;
-  name: string;
-  role: 'superadmin' | 'admin' | 'user';
-}
-
-type TaskField = 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType';
-
-type PendingChange = {
-  designerId: string;
-  date: string;
-  itemId: string;
-  field: TaskField;
-  value: any;
-};
-
-type EditingSession = {
-  designerId: string;
-  date: string;
-  userId: string;
-  username: string;
-  name: string;
-  mode?: 'edit' | 'colorMark';
-};
-
-type BatchReplaceMatch = {
-  designerId: string;
-  designerName: string;
-  date: string;
-  itemId: string;
-  taskName: string;
-  fields: { field: string; label: string; text: string; count: number }[];
-};
-
-const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
-
-type SelectedTask = { itemId: string; designerId: string; date: string };
-
-const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__${selection.date}__${selection.itemId}`;
-
-const editingSessionKey = (designerId: string, date: string) => `${designerId}__${date}`;
-
-const isEditableKeyboardTarget = (target: EventTarget | null) => {
-  if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
-};
-
-const normalizeTaskColor = (value?: string) => String(value || '').trim().toLowerCase();
-const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
-const hasStoredUserMarkColor = (item: TaskItem | GunItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
-
-// 模块级暂存：枪名拖拽手柄按下时直接量取所在枪名行（枪名格+工时格）的实测尺寸与位置，
-// 供 DragOverlay 等比复刻（避免 document.querySelector 命中未布局元素量出 0/NaN）
-let gunRowDragDims: { width: number; height: number; hoursWidth: number; x: number; y: number; handleX?: number; handleY?: number } | null = null;
-// 同时保留触发拖拽的枪名格 DOM，防止 drag 激活后鼠标已移开导致 elementFromPoint 找不到源行
-let gunRowDragOriginCell: HTMLElement | null = null;
-
-// 枪名跨主任务拖拽手柄：仅支持按住不放进行拖动（无点击等其它操作），
-// 落点判定由 Dashboard 的 handleDragEnd 通过指针位置命中 DOM 完成
-const GunDragHandle = ({ item, designerId, date, gunIndex, gun, disabled }: {
-  item: TaskItem;
-  designerId: string;
-  date: string;
-  gunIndex: number;
-  gun: GunItem;
-  disabled: boolean;
-}) => {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `gun-${designerId}-${date}-${item.id}-${gun.id}`,
-    data: { type: 'gun', item, designerId, date, gunIndex, gun },
-    disabled,
-  });
-
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      {...attributes}
-      onPointerDown={(e) => {
-        // 阻止冒泡到主任务行的拖拽/选中逻辑，仅启动枪名拖拽
-        e.stopPropagation();
-        // 直接量取本手柄所在的枪名行：枪名格 + 相邻工时格
-        const cell = (e.currentTarget as HTMLElement).closest('[data-gun-index]') as HTMLElement | null;
-        const hoursCell = cell?.nextElementSibling as HTMLElement | null;
-        if (cell) {
-          gunRowDragOriginCell = cell;
-          const r = cell.getBoundingClientRect();
-          const hr = hoursCell?.getBoundingClientRect();
-          // DragOverlay 根容器锚定在手柄按钮的初始矩形上，这里同帧量取手柄坐标用于平移对齐
-          const hb = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          gunRowDragDims = {
-            width: r.width + (hr?.width ?? 48),
-            height: r.height,
-            hoursWidth: hr?.width ?? 48,
-            x: r.x,
-            y: r.y,
-            handleX: hb.x,
-            handleY: hb.y,
-          };
-        } else {
-          gunRowDragDims = null;
-          gunRowDragOriginCell = null;
-        }
-        (listeners?.onPointerDown as any)?.(e);
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-      className={`shrink-0 p-1 transition-all cursor-grab active:cursor-grabbing ${isDragging ? 'opacity-30' : 'opacity-0 group-hover/gun-row:opacity-100 text-gray-300 hover:text-blue-600'}`}
-      style={{ touchAction: 'none' }}
-      title="按住拖动到其他主任务"
-      tabIndex={-1}
-    >
-      <Move size={13} />
-    </button>
-  );
-};
-
-// 枪名拖拽时目标主任务的预选中状态：'valid' 可放置（绿），'invalid' 存在同名枪名（红）
-type GunDropTargetState = 'valid' | 'invalid' | null;
-
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null }) => {
-  const currentSelection = { itemId: item.id, designerId, date };
-  const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
-  const isAutoMarked = item.colorMarkedBy?.id === 'auto';
-  // 白色任务无 colorBeforeUserMark 记录时（如拷贝自已完成的任务），也允许恢复为未完成（后端随机配色）
-  const canRestoreColor = canMarkColor && isWhiteTaskColor(item.color) && (!hasStoredUserMarkColor(item) || item.colorMarkedBy);
-  const showMarkWhite = canMarkColor && !isWhiteTaskColor(item.color);
-
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({
-    id: item.id,
-    data: {
-      type: 'task',
-      item,
-      designerId,
-      date,
-    },
-    disabled: !isAdmin || !isSelected,
-  });
-
-  const style = {
-    transform: CSS.Translate.toString(transform),
-    transition,
-    backgroundColor: item.color || 'transparent',
-    opacity: isDragging ? 0.3 : 1,
-    border: isSelected ? '2px solid #3b82f6' : '1px solid transparent',
-    borderRadius: isSelected ? '4px' : '0',
-  };
-
-  const getTypeStyle = () => {
-    if (item.leaveType === 'sick') return { backgroundColor: '#fee2e2' };
-    if (item.leaveType === 'vacation') return { backgroundColor: '#dbeafe' };
-    if (item.leaveType === 'illness') return { backgroundColor: '#fce7f3' };
-    if (item.leaveType === 'trip') return { backgroundColor: '#fef9c3' };
-    return {};
-  };
-
-  const typeLabel = (() => {
-    if (item.leaveType === 'sick') return '事假';
-    if (item.leaveType === 'vacation') return '休假';
-    if (item.leaveType === 'illness') return '病假';
-    if (item.leaveType === 'trip') {
-      const name = (item.taskName || '').trim();
-      if (!name) return '出差';
-      return name.endsWith('出差') ? name : `${name}出差`;
-    }
-    return '';
-  })();
-
-  const isLeaveType = item.leaveType === 'sick' || item.leaveType === 'vacation' || item.leaveType === 'illness';
-
-  return (
-    <div
-      ref={setNodeRef}
-      data-task-id={item.id}
-      data-designer-id={designerId}
-      data-date={date}
-      title={isAdmin ? metadataTitle : undefined}
-      style={{ ...style, ...getTypeStyle() }}
-      {...attributes}
-      {...listeners}
-
-      onKeyDown={(e: any) => {
-        if (isAdmin) {
-          if (e.key === 'Delete') {
-            e.preventDefault();
-            e.stopPropagation();
-            onDeleteTask(item, designerId, date);
-          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
-            e.preventDefault();
-            const copyEvent = new CustomEvent('task-copy', { detail: { item, designerId, date } });
-            window.dispatchEvent(copyEvent);
-          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
-            e.preventDefault();
-            const cutEvent = new CustomEvent('task-cut', { detail: { item, designerId, date } });
-            window.dispatchEvent(cutEvent);
-          } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
-            e.preventDefault();
-            const pasteEvent = new CustomEvent('task-paste', { detail: { item, designerId, date } });
-            window.dispatchEvent(pasteEvent);
-          }
-        }
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (isAdmin) {
-          onSelectTask(item.id, designerId, date, e.ctrlKey || e.metaKey);
-        }
-      }}
-      onDoubleClick={(e) => {
-        if (e.ctrlKey || e.metaKey) return;
-        e.stopPropagation();
-        if (isAdmin) {
-          onTaskClick(item, designerId, date, 'task');
-        }
-      }}
-      tabIndex={isAdmin ? 0 : -1}
-      className={`relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
-    >
-      {/* 枪名拖拽路径扫过时的预选中高亮：整条主任务描边变色（绿=可放置，红=重复不可放置） */}
-      {gunDropTarget && (
-        <div
-          className="absolute inset-0 z-20 pointer-events-none"
-          style={{
-            border: `2px solid ${gunDropTarget === 'invalid' ? '#ef4444' : '#16a34a'}`,
-            borderRadius: 3,
-            backgroundColor: gunDropTarget === 'invalid' ? 'rgba(239,68,68,0.16)' : 'rgba(22,163,74,0.14)',
-            boxShadow: gunDropTarget === 'invalid'
-              ? '0 0 0 1px rgba(239,68,68,0.45)'
-              : '0 0 0 1px rgba(22,163,74,0.45)',
-          }}
-        />
-      )}
-      {/* 主任务拖拽路径扫过时的预插入标记：顶部粗线表示将插入到该主任务上方（绿=可放置，红=复制内容重复） */}
-      {taskInsertMarker && (
-        <div
-          className="absolute left-0 right-0 z-20 pointer-events-none"
-          style={{
-            top: -2,
-            height: 4,
-            borderRadius: 2,
-            backgroundColor: taskInsertMarker === 'invalid' ? '#ef4444' : '#16a34a',
-            boxShadow: taskInsertMarker === 'invalid'
-              ? '0 0 0 1px rgba(239,68,68,0.55), 0 1px 4px rgba(239,68,68,0.5)'
-              : '0 0 0 1px rgba(22,163,74,0.55), 0 1px 4px rgba(22,163,74,0.5)',
-          }}
-        />
-      )}
-      {/* Main Task Row */}
-      <div
-        className={`pl-2 pr-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
-      >
-        <div className={`flex items-center ${item.leaveType ? 'justify-center' : 'justify-start'} w-full pr-1`}>
-            {/* Mark buttons before task text */}
-            {!item.leaveType && canMarkColor && (
-              <div className="flex items-center gap-0.5 mr-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
-                {showMarkWhite && (
-                  <button
-                    type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title="任务完成"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMarkColor(item, designerId, date, 'white');
-                    }}
-                  />
-                )}
-                {canRestoreColor && (
-                  <button
-                    type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title={isAutoMarked ? '任务未完成（联动恢复主任务及所有枪名）' : hasStoredUserMarkColor(item) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMarkColor(item, designerId, date, 'restore');
-                    }}
-                  >
-                    <RefreshCw size={10} />
-                  </button>
-                )}
-              </div>
-            )}
-            {typeLabel ? (
-              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'bg-pink-100 text-pink-700' : 'bg-yellow-100 text-yellow-800'}`}>
-                {typeLabel}
-              </span>
-            ) : (
-              item.taskName || <span className="text-gray-300 italic">无</span>
-            )}
-            {/* Move up/down buttons after task text */}
-            {!item.leaveType && isAdmin && (canMoveUp || canMoveDown) && (
-              <div className="flex items-center gap-0.5 ml-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
-                {canMoveUp && (
-                  <button
-                    className="p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
-                    title="上移"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMoveTask(item, designerId, date, 'up');
-                    }}
-                  >
-                    <ChevronUp size={14} />
-                  </button>
-                )}
-                {canMoveDown && (
-                  <button
-                    className="p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
-                    title="下移"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMoveTask(item, designerId, date, 'down');
-                    }}
-                  >
-                    <ChevronDown size={14} />
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-      </div>
-      <div 
-        className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold hover:bg-blue-50/50 transition cursor-pointer"
-      >
-        {item.guns && item.guns.length > 0 ? '' : item.hours}
-      </div>
-
-      {/* Gun Rows */}
-      {(item.guns || []).map((gun, index) => {
-        const gunIsWhite = isWhiteTaskColor(gun.color);
-        const gunCanRestore = canMarkColor && gunIsWhite && (!hasStoredUserMarkColor(gun) || gun.colorMarkedBy);
-        const gunShowMarkWhite = canMarkColor && !gunIsWhite;
-        const gunCount = (item.guns || []).length;
-        const canMoveUp = isAdmin && gunCount > 1 && index > 0;
-        const canMoveDown = isAdmin && gunCount > 1 && index < gunCount - 1;
-        
-        return (
-        <React.Fragment key={gun.id}>
-          <div
-            data-gun-index={index}
-            className="border-r border-gray-200 px-2 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
-            style={{ backgroundColor: gun.color || 'transparent' }}
-          >
-            {/* Gun mark buttons before gun name */}
-            {canMarkColor && (
-              <div className="flex items-center gap-0.5 mr-1 shrink-0 opacity-0 group-hover/gun-row:opacity-100 transition-opacity">
-                {gunShowMarkWhite && (
-                  <button
-                    type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title="任务完成"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMarkGunColor(item, designerId, date, index, 'white');
-                    }}
-                  />
-                )}
-                {gunCanRestore && (
-                  <button
-                    type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
-                    title={hasStoredUserMarkColor(gun) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMarkGunColor(item, designerId, date, index, 'restore');
-                    }}
-                  >
-                    <RefreshCw size={10} />
-                  </button>
-                )}
-              </div>
-            )}
-            <div className="flex-1 flex items-center gap-1">
-              <span>{gun.name || '未命名'}</span>
-            </div>
-            {/* 枪名操作按钮组：拖动 / 上移 / 下移 / 删除，拉开间距避免相互干扰 */}
-            <div className="flex items-center gap-2 shrink-0 pl-1">
-            {isAdmin && (
-              <GunDragHandle
-                item={item}
-                designerId={designerId}
-                date={date}
-                gunIndex={index}
-                gun={gun}
-                disabled={!isAdmin}
-              />
-            )}
-            {canMoveUp && (
-              <button
-                className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-blue-600 transition-opacity"
-                title="上移"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMoveGun(item, designerId, date, index, 'up');
-                }}
-              >
-                <ChevronUp size={14} />
-              </button>
-            )}
-            {canMoveDown && (
-              <button
-                className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-blue-600 transition-opacity"
-                title="下移"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMoveGun(item, designerId, date, index, 'down');
-                }}
-              >
-                <ChevronDown size={14} />
-              </button>
-            )}
-             {isAdmin && (
-               <button
-                 className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-red-500 transition-opacity"
-                 onClick={(e) => {
-                   e.stopPropagation();
-                   onDeleteGun(item, designerId, date, index);
-                 }}
-               >
-                 <Trash2 size={12} />
-               </button>
-             )}
-            </div>
-            </div>
-          <div
-            data-gun-index={index}
-            className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
-            style={{ backgroundColor: gun.color || 'transparent' }}
-          >
-            {gun.hours}
-          </div>
-        </React.Fragment>
-        );
-      })}
-    </div>
-  );
-};
-
-const SortableDesignerTbody = ({ designer, isAdmin, children }: { designer: Designer, isAdmin: boolean, children: (args: { attributes: any, listeners: any, isDragging: boolean }) => React.ReactNode }) => {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({
-    id: `designer-${designer.id}`,
-    data: {
-      type: 'designer',
-      designerId: designer.id,
-      group: designer.group || '未分组',
-    },
-    disabled: !isAdmin,
-  });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  return (
-    <tbody ref={setNodeRef} style={style}>
-      {children({ attributes, listeners, isDragging })}
-    </tbody>
-  );
-};
-
-const DroppableCell = ({ designerId, date, children, className, ...props }: any) => {
-  const { setNodeRef } = useDroppable({
-    id: `cell-${designerId}-${date}`,
-    data: {
-      type: 'cell',
-      designerId,
-      date,
-    }
-  });
-
-  return (
-    <td ref={setNodeRef} className={className} data-cell-designer-id={designerId} data-cell-date={date} {...props}>
-      {children}
-    </td>
-  );
-};
-
-interface Toast {
-  message: string;
-  type: 'success' | 'error';
-  id: number;
-}
+import SortableTask from './components/SortableTask';
+import SortableDesignerTbody from './components/SortableDesignerTbody';
+import DroppableCell from './components/DroppableCell';
+import { useEditingSessions } from './hooks/useEditingSessions';
+import { useTaskHistory } from './hooks/useTaskHistory';
+import { useGunDragDrop } from './hooks/useGunDragDrop';
+import { defaultAccessSettings, PRESET_COLORS } from './constants';
+import {
+  taskSelectionKey,
+  editingSessionKey,
+  isEditableKeyboardTarget,
+  normalizeTaskColor,
+  isWhiteTaskColor,
+  hasStoredUserMarkColor,
+  extractSpecNumber,
+  splitDesignTaskName,
+  getDeliveryDateSuffix,
+  getDesignPlanClientName,
+  buildSyncedSpecTaskName,
+  isTaskContentIdentical,
+  hasInvalidNamedGunHours,
+  hasDuplicateGunNames,
+  getHoursInputValue,
+  getGunHoursTotalInputValue,
+  isMeaningfulTask,
+  getTaskHours,
+  formatTaskMetaTime,
+  buildTaskMetadataTitle,
+} from './utils';
+import type {
+  GunItem,
+  TaskItem,
+  TaskSheet,
+  SpecInfoResponse,
+  Designer,
+  User,
+  TaskField,
+  PendingChange,
+  EditingSession,
+  BatchReplaceMatch,
+  SelectedTask,
+  GunDropTargetState,
+  Toast,
+} from './types';
 
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
@@ -617,6 +98,13 @@ const Dashboard = () => {
   const [updatingWorkdayOverrideDate, setUpdatingWorkdayOverrideDate] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const socketRef = useRef<Socket | null>(null);
+  const addToast = useCallback((message: string, type: 'success' | 'error') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { message, type, id }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  }, []);
   const [selectedDesignerId, setSelectedDesignerId] = useState<string>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalDate, setModalDate] = useState<string | null>(null);
@@ -626,36 +114,13 @@ const Dashboard = () => {
   useEffect(() => {
     clipboardRef.current = clipboard;
   }, [clipboard]);
-  const [activeTask, setActiveTask] = useState<{item: TaskItem, designerId: string, date: string, isCtrlDrag?: boolean} | null>(null);
-  // 正在拖拽的枪名（十字箭头手柄按住不放触发）；dims 为原枪名行两格（枪名格+工时格）的实测尺寸，用于浮层等比复刻
-  const [activeGun, setActiveGun] = useState<{gun: GunItem, item: TaskItem, designerId: string, date: string, gunIndex: number, dims?: {width: number, height: number, hoursWidth: number, offsetX?: number, offsetY?: number}} | null>(null);
-  // 枪名拖拽过程中，指针扫过的目标主任务（预选中反馈）：
-  // invalid = 目标已有同名枪名（红），isSelf = 扫过的是源主任务自身（不预选中、禁止拖拽调整）
-  const [gunDropTarget, setGunDropTarget] = useState<{ designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean } | null>(null);
-  const gunDropTargetRef = useRef<string>('');
-  const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);
-  const gunDropSelf = Boolean(gunDropTarget?.isSelf);
-  // 主任务拖拽过程中，指针扫过的目标位置（预选中反馈）：
-  // itemId = 预插入到该主任务上方；itemId 为 null = 预追加到目标单元格最下方；
-  // duplicate = 目标单元格已存在内容完全一样的主任务（红，移动/复制都会被拒绝）
-  const [taskDropTarget, setTaskDropTarget] = useState<{ designerId: string, date: string, itemId: string | null, duplicate: boolean } | null>(null);
-  const taskDropTargetRef = useRef<{ designerId: string, date: string, itemId: string | null, duplicate: boolean } | null>(null);
-  const taskDropDuplicate = Boolean(taskDropTarget?.duplicate);
-  // 主任务拖拽是否按住 Ctrl（复制）：dragStart 时记录，供 dragMove 实时判定重复标记（避免 state 闭包旧值）
-  const taskDragCtrlRef = useRef(false);
   const [focusTarget, setFocusTarget] = useState<{itemId: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number} | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isOverDelete, setIsOverDelete] = useState(false);
-  const lastOverIdRef = useRef<string | null>(null);
   const [selectedTasks, setSelectedTasks] = useState<SelectedTask[]>([]);
   const selectedTasksRef = useRef<SelectedTask[]>([]);
   useEffect(() => {
     selectedTasksRef.current = selectedTasks;
   }, [selectedTasks]);
   const [selectedCell, setSelectedCell] = useState<{designerId: string, date: string} | null>(null);
-  const [editingSessions, setEditingSessions] = useState<Record<string, EditingSession>>({});
-  const [history, setHistory] = useState<{operation: string, data: any, timestamp: number}[]>([]);
-  const [redoHistory, setRedoHistory] = useState<{operation: string, data: any, timestamp: number}[]>([]);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const handledJumpKeyRef = useRef<string | null>(null);
   const hasShownDisconnectToast = useRef(false);
@@ -749,618 +214,17 @@ const Dashboard = () => {
   // Input refs for modal focus
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8,
-      },
-    })
-  );
-
-  const getEditingSession = useCallback(
-    (designerId: string, date: string) => editingSessions[editingSessionKey(designerId, date)],
-    [editingSessions]
-  );
-
-  const getBlockingEditingSession = useCallback(
-    (designerId: string, date: string) => {
-      const session = getEditingSession(designerId, date);
-      if (!session || session.userId === user?.id) return null;
-      return session;
-    },
-    [getEditingSession, user?.id]
-  );
+  const {
+    editingSessions,
+    setEditingSessions,
+    getEditingSession,
+    getBlockingEditingSession,
+    warnIfCellLocked,
+    startEditingCell,
+    stopEditingCell,
+  } = useEditingSessions({ user, socketRef, addToast });
 
   const canViewEditingUser = user?.role === 'superadmin' || user?.role === 'admin';
-
-  const warnIfCellLocked = useCallback(
-    (designerId: string, date: string) => {
-      const session = getBlockingEditingSession(designerId, date);
-      if (!session) return false;
-      addToast(`${session.name || session.username} ${session.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域，暂无法修改任务完成状态'}`, 'error');
-      return true;
-    },
-    [getBlockingEditingSession]
-  );
-
-  const startEditingCell = useCallback(
-    (designerId: string, date: string) => {
-      if (!user) return;
-      setEditingSessions(prev => {
-        const next = { ...prev };
-        Object.entries(next).forEach(([key, session]) => {
-          if (session.userId === user.id && key !== editingSessionKey(designerId, date)) {
-            delete next[key];
-          }
-        });
-        next[editingSessionKey(designerId, date)] = {
-          designerId,
-          date,
-          userId: user.id,
-          username: user.username,
-          name: user.name
-        };
-        return next;
-      });
-      socketRef.current?.emit('start_editing', { designerId, date, userId: user.id, username: user.username, name: user.name });
-    },
-    [user]
-  );
-
-  const stopEditingCell = useCallback((designerId?: string | null, date?: string | null) => {
-    if (designerId && date) {
-      socketRef.current?.emit('stop_editing', { designerId, date });
-      return;
-    }
-    socketRef.current?.emit('stop_editing');
-  }, []);
-
-  useEffect(() => {
-    if (!isOfflineMode) return;
-    setSelectedCell(null);
-    setSelectedTasks([]);
-    setActiveTask(null);
-    setActiveGun(null);
-    setIsDragging(false);
-    setIsOverDelete(false);
-    setPendingChanges([]);
-    if (modalOpen) {
-      setModalOpen(false);
-      stopEditingCell(modalDesignerId, modalDate);
-    } else {
-      stopEditingCell();
-    }
-  }, [isOfflineMode, modalOpen, modalDesignerId, modalDate, stopEditingCell]);
-
-  const collisionDetection: CollisionDetection = useCallback((args) => {
-    const pointer = pointerWithin(args);
-    if (pointer.length) return pointer;
-    return rectIntersection(args);
-  }, []);
-
-
-
-  const handleDragStart = (event: DragStartEvent) => {
-    if (!canEditTasks) return;
-    const { active, active: { data } } = event;
-    const data_current = data.current;
-    
-    const isCtrlDrag = event.activatorEvent && 
-      (event.activatorEvent as MouseEvent | KeyboardEvent).ctrlKey;
-    
-    if (data_current?.type === 'task') {
-      if (warnIfCellLocked(data_current.designerId, data_current.date)) return;
-      taskDragCtrlRef.current = Boolean(isCtrlDrag);
-      setTaskDropTargetState(null);
-      setActiveTask({
-        item: data_current.item,
-        designerId: data_current.designerId,
-        date: data_current.date,
-        isCtrlDrag,
-      });
-      setIsDragging(true);
-      return;
-    }
-
-    if (data_current?.type === 'gun') {
-      if (warnIfCellLocked(data_current.designerId, data_current.date)) return;
-      setGunDropTargetState(null);
-      // 优先使用 pointerDown 时量取的源枪名行尺寸；若丢失（如拖拽激活前重渲染），
-      // 回退到保留的源 DOM 或事件坐标重新量取，最大限度保证 DragOverlay 与原行尺寸一致
-      let measured = gunRowDragDims;
-      if (!measured || !isFinite(measured.width) || !isFinite(measured.height) || measured.width <= 0 || measured.height <= 0) {
-        const cell =
-          (gunRowDragOriginCell?.isConnected ? gunRowDragOriginCell : null) ??
-          (() => {
-            const ev = event.activatorEvent as PointerEvent | MouseEvent | undefined;
-            if (!ev || !('clientX' in ev) || !('clientY' in ev)) return null;
-            const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
-            return el?.closest('[data-gun-index]') as HTMLElement | null;
-          })();
-        const hoursCell = cell?.nextElementSibling as HTMLElement | null;
-        if (cell) {
-          const r = cell.getBoundingClientRect();
-          const hr = hoursCell?.getBoundingClientRect();
-          measured = {
-            width: r.width + (hr?.width ?? 0),
-            height: r.height,
-            hoursWidth: hr?.width ?? 0,
-            x: r.x,
-            y: r.y,
-          };
-        }
-      }
-      let dims: {width: number, height: number, hoursWidth: number, offsetX?: number, offsetY?: number} | undefined;
-      if (measured && isFinite(measured.width) && isFinite(measured.height) && measured.width > 0 && measured.height > 0) {
-        // DragOverlay 根容器宽高锁定为激活节点（手柄按钮，约 21x21），
-        // 浮层内容必须显式指定整行宽高，并按「源枪名格 − 手柄初始位置」平移对齐源行
-        const hasHandlePos = typeof measured.handleX === 'number' && typeof measured.handleY === 'number';
-        const offsetX = hasHandlePos && isFinite(measured.x) ? measured.x - (measured.handleX as number) : 0;
-        const offsetY = hasHandlePos && isFinite(measured.y) ? measured.y - (measured.handleY as number) : 0;
-        dims = {
-          width: Math.min(Math.max(measured.width, 80), 800),
-          height: Math.min(Math.max(measured.height, 18), 60),
-          hoursWidth: Math.min(Math.max(measured.hoursWidth, 24), 120),
-          offsetX: Math.min(Math.max(offsetX, -2000), 2000),
-          offsetY: Math.min(Math.max(offsetY, -2000), 2000),
-        };
-      }
-      gunRowDragDims = null;
-      gunRowDragOriginCell = null;
-      setActiveGun({
-        gun: data_current.gun,
-        item: data_current.item,
-        designerId: data_current.designerId,
-        date: data_current.date,
-        gunIndex: data_current.gunIndex,
-        dims,
-      });
-    }
-  };
-
-  // 更新「指针扫过的目标主任务 + 是否可放置」：同步 ref/state，并切换禁止放置光标
-  const setGunDropTargetState = (next: { designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean } | null) => {
-    const key = next
-      ? `${next.designerId}|${next.date}|${next.itemId}|${next.invalid ? '1' : '0'}|${next.isSelf ? '1' : '0'}`
-      : '';
-    if (gunDropTargetRef.current === key) return;
-    gunDropTargetRef.current = key;
-    setGunDropTarget(next);
-    // 扫过自身主任务或目标重名时都禁止放置
-    document.body.style.cursor = next && (next.invalid || next.isSelf) ? 'not-allowed' : '';
-  };
-
-  // 指针位置命中主任务容器（带 data-task-id 的元素）
-  const hitTestTaskContainer = (cx: number, cy: number): HTMLElement | null => {
-    const stack = document.elementsFromPoint(cx, cy);
-    for (const el of stack) {
-      if (!(el instanceof HTMLElement)) continue;
-      const t = el.closest('[data-task-id]');
-      if (t instanceof HTMLElement) return t;
-    }
-    return null;
-  };
-
-  // 由拖拽事件换算指针实际位置：激活事件坐标 + 位移 delta（键盘拖拽等无坐标场景返回 null）
-  const getDragPointer = (event: DragMoveEvent | DragEndEvent): { x: number, y: number } | null => {
-    const ev = event.activatorEvent as PointerEvent | MouseEvent | undefined;
-    if (!ev || !('clientX' in ev) || !('clientY' in ev)) return null;
-    return { x: ev.clientX + event.delta.x, y: ev.clientY + event.delta.y };
-  };
-
-  // 指针位置同时命中单元格（data-cell-designer-id）与主任务容器；命中的主任务必须属于该单元格
-  const hitTestCellAndTask = (cx: number, cy: number): { cellEl: HTMLElement | null, taskEl: HTMLElement | null } => {
-    const stack = document.elementsFromPoint(cx, cy);
-    let cellEl: HTMLElement | null = null;
-    let taskEl: HTMLElement | null = null;
-    for (const el of stack) {
-      if (!(el instanceof HTMLElement)) continue;
-      if (!cellEl) {
-        const c = el.closest('[data-cell-designer-id]');
-        if (c instanceof HTMLElement) cellEl = c;
-      }
-      if (!taskEl) {
-        const t = el.closest('[data-task-id]');
-        if (t instanceof HTMLElement) taskEl = t;
-      }
-      if (cellEl && taskEl) break;
-    }
-    if (cellEl && taskEl) {
-      const sameCell = taskEl.getAttribute('data-designer-id') === cellEl.getAttribute('data-cell-designer-id')
-        && taskEl.getAttribute('data-date') === cellEl.getAttribute('data-cell-date');
-      if (!sameCell) taskEl = null;
-    }
-    return { cellEl, taskEl };
-  };
-
-  // 判断目标主任务是否已存在同名枪名（同主任务内重排不算）
-  const isGunDropDuplicate = (taskEl: HTMLElement, sourceData: any): boolean => {
-    const dId = taskEl.getAttribute('data-designer-id') || '';
-    const dt = taskEl.getAttribute('data-date') || '';
-    const itemId = taskEl.getAttribute('data-task-id') || '';
-    if (!dId || !dt || !itemId) return false;
-    if (dId === sourceData.designerId && dt === sourceData.date && itemId === sourceData.item.id) return false;
-    const gunName = String(sourceData.gun?.name || '').trim();
-    if (!gunName) return false;
-    const targetItem = getAllItems(dId, dt).find(i => i.id === itemId);
-    return !!targetItem && (targetItem.guns || []).some(g => String(g?.name || '').trim() === gunName);
-  };
-
-  // 判断两条主任务内容是否完全一样（主任务名/工时/类型/全部枪名及枪名工时；颜色不参与比对）
-  const isTaskContentIdentical = (a: TaskItem, b: TaskItem): boolean => {
-    if (String(a.taskName || '').trim() !== String(b.taskName || '').trim()) return false;
-    if (String(a.hours ?? '').trim() !== String(b.hours ?? '').trim()) return false;
-    if ((a.leaveType || null) !== (b.leaveType || null)) return false;
-    const gunsA = Array.isArray(a.guns) ? a.guns : [];
-    const gunsB = Array.isArray(b.guns) ? b.guns : [];
-    if (gunsA.length !== gunsB.length) return false;
-    for (let i = 0; i < gunsA.length; i++) {
-      if (String(gunsA[i]?.name || '').trim() !== String(gunsB[i]?.name || '').trim()) return false;
-      if (String(gunsA[i]?.hours ?? '').trim() !== String(gunsB[i]?.hours ?? '').trim()) return false;
-    }
-    return true;
-  };
-
-  // 目标单元格是否已存在与 sourceItem 内容完全一样的主任务（用于 Ctrl 复制预选中变红）
-  const isTaskCopyDuplicate = (designerId: string, date: string, sourceItem: TaskItem): boolean => {
-    return getAllItems(designerId, date).some(i => isTaskContentIdentical(i, sourceItem));
-  };
-
-  // 更新「主任务拖拽指针扫过的目标位置」：同步 ref/state，并在复制重复时切换禁止放置光标
-  const setTaskDropTargetState = (next: { designerId: string, date: string, itemId: string | null, duplicate: boolean } | null) => {
-    const key = next
-      ? `${next.designerId}|${next.date}|${next.itemId ?? 'append'}|${next.duplicate ? '1' : '0'}`
-      : '';
-    const prev = taskDropTargetRef.current;
-    const prevKey = prev
-      ? `${prev.designerId}|${prev.date}|${prev.itemId ?? 'append'}|${prev.duplicate ? '1' : '0'}`
-      : '';
-    if (prevKey === key) return;
-    taskDropTargetRef.current = next;
-    setTaskDropTarget(next);
-    document.body.style.cursor = next?.duplicate ? 'not-allowed' : '';
-  };
-
-  const handleDragMove = (event: DragMoveEvent) => {
-    const { active } = event;
-    const sourceData = active.data.current;
-
-    // 主任务拖拽：指针扫过的目标位置实时显示标记框（绿=预移动到该主任务上方/最下方，红=复制内容重复）；
-    // 扫过自己当天的源单元格不显示标记框
-    if (sourceData?.type === 'task') {
-      const pointer = getDragPointer(event);
-      if (!pointer) {
-        setTaskDropTargetState(null);
-        return;
-      }
-      const { cellEl, taskEl } = hitTestCellAndTask(pointer.x, pointer.y);
-      if (!cellEl) {
-        setTaskDropTargetState(null);
-        return;
-      }
-      const designerId = cellEl.getAttribute('data-cell-designer-id') || '';
-      const date = cellEl.getAttribute('data-cell-date') || '';
-      if (!designerId || !date) {
-        setTaskDropTargetState(null);
-        return;
-      }
-      // 划过自己当天的任务框（源单元格）：不做预选中标记
-      if (designerId === sourceData.designerId && date === sourceData.date) {
-        setTaskDropTargetState(null);
-        return;
-      }
-      const overItemId = taskEl ? (taskEl.getAttribute('data-task-id') || null) : null;
-      // 目标单元格已存在内容完全一样的主任务（多选时任一重复即标红）→ 红色重复标记，移动/复制都会被拒绝；
-      // 复制时检查全部待复制任务；移动时仅检查真正会被移过去的任务（已在目标单元格中的选中任务不参与）
-      const isCopyDrag = taskDragCtrlRef.current;
-      const duplicate = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date })
-        .filter(payload => isCopyDrag || !(payload.designerId === designerId && payload.date === date))
-        .some(payload => isTaskCopyDuplicate(designerId, date, payload.item));
-      setTaskDropTargetState({ designerId, date, itemId: overItemId, duplicate });
-      return;
-    }
-
-    if (sourceData?.type !== 'gun') return;
-    const rect = active.rect.current.translated;
-    if (!rect) {
-      setGunDropTargetState(null);
-      return;
-    }
-    // 落点跟随指针（十字光标）实际位置：激活节点是枪名行右侧的拖动手柄，
-    // 其矩形中心即光标位置。不能用浮层整行中心——手柄偏向行右侧，整行中心
-    // 比光标偏左约半行宽，悬停在右格左半区时会误判到左侧相邻人员单元格。
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const taskEl = hitTestTaskContainer(cx, cy);
-    if (!taskEl) {
-      setGunDropTargetState(null);
-      return;
-    }
-    const designerId = taskEl.getAttribute('data-designer-id') || '';
-    const date = taskEl.getAttribute('data-date') || '';
-    const itemId = taskEl.getAttribute('data-task-id') || '';
-    if (!designerId || !date || !itemId) {
-      setGunDropTargetState(null);
-      return;
-    }
-    // 扫过的是源主任务自身：不做预选中高亮，且禁止拖拽调整顺序
-    // （同主任务内调整枪名顺序请使用行内的上移/下移箭头）
-    const isSelf = designerId === sourceData.designerId && date === sourceData.date && itemId === sourceData.item.id;
-    setGunDropTargetState({
-      designerId,
-      date,
-      itemId,
-      invalid: isSelf ? false : isGunDropDuplicate(taskEl, sourceData),
-      isSelf,
-    });
-  };
-
-  const handleDragOver = (event: DragOverEvent) => {
-    if (!canEditTasks) return;
-    const { active, over } = event;
-    const activeType = active.data.current?.type;
-    if (activeType !== 'task') {
-      setIsOverDelete(false);
-      return;
-    }
-    lastOverIdRef.current = over?.id ? String(over.id) : null;
-    setIsOverDelete(over?.id === 'delete-area');
-  };
-
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const { active, over } = event;
-    setIsDragging(false);
-    setActiveGun(null);
-    setGunDropTargetState(null);
-    // 落点以拖拽过程中实时维护的指针命中结果为准（ref 保存最新值，避免闭包旧值）
-    const dropTargetSnapshot = taskDropTargetRef.current;
-    setTaskDropTargetState(null);
-
-    const sourceData = active.data.current;
-    const targetData = over?.data.current;
-
-    if (!canEditTasks) return;
-
-    // 枪名拖拽：可移动到任意人员的任意日期的任意主任务；
-    // 命中某条枪名则插入到该枪名上面，否则追加到该主任务最下面
-    if (sourceData?.type === 'gun') {
-      const translatedRect = active.rect.current.translated;
-      if (!translatedRect) return;
-      // 落点以指针（十字光标）实际位置为准：激活节点是枪名行右侧的拖动手柄，
-      // 其矩形中心即光标位置。不能用浮层整行中心——手柄偏向行右侧，整行中心
-      // 比光标偏左约半行宽，光标已进入右侧目标单元格时仍会误命中左边单元格。
-      // 注意：DragOverlay 浮层容器本身会出现在 elementsFromPoint 栈顶，但其无
-      // data-gun-index/data-task-id，closest 匹配为空后循环会继续穿透到下方真实行。
-      const cx = translatedRect.left + translatedRect.width / 2;
-      const cy = translatedRect.top + translatedRect.height / 2;
-      const stack = document.elementsFromPoint(cx, cy);
-      let gunTargetEl: HTMLElement | null = null;
-      let taskTargetEl: HTMLElement | null = null;
-      for (const el of stack) {
-        if (!(el instanceof HTMLElement)) continue;
-        if (!gunTargetEl) {
-          const g = el.closest('[data-gun-index]');
-          if (g instanceof HTMLElement) gunTargetEl = g;
-        }
-        if (!taskTargetEl) {
-          const t = el.closest('[data-task-id]');
-          if (t instanceof HTMLElement) taskTargetEl = t;
-        }
-        if (gunTargetEl && taskTargetEl) break;
-      }
-      // 命中的枪名必须属于同一个主任务容器
-      if (gunTargetEl && taskTargetEl && gunTargetEl.closest('[data-task-id]') !== taskTargetEl) gunTargetEl = null;
-      if (!taskTargetEl) return; // 未落在任何主任务上，取消移动
-
-      const targetDesignerId = taskTargetEl.getAttribute('data-designer-id') || '';
-      const targetDate = taskTargetEl.getAttribute('data-date') || '';
-      const targetItemId = taskTargetEl.getAttribute('data-task-id') || '';
-      if (!targetDesignerId || !targetDate || !targetItemId) return;
-      if (warnIfCellLocked(targetDesignerId, targetDate)) return;
-
-      const sameItem = sourceData.designerId === targetDesignerId && sourceData.date === targetDate && sourceData.item.id === targetItemId;
-      // 禁止拖拽调整自身主任务内的枪名顺序：请使用该枪名行的上移/下移箭头
-      if (sameItem) {
-        addToast('同一主任务内请使用枪名行的上移/下移箭头调整顺序', 'error');
-        return;
-      }
-      // 目标主任务存在同名枪名：前端直接拦截并提示（后端 /tasks/move-gun 同样有校验兜底）
-      const movingGunName = String(sourceData.gun?.name || '').trim();
-      if (movingGunName) {
-        const targetItemForCheck = getAllItems(targetDesignerId, targetDate).find(i => i.id === targetItemId);
-        if (targetItemForCheck && (targetItemForCheck.guns || []).some(g => String(g?.name || '').trim() === movingGunName)) {
-          addToast(`目标主任务已存在枪名「${movingGunName}」，无法移动`, 'error');
-          return;
-        }
-      }
-      const newIndex = gunTargetEl ? Number(gunTargetEl.getAttribute('data-gun-index')) : undefined;
-
-      await onMoveGunToTask({
-        sourceDesignerId: sourceData.designerId,
-        sourceDate: sourceData.date,
-        sourceItemId: sourceData.item.id,
-        sourceGunIndex: sourceData.gunIndex,
-        gunId: sourceData.gun.id,
-        targetDesignerId,
-        targetDate,
-        targetItemId,
-        newIndex,
-        sourceItemSnapshot: sourceData.item,
-      });
-      return;
-    }
-
-    const isCtrlDrag = activeTask?.isCtrlDrag;
-
-    // Ctrl+拖拽复制主任务：落点由指针命中快照决定——命中某条主任务则插入到其上方，
-    // 否则追加到目标单元格最下方；目标已存在内容完全一样的主任务时拒绝复制
-    if (isCtrlDrag && sourceData?.type === 'task') {
-      if (!dropTargetSnapshot) {
-        setActiveTask(null);
-        return;
-      }
-      if (warnIfCellLocked(dropTargetSnapshot.designerId, dropTargetSnapshot.date)) {
-        setActiveTask(null);
-        return;
-      }
-      const targetDesignerId = dropTargetSnapshot.designerId;
-      const targetDate = dropTargetSnapshot.date;
-      const targetItems = getAllItems(targetDesignerId, targetDate);
-      let newIndex: number | undefined = undefined;
-      if (dropTargetSnapshot.itemId) {
-        const hitIndex = targetItems.findIndex(i => i.id === dropTargetSnapshot.itemId);
-        if (hitIndex >= 0) newIndex = hitIndex;
-      }
-      try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date });
-        const duplicatePayload = payloads.find(payload => targetItems.some(i => isTaskContentIdentical(i, payload.item)));
-        if (duplicatePayload) {
-          addToast(`目标已存在内容完全相同的主任务「${(duplicatePayload.item.taskName || '').trim() || '无'}」，拒绝复制`, 'error');
-          setActiveTask(null);
-          return;
-        }
-        const res = await axiosInstance.post('/tasks/item/batch', {
-          designerId: targetDesignerId,
-          date: targetDate,
-          items: payloads.map(payload => payload.item),
-          newIndex
-        }, authHeader);
-        addToHistory('batchAdd', {
-          items: (res.data.items || []).map((created: TaskItem, idx: number) => ({
-            designerId: targetDesignerId,
-            date: targetDate,
-            itemId: created.id,
-            item: payloads[idx]?.item
-          }))
-        });
-        upsertSheet(res.data.sheet);
-        socketRef.current?.emit('task_updated');
-        setActiveTask(null);
-        addToast('任务已复制', 'success');
-        return;
-      } catch (err: any) {
-        addToast('复制失败', 'error');
-        setActiveTask(null);
-        return;
-      }
-    }
-
-    if (sourceData?.type === 'designer' && targetData?.type === 'designer') {
-      const group = sourceData.group;
-      if (group !== targetData.group) return;
-
-      const groupIds = designers.filter(d => (d.group || '未分组') === group).map(d => d.id);
-      const oldIndex = groupIds.indexOf(sourceData.designerId);
-      const newIndex = groupIds.indexOf(targetData.designerId);
-      if (oldIndex === -1 || newIndex === -1) return;
-
-      const nextGroupIds = arrayMove(groupIds, oldIndex, newIndex);
-      const groupOf = new Map(designers.map(d => [d.id, d.group || '未分组']));
-      let ptr = 0;
-      const nextIds = designers.map(d => d.id).map(id => (groupOf.get(id) === group ? nextGroupIds[ptr++] : id));
-
-      const byId = new Map(designers.map(d => [d.id, d]));
-      const nextDesigners = nextIds.map(id => byId.get(id)).filter(Boolean) as Designer[];
-      setDesigners(nextDesigners);
-
-      try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        await axiosInstance.post('/designers/reorder', { ids: nextIds }, authHeader);
-        addToast('排序已保存', 'success');
-      } catch (err) {
-        addToast('排序保存失败', 'error');
-        fetchData();
-      } finally {
-        setActiveTask(null);
-      }
-      return;
-    }
-
-    // 主任务移动（无 Ctrl）：落点以指针命中快照为准——命中某条主任务则移动到其上方，
-    // 否则移动到目标单元格最下方；落在源单元格（自己当天的任务框）时不做任何移动
-    if (sourceData?.type === 'task') {
-      const sourceDesignerId = sourceData.designerId;
-      const sourceDate = sourceData.date;
-
-      if (!dropTargetSnapshot) {
-        setActiveTask(null);
-        return;
-      }
-      const targetDesignerId = dropTargetSnapshot.designerId;
-      const targetDate = dropTargetSnapshot.date;
-
-      if (warnIfCellLocked(sourceDesignerId, sourceDate) || warnIfCellLocked(targetDesignerId, targetDate)) {
-        setActiveTask(null);
-        return;
-      }
-
-      const targetItems = getAllItems(targetDesignerId, targetDate);
-      let newIndex: number | undefined = undefined;
-      if (dropTargetSnapshot.itemId) {
-        const hitIndex = targetItems.findIndex(i => i.id === dropTargetSnapshot.itemId);
-        if (hitIndex >= 0) newIndex = hitIndex;
-      }
-
-      try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceDesignerId, date: sourceDate });
-        // 多选时排除已在目标单元格中的任务，避免同单元格重复挪动导致顺序抖动
-        const movedPayloads = payloads.filter(payload => !(payload.designerId === targetDesignerId && payload.date === targetDate));
-        if (movedPayloads.length === 0) {
-          setActiveTask(null);
-          return;
-        }
-
-        // 目标单元格已存在内容完全一样的主任务时拒绝移动（任一重复即整体拒绝）
-        const duplicatePayload = movedPayloads.find(payload => targetItems.some(i => isTaskContentIdentical(i, payload.item)));
-        if (duplicatePayload) {
-          addToast(`目标已存在内容完全相同的主任务「${(duplicatePayload.item.taskName || '').trim() || '无'}」，拒绝移动`, 'error');
-          setActiveTask(null);
-          return;
-        }
-
-        for (const payload of movedPayloads) {
-          await axiosInstance.post('/tasks/move', {
-            sourceDesignerId: payload.designerId,
-            sourceDate: payload.date,
-            itemId: payload.item.id,
-            targetDesignerId,
-            targetDate,
-            newIndex: movedPayloads.length === 1 ? newIndex : undefined
-          }, authHeader);
-        }
-
-        // Add to history for undo
-        addToHistory('batchMove', {
-          items: movedPayloads.map(payload => ({
-            sourceDesignerId: payload.designerId,
-            sourceDate: payload.date,
-            targetDesignerId,
-            targetDate,
-            itemId: payload.item.id
-          }))
-        });
-
-        socketRef.current?.emit('task_updated');
-        stopEditingCell();
-        fetchSheets();
-        setSelectedTasks([]);
-        setSelectedCell(null);
-        addToast('任务已移动', 'success');
-      } catch (err: any) {
-        addToast('移动失败', 'error');
-      } finally {
-        setActiveTask(null);
-      }
-      return;
-    }
-
-    if (!over || !sourceData || !targetData) {
-      setActiveTask(null);
-      return;
-    }
-  };
 
   const daysInMonth = getDaysInMonth(currentDate);
   const firstDayOfMonth = startOfMonth(currentDate);
@@ -1969,30 +833,11 @@ const Dashboard = () => {
     deleteSelectedTasks({ item, designerId, date });
   };
 
-  const addToast = (message: string, type: 'success' | 'error') => {
-    const id = Date.now();
-    setToasts(prev => [...prev, { message, type, id }]);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 3000);
-  };
-
   const warnIfOfflineEdit = () => {
     if (!isOfflineModeRef.current) return false;
     addToast('当前离线，禁止编辑', 'error');
     return true;
   };
- 
-   // Extract spec number (仕样号) from task name
-   // Patterns: S57157, M55478, S-53969, or standalone digits like 56363
-  const extractSpecNumber = (taskName: string): string | null => {
-     // Priority 1: letter prefix + optional hyphen + 4-6 digits (e.g., S57157, M55478, S-53969)
-     const letterMatch = taskName.match(/\b[A-Za-z]-?(\d{4,6})\b/);
-     if (letterMatch) return letterMatch[1];
-     // Priority 2: standalone 4-6 digits (e.g., 56363)
-     const digitsMatch = taskName.match(/\b(\d{4,6})\b/);
-     return digitsMatch ? digitsMatch[1] : null;
-   };
 
   const isPureFiveDigitSpecNumber = (value: string) => new RegExp(`^\\d{${specNumberDigits}}$`).test(value.trim());
 
@@ -2024,46 +869,6 @@ const Dashboard = () => {
     }
   };
 
-  const splitDesignTaskName = (taskName: string) => {
-    const trimmed = taskName.trim();
-    const deadlineMatch = trimmed.match(/\s*(\[\d{1,2}\/\d{1,2}\])$/);
-    const withoutDeadline = deadlineMatch && typeof deadlineMatch.index === 'number'
-      ? trimmed.slice(0, deadlineMatch.index).trim()
-      : trimmed;
-    const typeMatch = withoutDeadline.match(/\s+(确认图|设计)$/);
-    const baseName = typeMatch && typeof typeMatch.index === 'number'
-      ? withoutDeadline.slice(0, typeMatch.index).trim()
-      : withoutDeadline;
-    const typeSuffix = typeMatch ? ` ${typeMatch[1]}` : '';
-    return { baseName, typeSuffix };
-  };
-
-  const getDeliveryDateSuffix = (deliveryDate?: string | null) => {
-    if (!deliveryDate) return null;
-    const dateMatch = deliveryDate.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-    if (!dateMatch) return null;
-    const month = parseInt(dateMatch[2], 10);
-    const day = parseInt(dateMatch[3], 10);
-    return `[${month}/${day}]`;
-  };
-
-  const getDesignPlanClientName = (specInfo: SpecInfoResponse, fallbackSpecNumber: string) => {
-    const clientName = specInfo.clientName?.trim();
-    if (!clientName) return '';
-    if (!specInfo.isModification || clientName.startsWith('M')) return clientName;
-
-    const specNumber = specInfo.specNumber || fallbackSpecNumber;
-    if (clientName.startsWith(`${specNumber}>`)) {
-      return `M${clientName}`;
-    }
-    return `M${specNumber}>${clientName}`;
-  };
-
-  const buildSyncedSpecTaskName = (originalTaskName: string, specInfo: SpecInfoResponse, specNumber: string, deliverySuffix: string) => {
-    const { baseName, typeSuffix } = splitDesignTaskName(originalTaskName);
-    const clientName = getDesignPlanClientName(specInfo, specNumber) || baseName;
-    return `${clientName}${typeSuffix} ${deliverySuffix}`.trim();
-  };
 
   const resolvePureSpecTaskName = async (taskName: string): Promise<string> => {
     const { baseName, typeSuffix } = splitDesignTaskName(taskName);
@@ -2239,389 +1044,7 @@ const Dashboard = () => {
     }
   }, []);
 
-
-  // 添加操作到历史记录，最多保留 10 步
-  // 新操作会清空重做栈，因为重做分支已失效
-  const addToHistory = (operation: string, data: any) => {
-    setHistory(prev => [...prev, { operation, data, timestamp: Date.now() }].slice(-10));
-    setRedoHistory([]);
-  };
-
-  const performUndo = useCallback(async (operation: {operation: string, data: any, timestamp: number}): Promise<{operation: string, data: any, timestamp: number} | null> => {
-    if (!canEditTasks) {
-      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
-      return null;
-    }
-    try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const op: any = { ...operation, data: { ...operation.data } };
-
-      switch (op.operation) {
-        case 'delete':
-          // Restore deleted task
-          {
-            const { designerId, date, item } = op.data;
-            const res = await axiosInstance.post('/tasks/item', {
-              designerId,
-              date,
-              taskName: item.taskName || '',
-              hours: item.hours || 0,
-              color: item.color || '',
-              guns: item.guns || [],
-              leaveType: item.leaveType || null
-            }, authHeader);
-            // 记录恢复后的新 itemId，供重做（再次删除）使用
-            op.data.restoredItemId = res.data.item?.id;
-            upsertSheet(res.data.sheet);
-          }
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'add':
-          // Remove added task
-          {
-            const { designerId: addDesignerId, date: addDate, itemId } = op.data;
-            await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId: addDesignerId, date: addDate, itemId } });
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'batchAdd':
-          {
-            const { items } = op.data;
-            for (const added of items || []) {
-              await axiosInstance.delete('/tasks/item', {
-                ...authHeader,
-                data: { designerId: added.designerId, date: added.date, itemId: added.itemId }
-              });
-            }
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'batchDelete':
-          {
-            const restoredItems: { designerId: string; date: string; itemId: string }[] = [];
-            for (const deleted of op.data.items || []) {
-              const res = await axiosInstance.post('/tasks/item', {
-                designerId: deleted.designerId,
-                date: deleted.date,
-                taskName: deleted.item.taskName || '',
-                hours: deleted.item.hours || 0,
-                color: deleted.item.color || '',
-                guns: deleted.item.guns || [],
-                leaveType: deleted.item.leaveType || null
-              }, authHeader);
-              if (res.data.item?.id) {
-                restoredItems.push({ designerId: deleted.designerId, date: deleted.date, itemId: res.data.item.id });
-              }
-            }
-            // 记录恢复后的新 itemId 列表，供重做（再次删除）使用
-            op.data.restoredItems = restoredItems;
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'move':
-          // Reverse move operation
-          {
-            const { sourceDesignerId, sourceDate, targetDesignerId, targetDate, itemId: moveItemId } = op.data;
-            await axiosInstance.post('/tasks/move', {
-              sourceDesignerId: targetDesignerId,
-              sourceDate: targetDate,
-              itemId: moveItemId,
-              targetDesignerId: sourceDesignerId,
-              targetDate: sourceDate
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'batchMove':
-          for (const moved of op.data.items || []) {
-            await axiosInstance.post('/tasks/move', {
-              sourceDesignerId: moved.targetDesignerId,
-              sourceDate: moved.targetDate,
-              itemId: moved.itemId,
-              targetDesignerId: moved.sourceDesignerId,
-              targetDate: moved.sourceDate
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'deleteGun':
-          // 撤销删除枪名操作，恢复原始枪名数组
-          {
-            const { designerId: gunDesignerId, date: gunDate, itemId: gunItemId, originalGuns } = op.data;
-            await axiosInstance.put('/tasks/item', {
-              designerId: gunDesignerId,
-              date: gunDate,
-              itemId: gunItemId,
-              field: 'guns',
-              value: originalGuns
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'moveGunBetweenItems':
-          // 撤销跨主任务移动枪名：把枪名从目标主任务移回源主任务原位置；
-          // 若源主任务因最后一个枪名被移走而被删除，则先按快照重建（空 guns）再移回
-          {
-            const d = op.data;
-            let restoredSourceItemId = d.sourceItemId;
-            if (d.sourceItemDeleted && d.sourceItemSnapshot) {
-              const snap = d.sourceItemSnapshot;
-              const res = await axiosInstance.post('/tasks/item', {
-                designerId: d.sourceDesignerId,
-                date: d.sourceDate,
-                taskName: snap.taskName || '',
-                hours: snap.hours || 0,
-                color: snap.color || '',
-                guns: [],
-                leaveType: snap.leaveType || null
-              }, authHeader);
-              if (res.data.item?.id) {
-                restoredSourceItemId = res.data.item.id;
-                // 更新历史记录中的源任务 id，保证重做指向重建后的任务
-                d.sourceItemId = restoredSourceItemId;
-              }
-            }
-            await axiosInstance.post('/tasks/move-gun', {
-              sourceDesignerId: d.targetDesignerId,
-              sourceDate: d.targetDate,
-              sourceItemId: d.targetItemId,
-              gunId: d.gunId,
-              targetDesignerId: d.sourceDesignerId,
-              targetDate: d.sourceDate,
-              targetItemId: restoredSourceItemId,
-              newIndex: d.sourceGunIndex
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        case 'fieldChange':
-          // 撤销字段变更操作，恢复原始值
-          {
-            const { designerId: fieldDesignerId, date: fieldDate, itemId: fieldItemId, field: fieldName, originalValue: fieldOriginalValue } = op.data;
-            await axiosInstance.put('/tasks/item', {
-              designerId: fieldDesignerId,
-              date: fieldDate,
-              itemId: fieldItemId,
-              field: fieldName,
-              value: fieldOriginalValue
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已撤销', 'success');
-          break;
-
-        default:
-          addToast('无法撤销此操作', 'error');
-          return null;
-      }
-      return op;
-    } catch (err) {
-      addToast('撤销失败', 'error');
-      return null;
-    }
-  }, [token, upsertSheet, fetchSheets, canEditTasks, isOfflineMode]);
-
-  // 重做被撤销的操作，返回更新后的操作对象（用于推回 history）
-  const performRedo = useCallback(async (operation: {operation: string, data: any, timestamp: number}): Promise<{operation: string, data: any, timestamp: number} | null> => {
-    if (!canEditTasks) {
-      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
-      return null;
-    }
-    try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const op: any = { ...operation, data: { ...operation.data } };
-
-      switch (op.operation) {
-        case 'delete':
-          // 重做删除操作：删除撤销时恢复的任务
-          {
-            const { designerId, date, restoredItemId } = op.data;
-            await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId, date, itemId: restoredItemId } });
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'add':
-          // 重做添加操作：重新创建任务，并更新 itemId
-          {
-            const { designerId, date, taskName, leaveType } = op.data;
-            const res = await axiosInstance.post('/tasks/item', {
-              designerId,
-              date,
-              taskName: taskName || '',
-              leaveType: leaveType || null,
-              hours: ''
-            }, authHeader);
-            op.data.itemId = res.data.item?.id;
-            upsertSheet(res.data.sheet);
-          }
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'batchAdd':
-          // 重做批量添加操作：重新创建所有任务，并更新 itemId
-          {
-            const items = op.data.items || [];
-            if (items.length > 0) {
-              const { designerId, date } = items[0];
-              const res = await axiosInstance.post('/tasks/item/batch', {
-                designerId,
-                date,
-                items: items.map((it: any) => it.item)
-              }, authHeader);
-              const createdItems = res.data.items || [];
-              op.data.items = items.map((it: any, idx: number) => ({
-                ...it,
-                itemId: createdItems[idx]?.id || it.itemId
-              }));
-              upsertSheet(res.data.sheet);
-            }
-          }
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'batchDelete':
-          // 重做批量删除操作：删除撤销时恢复的所有任务
-          {
-            const restoredItems = op.data.restoredItems || [];
-            for (const restored of restoredItems) {
-              await axiosInstance.delete('/tasks/item', {
-                ...authHeader,
-                data: { designerId: restored.designerId, date: restored.date, itemId: restored.itemId }
-              });
-            }
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'move':
-          // 重做移动操作
-          {
-            const { sourceDesignerId, sourceDate, targetDesignerId, targetDate, itemId: moveItemId } = op.data;
-            await axiosInstance.post('/tasks/move', {
-              sourceDesignerId,
-              sourceDate,
-              itemId: moveItemId,
-              targetDesignerId,
-              targetDate
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'batchMove':
-          // 重做批量移动操作
-          for (const moved of op.data.items || []) {
-            await axiosInstance.post('/tasks/move', {
-              sourceDesignerId: moved.sourceDesignerId,
-              sourceDate: moved.sourceDate,
-              itemId: moved.itemId,
-              targetDesignerId: moved.targetDesignerId,
-              targetDate: moved.targetDate
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'deleteGun':
-          // 重做删除枪名操作：再次移除指定索引的枪名
-          {
-            const { designerId, date, itemId, originalGuns, gunIndex } = op.data;
-            const newGuns = (originalGuns || []).filter((_: any, i: number) => i !== gunIndex);
-            await axiosInstance.put('/tasks/item', {
-              designerId,
-              date,
-              itemId,
-              field: 'guns',
-              value: newGuns
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'moveGunBetweenItems':
-          // 重做跨主任务移动枪名
-          {
-            const d = op.data;
-            await axiosInstance.post('/tasks/move-gun', {
-              sourceDesignerId: d.sourceDesignerId,
-              sourceDate: d.sourceDate,
-              sourceItemId: d.sourceItemId,
-              gunId: d.gunId,
-              targetDesignerId: d.targetDesignerId,
-              targetDate: d.targetDate,
-              targetItemId: d.targetItemId,
-              newIndex: d.newIndex
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        case 'fieldChange':
-          // 重做字段变更操作：设置为新值
-          {
-            const { designerId, date, itemId, field, newValue } = op.data;
-            await axiosInstance.put('/tasks/item', {
-              designerId,
-              date,
-              itemId,
-              field,
-              value: newValue
-            }, authHeader);
-          }
-          fetchSheets();
-          socketRef.current?.emit('task_updated');
-          addToast('操作已重做', 'success');
-          break;
-
-        default:
-          addToast('无法重做此操作', 'error');
-          return null;
-      }
-      return op;
-    } catch (err) {
-      addToast('重做失败', 'error');
-      return null;
-    }
-  }, [token, upsertSheet, fetchSheets, canEditTasks, isOfflineMode]);
+  const { addToHistory } = useTaskHistory({ token, upsertSheet, fetchSheets, canEditTasks, isOfflineMode, addToast, socketRef });
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -2638,59 +1061,11 @@ const Dashboard = () => {
       }
     };
 
-    const handleUndo = async (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        if (!canEditTasks) {
-          if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
-          return;
-        }
-        if (history.length > 0) {
-          const lastOperation = history[history.length - 1];
-          const undoneOp = await performUndo(lastOperation);
-          // 仅在撤销成功时才从 history 移除并推入 redoHistory
-          if (undoneOp) {
-            setHistory(prev => prev.slice(0, -1));
-            setRedoHistory(prev => [...prev, undoneOp].slice(-10));
-          }
-        } else {
-          addToast('暂无可撤销操作', 'error');
-        }
-      }
-    };
-
-    const handleRedo = async (e: KeyboardEvent) => {
-      // Ctrl+Y 或 Ctrl+Shift+Z 触发重做
-      const isCtrlY = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y';
-      const isCtrlShiftZ = (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z';
-      if (!isCtrlY && !isCtrlShiftZ) return;
-      e.preventDefault();
-      if (!canEditTasks) {
-        if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
-        return;
-      }
-      if (redoHistory.length > 0) {
-        const lastRedoOperation = redoHistory[redoHistory.length - 1];
-        const redoneOp = await performRedo(lastRedoOperation);
-        // 仅在重做成功时才从 redoHistory 移除并推回 history
-        if (redoneOp) {
-          setRedoHistory(prev => prev.slice(0, -1));
-          setHistory(prev => [...prev, redoneOp].slice(-10));
-        }
-      } else {
-        addToast('暂无可重做操作', 'error');
-      }
-    };
-
     window.addEventListener('keydown', handleEsc);
-    window.addEventListener('keydown', handleUndo);
-    window.addEventListener('keydown', handleRedo);
     return () => {
       window.removeEventListener('keydown', handleEsc);
-      window.removeEventListener('keydown', handleUndo);
-      window.removeEventListener('keydown', handleRedo);
     };
-  }, [batchReplaceOpen, modalOpen, history, redoHistory, performUndo, performRedo, canEditTasks, isOfflineMode]);
+  }, [batchReplaceOpen, modalOpen, modalDesignerId, modalDate, stopEditingCell]);
 
   const fetchWorkdayOverrides = useCallback(async () => {
     try {
@@ -3011,6 +1386,64 @@ const Dashboard = () => {
       .filter(Boolean) as { item: TaskItem; designerId: string; date: string }[];
   }
 
+  const {
+    sensors,
+    collisionDetection,
+    handleDragStart,
+    handleDragMove,
+    handleDragEnd,
+    setGunDropTargetState,
+    setTaskDropTargetState,
+    taskDragCtrlRef,
+    activeTask,
+    setActiveTask,
+    activeGun,
+    setActiveGun,
+    gunDropTarget,
+    taskDropTarget,
+    setIsDragging,
+    setIsOverDelete,
+  } = useGunDragDrop({
+    canEditTasks,
+    warnIfCellLocked,
+    getAllItems,
+    getSelectedTaskPayloads,
+    designers,
+    setDesigners,
+    token,
+    addToHistory,
+    upsertSheet,
+    fetchSheets,
+    fetchData,
+    stopEditingCell,
+    addToast,
+    onMoveGunToTask,
+    setSelectedTasks,
+    setSelectedCell,
+    socketRef,
+  });
+
+  const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);
+  const gunDropSelf = Boolean(gunDropTarget?.isSelf);
+  const taskDropDuplicate = Boolean(taskDropTarget?.duplicate);
+
+  useEffect(() => {
+    if (!isOfflineMode) return;
+    setSelectedCell(null);
+    setSelectedTasks([]);
+    setActiveTask(null);
+    setActiveGun(null);
+    setIsDragging(false);
+    setIsOverDelete(false);
+    setPendingChanges([]);
+    if (modalOpen) {
+      setModalOpen(false);
+      stopEditingCell(modalDesignerId, modalDate);
+    } else {
+      stopEditingCell();
+    }
+  }, [isOfflineMode, modalOpen, modalDesignerId, modalDate, stopEditingCell]);
+
 
   const deleteSelectedTasks = useCallback(async (fallback?: { item: TaskItem; designerId: string; date: string }) => {
     if (!canEditTasks) {
@@ -3109,54 +1542,6 @@ const Dashboard = () => {
     return updatedItem;
   };
 
-  const hasInvalidNamedGunHours = (guns?: GunItem[]) => {
-    return (guns || []).some(gun => {
-      const name = String(gun.name || '').trim();
-      if (!name) return false;
-      const hours = typeof gun.hours === 'number' ? gun.hours : parseFloat(String(gun.hours));
-      return isNaN(hours) || hours <= 0;
-    });
-  };
-
-  // 同一主任务内是否存在重复的非空枪名（与后端 validateDuplicateGunNames 规则一致）
-  const hasDuplicateGunNames = (guns?: GunItem[]) => {
-    const seen = new Set<string>();
-    for (const gun of guns || []) {
-      const name = String(gun?.name || '').trim();
-      if (!name) continue;
-      if (seen.has(name)) return true;
-      seen.add(name);
-    }
-    return false;
-  };
-
-  const getHoursInputValue = (value: number | string | null | undefined) => {
-    if (value === null || value === undefined || value === '') return '';
-    const numericValue = typeof value === 'number' ? value : parseFloat(String(value));
-    if (isNaN(numericValue) || numericValue === 0) return '';
-    return value;
-  };
-
-  const getGunHoursTotalInputValue = (guns?: GunItem[]) => {
-    const total = (guns || []).reduce((sum, gun) => {
-      const hours = typeof gun.hours === 'number' ? gun.hours : parseFloat(String(gun.hours));
-      return sum + (isNaN(hours) ? 0 : hours);
-    }, 0);
-    return total > 0 ? total : '';
-  };
-
-  const isMeaningfulTask = (item: TaskItem) => {
-    if (item.leaveType) return true;
-    const taskName = (item.taskName || '').trim();
-    const gunsEmpty = !item.guns || item.guns.length === 0 || item.guns.every((g: any) => !g.name || g.name.trim() === '未命名');
-    return Boolean(taskName || !gunsEmpty);
-  };
-
-  const getTaskHours = (item: TaskItem) => {
-    const mainHours = typeof item.hours === 'number' ? item.hours : (parseFloat(String(item.hours)) || 0);
-    const gunsHours = (item.guns || []).reduce((gSum, g) => gSum + (typeof g.hours === 'number' ? g.hours : (parseFloat(String(g.hours)) || 0)), 0);
-    return item.guns && item.guns.length > 0 ? gunsHours : mainHours;
-  };
  
   const calculateDailyTotal = (designerId: string, date: string) => {
     const items = getItems(designerId, date);
@@ -3611,50 +1996,6 @@ const Dashboard = () => {
     </div>
   );
 
-  const PRESET_COLORS = [
-    { label: '无', value: '' },
-    // 淡色系
-    { label: '淡红', value: '#fee2e2' },
-    { label: '淡玫瑰', value: '#ffe4e6' },
-    { label: '淡橙', value: '#ffedd5' },
-    { label: '淡琥珀', value: '#fef3c7' },
-    { label: '淡黄', value: '#fef9c3' },
-    { label: '淡黄绿', value: '#ecfccb' },
-    { label: '淡绿', value: '#dcfce7' },
-    { label: '淡翠绿', value: '#d1fae5' },
-    { label: '淡青', value: '#cffafe' },
-    { label: '淡天蓝', value: '#e0f2fe' },
-    { label: '淡蓝', value: '#dbeafe' },
-    { label: '淡靛', value: '#e0e7ff' },
-    { label: '淡紫', value: '#f3e8ff' },
-    { label: '淡粉', value: '#fce7f3' },
-    { label: '淡棕', value: '#f5e6d3' },
-    { label: '淡石板', value: '#f1f5f9' },
-    { label: '淡灰', value: '#f3f4f6' },
-    // 深色/饱和系
-    { label: '深红', value: '#fca5a5' },
-    { label: '大红', value: '#f87171' },
-    { label: '玫红', value: '#fb7185' },
-    { label: '深橙', value: '#fdba74' },
-    { label: '橙红', value: '#fb923c' },
-    { label: '琥珀', value: '#fbbf24' },
-    { label: '深黄', value: '#fde047' },
-    { label: '黄绿', value: '#a3e635' },
-    { label: '深绿', value: '#86efac' },
-    { label: '翠绿', value: '#34d399' },
-    { label: '青色', value: '#67e8f9' },
-    { label: '湖青', value: '#22d3ee' },
-    { label: '天蓝', value: '#38bdf8' },
-    { label: '深蓝', value: '#93c5fd' },
-    { label: '靛蓝', value: '#818cf8' },
-    { label: '深紫', value: '#d8b4fe' },
-    { label: '粉色', value: '#f9a8d4' },
-    { label: '桃红', value: '#f472b6' },
-    { label: '棕色', value: '#c08457' },
-    { label: '石板', value: '#94a3b8' },
-    { label: '灰色', value: '#e5e7eb' },
-    { label: '深灰', value: '#6b7280' },
-  ];
 
   const handleCopy = (designerId: string, date: string) => {
     const items = getItems(designerId, date);
@@ -3712,23 +2053,6 @@ const Dashboard = () => {
     return user?.role === 'admin' && systemSettingsAccess.allowAdmins;
   };
 
-  const formatTaskMetaTime = (value?: string) => {
-    if (!value) return '暂无记录';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '暂无记录';
-    return format(date, 'yyyy-MM-dd HH:mm');
-  };
-
-  const buildTaskMetadataTitle = (item: TaskItem) => {
-    const creator = item.createdBy?.name || item.createdBy?.username || '暂无记录';
-    const updater = item.updatedBy?.name || item.updatedBy?.username || '暂无记录';
-    return [
-      `创建者：${creator}`,
-      `创建时间：${formatTaskMetaTime(item.createdAt)}`,
-      `最后修改者：${updater}`,
-      `最后修改时间：${formatTaskMetaTime(item.updatedAt)}`
-    ].join('\n');
-  };
 
   const hasRealtimeUpdates = Boolean(token);
   const footerStatusDotClass = !hasRealtimeUpdates

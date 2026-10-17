@@ -109,6 +109,8 @@ npm run build
 
 > 注意：生产构建的 `base` 路径为 /obara-task-manager/（配置在 `frontend/vite.config.ts`）。如果前端静态文件部署在网站根目录而非子路径下，请将 `base` 改为 `/` 或按实际路径调整。
 
+产物由多个 chunk 组成（依赖按 `vendor-react` / `vendor-utils` / `vendor-dnd` / `vendor-socket` / `vendor-icons` 分包，除主页面和登录页外的页面按路由懒加载，详见 README 的「前端加载与构建产物」）。部署时必须完整拷贝 `frontend/dist/assets/` 下的**全部**文件，静态服务器需允许匿名访问该目录并按 `.js` 返回 `application/javascript`；只拷贝入口 `index-*.js` 会导致打开子页面时报 chunk 加载失败。
+
 ### 启动后端
 
 ```bat

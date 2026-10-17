@@ -1,19 +1,28 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SystemSettingsProvider } from './context/SystemSettingsContext';
 import { sanitizeRedirect } from './utils/redirect';
 import Login from './pages/Login';
-import ChangePassword from './pages/ChangePassword';
+// 主页面是首页（/），保持静态导入随主 chunk 同步加载；
+// 若改为懒加载，首屏会多一次 chunk 往返并先显示加载占位，反而更慢。
 import Dashboard from './pages/Dashboard';
-import Admin from './pages/Admin';
-import Leaderboard from './pages/Leaderboard';
-import WorkHours from './pages/WorkHours';
-import StatusTracking from './pages/StatusTracking';
-import SystemSettings from './pages/SystemSettings';
-import SystemLogs from './pages/SystemLogs';
-import DesignStandards from './pages/DesignStandards';
-import GunLedger from './pages/GunLedger';
+
+const ChangePassword = lazy(() => import('./pages/ChangePassword'));
+const Admin = lazy(() => import('./pages/Admin'));
+const Leaderboard = lazy(() => import('./pages/Leaderboard'));
+const WorkHours = lazy(() => import('./pages/WorkHours'));
+const StatusTracking = lazy(() => import('./pages/StatusTracking'));
+const SystemSettings = lazy(() => import('./pages/SystemSettings'));
+const SystemLogs = lazy(() => import('./pages/SystemLogs'));
+const DesignStandards = lazy(() => import('./pages/DesignStandards'));
+const GunLedger = lazy(() => import('./pages/GunLedger'));
+
+const PageFallback = () => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>
+    加载中...
+  </div>
+);
 
 const ProtectedRoute = ({
   children,
@@ -87,7 +96,8 @@ const LoginRoute = () => {
 
 const AppRoutes = () => {
   return (
-    <Routes>
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
       <Route path="/login" element={<LoginRoute />} />
       <Route 
         path="/change-password" 
@@ -170,7 +180,8 @@ const AppRoutes = () => {
         } 
       />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </Suspense>
   );
 };
 
