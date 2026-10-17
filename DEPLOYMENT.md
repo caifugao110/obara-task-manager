@@ -245,7 +245,7 @@ GET http://localhost:5000/api/system/version    # 需要登录，匿名返回 40
 4. 拉取或替换新版本代码（人工确认后手动执行 `git pull`；`start.bat` 不会自动拉取）。
 5. 执行 `npm run install:all` 更新依赖（含 `better-sqlite3` 原生模块）。
 6. 执行 `npm run build` 验证前端构建。
-7. 启动后端和前端，确认数据库迁移日志无异常（若存在遗留 `db.json`，首次启动会自动迁移到 SQLite）。
+7. 启动后端和前端，确认启动日志无异常。
 8. 登录后验证主页面、管理后台、系统设置、导入导出和关键报表。
 
 ### 回滚流程
@@ -277,7 +277,6 @@ GITEE_TOKEN=your-gitee-token
 GITEE_REPO_OWNER=caifugao110
 GITEE_REPO_NAME=obara-task-manager
 SQLITE_DB_PATH=./data.db
-DB_PATH=./db.json
 SPEC_SHARE_PATH=\\192.168.160.6\仕样书$
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
@@ -300,7 +299,6 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
-| `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite，迁移完成后可删除 |
 | `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；登录/改密独立限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被独立限流器使用 |
@@ -431,7 +429,7 @@ GITEE_REPO_NAME=obara-task-manager
 | 集合 | 说明 |
 |------|------|
 | `users` | 登录用户，角色包括 `superadmin`、`admin`、`user`，含 `forcePasswordChange` 字段 |
-| `designers` | 设计人员列表 |
+| `designers` | 设计人员列表，字段含 `name`、`group`、`order`、`hidden`（隐藏后不出现在主页面「全部」与分组筛选中） |
 | `statusTrackingItems` | 状态追踪记录 |
 | `gunLedger` | 焊枪编号台账，包含 `categories`（分类→表→行三级结构）和 `defaultResponsiblePersons`（默认担当人员） |
 | `settings.leaderboard` | 任务报表访问权限 |
@@ -440,13 +438,16 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.gunLedger` | 焊枪台账访问权限（`allowViewers=true` 时普通用户只读） |
 | `settings.designStandards` | 设计规范知识库页面访问权限 |
 | `settings.systemSettings` | 系统设置数据管理模块访问权限（`allowViewers` 始终为 `false`） |
+| `settings.maintenance` | 数据库自动维护配置：备份/任务导出/编号台账导出/断网备份/年度清理开关、保留天数、执行时间点（`scheduleTimes`，最多两个）与各类输出目录 |
+| `settings.designStandardsLinkedKbIds` | 已关联的 WeKnora 知识库 ID 列表（数组） |
+| `settings.designStandardsPrompt` | 答复约束提示词：`{ enabled, knowledgeBases: { [kbId]: { prompt, agentId, updatedAt } } }` |
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
-| `settings.system` | 系统设置，如多设备登录、允许登录用户修改本人设计计划完成状态、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、设计计划标记颜色随机（`randomDesignPlanColor`）、焊枪台账分配任务标记颜色随机（`randomAssignmentColor`）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，两个颜色随机开关缺失时默认关闭，默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
+| `settings.system` | 系统设置：多设备登录（`allowMultiDevice`）、允许登录用户修改本人设计计划完成状态（`allowUserDesignPlanColorMark`，兼容字段 `allowUserEditOwnTaskColor`）、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、操作日志保留条数（`auditLogMaxRows`，100~100000，默认 5000）、设计计划标记颜色随机（`randomDesignPlanColor`）、焊枪台账分配任务标记颜色随机（`randomAssignmentColor`）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，两个颜色随机开关缺失时默认关闭，默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
-除上述键值集合外，三类高写入量数据存放在独立的关系表中（首次升级自动从 `kv_store` 搬迁，幂等）：
+除上述键值集合外，三类高写入量数据存放在独立的关系表中：
 
 | 表 | 说明 |
 |----|------|
@@ -454,11 +455,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `login_logs` | 登录日志独立表（含 IP、浏览器信息、登录结果），最多保留 2000 条 |
 | `audit_logs` | 操作日志独立表，默认最多保留 5000 条（保留条数可在系统设置 → 日志管理中调整） |
 
-### 从 JSON 自动迁移
-
-如果 `backend/db.json` 存在且 SQLite 数据库为空，后端启动时会**自动**将 JSON 数据迁移到 SQLite，并将原 `db.json` 重命名为 `db.json.migrated-<时间戳>.bak`。迁移完成后可删除该备份文件。
-
-首次启动或旧版本升级时，`backend/db.js` 会自动补齐缺失的默认配置并执行数据结构迁移（任务结构、日期格式、用户字段等）。
+首次启动或旧版本升级时，`backend/db.js` 会自动补齐缺失的默认配置。
 
 多人编辑占用状态保存在后端运行时内存中，用于防止同一设计人员同一天被多个用户同时编辑；服务重启后会自动清空，不写入数据库。
 
@@ -628,11 +625,18 @@ taskkill /PID <PID> /F
 
 ### 后端断开后页面无离线提示
 
-1. 检查浏览器是否处于真正的离线状态：`navigator.onLine` 仅检测浏览器网络连接，后端端口断开（服务器宕机）时不触发
-2. 系统使用双通道检测后端不可达：axios 响应拦截器捕获 `ERR_NETWORK`/`ECONNABORTED` 后广播全局 `server-unreachable` 事件（恢复时广播 `server-online`），主页面/状态追踪/焊枪台账另监听 Socket.IO 的 `connect_error`/`connect` 事件
-3. 断线时页脚显示红色/琥珀色圆点 + "离线"，页面顶部显示橙色横幅提示「当前处于离线模式，此页面禁止编辑」，所有写操作被拦截
-4. 主页面如果此前已加载过数据，会自动显示 localStorage 缓存内容，不会归零
-5. 离线期间页面每 5 秒轻量探测 `/api/auth/validate`，后端恢复后自动重新加载最新数据，横幅和页脚状态恢复正常
+离线检测分两个通道，**覆盖范围不同**，排障时先判断走的是哪一条：
+
+1. **浏览器断网**：`navigator.onLine` 与 `online`/`offline` 事件，全部页面生效。
+2. **后端进程停止但浏览器仍在线**：axios 响应拦截器捕获 `ERR_NETWORK`/`ECONNABORTED` 后广播全局 `server-unreachable` 事件（恢复时广播 `server-online`）。**当前只有管理后台、任务报表、工时管理、系统设置、操作日志订阅该事件**；主页面、状态追踪、焊枪台账**未订阅**，它们依赖 Socket.IO 的 `connect_error`/`connect` 事件与接口错误码兜底，因此横幅可能要等到下一次交互或 Socket 重连后才出现，这属于预期行为。
+
+其他表现与排查要点：
+
+- 断线时页脚显示红色/琥珀色圆点 + "离线"，页面顶部显示橙色横幅「当前处于离线模式，此页面禁止编辑」，所有写操作被拦截。
+- 页脚还有一种琥珀色「需手动刷新获取最新状态」，表示未登录/无 token（无实时连接），**不是离线**，不要误判。
+- 主页面若此前已加载过数据，会自动显示 localStorage 缓存内容，不会归零。
+- 管理后台、任务报表、工时管理、系统设置、操作日志在离线期间每 5 秒轻量探测 `/api/auth/validate`，后端恢复后自动重新加载最新数据；主页面/状态追踪/焊枪台账由 Socket 重连触发刷新。
+- 若确认后端进程存活却仍提示离线，依次检查：后端端口是否被占用或改过（`backend/.env` 的 `PORT`）、浏览器 Token 是否过期（重新登录）、前端 `vite.config.ts` 中 `/api`、`/socket.io` 代理是否正确。
 
 ### 前端请求后端失败
 
@@ -645,6 +649,16 @@ taskkill /PID <PID> /F
 ### 任务报表或工时管理提示无设计人员
 
 确认管理后台“设计人员列表”中存在设计人员。管理员和超级管理员读取设计人员时需要有效 Token。
+
+### 主页面看不到某个设计人员
+
+1. 该人员可能被标记为**隐藏**：管理后台「设计人员列表」中行呈半透明、眼睛图标为蓝色。隐藏人员在「全部」筛选和分组筛选下不显示，只有顶部下拉菜单单独选中时才可见。点击眼睛图标「取消隐藏」即可恢复。
+2. 确认当前分组未被折叠（分组折叠状态保存在浏览器 localStorage，可点击分组标题展开）。
+3. 确认顶部下拉菜单没有筛选到其他人员/分组。
+
+### 焊枪台账任务分配后新建的任务数少于勾选的枪名数
+
+这是「相同仕样号合并」生效的正常结果：勾选枪名后若目标设计人员、目标日期下已存在**仕样号相同**的确认图任务（任务名含「确认图」且不含「确认图修改」），分配面板会提示「发现 N 个相同仕样号的确认图任务」；勾选「添加到已有任务」后这些枪名会追加进已有任务而不是新建。若需要全部新建，取消该勾选即可。另外，已被主任务使用的枪名（天蓝色）不显示勾选框，无法重复分配。
 
 ### 权限设置保存后结果和请求体不同
 

@@ -31,7 +31,7 @@ Authorization: Bearer <token>
 - [前端批量导入模板](#前端批量导入模板)
 - [Socket.IO](#socketio)
 - [常见错误码](#常见错误码)
-- [数据库迁移说明](#数据库迁移说明)
+- [数据库初始化说明](#数据库初始化说明)
 - [安全特性](#安全特性)
 - [环境变量配置](#环境变量配置)
 - [配置文件结构](#配置文件结构)
@@ -300,8 +300,6 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `group` | 用户分组 |
 | `disabled` | 是否禁用，禁用后无法登录 |
 | `forcePasswordChange` | 是否需要在下次登录后修改密码 |
-
-说明：首次访问时会自动迁移用户数据，添加缺失的 `disabled` 和 `forcePasswordChange` 字段。
 
 ### 创建登录用户
 
@@ -795,10 +793,9 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - `guns`（整体替换枪名数组）
 - `gunColor`（标记单个枪名颜色，需配合 `gunIndex` 指定枪名下标）
 - `leaveType`（合法值：`sick` 事假、`vacation` 休假、`illness` 病假、`trip` 出差、`null`）
-- `fontSize`
-- `textColor`
+- `fontSize`、`textColor`：**仅通过 Joi 白名单校验，处理器没有对应分支**，传这两个值会落入 `else` 兜底，把 `taskName` 覆盖成 `value`（例如 `{"field":"fontSize","value":"14px"}` 会把任务名改成 `14px`）。这两个字段只在**创建**任务（`POST /api/tasks/item`）时有效，更新任务请勿使用。
 
-更新 `guns` 时同样校验：枪名存在时工时不能为 0。
+更新 `guns` 时同样校验：枪名存在时工时不能为 0、同一任务内枪名不可重复（校验不通过返回 `400`，`message` 为中文原因说明）。
 
 - **所有任务内容的修改（包括枪名的编辑、复制、删除）都会自动更新 `updatedAt` 和 `updatedBy` 字段。**
 - 枪名对象除 `id`、`name`、`hours` 外，还包含颜色标记字段：`color`（当前颜色）、`colorBeforeUserMark`（标记前的原始颜色）、`colorMarkedBy`（标记人 `{ id, username, name }`）。
@@ -1396,7 +1393,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `undrawnVarieties` | 未下种数（导入/保存值；导出时动态按 `确认种数 - 下图种数` 计算） |
 | `undrawnQuantity` | 未下数量（导入/保存值；导出时动态按 `确认数量 - 已发图` 计算） |
 | `unconfirmedQuantity` | 未确认数（导入/保存值；导出时动态按 `数量 - 确认数量` 计算） |
-| `designDeliveryDays` | 设计纳期天数（纳期距今天数，**动态计算不存储**，小于 1 天时导出为空） |
+| `designDeliveryDays` | 设计纳期天数（纳期距今天数，小于 1 天时导出为空）。该字段**会随记录一起落库**，但每次创建/更新以及每次读取都由服务端按 `deliveryDate` 重新计算后覆盖，客户端提交的值会被剥离忽略 |
 | `salesPerson` | 营业担当 |
 | `leader` | 组长（前端按营业担当自动匹配组长规则填充） |
 | `createdAt` | 创建时间，ISO 格式 |
@@ -1652,10 +1649,10 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 客户端事件：
 
-| 事件 | 说明 | 参数 |
-|------|------|------|
-| `status_tracking_start_edit` | 通知开始编辑状态追踪记录 | `{ itemId, userId, username }` |
-| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录 | `{ itemId }` |
+| 事件 | 说明 | 参数 | 权限与限流 |
+|------|------|------|------------|
+| `status_tracking_start_edit` | 通知开始编辑状态追踪记录 | `{ itemId }`（`userId`/`username` 由服务端会话注入，客户端传入的值被忽略；缺少 `itemId` 时回发 `error: Missing itemId`） | 仅 `admin`/`superadmin`（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；每个连接 10 秒最多 30 次（超限 `error: 操作过于频繁，请稍后再试`） |
+| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录 | `{ itemId }` | 需已认证 |
 
 服务端事件：
 
@@ -2271,6 +2268,8 @@ PUT 请求：
 
 `GET /api/system/settings`
 
+权限：任意**已登录**用户（含 `user` 角色）均可读取全部系统设置，不限超级管理员。
+
 响应：
 
 ```json
@@ -2325,6 +2324,7 @@ PUT 请求：
 {
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
+  "allowUserEditOwnTaskColor": true,
   "allowUserChangePassword": true,
   "specNumberDigits": 6,
   "auditLogMaxRows": 5000,
@@ -2346,6 +2346,8 @@ PUT 请求：
 字段说明：
 
 - 所有字段含义同 `GET /api/system/settings`。
+- `allowMultiDevice` 为**必填**布尔值（Joi `required()`），缺失返回 `400`。
+- `allowUserDesignPlanColorMark` 与 `allowUserEditOwnTaskColor` 为兼容字段：二者只要传其一，服务端取两者的**或值**后同时回写两个字段；两个都不传时默认允许（`true`）。
 - `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
 - `auditLogMaxRows` 取值 `100` ~ `100000` 的整数，可选；传入其他值会被忽略并使用默认值 `5000`。
 - `randomDesignPlanColor` / `randomAssignmentColor` / `allowUserChangePassword` 可选，布尔值（自主改密开关仅在显式传 `true` 时开启）。
@@ -3677,45 +3679,47 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 ### 客户端事件
 
-| 事件 | 说明 |
-|------|------|
-| `connect` | Socket 连接成功（可用于检测后端是否恢复） |
-| `connect_error` | Socket 连接失败（后端端口断开或网络异常） |
-| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端 |
-| `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`（可选 `mode` 为 `edit` 或 `colorMark`） |
-| `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 |
-| `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数包含 `itemId` |
-| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录，参数包含 `itemId` |
-| `gun_ledger_start_edit` | 通知开始编辑焊枪台账某行（取号），参数包含 `tableId`、`serialNumber` |
-| `gun_ledger_stop_edit` | 通知停止编辑焊枪台账某行，参数包含 `tableId`、`serialNumber` |
-| `gun_ledger_lock_table` | 申请焊枪台账表级独占编辑锁，参数包含 `tableId` |
-| `gun_ledger_unlock_table` | 释放焊枪台账表级编辑锁，参数包含 `tableId` |
-| `gun_ledger_table_heartbeat` | 焊枪台账表级锁心跳续期，参数包含 `tableId` |
+| 事件 | 说明 | 权限与限流 |
+|------|------|------------|
+| `connect` | Socket 连接成功（可用于检测后端是否恢复） | - |
+| `connect_error` | Socket 连接失败（后端端口断开或网络异常） | - |
+| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端（**不转发客户端 payload**） | 需已认证；**每个连接 10 秒最多 5 次**，超限收到 `error`（`操作过于频繁，请稍后再试`） |
+| `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`（可选 `mode` 为 `edit` 或 `colorMark`） | 需已认证；用户身份一律取服务端会话，客户端传入的 `userId`/`username` 被忽略 |
+| `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 | 需已认证 |
+| `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数只需 `itemId` | **仅 `admin`/`superadmin`**（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；**每个连接 10 秒最多 30 次** |
+| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录，参数包含 `itemId` | 需已认证 |
+| `gun_ledger_start_edit` | 通知开始编辑焊枪台账某行（取号），参数包含 `tableId`、`serialNumber` | 仅 `admin`/`superadmin` |
+| `gun_ledger_stop_edit` | 通知停止编辑焊枪台账某行，参数包含 `tableId`、`serialNumber` | 需已认证 |
+| `gun_ledger_lock_table` | 申请焊枪台账表级独占编辑锁，参数包含 `tableId` | 仅 `admin`/`superadmin` |
+| `gun_ledger_unlock_table` | 释放焊枪台账表级编辑锁，参数包含 `tableId` | 需已认证 |
+| `gun_ledger_table_heartbeat` | 焊枪台账表级锁心跳续期，参数包含 `tableId` | 仅 `admin`/`superadmin` |
+
+> 所有事件均在 try/catch 中执行，鉴权或校验失败时向**发起者**回发 `error` 事件（`{ message }`），不会广播给其他人。
 
 ### 服务端事件
 
-| 事件 | 说明 |
-|------|------|
-| `task_refreshed` | 任务数据已刷新，其他客户端收到后会重新加载数据 |
-| `editing_state` | 当前所有编辑中的单元格状态，连接成功后下发 |
-| `user_editing` | 某用户正在编辑指定设计人员日期单元格 |
-| `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 |
-| `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格 |
-| `session_invalidated` | 当前会话被新登录踢下线 |
-| `status_tracking_edit_start` | 某用户开始编辑指定状态追踪记录，参数 `{ itemId, userId, username, socketId }` |
-| `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` |
-| `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` |
-| `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 |
-| `gun_ledger_editing_state` | 当前焊枪台账行编辑状态，连接成功后下发 |
-| `gun_ledger_table_locks_state` | 当前焊枪台账表级锁快照，连接成功后下发 |
-| `gun_ledger_edit_start` | 某用户开始编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId, username, name }` |
-| `gun_ledger_edit_stop` | 某用户停止编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId }` |
-| `gun_ledger_edit_blocked` | 当前行已被其他用户编辑，参数为占用会话 |
-| `gun_ledger_table_locked` | 某表被锁定（表级独占编辑锁），参数 `{ tableId, userId, username, name, lockedAt }` |
-| `gun_ledger_table_unlocked` | 某表锁被释放，参数 `{ tableId }` |
-| `gun_ledger_table_lock_blocked` | 申请表级锁被他人占用，参数 `{ tableId, holder }` |
-| `gun_ledger_updated` | 焊枪台账数据变更，参数含 `action`（import/add_category/delete_category/add_table/rename_table/delete_table/reorder_tables/reorder_categories/update_rows/gun_name_rule/default_persons）及相关数据 |
-| `error` | 事件处理出错，参数 `{ message }`（如未认证、缺少必填字段） |
+| 事件 | 说明 | 接收方 |
+|------|------|--------|
+| `task_refreshed` | 任务数据已刷新，客户端收到后会重新加载数据 | 由 `task_updated` 事件触发时：除发起者外的其他客户端；由 HTTP 接口（导入/维护/分配）触发时：全体客户端 |
+| `editing_state` | 当前所有编辑中的单元格状态，连接成功后下发 | 仅当前连接 |
+| `user_editing` | 某用户正在编辑指定设计人员日期单元格，参数为编辑会话（含 `designerId`、`date`、`userId`、`username`、`name`、`mode`、`socketId`） | **除发起者外**的其他客户端（发起者需自行维护本地状态） |
+| `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 | 仅发起者 |
+| `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格，参数 `{ designerId, date, userId }` | 全体客户端（含发起者） |
+| `session_invalidated` | 当前会话被新登录踢下线 | 该用户的其他设备连接 |
+| `status_tracking_edit_start` | 某用户开始编辑指定状态追踪记录，参数 `{ itemId, userId, username, socketId }` | 全体客户端（含发起者） |
+| `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` | 全体客户端（含发起者） |
+| `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` | 全体客户端 |
+| `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 | 全体客户端 |
+| `gun_ledger_editing_state` | 当前焊枪台账行编辑状态，连接成功后下发 | 仅当前连接 |
+| `gun_ledger_table_locks_state` | 当前焊枪台账表级锁快照，连接成功后下发 | 仅当前连接 |
+| `gun_ledger_edit_start` | 某用户开始编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId, username, name, socketId }` | **除发起者外**的其他客户端 |
+| `gun_ledger_edit_stop` | 某用户停止编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId }` | 全体客户端（含发起者） |
+| `gun_ledger_edit_blocked` | 当前行已被其他用户编辑，参数为占用会话 | 仅发起者 |
+| `gun_ledger_table_locked` | 某表被锁定（表级独占编辑锁），参数 `{ tableId, userId, username, name, lockedAt }` | 全体客户端 |
+| `gun_ledger_table_unlocked` | 某表锁被释放，参数 `{ tableId }` | 全体客户端 |
+| `gun_ledger_table_lock_blocked` | 申请表级锁被他人占用，参数 `{ tableId, holder }` | 仅发起者 |
+| `gun_ledger_updated` | 焊枪台账数据变更，参数含 `action`（import/add_category/delete_category/add_table/rename_table/delete_table/reorder_tables/reorder_categories/update_rows/gun_name_rule/default_persons）及相关数据 | 全体客户端 |
+| `error` | 事件处理出错，参数 `{ message }`（如未认证、权限不足、缺少必填字段、触发限流） | 仅发起者 |
 
 ## 常见错误码
 
@@ -3750,24 +3754,17 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 - 全部 `/api` 接口还受全局限流保护（按 IP 计数，默认每 15 分钟 3000 次，可用 `API_RATE_LIMIT_MAX` 调整），超限返回 HTTP `429` 与消息 `请求过于频繁，请稍后再试`；`OPTIONS` 预检与本机环回请求不计数。
 - 登录请求体校验：`username` 为 3-30 位字母数字，`password` 至少 6 位。
 
-## 数据库迁移说明
+## 数据库初始化说明
 
-系统启动时会自动执行数据库迁移：
+系统使用 SQLite 数据库（`backend/data.db`，WAL 模式）作为唯一数据源，启动时自动执行以下初始化：
 
-1. **任务数据结构迁移**：将旧版 `hours` 对象格式迁移为新版 `days` 对象格式
-2. **日期格式规范化**：统一日期格式为 `YYYY-MM-DD`，截取前 10 位
-3. **配置自动补齐**：首次启动或旧版本升级时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`workdayOverrides`、`system`、`ipBlacklist` 等）
-4. **用户字段迁移**：自动为旧用户补齐 `disabled` 和 `forcePasswordChange` 字段
-5. **强制修改密码迁移**：首次访问用户列表或校验会话时，自动将非超级管理员用户的 `forcePasswordChange` 标记为 `true`
-6. **操作日志独立表**：`auditLogs` 从 `kv_store` 迁往 `audit_logs` 独立表（含时间戳索引），迁移后从 `kv_store` 摘除该集合
-7. **登录日志独立表**：`loginLogs` 同样从 `kv_store` 迁往 `login_logs` 独立表（含时间戳索引），迁移后从 `kv_store` 摘除该集合
-8. **任务数据关系表化**：`tasks` 集合从 `kv_store` 整体 JSON 拆分为 `task_sheets`（按 `designer_id + year + month` 唯一索引）与 `task_entries`（条目级 JSON，外键级联删除）两张关系表；对外接口的 sheet 数据形状不变，前端无感知
+1. **建表**：`kv_store`（键值集合）、`task_sheets` / `task_entries`（任务工时关系表）、`login_logs`（登录日志）、`audit_logs`（操作日志）不存在时自动创建
+2. **空库初始化**：`kv_store` 为空时写入初始数据（空用户/设计员集合、默认焊枪台账、默认设置）
+3. **配置自动补齐**：每次启动及每次写库时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`maintenance`、`workdayOverrides`、`system`、`ipBlacklist` 等）
+4. **焊枪台账序号校验**：启动时检测台账序号跳号/乱序，自动修复为连续自然序号 1..N
+5. **初始管理员**：不存在超级管理员时自动创建，密码取 `DEFAULT_ADMIN_PASSWORD`，留空则随机生成并仅在控制台显示一次
 
-迁移规则：
-- 迁移过程会自动保存到 SQLite 数据库（`backend/data.db`）
-- 若存在遗留 `backend/db.json`，首次启动会自动导入到 SQLite
-- 迁移后会在控制台输出迁移信息
-- 多次启动不会重复迁移
+系统不再提供从遗留 JSON 文件或旧版数据结构的数据迁移。
 
 ## 安全特性
 
@@ -3803,7 +3800,6 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
-| `DB_PATH` | `./db.json` | 遗留 JSON 数据库路径，仅首次启动时用于自动迁移到 SQLite |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口时间（毫秒），仅在 `security.js` 配置中定义；当前登录/改密限流器使用硬编码阈值，未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数，同上，当前未被独立限流器使用 |
 | `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
@@ -3818,6 +3814,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 | `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
+| `SMOKE_DB_PATH` | 空 | 仅 `backend/tests/smoke-relational.js` 冒烟测试读取：优先用它覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；服务端运行时不读取 |
 
 ### CORS 配置示例
 
@@ -3844,7 +3841,7 @@ GITEE_REPO_NAME=obara-task-manager
   rateLimit: { windowMs, max },
   gitee: { token, repoOwner, repoName },
   server: { port, environment },
-  database: { legacyJsonPath, sqlitePath },
+  database: { sqlitePath },
   spec: { sharePath }
 }
 ```
@@ -3856,7 +3853,6 @@ GITEE_REPO_NAME=obara-task-manager
 | `jwt.issuer` | JWT 签发者，默认 `obara-task-manager` |
 | `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
 | `rateLimit.windowMs` / `rateLimit.max` | 配置块仍保留，但当前三层限流器均未读取这两个值：全局限流阈值取环境变量 `API_RATE_LIMIT_MAX`（默认 3000），窗口固定 15 分钟；登录/改密独立限流阈值在 `backend/routes/auth.js` 内硬编码 |
-| `database.legacyJsonPath` | 遗留 JSON 数据库路径（`DB_PATH`，默认 `./db.json`），仅首次启动迁移时使用 |
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 

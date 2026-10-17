@@ -205,7 +205,7 @@ const GunDragHandle = ({ item, designerId, date, gunIndex, gun, disabled }: {
 // 枪名拖拽时目标主任务的预选中状态：'valid' 可放置（绿），'invalid' 存在同名枪名（红）
 type GunDropTargetState = 'valid' | 'invalid' | null;
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null }) => {
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
   const isAutoMarked = item.colorMarkedBy?.id === 'auto';
@@ -321,6 +321,21 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             boxShadow: gunDropTarget === 'invalid'
               ? '0 0 0 1px rgba(239,68,68,0.45)'
               : '0 0 0 1px rgba(22,163,74,0.45)',
+          }}
+        />
+      )}
+      {/* 主任务拖拽路径扫过时的预插入标记：顶部粗线表示将插入到该主任务上方（绿=可放置，红=复制内容重复） */}
+      {taskInsertMarker && (
+        <div
+          className="absolute left-0 right-0 z-20 pointer-events-none"
+          style={{
+            top: -2,
+            height: 4,
+            borderRadius: 2,
+            backgroundColor: taskInsertMarker === 'invalid' ? '#ef4444' : '#16a34a',
+            boxShadow: taskInsertMarker === 'invalid'
+              ? '0 0 0 1px rgba(239,68,68,0.55), 0 1px 4px rgba(239,68,68,0.5)'
+              : '0 0 0 1px rgba(22,163,74,0.55), 0 1px 4px rgba(22,163,74,0.5)',
           }}
         />
       )}
@@ -555,7 +570,7 @@ const DroppableCell = ({ designerId, date, children, className, ...props }: any)
   });
 
   return (
-    <td ref={setNodeRef} className={className} {...props}>
+    <td ref={setNodeRef} className={className} data-cell-designer-id={designerId} data-cell-date={date} {...props}>
       {children}
     </td>
   );
@@ -620,6 +635,14 @@ const Dashboard = () => {
   const gunDropTargetRef = useRef<string>('');
   const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);
   const gunDropSelf = Boolean(gunDropTarget?.isSelf);
+  // 主任务拖拽过程中，指针扫过的目标位置（预选中反馈）：
+  // itemId = 预插入到该主任务上方；itemId 为 null = 预追加到目标单元格最下方；
+  // duplicate = 目标单元格已存在内容完全一样的主任务（红，移动/复制都会被拒绝）
+  const [taskDropTarget, setTaskDropTarget] = useState<{ designerId: string, date: string, itemId: string | null, duplicate: boolean } | null>(null);
+  const taskDropTargetRef = useRef<{ designerId: string, date: string, itemId: string | null, duplicate: boolean } | null>(null);
+  const taskDropDuplicate = Boolean(taskDropTarget?.duplicate);
+  // 主任务拖拽是否按住 Ctrl（复制）：dragStart 时记录，供 dragMove 实时判定重复标记（避免 state 闭包旧值）
+  const taskDragCtrlRef = useRef(false);
   const [focusTarget, setFocusTarget] = useState<{itemId: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number} | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isOverDelete, setIsOverDelete] = useState(false);
@@ -827,6 +850,8 @@ const Dashboard = () => {
     
     if (data_current?.type === 'task') {
       if (warnIfCellLocked(data_current.designerId, data_current.date)) return;
+      taskDragCtrlRef.current = Boolean(isCtrlDrag);
+      setTaskDropTargetState(null);
       setActiveTask({
         item: data_current.item,
         designerId: data_current.designerId,
@@ -916,6 +941,38 @@ const Dashboard = () => {
     return null;
   };
 
+  // 由拖拽事件换算指针实际位置：激活事件坐标 + 位移 delta（键盘拖拽等无坐标场景返回 null）
+  const getDragPointer = (event: DragMoveEvent | DragEndEvent): { x: number, y: number } | null => {
+    const ev = event.activatorEvent as PointerEvent | MouseEvent | undefined;
+    if (!ev || !('clientX' in ev) || !('clientY' in ev)) return null;
+    return { x: ev.clientX + event.delta.x, y: ev.clientY + event.delta.y };
+  };
+
+  // 指针位置同时命中单元格（data-cell-designer-id）与主任务容器；命中的主任务必须属于该单元格
+  const hitTestCellAndTask = (cx: number, cy: number): { cellEl: HTMLElement | null, taskEl: HTMLElement | null } => {
+    const stack = document.elementsFromPoint(cx, cy);
+    let cellEl: HTMLElement | null = null;
+    let taskEl: HTMLElement | null = null;
+    for (const el of stack) {
+      if (!(el instanceof HTMLElement)) continue;
+      if (!cellEl) {
+        const c = el.closest('[data-cell-designer-id]');
+        if (c instanceof HTMLElement) cellEl = c;
+      }
+      if (!taskEl) {
+        const t = el.closest('[data-task-id]');
+        if (t instanceof HTMLElement) taskEl = t;
+      }
+      if (cellEl && taskEl) break;
+    }
+    if (cellEl && taskEl) {
+      const sameCell = taskEl.getAttribute('data-designer-id') === cellEl.getAttribute('data-cell-designer-id')
+        && taskEl.getAttribute('data-date') === cellEl.getAttribute('data-cell-date');
+      if (!sameCell) taskEl = null;
+    }
+    return { cellEl, taskEl };
+  };
+
   // 判断目标主任务是否已存在同名枪名（同主任务内重排不算）
   const isGunDropDuplicate = (taskEl: HTMLElement, sourceData: any): boolean => {
     const dId = taskEl.getAttribute('data-designer-id') || '';
@@ -929,9 +986,80 @@ const Dashboard = () => {
     return !!targetItem && (targetItem.guns || []).some(g => String(g?.name || '').trim() === gunName);
   };
 
+  // 判断两条主任务内容是否完全一样（主任务名/工时/类型/全部枪名及枪名工时；颜色不参与比对）
+  const isTaskContentIdentical = (a: TaskItem, b: TaskItem): boolean => {
+    if (String(a.taskName || '').trim() !== String(b.taskName || '').trim()) return false;
+    if (String(a.hours ?? '').trim() !== String(b.hours ?? '').trim()) return false;
+    if ((a.leaveType || null) !== (b.leaveType || null)) return false;
+    const gunsA = Array.isArray(a.guns) ? a.guns : [];
+    const gunsB = Array.isArray(b.guns) ? b.guns : [];
+    if (gunsA.length !== gunsB.length) return false;
+    for (let i = 0; i < gunsA.length; i++) {
+      if (String(gunsA[i]?.name || '').trim() !== String(gunsB[i]?.name || '').trim()) return false;
+      if (String(gunsA[i]?.hours ?? '').trim() !== String(gunsB[i]?.hours ?? '').trim()) return false;
+    }
+    return true;
+  };
+
+  // 目标单元格是否已存在与 sourceItem 内容完全一样的主任务（用于 Ctrl 复制预选中变红）
+  const isTaskCopyDuplicate = (designerId: string, date: string, sourceItem: TaskItem): boolean => {
+    return getAllItems(designerId, date).some(i => isTaskContentIdentical(i, sourceItem));
+  };
+
+  // 更新「主任务拖拽指针扫过的目标位置」：同步 ref/state，并在复制重复时切换禁止放置光标
+  const setTaskDropTargetState = (next: { designerId: string, date: string, itemId: string | null, duplicate: boolean } | null) => {
+    const key = next
+      ? `${next.designerId}|${next.date}|${next.itemId ?? 'append'}|${next.duplicate ? '1' : '0'}`
+      : '';
+    const prev = taskDropTargetRef.current;
+    const prevKey = prev
+      ? `${prev.designerId}|${prev.date}|${prev.itemId ?? 'append'}|${prev.duplicate ? '1' : '0'}`
+      : '';
+    if (prevKey === key) return;
+    taskDropTargetRef.current = next;
+    setTaskDropTarget(next);
+    document.body.style.cursor = next?.duplicate ? 'not-allowed' : '';
+  };
+
   const handleDragMove = (event: DragMoveEvent) => {
     const { active } = event;
     const sourceData = active.data.current;
+
+    // 主任务拖拽：指针扫过的目标位置实时显示标记框（绿=预移动到该主任务上方/最下方，红=复制内容重复）；
+    // 扫过自己当天的源单元格不显示标记框
+    if (sourceData?.type === 'task') {
+      const pointer = getDragPointer(event);
+      if (!pointer) {
+        setTaskDropTargetState(null);
+        return;
+      }
+      const { cellEl, taskEl } = hitTestCellAndTask(pointer.x, pointer.y);
+      if (!cellEl) {
+        setTaskDropTargetState(null);
+        return;
+      }
+      const designerId = cellEl.getAttribute('data-cell-designer-id') || '';
+      const date = cellEl.getAttribute('data-cell-date') || '';
+      if (!designerId || !date) {
+        setTaskDropTargetState(null);
+        return;
+      }
+      // 划过自己当天的任务框（源单元格）：不做预选中标记
+      if (designerId === sourceData.designerId && date === sourceData.date) {
+        setTaskDropTargetState(null);
+        return;
+      }
+      const overItemId = taskEl ? (taskEl.getAttribute('data-task-id') || null) : null;
+      // 目标单元格已存在内容完全一样的主任务（多选时任一重复即标红）→ 红色重复标记，移动/复制都会被拒绝；
+      // 复制时检查全部待复制任务；移动时仅检查真正会被移过去的任务（已在目标单元格中的选中任务不参与）
+      const isCopyDrag = taskDragCtrlRef.current;
+      const duplicate = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date })
+        .filter(payload => isCopyDrag || !(payload.designerId === designerId && payload.date === date))
+        .some(payload => isTaskCopyDuplicate(designerId, date, payload.item));
+      setTaskDropTargetState({ designerId, date, itemId: overItemId, duplicate });
+      return;
+    }
+
     if (sourceData?.type !== 'gun') return;
     const rect = active.rect.current.translated;
     if (!rect) {
@@ -984,6 +1112,9 @@ const Dashboard = () => {
     setIsDragging(false);
     setActiveGun(null);
     setGunDropTargetState(null);
+    // 落点以拖拽过程中实时维护的指针命中结果为准（ref 保存最新值，避免闭包旧值）
+    const dropTargetSnapshot = taskDropTargetRef.current;
+    setTaskDropTargetState(null);
 
     const sourceData = active.data.current;
     const targetData = over?.data.current;
@@ -1061,25 +1192,46 @@ const Dashboard = () => {
 
     const isCtrlDrag = activeTask?.isCtrlDrag;
 
-    if (isCtrlDrag && sourceData?.type === 'task' && targetData?.type === 'cell') {
-      if (warnIfCellLocked(targetData.designerId, targetData.date)) {
+    // Ctrl+拖拽复制主任务：落点由指针命中快照决定——命中某条主任务则插入到其上方，
+    // 否则追加到目标单元格最下方；目标已存在内容完全一样的主任务时拒绝复制
+    if (isCtrlDrag && sourceData?.type === 'task') {
+      if (!dropTargetSnapshot) {
         setActiveTask(null);
         return;
+      }
+      if (warnIfCellLocked(dropTargetSnapshot.designerId, dropTargetSnapshot.date)) {
+        setActiveTask(null);
+        return;
+      }
+      const targetDesignerId = dropTargetSnapshot.designerId;
+      const targetDate = dropTargetSnapshot.date;
+      const targetItems = getAllItems(targetDesignerId, targetDate);
+      let newIndex: number | undefined = undefined;
+      if (dropTargetSnapshot.itemId) {
+        const hitIndex = targetItems.findIndex(i => i.id === dropTargetSnapshot.itemId);
+        if (hitIndex >= 0) newIndex = hitIndex;
       }
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date });
-        const res = await axiosInstance.post('/tasks/item/batch', { 
-          designerId: targetData.designerId, 
-          date: targetData.date, 
-          items: payloads.map(payload => payload.item)
+        const duplicatePayload = payloads.find(payload => targetItems.some(i => isTaskContentIdentical(i, payload.item)));
+        if (duplicatePayload) {
+          addToast(`目标已存在内容完全相同的主任务「${(duplicatePayload.item.taskName || '').trim() || '无'}」，拒绝复制`, 'error');
+          setActiveTask(null);
+          return;
+        }
+        const res = await axiosInstance.post('/tasks/item/batch', {
+          designerId: targetDesignerId,
+          date: targetDate,
+          items: payloads.map(payload => payload.item),
+          newIndex
         }, authHeader);
         addToHistory('batchAdd', {
-          items: (res.data.items || []).map((created: TaskItem, idx: number) => ({ 
-            designerId: targetData.designerId, 
-            date: targetData.date, 
+          items: (res.data.items || []).map((created: TaskItem, idx: number) => ({
+            designerId: targetDesignerId,
+            date: targetDate,
             itemId: created.id,
-            item: payloads[idx]?.item 
+            item: payloads[idx]?.item
           }))
         });
         upsertSheet(res.data.sheet);
@@ -1125,41 +1277,45 @@ const Dashboard = () => {
       return;
     }
 
-    if (!over || !sourceData || !targetData) {
-      setActiveTask(null);
-      return;
-    }
-
-    // Regular move operation (without Ctrl)
-    if (sourceData?.type === 'task' && targetData?.type === 'cell') {
-      const sourceId = active.id as string;
+    // 主任务移动（无 Ctrl）：落点以指针命中快照为准——命中某条主任务则移动到其上方，
+    // 否则移动到目标单元格最下方；落在源单元格（自己当天的任务框）时不做任何移动
+    if (sourceData?.type === 'task') {
       const sourceDesignerId = sourceData.designerId;
       const sourceDate = sourceData.date;
-      
-      let targetDesignerId = targetData.designerId;
-      let targetDate = targetData.date;
-      let newIndex: number | undefined = undefined;
+
+      if (!dropTargetSnapshot) {
+        setActiveTask(null);
+        return;
+      }
+      const targetDesignerId = dropTargetSnapshot.designerId;
+      const targetDate = dropTargetSnapshot.date;
 
       if (warnIfCellLocked(sourceDesignerId, sourceDate) || warnIfCellLocked(targetDesignerId, targetDate)) {
         setActiveTask(null);
         return;
       }
 
-      if (targetData.type === 'task') {
-        const targetItems = getItems(targetDesignerId, targetDate);
-        newIndex = targetItems.findIndex(i => i.id === over.id);
-      }
-
-      if (sourceDesignerId === targetDesignerId && sourceDate === targetDate && sourceId === over.id) {
-         setActiveTask(null);
-         return;
+      const targetItems = getAllItems(targetDesignerId, targetDate);
+      let newIndex: number | undefined = undefined;
+      if (dropTargetSnapshot.itemId) {
+        const hitIndex = targetItems.findIndex(i => i.id === dropTargetSnapshot.itemId);
+        if (hitIndex >= 0) newIndex = hitIndex;
       }
 
       try {
         const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceDesignerId, date: sourceDate });
-        const movedPayloads = payloads.filter(payload => !(payload.designerId === targetDesignerId && payload.date === targetDate && payload.item.id === over.id));
+        // 多选时排除已在目标单元格中的任务，避免同单元格重复挪动导致顺序抖动
+        const movedPayloads = payloads.filter(payload => !(payload.designerId === targetDesignerId && payload.date === targetDate));
         if (movedPayloads.length === 0) {
+          setActiveTask(null);
+          return;
+        }
+
+        // 目标单元格已存在内容完全一样的主任务时拒绝移动（任一重复即整体拒绝）
+        const duplicatePayload = movedPayloads.find(payload => targetItems.some(i => isTaskContentIdentical(i, payload.item)));
+        if (duplicatePayload) {
+          addToast(`目标已存在内容完全相同的主任务「${(duplicatePayload.item.taskName || '').trim() || '无'}」，拒绝移动`, 'error');
           setActiveTask(null);
           return;
         }
@@ -1174,7 +1330,7 @@ const Dashboard = () => {
             newIndex: movedPayloads.length === 1 ? newIndex : undefined
           }, authHeader);
         }
-        
+
         // Add to history for undo
         addToHistory('batchMove', {
           items: movedPayloads.map(payload => ({
@@ -1185,7 +1341,7 @@ const Dashboard = () => {
             itemId: payload.item.id
           }))
         });
-        
+
         socketRef.current?.emit('task_updated');
         stopEditingCell();
         fetchSheets();
@@ -1197,6 +1353,12 @@ const Dashboard = () => {
       } finally {
         setActiveTask(null);
       }
+      return;
+    }
+
+    if (!over || !sourceData || !targetData) {
+      setActiveTask(null);
+      return;
     }
   };
 
@@ -3787,7 +3949,7 @@ const Dashboard = () => {
         onDragStart={handleDragStart}
         onDragMove={handleDragMove}
         onDragEnd={handleDragEnd}
-        onDragCancel={() => setGunDropTargetState(null)}
+        onDragCancel={() => { setGunDropTargetState(null); setTaskDropTargetState(null); taskDragCtrlRef.current = false; }}
       >
 
 
@@ -3870,6 +4032,10 @@ const Dashboard = () => {
                                   const items = getItems(d.id, day.fullDate);
                                   const editingSession = getEditingSession(d.id, day.fullDate);
                                   const isCellLocked = Boolean(getBlockingEditingSession(d.id, day.fullDate));
+                                  // 主任务拖拽扫过本单元格时的预插入位置：itemId 命中某条主任务 → 其上方显示标记线；
+                                  // itemId 为 null → 最下方显示追加标记线；duplicate 时红色（复制内容重复）
+                                  const cellTaskDrop = taskDropTarget && taskDropTarget.designerId === d.id && taskDropTarget.date === day.fullDate ? taskDropTarget : null;
+                                  const showAppendMarker = Boolean(cellTaskDrop && cellTaskDrop.itemId === null);
                                   return (
                                     <DroppableCell 
                                       key={`${d.id}-${day.fullDate}`}
@@ -3919,6 +4085,7 @@ const Dashboard = () => {
                                                 selectedTasks={selectedTasks}
                                                 metadataTitle={buildTaskMetadataTitle(item)}
                                                 gunDropTarget={gunDropTarget && !gunDropTarget.isSelf && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate && gunDropTarget.itemId === item.id ? (gunDropTarget.invalid ? 'invalid' : 'valid') : null}
+                                                taskInsertMarker={cellTaskDrop && cellTaskDrop.itemId === item.id ? (cellTaskDrop.duplicate ? 'invalid' : 'valid') : null}
                                                 onSelectTask={(itemId, designerId, date, append) => {
                                                   if (!canEditTasks) return;
                                                   if (warnIfCellLocked(designerId, date)) return;
@@ -3929,6 +4096,21 @@ const Dashboard = () => {
                                               />
                                             );
                                           })}
+                                          {/* 主任务拖拽扫过本单元格但未命中任何主任务：最下方显示追加位置标记线 */}
+                                          {showAppendMarker && (
+                                            <div
+                                              className="pointer-events-none"
+                                              style={{
+                                                height: 4,
+                                                margin: '0 2px',
+                                                borderRadius: 2,
+                                                backgroundColor: cellTaskDrop?.duplicate ? '#ef4444' : '#16a34a',
+                                                boxShadow: cellTaskDrop?.duplicate
+                                                  ? '0 0 0 1px rgba(239,68,68,0.55), 0 1px 4px rgba(239,68,68,0.5)'
+                                                  : '0 0 0 1px rgba(22,163,74,0.55), 0 1px 4px rgba(22,163,74,0.5)',
+                                              }}
+                                            />
+                                          )}
                                           {canEditTasks && (
                                             <div 
                                               className={`h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-blue-50/50'} ${selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? 'opacity-100 bg-blue-100 border border-blue-400' : ''}`}
@@ -4002,26 +4184,80 @@ const Dashboard = () => {
 
         <DragOverlay>
           {activeTask && (
-            <div className="flex border border-blue-400 shadow-2xl rounded opacity-90 scale-105 bg-white overflow-hidden pointer-events-none">
-              <div className="w-[18rem] border-r border-gray-200 flex flex-col bg-white">
-                <div className="px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium">
-                  {(() => {
-                    const item = activeTask.item;
-                    if (item.leaveType === 'sick') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700">事假</span>;
-                    if (item.leaveType === 'vacation') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">休假</span>;
-                    if (item.leaveType === 'illness') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-pink-100 text-pink-700">病假</span>;
-                    if (item.leaveType === 'trip') {
-                      const name = (item.taskName || '').trim();
-                      if (!name) return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800">出差</span>;
-                      return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800">{name.endsWith('出差') ? name : `${name}出差`}</span>;
-                    }
-                    return item.taskName || <span className="text-gray-300 italic">无</span>;
-                  })()}
+            <div className="relative">
+              {/* 重复提示（移动/复制共用）：浮在拖拽主任务的正上方 */}
+              {taskDropDuplicate && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    bottom: '100%',
+                    marginBottom: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    whiteSpace: 'nowrap',
+                    fontSize: 11,
+                    lineHeight: '16px',
+                    fontWeight: 700,
+                    color: '#ffffff',
+                    backgroundColor: '#dc2626',
+                    border: '1px solid #b91c1c',
+                    borderRadius: 4,
+                    padding: '1px 6px',
+                    boxShadow: '0 2px 6px rgba(220,38,38,0.45)',
+                  }}
+                >
+                  <AlertCircle size={11} />
+                  重复任务
                 </div>
-              </div>
-              <div className="w-12 flex flex-col bg-white">
-                <div className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold">
-                  {activeTask.item.guns && activeTask.item.guns.length > 0 ? '' : activeTask.item.hours}
+              )}
+              {/* 等比复刻整个主任务：主任务行 + 全部枪名行（枪名格+工时格） */}
+              <div className={`flex border ${taskDropDuplicate ? 'border-red-400' : 'border-blue-400'} shadow-2xl rounded opacity-90 scale-105 bg-white overflow-hidden pointer-events-none`}>
+                <div className="w-[18rem] border-r border-gray-200 flex flex-col bg-white">
+                  <div
+                    className="px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium"
+                    style={{ backgroundColor: activeTask.item.color || 'transparent' }}
+                  >
+                    {(() => {
+                      const item = activeTask.item;
+                      if (item.leaveType === 'sick') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700">事假</span>;
+                      if (item.leaveType === 'vacation') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">休假</span>;
+                      if (item.leaveType === 'illness') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-pink-100 text-pink-700">病假</span>;
+                      if (item.leaveType === 'trip') {
+                        const name = (item.taskName || '').trim();
+                        if (!name) return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800">出差</span>;
+                        return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800">{name.endsWith('出差') ? name : `${name}出差`}</span>;
+                      }
+                      return item.taskName || <span className="text-gray-300 italic">无</span>;
+                    })()}
+                  </div>
+                  {(activeTask.item.guns || []).map((gun) => (
+                    <div
+                      key={gun.id}
+                      className="px-2 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50"
+                      style={{ backgroundColor: gun.color || 'transparent' }}
+                    >
+                      {gun.name || '未命名'}
+                    </div>
+                  ))}
+                </div>
+                <div className="w-12 flex flex-col bg-white">
+                  <div
+                    className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold"
+                    style={{ backgroundColor: activeTask.item.color || 'transparent' }}
+                  >
+                    {activeTask.item.guns && activeTask.item.guns.length > 0 ? '' : activeTask.item.hours}
+                  </div>
+                  {(activeTask.item.guns || []).map((gun) => (
+                    <div
+                      key={gun.id}
+                      className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold border-t border-gray-200/50"
+                      style={{ backgroundColor: gun.color || 'transparent' }}
+                    >
+                      {gun.hours}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

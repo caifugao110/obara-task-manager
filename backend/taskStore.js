@@ -293,49 +293,6 @@ const getSheetsByIds = (ids) => {
   return assembleSheets(raw, rows);
 };
 
-// ---------------------------------------------------------------------------
-// 从 kv_store 的 tasks 大 JSON 迁移（幂等：仅当 kv 行存在时执行，成功后删除该行）
-// tasksArray 来自已完成归一化迁移的内存缓存
-// ---------------------------------------------------------------------------
-const migrateFromCache = (tasksArray) => {
-  const raw = ensureTables();
-  const kvRow = raw.prepare("SELECT value FROM kv_store WHERE key = 'tasks'").get();
-
-  let sheets = Array.isArray(tasksArray) ? tasksArray : [];
-  if (sheets.length === 0 && kvRow) {
-    try {
-      const parsed = JSON.parse(kvRow.value);
-      sheets = Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      sheets = [];
-    }
-  }
-  // 既没有缓存数据也没有 kv 遗留行：无需迁移（幂等）
-  if (!kvRow && sheets.length === 0) return { migrated: false };
-
-  const tx = raw.transaction(() => {
-    for (const sheet of sheets) {
-      if (!sheet || typeof sheet !== 'object') continue;
-      const designerId = sheet.designerId || sheet.userId || '';
-      if (!designerId || !sheet.month || !sheet.year) continue;
-      saveSheet({
-        id: sheet.id || `sheet-${designerId}-${sheet.year}-${sheet.month}`,
-        designerId,
-        month: sheet.month,
-        year: sheet.year,
-        days: sheet.days && typeof sheet.days === 'object' ? sheet.days : {}
-      });
-    }
-    // 全部写入成功后再摘除 kv 行；任何一步失败整个事务回滚，kv 数据保留
-    raw.prepare("DELETE FROM kv_store WHERE key = 'tasks'").run();
-  });
-  tx();
-
-  const entryCount = countEntries();
-  console.log(`[taskStore] 已迁移 ${sheets.length} 张工时表 / ${entryCount} 条任务条目到关系表`);
-  return { migrated: true, sheets: sheets.length, entries: entryCount };
-};
-
 module.exports = {
   ensureTables,
   listSheets,
@@ -354,6 +311,5 @@ module.exports = {
   countMonths,
   entriesJsonSize,
   findCandidateSheetIds,
-  listUsedGunNames,
-  migrateFromCache
+  listUsedGunNames
 };

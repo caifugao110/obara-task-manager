@@ -161,7 +161,8 @@ const batchCreateItemSchema = Joi.object({
 const batchCreateSchema = Joi.object({
   designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
-  items: Joi.array().items(batchCreateItemSchema).min(1).required()
+  items: Joi.array().items(batchCreateItemSchema).min(1).required(),
+  newIndex: Joi.number().integer().min(0).optional()
 });
 
 const deleteItemSchema = Joi.object({
@@ -315,7 +316,7 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const { designerId, date: rawDate, items: pasteItems } = validated;
+  const { designerId, date: rawDate, items: pasteItems, newIndex } = validated;
   const date = normalizeDate(rawDate);
   const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
   if (!isAdmin) {
@@ -344,8 +345,14 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
       fontSize: item.fontSize,
       textColor: item.textColor
     }, req.user);
-    sheet.days[date].push(newItem);
     addedItems.push(newItem);
+  }
+
+  // newIndex 指定时整体插入到该位置（粘贴/拖拽复制的预插入点），否则追加到最下面
+  if (typeof newIndex === 'number' && newIndex >= 0 && newIndex <= sheet.days[date].length) {
+    sheet.days[date].splice(newIndex, 0, ...addedItems);
+  } else {
+    sheet.days[date].push(...addedItems);
   }
 
   taskStore.saveSheet(sheet);

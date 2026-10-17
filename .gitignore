@@ -38,8 +38,6 @@ App.config.bak
 control/Properties/GeneratedVersion.cs
 
 # Data files (local storage)
-backend/db.json
-backend/db.json.migrated-*.bak
 backend/*.data.json
 *.data.json
 # SQLite database files

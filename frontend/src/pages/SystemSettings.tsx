@@ -135,7 +135,7 @@ interface MaintenanceStatus {
     taskItemsCount: number;
   };
   files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; gunLedgerExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[]; offlineBackups: MaintenanceFile[] };
-  scheduler: { running: boolean; nextRunAt?: string; lastRun?: MaintenanceLastRun | null };
+  scheduler: { running: boolean; nextRunAt?: string; nextRunAtLocal?: string; timezone?: string; lastRun?: MaintenanceLastRun | null };
 }
 
 const defaultMaintenanceSettings: MaintenanceSettings = {
@@ -1952,8 +1952,11 @@ const SystemSettings = () => {
                       })()}
                     </div>
                     <div className="mt-2 space-y-1 text-xs">
-                      <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">下次执行</span><span className="text-gray-700">{maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-'}</span></div>
+                      <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">下次执行</span><span className="text-gray-700">{(maintenanceStatus?.scheduler?.nextRunAtLocal || '').replace(/\s*\(.*\)$/, '') || (maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-')}</span></div>
                       <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">上次执行</span><span className="text-gray-700">{maintenanceStatus?.scheduler?.lastRun?.finishedAt ? format(new Date(maintenanceStatus.scheduler.lastRun.finishedAt), 'yyyy-MM-dd HH:mm:ss') : '尚无自动执行记录'}</span></div>
+                      {maintenanceStatus?.scheduler?.timezone && (
+                        <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">时区</span><span className="text-gray-500">服务器本地时间（{maintenanceStatus.scheduler.timezone}）</span></div>
+                      )}
                     </div>
 
                     {/* 上次计划执行的逐项结果 */}

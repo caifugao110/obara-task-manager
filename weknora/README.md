@@ -36,12 +36,25 @@ WeKnora 的地址与 API Key 只保存在 `backend/.env`，**不下发到浏览�
 
 磁盘：首次拉取镜像约 2~3GB；内存建议 ≥ 4GB。
 
+**镜像与关键配置**（均取自 `weknora/.env`，默认已固定版本，避免 `latest` 漂移）：
+
+| 项 | 默认值 | 说明 |
+|----|--------|------|
+| `WEKNORA_VERSION` | `v0.8.2` | `wechatopenai/weknora-{ui,app,docreader}` 三个官方镜像的标签 |
+| 向量/关系库 | `paradedb/paradedb:v0.22.6-pg17` | 在 `docker-compose.yml` 中固定，不受 `WEKNORA_VERSION` 影响 |
+| 缓存/任务队列 | `redis:7.0-alpine` | 同上 |
+| `APP_PORT` / `FRONTEND_PORT` | `8080` / `80` | 发布到 `BIND_ADDRESS` 指定的地址（默认仅回环） |
+| `BIND_ADDRESS` | `127.0.0.1` | 端口绑定地址，改为 `0.0.0.0` 即暴露到内网（见第 9 节） |
+| `MAX_FILE_SIZE_MB` | `50` | 控制台上传与 docreader 解析的**单个文档大小上限（MB）**；需要上传更大文档时先调大该值再 `docker compose up -d` 重建容器 |
+| `DISABLE_REGISTRATION` | `true` | 关闭开放注册 |
+| 文档解析端口 | gRPC `50051` | docreader 仅在容器网络内暴露，不发布到宿主机 |
+
 **模型 Key 的配置方式**（`setup.js` 按以下优先级读取，全部缺失才交互询问）：
 
-1. **写入 `weknora/.env`**（推荐）：`DEEPSEEK_API_KEY=sk-xxx`、`BIGMODEL_API_KEY=xxx.yyy`，一次配置永久生效（该文件已 gitignore，不会泄露）；
-2. 环境变量：`DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`；
-3. 命令行参数：`--deepseek-key` / `--zhipu-key`；
-4. 都没有时运行中提示输入。
+1. **命令行参数**：`--deepseek-key` / `--zhipu-key`（优先级最高，适合临时覆盖）；
+2. **环境变量**：`DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`；
+3. **写入 `weknora/.env`**（推荐长期保存）：`DEEPSEEK_API_KEY=sk-xxx`、`BIGMODEL_API_KEY=xxx.yyy`，一次配置永久生效（该文件已 gitignore，不会泄露）；
+4. 三者都没有时才在运行中提示输入。
 
 > 模型创建后即加密存入 WeKnora 数据库，此后重复执行 `setup.js` 不再需要 Key。
 
@@ -94,9 +107,11 @@ node scripts/setup.js \
 
 | 参数 | 说明 |
 |------|------|
-| `--no-env` | 跳过写入 `backend/.env` |
-| `--base-url <url>` | WeKnora 在其他主机时指定 API 地址 |
-| `--email <邮箱>` / `--password <口令>` | 指定管理员账号；均缺省时交互/随机生成口令（见第 3 节） |
+| `--deepseek-key` / `--zhipu-key` | 模型 API Key（优先级最高，见第 2 节） |
+| `--email <邮箱>` / `--password <口令>` | 指定管理员账号与口令；均缺省时交互/随机生成口令（见第 3 节）。`--password` 单独出现不带值时按「未提供」处理 |
+| `--base-url <url>` | WeKnora 在其他主机时指定 API 根地址（默认 `http://127.0.0.1:8080/api/v1`） |
+| `--backend-env <path>` | 指定要写入的 `backend/.env` 路径（默认 `../../backend/.env`），后端不在标准相对位置时使用 |
+| `--no-env` | 跳过写入 `backend/.env`（只初始化 WeKnora，不联动本系统后端配置） |
 
 ## 5. 目录结构
 
@@ -231,5 +246,21 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 2. 确认管理员口令已从随机初始口令改为强口令；
 3. 保持 `DISABLE_REGISTRATION=true`；
 4. 全新部署可把 `DB_PASSWORD` / `REDIS_PASSWORD` 改为强口令（**已有数据卷的部署勿改**，会导致数据库/Redis 无法登录）。
+
+## 10. 常见故障排查
+
+| 现象 | 原因与处理 |
+|------|------------|
+| `docker compose up -d` 报端口被占用 | Windows 上 80 端口常被 IIS/其他服务占用。修改 `weknora/.env` 的 `FRONTEND_PORT`（控制台）或 `APP_PORT`（API）后重新 `docker compose up -d`。**若改了 `APP_PORT`，本系统 `backend/.env` 的 `WEKNORA_BASE_URL` 也要同步修改并重启后端** |
+| `docker compose ps` 中 app 长时间 `unhealthy` | 多为 `.env` 缺失或 `JWT_SECRET`/`SYSTEM_AES_KEY` 为空。执行 `node scripts/gen-env.js` 补齐密钥后 `docker compose up -d`；再看 `docker compose logs -f app` 定位。首次启动健康检查有 60s `start_period`，请等待 1~2 分钟 |
+| `setup.js` 提示管理员账号已存在 / 口令不匹配 | 该控制台此前已用其他口令初始化过。把现有口令写入 `weknora/.env` 的 `WEKNORA_ADMIN_PASSWORD`（或用 `--password` 传入）后重试；口令遗忘需在 WeKnora 控制台或数据库中重置 |
+| 本系统页面提示「部分工作空间无法访问」 | 状态接口 `tenants` 中某个 Key 不可达或不属于该空间。核对 `WEKNORA_EXTRA_API_KEYS` 是否为对应工作空间创建的 Key，**修改后必须重启本系统后端** |
+| 检索有结果，问答返回 `400 WEKNORA_MULTI_TENANT` | 勾选的知识库跨越了多个工作空间。问答会话是空间级资源，请只勾选同一空间的知识库（跨空间请使用「规范检索」） |
+| 配置答复约束提示词返回 `503 WEKNORA_NO_QA_MODEL` | 该工作空间没有可用的 KnowledgeQA 问答模型。在控制台「设置 → 模型管理」为该空间创建问答模型，或重跑 `setup.js` |
+| 文档上传后一直处于解析中 | 检查 `docker compose ps` 中 docreader 是否 healthy（`docker compose logs -f docreader`）；确认文档未超过 `MAX_FILE_SIZE_MB`（默认 50MB） |
+| `pg_dump` 报角色/库不存在 | 备份命令中的用户名与库名取自 `weknora/.env` 的 `DB_USER` / `DB_NAME`（默认 `postgres` / `WeKnora`），请按实际值替换 |
+| 本系统检索/问答一直超时 | 确认 app 容器健康、`WEKNORA_BASE_URL` 端口与 `APP_PORT` 一致；云端模型 API（DeepSeek/智谱）Key 失效时问答会失败，可在控制台「设置 → 模型管理」核对并更新 |
+
+> 修改 `weknora/.env` 后需 `docker compose up -d` 重建受影响容器；修改 `backend/.env` 的 `WEKNORA_*` 后需**重启本系统后端**（`node server.js`，无热重载）。
 
 最后更新：2026-10-17

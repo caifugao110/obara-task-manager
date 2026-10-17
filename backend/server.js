@@ -532,11 +532,14 @@ const handleShutdown = async (signal) => {
 process.on('SIGINT', handleShutdown);
 process.on('SIGTERM', handleShutdown);
 
-// 启动前初始化数据库：若存在遗留 db.json 则自动迁移到 SQLite
+// 启动前初始化数据库（加载缓存到内存）
 db.init();
 
 server.listen(securityConfig.server.port, () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
   db.initAdmin();
-  startMaintenanceScheduler();
+  // 维护计划配置迁移（旧 scheduleTime 单值 -> scheduleTimes）在调度器内部完成
+  startMaintenanceScheduler().catch((err) => {
+    console.error('[maintenance] 维护计划调度启动失败:', err && err.message ? err.message : err);
+  });
 });

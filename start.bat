@@ -60,8 +60,6 @@ echo In hidden mode search %LOG_DIR%\backend.log for the "[INIT]" lines.
 echo (Set DEFAULT_ADMIN_PASSWORD in backend\.env to define it yourself.)
 echo Logs: %LOG_DIR%
 echo.
-echo Note: Database auto-migrates from JSON to SQLite on first start if needed.
-echo.
 ping -n 4 127.0.0.1 >nul
 goto :end
 

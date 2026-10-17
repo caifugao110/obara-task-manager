@@ -1,4 +1,3 @@
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
@@ -6,7 +5,6 @@ const bcrypt = require('bcryptjs');
 const securityConfig = require('./config/security');
 
 const sqlitePath = path.resolve(__dirname, securityConfig.database.sqlitePath);
-const legacyJsonPath = path.resolve(__dirname, securityConfig.database.legacyJsonPath);
 
 // 内存中的数据缓存，所有 readDb 从这里返回克隆，避免每次请求访问磁盘
 let _cache = null;
@@ -282,71 +280,6 @@ const clearLoginLogs = () => {
   return Number(database.prepare('DELETE FROM login_logs').run().changes);
 };
 
-// 首次切换到独立表时，把 kv_store 里遗留的 loginLogs 搬迁过来（幂等）
-const migrateLoginLogsToTable = () => {
-  const database = ensureLoginLogTable();
-  if (countLoginLogs() > 0) return;
-
-  const row = database.prepare("SELECT value FROM kv_store WHERE key = 'loginLogs'").get();
-  if (!row) return;
-
-  let legacy = [];
-  try {
-    legacy = JSON.parse(row.value);
-  } catch (e) {
-    return;
-  }
-  if (!Array.isArray(legacy) || legacy.length === 0) return;
-
-  const insert = database
-    .prepare(`
-      INSERT OR IGNORE INTO login_logs (id, timestamp, userId, username, name, role, ip, userAgent, browserInfo, success, reason, action)
-      VALUES (@id, @timestamp, @userId, @username, @name, @role, @ip, @userAgent, @browserInfo, @success, @reason, @action)
-    `);
-  const tx = database.transaction((items) => {
-    for (const item of items) insert.run(serializeLoginEntry(item));
-  });
-  tx(legacy);
-
-  database.prepare("DELETE FROM kv_store WHERE key = 'loginLogs'").run();
-  trimLoginLogs(database);
-  console.log(`[db] 已迁移 ${legacy.length} 条历史登录日志到 login_logs 独立表`);
-};
-
-// 首次切换到独立表时，把 kv_store 里遗留的 auditLogs 搬迁过来（幂等）
-const migrateAuditLogsToTable = () => {
-  const database = ensureAuditLogTable();
-  if (countAuditLogs() > 0) return;
-
-  const row = database.prepare("SELECT value FROM kv_store WHERE key = 'auditLogs'").get();
-  if (!row) return;
-
-  let legacy = [];
-  try {
-    legacy = JSON.parse(row.value);
-  } catch (e) {
-    return;
-  }
-  if (!Array.isArray(legacy) || legacy.length === 0) return;
-
-  const insert = database
-    .prepare(`
-      INSERT OR IGNORE INTO audit_logs (id, timestamp, userId, username, name, role, action, method, path,
-        ip, userAgent, browserInfo, requestBody, responseStatus, responseMessage, durationMs)
-      VALUES (@id, @timestamp, @userId, @username, @name, @role, @action, @method, @path,
-        @ip, @userAgent, @browserInfo, @requestBody, @responseStatus, @responseMessage, @durationMs)
-    `);
-  const tx = database.transaction((items) => {
-    for (const item of items) insert.run(serializeAuditEntry(item));
-  });
-  tx(legacy);
-
-  // 搬迁完成后从 kv_store 移除，避免整库写时再带上这份数据
-  database.prepare("DELETE FROM kv_store WHERE key = 'auditLogs'").run();
-  trimAuditLogs(database);
-  console.log(`[db] 已迁移 ${legacy.length} 条历史操作日志到 audit_logs 独立表`);
-};
-
 // 将缓存中的顶层集合持久化到 kv_store（事务）。
 // 脏检查：每个集合序列化后与上次落库内容比较，仅 UPSERT 真正变化的集合，
 // 避免一次小改动引发全部集合的磁盘写入与 WAL 膨胀。
@@ -562,80 +495,6 @@ const getInitialDb = () => ({
   }
 });
 
-const migrateTasksIfNeeded = (db) => {
-  const tasks = Array.isArray(db.tasks) ? db.tasks : [];
-  const hasOld = tasks.some(t => t && typeof t === 'object' && t.hours && !t.days);
-  if (!hasOld) return { migrated: false, db };
-
-  const sheetMap = new Map();
-
-  for (const t of tasks) {
-    if (!t || typeof t !== 'object') continue;
-
-    if (t.days && typeof t.days === 'object') {
-      const key = `${t.userId}::${t.year}::${t.month}`;
-      const normalized = {
-        id: t.id || `sheet-${t.userId}-${t.year}-${t.month}`,
-        userId: t.userId,
-        month: t.month,
-        year: t.year,
-        days: t.days && typeof t.days === 'object' ? t.days : {}
-      };
-      sheetMap.set(key, normalized);
-      continue;
-    }
-
-    if (!t.userId || !t.month || !t.year || !t.hours || typeof t.hours !== 'object') continue;
-
-    const key = `${t.userId}::${t.year}::${t.month}`;
-    const sheet = sheetMap.get(key) || {
-      id: `sheet-${t.userId}-${t.year}-${t.month}`,
-      userId: t.userId,
-      month: t.month,
-      year: t.year,
-      days: {}
-    };
-
-    for (const [date, rawHours] of Object.entries(t.hours)) {
-      if (!sheet.days[date]) sheet.days[date] = [];
-      const hours = typeof rawHours === 'number' ? rawHours : (parseFloat(rawHours) || 0);
-      sheet.days[date].push({
-        id: `${t.id || 'task'}-${date}`,
-        taskName: t.taskName || '',
-        hours
-      });
-    }
-
-    sheetMap.set(key, sheet);
-  }
-
-  const migratedDb = { ...db, tasks: Array.from(sheetMap.values()) };
-  return { migrated: true, db: migratedDb };
-};
-
-const normalizeSheetDatesIfNeeded = (db) => {
-  const tasks = Array.isArray(db.tasks) ? db.tasks : [];
-  let changed = false;
-
-  const normalizedTasks = tasks.map(t => {
-    if (!t || typeof t !== 'object' || !t.days || typeof t.days !== 'object') return t;
-
-    const nextDays = {};
-    for (const [rawDate, items] of Object.entries(t.days)) {
-      const date = typeof rawDate === 'string' && rawDate.length >= 10 ? rawDate.slice(0, 10) : rawDate;
-      if (date !== rawDate) changed = true;
-
-      const arr = Array.isArray(items) ? items : [];
-      if (!nextDays[date]) nextDays[date] = [];
-      nextDays[date] = nextDays[date].concat(arr);
-    }
-
-    return { ...t, days: nextDays };
-  });
-
-  return { changed, db: changed ? { ...db, tasks: normalizedTasks } : db };
-};
-
 const applySettingsDefaults = (parsed) => {
   if (!parsed.designers) parsed.designers = [];
   if (!parsed.settings) parsed.settings = {};
@@ -725,69 +584,19 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.system.auditLogMaxRows = DEFAULT_AUDIT_LOG_MAX_ROWS;
   }
   if (!parsed.statusTrackingItems) parsed.statusTrackingItems = [];
-  // auditLogs / loginLogs 已迁出至独立表，tasks 已迁出至 taskStore 关系表，此处不再回填
+  // auditLogs / loginLogs 存放于独立表，tasks 存放于 taskStore 关系表，此处不再回填
   parsed.gunLedger = normalizeGunLedger(parsed.gunLedger);
-
-  let migratedUsers = false;
-  parsed.users.forEach(u => {
-    if (u.forcePasswordChange === undefined) {
-      u.forcePasswordChange = false;
-      migratedUsers = true;
-    }
-  });
-
-  return { migratedUsers };
 };
 
-// 从遗留 db.json 迁移到 SQLite（幂等：仅当 kv_store 为空时执行）
-const migrateFromLegacyJsonIfNeeded = () => {
-  const db = openDatabase();
-  const count = db.prepare('SELECT COUNT(*) as c FROM kv_store').get().c;
-  if (count > 0) return { migrated: false };
-
-  if (!fs.existsSync(legacyJsonPath)) {
-    console.log('[db] 未找到遗留 db.json，使用空数据库初始化');
-    _cache = getInitialDb();
-    persistCache();
-    return { migrated: false };
-  }
-
-  try {
-    console.log(`[db] 检测到遗留 ${legacyJsonPath}，开始迁移到 SQLite...`);
-    const data = JSON.parse(fs.readFileSync(legacyJsonPath, 'utf8'));
-    // 补齐默认字段
-    applySettingsDefaults(data);
-    const migratedRes = migrateTasksIfNeeded(data);
-    const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
-    _cache = normalizedRes.db;
-    persistCache();
-    const stat = fs.statSync(legacyJsonPath);
-    console.log(`[db] 迁移完成：${Object.keys(_cache).length} 个集合，源文件 ${(stat.size / 1024).toFixed(1)} KB`);
-    // 迁移后将原 db.json 重命名为备份，避免重复迁移
-    const backupPath = `${legacyJsonPath}.migrated-${Date.now()}.bak`;
-    fs.renameSync(legacyJsonPath, backupPath);
-    console.log(`[db] 原 db.json 已备份为 ${path.basename(backupPath)}`);
-    return { migrated: true };
-  } catch (err) {
-    console.error('[db] 从遗留 JSON 迁移失败:', err.message);
-    _cache = getInitialDb();
-    persistCache();
-    return { migrated: false, error: err.message };
-  }
-};
-
-// 初始化：打开数据库、加载缓存、必要时迁移
+// 初始化：打开数据库、加载缓存
 const init = () => {
   if (_cache) return;
   openDatabase();
-  // 首次切到独立表时搬迁历史操作日志，并从 kv_store 中摘除该集合
-  migrateAuditLogsToTable();
-  // 登录日志同样迁往独立表
-  migrateLoginLogsToTable();
   const rows = _db.prepare('SELECT COUNT(*) as c FROM kv_store').get().c;
   let gunSerialNeedPersist = false;
   if (rows === 0) {
-    migrateFromLegacyJsonIfNeeded();
+    _cache = getInitialDb();
+    persistCache();
   } else {
     _cache = loadFromDb();
     // 归一化前检测存量序号跳号/乱序（归一化会原地修复为连续序号）
@@ -798,17 +607,8 @@ const init = () => {
     applySettingsDefaults(_cache);
     if (gunSerialNeedPersist) persistCache();
   }
-  // 启动时执行一次迁移归一化并持久化
-  const migratedRes = migrateTasksIfNeeded(_cache);
-  const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
-  if (migratedRes.migrated || normalizedRes.changed) {
-    _cache = normalizedRes.db;
-    persistCache();
-  }
-  // tasks 集合迁往 taskStore 关系表（幂等），迁完后从缓存摘除，
-  // 之后 readDb 的整库深拷贝与 persistCache 都不再包含任务数据
-  const taskStore = require('./taskStore');
-  taskStore.migrateFromCache(_cache.tasks);
+  // tasks 由 taskStore 关系表承载，不进入内存缓存，
+  // readDb 的整库深拷贝与 persistCache 都不包含任务数据
   if (_cache.tasks !== undefined) {
     delete _cache.tasks;
     delete _lastPersistedJson.tasks;
@@ -825,11 +625,9 @@ const processQueue = () => {
   isWriting = true;
   const { data, resolve, reject } = writeQueue.shift();
   try {
-    // 写入前再做一次归一化，保证落库数据结构正确
+    // 写入前再补齐一次默认配置，保证落库数据结构正确
     applySettingsDefaults(data);
-    const migratedRes = migrateTasksIfNeeded(data);
-    const normalizedRes = normalizeSheetDatesIfNeeded(migratedRes.db);
-    _cache = normalizedRes.db;
+    _cache = data;
     persistCache();
     resolve();
   } catch (err) {

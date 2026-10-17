@@ -62,6 +62,24 @@ const pad = (value) => String(value).padStart(2, '0');
 const toTimestamp = (date = new Date()) => `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 const toDateKey = (date = new Date()) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
+// 调度日志面向运维人员：一律按服务器本地时区输出，并附时区标识，
+// 避免 UTC 的 ISO 时间（…T16:30:00.000Z）被误读成 16:30 本地时间。
+const getTimezoneLabel = () => {
+  const offsetMinutes = -new Date().getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMinutes);
+  let timezone = '';
+  try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (err) { /* 忽略时区名解析失败 */ }
+  return `${timezone ? `${timezone} ` : ''}UTC${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+};
+
+const formatLocalDateTime = (date = new Date()) => {
+  const target = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(target.getTime())) return String(date);
+  const time = `${pad(target.getHours())}:${pad(target.getMinutes())}:${pad(target.getSeconds())}`;
+  return `${toDateKey(target)} ${time} (${getTimezoneLabel()})`;
+};
+
 const normalizeScheduleTimes = (settings = {}) => {
   // 每日自动维护时间：最多两个时间点。兼容旧配置里的单值 scheduleTime（历史数据迁移）。
   const source = Array.isArray(settings.scheduleTimes)
@@ -508,11 +526,13 @@ const runScheduledMaintenance = async () => {
   const startedAt = new Date();
   const result = { startedAt: startedAt.toISOString(), backup: null, taskExport: null, gunLedgerExport: null, backupCleanup: null, yearlyCleanup: null, errors: [] };
 
+  console.log(`[maintenance] 计划维护开始 (${formatLocalDateTime(startedAt)})`);
   try {
     const { settings } = getMaintenanceSettings();
     if (!settings.enabled) {
       result.skipped = true;
       result.reason = 'disabled';
+      console.log('[maintenance] 维护总开关已关闭，本次计划执行跳过');
       return result;
     }
     if (settings.dailyBackupEnabled) result.backup = await createDatabaseBackup();
@@ -529,6 +549,7 @@ const runScheduledMaintenance = async () => {
     result.finishedAt = new Date().toISOString();
     lastSchedulerState = result;
     schedulerRunning = false;
+    console.log(`[maintenance] 计划维护结束 (${formatLocalDateTime(result.finishedAt)})${result.errors.length ? `，失败项: ${result.errors.join('; ')}` : ''}`);
   }
 };
 
@@ -539,15 +560,36 @@ const scheduleNextRun = () => {
   if (schedulerTimer) clearTimeout(schedulerTimer);
   schedulerTimer = setTimeout(async () => {
     await runScheduledMaintenance();
-    scheduleNextRun();
+    const rescheduled = scheduleNextRun();
+    console.log(`[maintenance] 已排定下次执行: ${formatLocalDateTime(rescheduled)}`);
   }, delay);
   lastSchedulerState = { ...(lastSchedulerState || {}), nextRunAt: nextRun.toISOString(), scheduleDate: toDateKey(nextRun) };
   return nextRun;
 };
 
-const startMaintenanceScheduler = () => {
+// 历史数据迁移：旧版本只存单值 scheduleTime，升级到「每天最多两个时间点」后
+// 内存里 normalize 能兼容，但库里仍是旧字段，UI 保存前每次启动都会被当成单点计划。
+// 这里在调度器启动时把旧字段一次性落库为 scheduleTimes（补齐默认第二个时间点）。
+const migrateLegacyScheduleTime = async () => {
+  const data = db.readDb();
+  const raw = data.settings?.maintenance;
+  if (!raw || typeof raw !== 'object') return null;
+  const hasLegacyField = Object.prototype.hasOwnProperty.call(raw, 'scheduleTime');
+  const lacksArray = !Array.isArray(raw.scheduleTimes) || raw.scheduleTimes.length === 0;
+  if (!hasLegacyField && !lacksArray) return null;
+
+  const normalized = normalizeMaintenanceSettings(raw);
+  if (!data.settings) data.settings = {};
+  data.settings.maintenance = normalized;
+  await db.writeDb(data);
+  console.log(`[maintenance] 已迁移维护计划配置: ${JSON.stringify(raw.scheduleTimes || raw.scheduleTime)} -> ${JSON.stringify(normalized.scheduleTimes)}`);
+  return normalized;
+};
+
+const startMaintenanceScheduler = async () => {
+  await migrateLegacyScheduleTime();
   const nextRun = scheduleNextRun();
-  console.log(`[maintenance] scheduler started, next run at ${nextRun.toISOString()}`);
+  console.log(`[maintenance] scheduler started, next run at ${formatLocalDateTime(nextRun)}`);
 };
 
 const getMaintenanceStatus = () => {
@@ -566,6 +608,8 @@ const getMaintenanceStatus = () => {
   const tasksJsonSize = taskStore.entriesJsonSize();
   const tasksCount = taskStore.countSheets();
   const taskItemsCount = taskStore.countEntries();
+
+  const nextRunAtIso = lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTimes).toISOString();
 
   return {
     settings,
@@ -595,8 +639,12 @@ const getMaintenanceStatus = () => {
     },
     scheduler: {
       running: schedulerRunning,
+      // 计划时间以服务器本地时区为准；这里同时给出本地字符串，避免前端/接口
+      // 消费 ISO(UTC) 时被当成 UTC 时刻展示。
+      timezone: getTimezoneLabel(),
       lastRun: lastSchedulerState,
-      nextRunAt: lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTimes).toISOString()
+      nextRunAt: nextRunAtIso,
+      nextRunAtLocal: formatLocalDateTime(nextRunAtIso)
     }
   };
 };
@@ -604,6 +652,8 @@ const getMaintenanceStatus = () => {
 module.exports = {
   defaultMaintenanceSettings,
   normalizeMaintenanceSettings,
+  formatLocalDateTime,
+  getTimezoneLabel,
   getMaintenanceStatus,
   createDatabaseBackup,
   createOfflineBackup,

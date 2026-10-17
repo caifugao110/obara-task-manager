@@ -62,33 +62,7 @@ const batchResetPasswordSchema = Joi.object({
 // Get all login users
 router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  
-  // Migrate existing users to add disabled field if not exists
-  let migrated = false;
-  data.users.forEach(u => {
-    if (u.disabled === undefined) {
-      u.disabled = false;
-      migrated = true;
-    }
-  });
 
-  // Migrate: set forcePasswordChange=true for existing non-superadmin users created before the feature
-  if (!data.settings?._migrations?.forcePasswordChangeMigrated) {
-    data.users.forEach(u => {
-      if (u.role !== 'superadmin') {
-        u.forcePasswordChange = true;
-      }
-    });
-    if (!data.settings) data.settings = {};
-    if (!data.settings._migrations) data.settings._migrations = {};
-    data.settings._migrations.forcePasswordChangeMigrated = true;
-    migrated = true;
-  }
-  
-  if (migrated) {
-    await db.writeDb(data);
-  }
-  
   const users = data.users.map(u => {
     const { password, sessionToken, ...rest } = u;
     return rest;
