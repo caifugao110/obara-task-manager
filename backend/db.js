@@ -270,6 +270,17 @@ const listLoginLogs = () => {
     .map(deserializeLoginRow);
 };
 
+// 查询指定用户最近一次成功登录的时间（ISO 字符串），无记录时返回 null。
+// 用于「上次登录时间」展示的历史数据兜底：用户字段缺失时可回落到登录日志表。
+const getLastSuccessfulLoginAt = (userId) => {
+  if (!userId) return null;
+  const database = ensureLoginLogTable();
+  const row = database
+    .prepare('SELECT timestamp FROM login_logs WHERE userId = ? AND success = 1 ORDER BY timestamp DESC, rowid DESC LIMIT 1')
+    .get(userId);
+  return row?.timestamp || null;
+};
+
 const countLoginLogs = () => {
   const database = ensureLoginLogTable();
   return Number(database.prepare('SELECT COUNT(*) AS c FROM login_logs').get().c);
@@ -705,6 +716,7 @@ module.exports = {
   // 登录日志独立表
   appendLoginLogEntry,
   listLoginLogs,
+  getLastSuccessfulLoginAt,
   countLoginLogs,
   clearLoginLogs
 };

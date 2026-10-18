@@ -136,6 +136,7 @@ Authorization: Bearer <token>
 - `forcePasswordChange=true` 时前端需引导用户到 `/change-password` 修改密码。
 - **未修改初始密码期间的 API 拦截**：`forcePasswordChange` 标记未清除前，除 `POST /api/auth/change-password` 和 `POST /api/auth/logout` 外的所有已登录接口一律返回 `403`（`code=FORCE_PASSWORD_CHANGE`）。
 - 登录接口受三层速率限制：第一层按 IP 15 分钟内最多 300 次尝试（`LOGIN_IP_RATE_LIMIT_MAX` 可调整，堵密码喷洒缺口）；第二层按「IP + 用户名」15 分钟内最多 20 次尝试（防止单账号爆破），两层均超限返回 HTTP `429` 与消息 `登录尝试过于频繁，请15分钟后再试`；此外还受全局 API 限流（默认每 IP 15 分钟 3000 次）约束。
+- 登录成功时会在用户记录上维护两个登录时间字段：把原 `lastLoginAt` 移到 `previousLoginAt`，再把 `lastLoginAt` 写为本次登录时间（首次登录时 `previousLoginAt` 为 `null`）。这两个字段经 `GET /api/auth/client-info` 下发，供前端展示「上次登录」。
 
 ### 校验当前会话
 
@@ -250,7 +251,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：需要登录。
 
-返回当前请求客户端的 IP 和解析后的浏览器信息，供前端展示本机登录环境使用。
+返回当前请求客户端的 IP、解析后的浏览器信息以及当前账号的登录时间，供前端页脚展示本机登录环境与「上次登录」时间使用。
 
 响应：
 
@@ -260,11 +261,25 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
   "browser": "Chrome",
   "os": "Windows",
   "device": "Desktop",
-  "summary": "Chrome / Windows / Desktop"
+  "summary": "Chrome / Windows / Desktop",
+  "lastLoginAt": "2026-10-18T01:20:00.000Z",
+  "previousLoginAt": "2026-10-17T09:05:00.000Z"
 }
 ```
 
-> 该接口返回简化的浏览器信息（不含版本号；带版本号的完整解析用于登录日志和操作日志）。接口本身会被操作日志记录，操作类型显示为「查看自身浏览器信息」。
+| 字段 | 说明 |
+|------|------|
+| `ip` | 客户端 IP |
+| `browser` / `os` / `device` / `summary` | 简化的浏览器信息（不含版本号） |
+| `lastLoginAt` | 本次（最近一次）登录时间，ISO 字符串；从未登录过时为 `null` |
+| `previousLoginAt` | 本次登录**之前**那次登录的时间，ISO 字符串；首次登录时为 `null` |
+
+说明：
+
+- `lastLoginAt` / `previousLoginAt` 取自用户记录，由登录接口维护（登录时原 `lastLoginAt` 转存为 `previousLoginAt`）。
+- **历史数据兜底**：两个字段都为空（该账号在新增字段后从未重新登录）时，服务端回落到登录日志表 `login_logs`，取该用户最近一次成功登录（`success = 1`）的 `timestamp` 填入 `lastLoginAt`；登录日志也无记录时两个字段均为 `null`。
+- 前端展示「上次登录」时优先取 `previousLoginAt`，为空时回退为 `lastLoginAt`（即首次登录展示本次登录时间），格式化到分钟（本地时区）。
+- 该接口返回简化的浏览器信息（不含版本号；带版本号的完整解析用于登录日志和操作日志）。接口本身会被操作日志记录，操作类型显示为「查看自身浏览器信息」。
 
 ## 用户接口
 
@@ -828,7 +843,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 1. 字段变更后先存入本地 `pendingChanges` 队列。
 2. 等待 500ms 后自动调用 `PUT /api/tasks/item` 保存。
-3. 保存成功后发出 `task_updated` Socket 事件通知其他客户端。
+3. 保存成功后发出 `task_updated` Socket 事件通知其他客户端：单条变更会带上「设计人员 + 当前年月」坐标走增量广播，其他客户端只合并该工时表；批量或无明确范围的变更发空事件，触发全量刷新。
 4. 保存成功后从 `pendingChanges` 队列中移除该变更。
 5. 用户也可以通过打开任务详情模态框并点击保存按钮手动触发保存。
 
@@ -3683,7 +3698,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 |------|------|------------|
 | `connect` | Socket 连接成功（可用于检测后端是否恢复） | - |
 | `connect_error` | Socket 连接失败（后端端口断开或网络异常） | - |
-| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端（**不转发客户端 payload**） | 需已认证；**每个连接 10 秒最多 5 次**，超限收到 `error`（`操作过于频繁，请稍后再试`） |
+| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端。可选参数 `{ designerId, month, year }` 用于增量广播，不传或坐标非法时退化为全量刷新信号 | 需已认证；**每个连接 10 秒最多 5 次**，超限收到 `error`（`操作过于频繁，请稍后再试`） |
 | `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`（可选 `mode` 为 `edit` 或 `colorMark`） | 需已认证；用户身份一律取服务端会话，客户端传入的 `userId`/`username` 被忽略 |
 | `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 | 需已认证 |
 | `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数只需 `itemId` | **仅 `admin`/`superadmin`**（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；**每个连接 10 秒最多 30 次** |
@@ -3700,7 +3715,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 | 事件 | 说明 | 接收方 |
 |------|------|--------|
-| `task_refreshed` | 任务数据已刷新，客户端收到后会重新加载数据 | 由 `task_updated` 事件触发时：除发起者外的其他客户端；由 HTTP 接口（导入/维护/分配）触发时：全体客户端 |
+| `task_refreshed` | 任务数据已刷新。载荷为空时客户端全量刷新；载荷为 `{ sheets: [sheet] }` 时为增量更新，客户端直接本地合并这些工时表（详见「任务刷新与增量广播」） | 由 `task_updated` 事件触发时：除发起者外的其他客户端；由 HTTP 接口（导入/维护/分配）触发时：全体客户端（无载荷） |
 | `editing_state` | 当前所有编辑中的单元格状态，连接成功后下发 | 仅当前连接 |
 | `user_editing` | 某用户正在编辑指定设计人员日期单元格，参数为编辑会话（含 `designerId`、`date`、`userId`、`username`、`name`、`mode`、`socketId`） | **除发起者外**的其他客户端（发起者需自行维护本地状态） |
 | `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 | 仅发起者 |
@@ -3720,6 +3735,33 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `gun_ledger_table_lock_blocked` | 申请表级锁被他人占用，参数 `{ tableId, holder }` | 仅发起者 |
 | `gun_ledger_updated` | 焊枪台账数据变更，参数含 `action`（import/add_category/delete_category/add_table/rename_table/delete_table/reorder_tables/reorder_categories/update_rows/gun_name_rule/default_persons）及相关数据 | 全体客户端 |
 | `error` | 事件处理出错，参数 `{ message }`（如未认证、权限不足、缺少必填字段、触发限流） | 仅发起者 |
+
+### 任务刷新与增量广播
+
+主页面任务变更后，发起方调用 `task_updated` 通知其他客户端，服务端据此广播 `task_refreshed`。为降低多人同时在线时的刷新开销，支持两种模式：
+
+**1. 增量广播（携带坐标）**
+
+客户端发送：
+
+```javascript
+socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 });
+```
+
+- `designerId` 为变更所属设计人员，`month` 为 1-12 的月份，`year` 为年份，三者齐全且合法时服务端用它们从数据库读取最新工时表（`taskStore.getSheet`）。
+- 广播内容取自**数据库**而非客户端 payload，避免把客户端构造的任意内容转发给其他在线用户。
+- 广播：`task_refreshed` 携带 `{ sheets: [sheet] }`，`sheet` 即该设计人员当月工时表的最新完整数据，其他客户端可直接本地合并，无需重新拉取整月数据。
+- 坐标缺失/非法或读取失败时退化为第 2 种模式（无载荷的全量刷新信号），服务端日志记录读取异常。
+
+**2. 全量刷新信号（无载荷）**
+
+不传坐标或坐标不合法时广播空的 `task_refreshed`，客户端按原逻辑重新拉取整月数据与工作日覆盖规则。适用于批量操作、跨设计人员移动、工作日设置变更、导入/维护等影响范围不明确或不止一张表的场景。
+
+前端接收侧的节流策略（仅主页面）：
+
+- 增量载荷只合并与当前查看月份一致（`sheet.month` / `sheet.year` 相同）的工时表，其他月份的变更丢弃，不触发拉取。
+- 全量刷新信号对**只读用户**（无编辑权限或离线模式）合并到 3 秒一次；页面处于后台（`visibilityState === 'hidden'`）时直接跳过并置挂起标记，切回前台再补刷一次。
+- 有编辑权限的用户收到全量信号时立即刷新，保证协作实时性。
 
 ## 常见错误码
 
@@ -3856,4 +3898,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-10-17
+最后更新：2026-10-18

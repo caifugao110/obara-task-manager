@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Move } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Move, Maximize2, Minimize2 } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
@@ -127,7 +127,8 @@ const Dashboard = () => {
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineCacheUsed, setOfflineCacheUsed] = useState(false);
   const [versionInfo, setVersionInfo] = useState<{ currentVersion: string; hasUpdate: boolean; latestVersion: string | null } | null>(null);
-  const [clientInfo, setClientInfo] = useState<{ ip: string; browser: string; summary: string } | null>(null);
+  const [clientInfo, setClientInfo] = useState<{ ip: string; browser: string; summary: string; lastLoginAt?: string | null; previousLoginAt?: string | null } | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
   const [batchFindText, setBatchFindText] = useState('');
   const [batchReplaceText, setBatchReplaceText] = useState('');
@@ -154,6 +155,13 @@ const Dashboard = () => {
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const isOfflineMode = !isOnline || offlineCacheUsed;
   const canEditTasks = isAdmin && !isOfflineMode;
+  // 经 ref 暴露给 socket 监听使用：该监听所在 effect 不能把 canEditTasks 放进依赖
+  // （会导致 socket 反复解绑重绑），用 ref 避免闭包捕获到过期值。
+  const canEditTasksRef = useRef(canEditTasks);
+  canEditTasksRef.current = canEditTasks;
+  // 只读用户的延迟全量刷新：合并窗口计时器 + 页面在后台期间挂起的刷新标记
+  const deferredRefreshTimerRef = useRef<number | null>(null);
+  const pendingFullRefreshRef = useRef(false);
   const isOfflineModeRef = useRef(isOfflineMode);
 
   useEffect(() => {
@@ -209,6 +217,37 @@ const Dashboard = () => {
     axiosInstance.get('/auth/client-info')
       .then(res => setClientInfo(res.data))
       .catch(() => {});
+  }, []);
+
+  // 同步全屏状态（支持通过 F11 / Esc 等方式退出）
+  useEffect(() => {
+    const syncFullscreenState = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+    syncFullscreenState();
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
+  }, []);
+
+  // 切换全屏显示
+  const toggleFullscreen = useCallback(async () => {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => Promise<void> | void;
+      webkitCancelFullScreen?: () => Promise<void> | void;
+    };
+    const el = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    try {
+      if (document.fullscreenElement || doc.webkitFullscreenElement) {
+        const exit = doc.exitFullscreen?.bind(doc) || doc.webkitExitFullscreen?.bind(doc) || doc.webkitCancelFullScreen?.bind(doc);
+        await exit?.();
+      } else {
+        const request = el.requestFullscreen?.bind(el) || el.webkitRequestFullscreen?.bind(el);
+        await request?.();
+      }
+    } catch {
+      // 浏览器拒绝全屏请求时忽略（例如非用户手势触发）
+    }
   }, []);
 
   // Input refs for modal focus
@@ -347,8 +386,18 @@ const Dashboard = () => {
     }, 120);
   }, [jumpTarget, loading, sheets, designers]);
 
-  // 打开主页面时自动将今日列滚动到视图中央展示
+  // 将今日列滚动到视图中央展示（打开主页面自动定位、点击左下角状态手动定位均复用）
   // 日期表头始终渲染且带有 data-date，整月无任务（sheets 为空）、当日无任务或分组全部折叠时也能定位到今日列
+  const scrollTodayColumnIntoView = useCallback(() => {
+    const now = new Date();
+    if (currentDate.getFullYear() !== now.getFullYear() || currentDate.getMonth() !== now.getMonth()) return false;
+    const todayStr = format(now, 'yyyy-MM-dd');
+    const target = document.querySelector(`[data-date="${todayStr}"]`) as HTMLElement | null;
+    if (!target) return false;
+    target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    return true;
+  }, [currentDate]);
+
   const todayColumnScrolledRef = useRef(false);
   useEffect(() => {
     if (todayColumnScrolledRef.current) return;
@@ -357,13 +406,19 @@ const Dashboard = () => {
     const now = new Date();
     if (currentDate.getFullYear() !== now.getFullYear() || currentDate.getMonth() !== now.getMonth()) return;
     todayColumnScrolledRef.current = true;
-    const todayStr = format(now, 'yyyy-MM-dd');
     const timer = window.setTimeout(() => {
-      const target = document.querySelector(`[data-date="${todayStr}"]`) as HTMLElement | null;
-      target?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      scrollTodayColumnIntoView();
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [loading, sheets, designers, currentDate, jumpTarget]);
+  }, [loading, sheets, designers, currentDate, jumpTarget, scrollTodayColumnIntoView]);
+
+  // 点击左下角状态指示（就绪/离线）时定位到今日列，不触发任何重连或数据刷新
+  const handleFooterStatusClick = useCallback(() => {
+    if (loading) return;
+    window.setTimeout(() => {
+      scrollTodayColumnIntoView();
+    }, 0);
+  }, [loading, scrollTodayColumnIntoView]);
 
 
 
@@ -816,7 +871,7 @@ const Dashboard = () => {
       addToHistory('batchMove', {
         items: [{ sourceDesignerId: designerId, sourceDate: date, targetDesignerId: designerId, targetDate: date, itemId: item.id }]
       });
-      socketRef.current?.emit('task_updated');
+      emitTaskUpdated(designerId);
     } catch (err: any) {
       console.error('移动任务失败:', err?.response?.data || err);
       addToast(err?.response?.data?.message || '移动失败', 'error');
@@ -938,6 +993,30 @@ const Dashboard = () => {
     });
   }, []);
 
+  // 通知其他客户端刷新数据。
+  // 传入 designerId 时走增量广播：服务端只回传该设计师的工时表，其他客户端直接本地
+  // 合并，无需重新拉取整月数据（30 人在线时这是主要开销来源）。
+  // 不传 designerId 时退化为全量刷新，用于批量操作、跨设计师移动、工作日设置变更等
+  // 影响范围不明确或不止一张表的场景。
+  //
+  // currentDate 经 ref 读取而非进入依赖数组：本函数被大量 useCallback 引用，若随月份
+  // 变化产生新引用，那些 useCallback 的依赖数组都要跟着改，漏改一处就会广播旧月份。
+  // 用 ref 保证本函数引用永久稳定。
+  const currentDateRef = useRef(currentDate);
+  currentDateRef.current = currentDate;
+  const emitTaskUpdated = useCallback((designerId?: string) => {
+    if (!designerId) {
+      socketRef.current?.emit('task_updated');
+      return;
+    }
+    const d = currentDateRef.current;
+    socketRef.current?.emit('task_updated', {
+      designerId,
+      month: d.getMonth() + 1,
+      year: d.getFullYear()
+    });
+  }, []);
+
   const fetchSheets = useCallback(async () => {
     try {
       const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
@@ -972,7 +1051,7 @@ const Dashboard = () => {
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
-      socketRef.current?.emit('task_updated');
+      emitTaskUpdated(designerId);
       addToast(action === 'white' ? '该任务标记为已完成' : '该任务标记为未完成', 'success');
     } catch (err: any) {
       addToast(err.response?.data?.message || '任务完成状态更新失败', 'error');
@@ -1005,7 +1084,7 @@ const Dashboard = () => {
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
-      socketRef.current?.emit('task_updated');
+      emitTaskUpdated(designerId);
       addToast(action === 'white' ? '该任务标记为已完成' : '该任务标记为未完成', 'success');
     } catch (err: any) {
       addToast(err.response?.data?.message || '枪名任务完成状态更新失败', 'error');
@@ -1138,7 +1217,39 @@ const Dashboard = () => {
         auth: { token }
       });
 
-      socketRef.current.on('task_refreshed', () => {
+      socketRef.current.on('task_refreshed', (payload?: { sheets?: TaskSheet[] }) => {
+        // 增量：服务端已回传受影响的工时表，直接本地合并，
+        // 无需重新拉取整月数据，也无需重拉工作日设置。
+        const incoming = payload?.sheets;
+        if (Array.isArray(incoming) && incoming.length > 0) {
+          // 只合并属于当前查看月份的工时表：其余月份的变更与当前视图无关，
+          // 合并进来会白白触发级联 effect 与离线缓存写入。
+          // currentDate 走 ref 读取，避免闭包捕获到过期月份。
+          const month = currentDateRef.current.getMonth() + 1;
+          const year = currentDateRef.current.getFullYear();
+          incoming.forEach(sheet => {
+            if (!sheet || sheet.month !== month || sheet.year !== year) return;
+            upsertSheet(sheet);
+          });
+          return;
+        }
+        // 无范围信息（批量操作 / 工作日设置变更 / 数据维护）：需要全量刷新。
+        // 只读用户占在线人数的大部分且不需要亚秒级实时性，合并到 3 秒刷新一次；
+        // 页面在后台时直接跳过，切回前台再补刷一次。
+        if (!canEditTasksRef.current) {
+          if (document.visibilityState === 'hidden') {
+            pendingFullRefreshRef.current = true;
+            return;
+          }
+          if (deferredRefreshTimerRef.current === null) {
+            deferredRefreshTimerRef.current = window.setTimeout(() => {
+              deferredRefreshTimerRef.current = null;
+              fetchSheets();
+              fetchWorkdayOverrides();
+            }, 3000);
+          }
+          return;
+        }
         fetchSheets();
         fetchWorkdayOverrides();
       });
@@ -1207,12 +1318,16 @@ const Dashboard = () => {
       });
 
       return () => {
+        if (deferredRefreshTimerRef.current !== null) {
+          window.clearTimeout(deferredRefreshTimerRef.current);
+          deferredRefreshTimerRef.current = null;
+        }
         socketRef.current?.disconnect();
       };
     } else {
       setIsOnline(true);
     }
-  }, [fetchData, fetchSheets, fetchWorkdayOverrides, systemSettingsLoaded, user]);
+  }, [fetchData, fetchSheets, fetchWorkdayOverrides, systemSettingsLoaded, user, upsertSheet]);
 
   // Online/offline event listeners
   useEffect(() => {
@@ -1241,11 +1356,32 @@ const Dashboard = () => {
     };
   }, [fetchData, sheets, user]);
 
-  // Save sheets to localStorage for offline use
+  // 页面重新可见时，补上在后台期间被跳过的刷新
   useEffect(() => {
-    if (sheets.length > 0 && isOnline) {
-      saveSheetsToLocalStorage(sheets);
-    }
+    const handleVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!pendingFullRefreshRef.current) return;
+      pendingFullRefreshRef.current = false;
+      if (deferredRefreshTimerRef.current !== null) {
+        window.clearTimeout(deferredRefreshTimerRef.current);
+        deferredRefreshTimerRef.current = null;
+      }
+      fetchSheets();
+      fetchWorkdayOverrides();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [fetchSheets, fetchWorkdayOverrides]);
+
+  // Save sheets to localStorage for offline use
+  // 只在离线时写：在线状态下这份缓存无人读取（数据以服务端为准），而每次 sheets
+  // 变化都同步 JSON.stringify 全量写入会阻塞主线程——别人每编辑一次就触发一次。
+  // 用 debounce 合并离线期间的连续编辑，避免逐条写入。
+  // 断网瞬间的数据由 online/offline 与 connect_error 事件里即时写入兜住。
+  useEffect(() => {
+    if (sheets.length === 0 || isOnline) return;
+    const timer = window.setTimeout(() => saveSheetsToLocalStorage(sheets), 800);
+    return () => window.clearTimeout(timer);
   }, [sheets, isOnline, saveSheetsToLocalStorage]);
 
   // Load cached sheets when offline and fetchData returned no data
@@ -1326,7 +1462,7 @@ const Dashboard = () => {
           }))
         });
         upsertSheet(res.data.sheet);
-        socketRef.current?.emit('task_updated');
+        emitTaskUpdated(designerId);
         stopEditingCell(designerId, date);
         setSelectedTasks([]);
         setSelectedCell(null);
@@ -1591,6 +1727,18 @@ const Dashboard = () => {
 
   const formatFooterHours = (hours: number) => `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} h`;
 
+  // 上次登录时间：精确到分钟（本地时区），格式 YYYY-MM-DD HH:mm
+  const formatLoginTime = (iso?: string | null): string => {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+
+  // 优先展示本次登录之前的那次登录；首次登录（无历史）时回退为本次登录时间
+  const lastLoginText = formatLoginTime(clientInfo?.previousLoginAt || clientInfo?.lastLoginAt);
+
   const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
     if (warnIfOfflineEdit()) return;
     try {
@@ -1627,7 +1775,7 @@ const Dashboard = () => {
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
-      socketRef.current?.emit('task_updated');
+      emitTaskUpdated(designerId);
       setPendingChanges(prev => prev.filter(c => !(c.designerId === designerId && c.date === date && c.itemId === itemId && c.field === field)));
     } catch (err: any) {
       console.error('Error saving item:', err);
@@ -1943,7 +2091,7 @@ const Dashboard = () => {
         hours: '' 
       }, authHeader);
       upsertSheet(res.data.sheet);
-      socketRef.current?.emit('task_updated');
+      emitTaskUpdated(designerId);
       
       // Add to history for undo
       if (res.data.sheet?.days?.[date]) {
@@ -1970,7 +2118,7 @@ const Dashboard = () => {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId, date, itemId } });
       upsertSheet(res.data.sheet);
-      socketRef.current?.emit('task_updated');
+      emitTaskUpdated(designerId);
       
       // Add to history for undo
       if (item) {
@@ -2027,7 +2175,7 @@ const Dashboard = () => {
           item: clipboard?.[idx]
         }))
       });
-      socketRef.current?.emit('task_updated');
+      emitTaskUpdated(designerId);
       stopEditingCell(designerId, date);
       setSelectedTasks([]);
       setSelectedCell(null);
@@ -2691,10 +2839,15 @@ const Dashboard = () => {
 
       <footer className="shrink-0 bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex justify-between items-center text-[11px] text-gray-500">
         <div className="flex items-center space-x-4">
-          <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleFooterStatusClick}
+            title="点击定位到今日任务"
+            className="flex items-center gap-1.5 hover:text-gray-700 transition-colors cursor-pointer focus:outline-none"
+          >
             <div className={`w-2 h-2 rounded-full ${footerStatusDotClass}`}></div>
             <span className={footerStatusTextClass}>{footerStatusText}</span>
-          </div>
+          </button>
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <div className="flex items-center gap-1.5">
             <span className="font-bold">本月任务条目:</span>
@@ -2716,11 +2869,27 @@ const Dashboard = () => {
         <div className="flex items-center gap-4">
           {clientInfo && (
             <>
+              {lastLoginText && (
+                <>
+                  <span className="font-medium" title="上一次成功登录的时间（精确到分钟）">上次登录: {lastLoginText}</span>
+                  <div className="w-[1px] h-3 bg-gray-300"></div>
+                </>
+              )}
               <span className="font-medium" title={clientInfo.summary}>IP: {clientInfo.ip || '未知'}</span>
               <div className="w-[1px] h-3 bg-gray-300"></div>
               <span className="font-medium" title={clientInfo.summary}>{clientInfo.browser}</span>
             </>
           )}
+          <div className="w-[1px] h-3 bg-gray-300"></div>
+          <button
+            type="button"
+            onClick={() => { void toggleFullscreen(); }}
+            title={isFullscreen ? '退出全屏显示（Esc）' : '全屏显示'}
+            className="flex items-center gap-1 font-medium hover:text-gray-700 transition-colors cursor-pointer focus:outline-none"
+          >
+            {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            <span>{isFullscreen ? '退出全屏' : '全屏'}</span>
+          </button>
         </div>
       </footer>
 
@@ -3978,7 +4147,7 @@ const Dashboard = () => {
                           guns
                         }, authHeader);
                         upsertSheet(res.data.sheet);
-                        socketRef.current?.emit('task_updated');
+                        emitTaskUpdated(modalDesignerId ?? undefined);
                         setPendingChanges([]);
                         setFocusTarget(null);
                         setModalOpen(false);

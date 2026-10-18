@@ -84,6 +84,7 @@ app.use('/api', ipBlacklist.middleware);
 const db = require('./db');
 const { startMaintenanceScheduler, createOfflineBackup } = require('./utils/dbMaintenance');
 const gunTableLocks = require('./utils/gunTableLocks');
+const taskStore = require('./taskStore');
 
 // Middleware
 const { auditLogMiddleware } = require('./middleware/auditLog');
@@ -221,7 +222,7 @@ io.on('connection', (socket) => {
   socket.emit('gun_ledger_table_locks_state', gunTableLocks.snapshot());
 
   // task_updated 事件：验证用户身份
-  socket.on('task_updated', () => {
+  socket.on('task_updated', (payload) => {
     try {
       requireSocketAuth(socket);
       // 限制单个连接的广播频率：该事件会触发全体客户端重新拉取数据，
@@ -230,9 +231,22 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: '操作过于频繁，请稍后再试' });
         return;
       }
-      // 不转发客户端 payload：前端对该事件不消费参数，仅据此触发重新拉取，
-      // 避免把客户端构造的任意内容广播给所有在线用户
-      socket.broadcast.emit('task_refreshed');
+      // 增量广播：客户端给出变更坐标（designerId/month/year）时，由服务端从数据库
+      // 读取最新工时表再广播，其他客户端可直接本地合并，无需重新拉取整月数据。
+      // 广播内容取自数据库而非客户端 payload，避免转发客户端构造的任意内容。
+      // 坐标缺失/非法或读取失败时退化为「空信号」，客户端按原逻辑全量刷新。
+      const designerId = payload && payload.designerId ? String(payload.designerId) : '';
+      const month = Number(payload?.month);
+      const year = Number(payload?.year);
+      let sheet = null;
+      if (designerId && Number.isInteger(month) && Number.isInteger(year)) {
+        try {
+          sheet = taskStore.getSheet(designerId, month, year);
+        } catch (e) {
+          console.error('[socket] task_updated 增量读取失败，退化为全量刷新:', e.message);
+        }
+      }
+      socket.broadcast.emit('task_refreshed', sheet ? { sheets: [sheet] } : undefined);
     } catch (err) {
       socket.emit('error', { message: err.message });
     }

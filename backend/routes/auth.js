@@ -196,6 +196,10 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
   }
   // sessionToken 始终指向最近一次登录的会话：从多设备切回单设备时仅保留最新会话
   data.users[userIndex].sessionToken = sessionId;
+  // 登录时间：previousLoginAt 保留本次登录前的那次登录时间（前端「上次登录」展示用），
+  // lastLoginAt 更新为本次登录时间；首次登录时 previousLoginAt 为空
+  data.users[userIndex].previousLoginAt = data.users[userIndex].lastLoginAt || null;
+  data.users[userIndex].lastLoginAt = new Date().toISOString();
   // 新会话建立即清除一次性失效原因，避免后续被顶下线时误报为密码重置
   data.users[userIndex].sessionInvalidationReason = undefined;
 
@@ -372,12 +376,21 @@ router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
   res.json({ message: '退出成功' });
 }));
 
-// 获取当前登录用户的客户端信息（IP、浏览器）
+// 获取当前登录用户的客户端信息（IP、浏览器、上次登录时间）
 router.get('/client-info', authMiddleware, asyncHandler(async (req, res) => {
   const ip = getClientIp(req);
   const userAgent = req.headers['user-agent'] || '';
   const browserInfo = getBrowserInfo(userAgent);
-  res.json({ ip, ...browserInfo });
+  // 上次登录时间：本次登录之前的那次登录；首次登录时回退为本次登录时间
+  const data = db.readDb();
+  const currentUser = data.users.find(u => u.id === req.user.id);
+  let lastLoginAt = currentUser?.lastLoginAt || null;
+  const previousLoginAt = currentUser?.previousLoginAt || null;
+  // 老账号在新增字段前从未重新登录：回落到登录日志表的最近一次成功登录
+  if (!lastLoginAt && !previousLoginAt) {
+    lastLoginAt = db.getLastSuccessfulLoginAt(req.user.id);
+  }
+  res.json({ ip, ...browserInfo, lastLoginAt, previousLoginAt });
 }));
 
 module.exports = router;
