@@ -70,6 +70,9 @@ export type EditingSession = {
   username: string;
   name: string;
   mode?: 'edit' | 'colorMark';
+  // colorMark 模式下定位具体行：itemId 为主任务 id，gunIndex 为枪名下标（null 表示主任务）
+  itemId?: string | null;
+  gunIndex?: number | null;
 };
 
 export type BatchReplaceMatch = {

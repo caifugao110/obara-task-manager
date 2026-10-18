@@ -3,7 +3,9 @@ import type { GunItem, TaskItem, SelectedTask, SpecInfoResponse } from './types'
 
 export const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__${selection.date}__${selection.itemId}`;
 
-export const editingSessionKey = (designerId: string, date: string) => `${designerId}__${date}`;
+// 编辑会话键精确到主任务：同一单元格内不同主任务的编辑互不影响；
+// itemId 为空表示旧版整格会话（兼容过渡期的旧客户端）
+export const editingSessionKey = (designerId: string, date: string, itemId?: string | null) => `${designerId}__${date}__${itemId ?? ''}`;
 
 export const isEditableKeyboardTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;

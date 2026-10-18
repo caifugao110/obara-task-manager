@@ -21,7 +21,7 @@ import type { Designer, GunItem, SelectedTask, TaskItem, TaskSheet } from '../ty
 
 interface UseGunDragDropParams {
   canEditTasks: boolean;
-  warnIfCellLocked: (designerId: string, date: string) => boolean;
+  warnIfCellLocked: (designerId: string, date: string, itemId?: string | null) => boolean;
   getAllItems: (designerId: string, date: string) => TaskItem[];
   getSelectedTaskPayloads: (fallback: { item: TaskItem; designerId: string; date: string }) => { item: TaskItem; designerId: string; date: string }[];
   designers: Designer[];
@@ -110,7 +110,7 @@ export const useGunDragDrop = ({
       (event.activatorEvent as MouseEvent | KeyboardEvent).ctrlKey;
 
     if (data_current?.type === 'task') {
-      if (warnIfCellLocked(data_current.designerId, data_current.date)) return;
+      if (warnIfCellLocked(data_current.designerId, data_current.date, data_current.item?.id)) return;
       taskDragCtrlRef.current = Boolean(isCtrlDrag);
       setTaskDropTargetState(null);
       setActiveTask({
@@ -124,7 +124,7 @@ export const useGunDragDrop = ({
     }
 
     if (data_current?.type === 'gun') {
-      if (warnIfCellLocked(data_current.designerId, data_current.date)) return;
+      if (warnIfCellLocked(data_current.designerId, data_current.date, data_current.item?.id)) return;
       setGunDropTargetState(null);
       // 优先使用 pointerDown 时量取的源枪名行尺寸；若丢失（如拖拽激活前重渲染），
       // 回退到保留的源 DOM 或事件坐标重新量取，最大限度保证 DragOverlay 与原行尺寸一致
@@ -403,7 +403,7 @@ export const useGunDragDrop = ({
       const targetDate = taskTargetEl.getAttribute('data-date') || '';
       const targetItemId = taskTargetEl.getAttribute('data-task-id') || '';
       if (!targetDesignerId || !targetDate || !targetItemId) return;
-      if (warnIfCellLocked(targetDesignerId, targetDate)) return;
+      if (warnIfCellLocked(targetDesignerId, targetDate, targetItemId)) return;
 
       const sameItem = sourceData.designerId === targetDesignerId && sourceData.date === targetDate && sourceData.item.id === targetItemId;
       // 禁止拖拽调整自身主任务内的枪名顺序：请使用该枪名行的上移/下移箭头
@@ -537,7 +537,8 @@ export const useGunDragDrop = ({
       const targetDesignerId = dropTargetSnapshot.designerId;
       const targetDate = dropTargetSnapshot.date;
 
-      if (warnIfCellLocked(sourceDesignerId, sourceDate) || warnIfCellLocked(targetDesignerId, targetDate)) {
+      // 源主任务按主任务粒度校验；目标单元格仅插入新位置，不修改他人正在编辑的主任务，故只做整格级（旧版会话）校验
+      if (warnIfCellLocked(sourceDesignerId, sourceDate, sourceData.item?.id) || warnIfCellLocked(targetDesignerId, targetDate)) {
         setActiveTask(null);
         return;
       }

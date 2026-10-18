@@ -136,7 +136,8 @@ app.use((err, req, res, next) => {
 app.set('io', io);
 
 const editingSessions = new Map();
-const editingKey = (designerId, date) => `${designerId}::${date}`;
+// 会话键精确到主任务：同一单元格内不同主任务的编辑互不影响；itemId 为空为旧版整格会话
+const editingKey = (designerId, date, itemId) => `${designerId}::${date}::${itemId || ''}`;
 const publicEditingSessions = () => Array.from(editingSessions.values());
 const broadcastStoppedSessions = (sessions, sourceSocket) => {
   sessions.forEach(session => {
@@ -262,7 +263,7 @@ io.on('connection', (socket) => {
         return;
       }
 
-      const key = editingKey(data.designerId, data.date);
+      const key = editingKey(data.designerId, data.date, data.itemId);
       const existingSession = editingSessions.get(key);
       
       if (
@@ -276,7 +277,7 @@ io.on('connection', (socket) => {
 
       const removedOwnSessions = removeSessions(session =>
         session.userId === authenticatedUser.id &&
-        editingKey(session.designerId, session.date) !== key
+        editingKey(session.designerId, session.date, session.itemId) !== key
       );
       broadcastStoppedSessions(removedOwnSessions, socket);
 
@@ -288,6 +289,9 @@ io.on('connection', (socket) => {
         username: authenticatedUser.username,
         name: authenticatedUser.name,
         mode: data.mode === 'colorMark' ? 'colorMark' : 'edit',
+        // colorMark 模式下行定位：itemId 主任务 id，gunIndex 枪名下标（null 表示主任务）
+        itemId: typeof data.itemId === 'string' ? data.itemId : null,
+        gunIndex: Number.isInteger(data.gunIndex) ? data.gunIndex : null,
         socketId: socket.id
       };
       editingSessions.set(key, session);
@@ -304,12 +308,12 @@ io.on('connection', (socket) => {
       
       let removedSessions = [];
       if (data?.designerId && data?.date) {
-        const key = editingKey(data.designerId, data.date);
-        const session = editingSessions.get(key);
-        if (session && session.socketId === socket.id) {
-          editingSessions.delete(key);
-          removedSessions = [session];
-        }
+        // 停止消息不带 itemId：移除该连接在此单元格内的全部主任务会话
+        removedSessions = removeSessions(session =>
+          session.socketId === socket.id &&
+          session.designerId === data.designerId &&
+          session.date === data.date
+        );
       } else {
         removedSessions = removeSessions(session => session.socketId === socket.id);
       }

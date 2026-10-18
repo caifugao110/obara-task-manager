@@ -2,11 +2,11 @@ import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { RefreshCw, ChevronUp, ChevronDown, Trash2 } from 'lucide-react';
-import type { GunDropTargetState, SelectedTask, TaskItem } from '../types';
+import type { EditingSession, GunDropTargetState, SelectedTask, TaskItem } from '../types';
 import { hasStoredUserMarkColor, isWhiteTaskColor, taskSelectionKey } from '../utils';
 import GunDragHandle from './GunDragHandle';
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null }) => {
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
   const isAutoMarked = item.colorMarkedBy?.id === 'auto';
@@ -62,6 +62,15 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
   })();
 
   const isLeaveType = item.leaveType === 'sick' || item.leaveType === 'vacation' || item.leaveType === 'illness';
+
+  // 他人在本主任务上的编辑/标记会话：gunIndex 为 null/undefined 时标记主任务行，否则标记对应枪名行
+  const editingMarkName = editingMarkSession ? (editingMarkSession.name || editingMarkSession.username) : '';
+  const isMainMarkTarget = Boolean(editingMarkSession) && editingMarkSession?.gunIndex == null;
+  const editingMarkBadge = editingMarkSession ? (
+    <span className="ml-1 shrink-0 text-[10px] font-bold text-white bg-red-600 px-1 py-0.5 rounded border border-red-700 shadow-sm whitespace-nowrap animate-pulse">
+      {editingMarkName} {editingMarkSession.mode === 'colorMark' ? '正在修改任务状态' : '正在编辑'}
+    </span>
+  ) : null;
 
   return (
     <div
@@ -181,8 +190,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             ) : (
               item.taskName || <span className="text-gray-300 italic">无</span>
             )}
-            {/* Move up/down buttons after task text */}
-            {!item.leaveType && isAdmin && (canMoveUp || canMoveDown) && (
+            {isMainMarkTarget && editingMarkBadge}
+            {/* Move up/down buttons after task text（他人正在编辑/标记本主任务时隐藏，避免对本任务的操作） */}
+            {!item.leaveType && isAdmin && !isMainMarkTarget && (canMoveUp || canMoveDown) && (
               <div className="flex items-center gap-0.5 ml-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
                 {canMoveUp && (
                   <button
@@ -266,7 +276,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             <div className="flex-1 flex items-center gap-1">
               <span>{gun.name || '未命名'}</span>
             </div>
-            {/* 枪名操作按钮组：拖动 / 上移 / 下移 / 删除，拉开间距避免相互干扰 */}
+            {/* 他人正在修改本枪名完成状态时：隐藏悬停操作按钮组，原位显示「正在修改」标记 */}
+            {editingMarkSession?.gunIndex === index ? editingMarkBadge : (
+            /* 枪名操作按钮组：拖动 / 上移 / 下移 / 删除，拉开间距避免相互干扰 */
             <div className="flex items-center gap-2 shrink-0 pl-1">
             {isAdmin && (
               <GunDragHandle
@@ -314,6 +326,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                </button>
              )}
             </div>
+            )}
             </div>
           <div
             data-gun-index={index}

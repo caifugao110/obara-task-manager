@@ -3667,7 +3667,24 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
 
 ### 编辑状态管理
 
-后端使用 `designerId::date` 作为键管理编辑会话，同一用户同时只能编辑一个单元格，切换编辑时会自动释放之前的编辑状态。多人同时使用时，同一设计人员同一天只允许一个用户编辑，其他用户会看到红色"正在编辑"提示。
+后端使用 `designerId::date::itemId` 作为键管理编辑会话（`itemId` 为空时退化为 `designerId::date::`，即旧的整格会话）。粒度为**主任务级**：
+
+- **同一主任务互斥**：某个主任务已被他人占用时，新的 `start_editing` 被拒绝，发起人收到 `editing_blocked`（载荷为占用会话）。
+- **不同主任务并行**：同一设计人员同一天内的不同主任务，允许多个用户同时编辑，互不干扰。
+- **整格会话兼容**：`itemId` 为空的旧版会话视为占用整个单元格，会拦住该单元格内的所有主任务；未升级的旧客户端发送的 `start_editing` 不带 `itemId`，行为与升级前一致。
+- **同一用户单会话**：同一用户同时只能持有一个会话，发起新的 `start_editing` 会自动释放自己之前的会话（向全体广播对应的 `user_stopped_editing`）。
+- **`stop_editing` 不带 `itemId`**：携带 `designerId` + `date` 时，移除**该 socket 在该单元格内的全部主任务会话**（不再只删一个键）；两者都不传时释放该 socket 的所有会话。
+- 断开连接时移除该 socket 持有的全部会话。
+
+前端 `useEditingSessions` 与之对应的判定规则：
+
+| 调用 | 传入 `itemId` | 不传 `itemId`（新增/整格类操作） |
+|------|--------------|--------------------------|
+| 被他人会话拦截的条件 | 他人占用**同一主任务**，或存在他人整格会话 | 仅他人**整格会话** |
+| 提示文案 | `AAA 正在编辑该任务，暂无法操作`（`colorMark` 时为 `AAA 正在修改该任务的完成状态，暂无法操作`） | `AAA 正在编辑该区域，暂无法操作` |
+| UI 呈现 | 该主任务行内的红色脉冲徽标（`colorMark` 时按 `gunIndex` 落到具体枪名行） | 整格红色罩层 |
+
+主页面「新增主任务」入口不再申请编辑会话，因此不受他人的主任务级会话影响。
 
 ### 焊枪台账编辑锁
 
@@ -3699,8 +3716,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `connect` | Socket 连接成功（可用于检测后端是否恢复） | - |
 | `connect_error` | Socket 连接失败（后端端口断开或网络异常） | - |
 | `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端。可选参数 `{ designerId, month, year }` 用于增量广播，不传或坐标非法时退化为全量刷新信号 | 需已认证；**每个连接 10 秒最多 5 次**，超限收到 `error`（`操作过于频繁，请稍后再试`） |
-| `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`（可选 `mode` 为 `edit` 或 `colorMark`） | 需已认证；用户身份一律取服务端会话，客户端传入的 `userId`/`username` 被忽略 |
-| `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放指定单元格；不传则释放当前 socket 的编辑状态 | 需已认证 |
+| `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、可选 `mode`（`edit` / `colorMark`）、可选 `itemId`（主任务 id，省略即整格会话）、可选 `gunIndex`（枪名下标，`colorMark` 模式下定位到具体枪名行，`null`/省略表示主任务本身） | 需已认证；用户身份一律取服务端会话，客户端传入的 `userId`/`username` 被忽略 |
+| `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放该 socket 在此单元格内的**全部主任务会话**（事件不带 `itemId`）；两者都不传则释放当前 socket 的所有编辑会话 | 需已认证 |
 | `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数只需 `itemId` | **仅 `admin`/`superadmin`**（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；**每个连接 10 秒最多 30 次** |
 | `status_tracking_stop_edit` | 通知停止编辑状态追踪记录，参数包含 `itemId` | 需已认证 |
 | `gun_ledger_start_edit` | 通知开始编辑焊枪台账某行（取号），参数包含 `tableId`、`serialNumber` | 仅 `admin`/`superadmin` |
@@ -3716,10 +3733,10 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | 事件 | 说明 | 接收方 |
 |------|------|--------|
 | `task_refreshed` | 任务数据已刷新。载荷为空时客户端全量刷新；载荷为 `{ sheets: [sheet] }` 时为增量更新，客户端直接本地合并这些工时表（详见「任务刷新与增量广播」） | 由 `task_updated` 事件触发时：除发起者外的其他客户端；由 HTTP 接口（导入/维护/分配）触发时：全体客户端（无载荷） |
-| `editing_state` | 当前所有编辑中的单元格状态，连接成功后下发 | 仅当前连接 |
-| `user_editing` | 某用户正在编辑指定设计人员日期单元格，参数为编辑会话（含 `designerId`、`date`、`userId`、`username`、`name`、`mode`、`socketId`） | **除发起者外**的其他客户端（发起者需自行维护本地状态） |
-| `editing_blocked` | 当前单元格已被其他用户编辑，服务端拒绝新的编辑请求 | 仅发起者 |
-| `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格，参数 `{ designerId, date, userId }` | 全体客户端（含发起者） |
+| `editing_state` | 当前所有编辑中的会话状态（主任务粒度，一个单元格可能存在多条），连接成功后下发 | 仅当前连接 |
+| `user_editing` | 某用户正在编辑指定会话，参数为编辑会话（含 `designerId`、`date`、`userId`、`username`、`name`、`mode`、`itemId`、`gunIndex`、`socketId`） | **除发起者外**的其他客户端（发起者需自行维护本地状态） |
+| `editing_blocked` | 目标主任务（或整格）已被其他用户编辑，服务端拒绝新的编辑请求，参数为占用会话 | 仅发起者 |
+| `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格，参数 `{ designerId, date, userId }`；不带 `itemId`，客户端需自行移除该用户在该单元格内的全部会话（切换/停止多个主任务会话时会逐条下发） | 全体客户端（含发起者） |
 | `session_invalidated` | 当前会话被新登录踢下线 | 该用户的其他设备连接 |
 | `status_tracking_edit_start` | 某用户开始编辑指定状态追踪记录，参数 `{ itemId, userId, username, socketId }` | 全体客户端（含发起者） |
 | `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` | 全体客户端（含发起者） |

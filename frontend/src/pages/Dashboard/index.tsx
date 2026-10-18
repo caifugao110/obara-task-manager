@@ -256,7 +256,7 @@ const Dashboard = () => {
   const {
     editingSessions,
     setEditingSessions,
-    getEditingSession,
+    getCellSessions,
     getBlockingEditingSession,
     warnIfCellLocked,
     startEditingCell,
@@ -561,10 +561,9 @@ const Dashboard = () => {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    if (warnIfCellLocked(designerId, date)) return;
+    // 新增主任务不占用编辑会话：不影响他人编辑/新增该单元格的其他主任务
     // 刷新枪名所在表索引，保证专用工时规则匹配到最新台账
     fetchGunLocations();
-    startEditingCell(designerId, date);
     setModalDesignerId(designerId);
     setModalDate(date);
     setFocusTarget(null);
@@ -600,8 +599,8 @@ const Dashboard = () => {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    if (warnIfCellLocked(designerId, date)) return;
-    startEditingCell(designerId, date);
+    if (warnIfCellLocked(designerId, date, item.id)) return;
+    startEditingCell(designerId, date, item.id);
     setModalDesignerId(designerId);
     setModalDate(date);
     setFocusTarget({ itemId: item.id, type, gunIndex });
@@ -731,7 +730,7 @@ const Dashboard = () => {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    if (warnIfCellLocked(designerId, date)) return;
+    if (warnIfCellLocked(designerId, date, item.id)) return;
     const newGuns = (item.guns || []).filter((_, i) => i !== gunIndex);
     // 记录删除枪名的操作，以便撤销
     addToHistory('deleteGun', {
@@ -751,7 +750,7 @@ const Dashboard = () => {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    if (warnIfCellLocked(designerId, date)) return;
+    if (warnIfCellLocked(designerId, date, item.id)) return;
     const guns = item.guns || [];
     const target = direction === 'up' ? gunIndex - 1 : gunIndex + 1;
     if (gunIndex < 0 || gunIndex >= guns.length || target < 0 || target >= guns.length) return;
@@ -847,7 +846,7 @@ const Dashboard = () => {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    if (warnIfCellLocked(designerId, date)) return;
+    if (warnIfCellLocked(designerId, date, item.id)) return;
     // 按显示顺序找到相邻任务，再换算成完整数组中的目标索引（兼容被隐藏的空任务）
     const visibleItems = getItems(designerId, date);
     const visIdx = visibleItems.findIndex(i => i.id === item.id);
@@ -884,7 +883,7 @@ const Dashboard = () => {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    if (warnIfCellLocked(designerId, date)) return;
+    if (warnIfCellLocked(designerId, date, item.id)) return;
     deleteSelectedTasks({ item, designerId, date });
   };
 
@@ -1033,7 +1032,7 @@ const Dashboard = () => {
   const handleUserDesignPlanColorMark = useCallback(async (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => {
     if (!user || !token) return;
     if (warnIfOfflineEdit()) return;
-    if (warnIfCellLocked(designerId, date)) return;
+    if (warnIfCellLocked(designerId, date, item.id)) return;
 
     socketRef.current?.emit('start_editing', {
       designerId,
@@ -1041,7 +1040,9 @@ const Dashboard = () => {
       userId: user.id,
       username: user.username,
       name: user.name,
-      mode: 'colorMark'
+      mode: 'colorMark',
+      itemId: item.id,
+      gunIndex: null
     });
 
     try {
@@ -1066,7 +1067,7 @@ const Dashboard = () => {
   const handleGunColorMark = useCallback(async (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => {
     if (!user || !token) return;
     if (warnIfOfflineEdit()) return;
-    if (warnIfCellLocked(designerId, date)) return;
+    if (warnIfCellLocked(designerId, date, item.id)) return;
 
     socketRef.current?.emit('start_editing', {
       designerId,
@@ -1074,7 +1075,9 @@ const Dashboard = () => {
       userId: user.id,
       username: user.username,
       name: user.name,
-      mode: 'colorMark'
+      mode: 'colorMark',
+      itemId: item.id,
+      gunIndex
     });
 
     try {
@@ -1281,7 +1284,7 @@ const Dashboard = () => {
         const next: Record<string, EditingSession> = {};
         (Array.isArray(sessions) ? sessions : []).forEach(session => {
           if (!session?.designerId || !session?.date) return;
-          next[editingSessionKey(session.designerId, session.date)] = session;
+          next[editingSessionKey(session.designerId, session.date, session.itemId)] = session;
         });
         setEditingSessions(next);
       });
@@ -1290,7 +1293,7 @@ const Dashboard = () => {
         if (!data?.designerId || !data?.date) return;
         setEditingSessions(prev => ({
           ...prev,
-          [editingSessionKey(data.designerId, data.date)]: data
+          [editingSessionKey(data.designerId, data.date, data.itemId)]: data
         }));
       });
 
@@ -1298,21 +1301,25 @@ const Dashboard = () => {
         if (!data?.designerId || !data?.date) return;
         setEditingSessions(prev => ({
           ...prev,
-          [editingSessionKey(data.designerId, data.date)]: data
+          [editingSessionKey(data.designerId, data.date, data.itemId)]: data
         }));
         setSelectedCell(null);
         setSelectedTasks([]);
         setModalOpen(false);
-        addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑该区域，暂无法修改任务完成状态'}`, 'error');
+        const blockedTarget = data.itemId ? '该任务' : '该区域';
+        addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? `正在修改${blockedTarget}的完成状态` : `正在编辑${blockedTarget}`}，暂无法操作`, 'error');
       });
 
       socketRef.current.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
         if (!data?.designerId || !data?.date) return;
         setEditingSessions(prev => {
-          const key = editingSessionKey(data.designerId, data.date);
-          if (!prev[key]) return prev;
+          // 停止消息不带 itemId：移除该用户在此单元格内的全部主任务会话
+          const entries = Object.entries(prev).filter(([, session]) =>
+            session.designerId === data.designerId && session.date === data.date && session.userId === data.userId
+          );
+          if (entries.length === 0) return prev;
           const next = { ...prev };
-          delete next[key];
+          entries.forEach(([key]) => { delete next[key]; });
           return next;
         });
       });
@@ -1412,7 +1419,7 @@ const Dashboard = () => {
       if (!user) return;
       const payloads = getSelectedTaskPayloads({ item, designerId, date });
       if (payloads.length === 0) return;
-      if (payloads.some(payload => warnIfCellLocked(payload.designerId, payload.date))) return;
+      if (payloads.some(payload => warnIfCellLocked(payload.designerId, payload.date, payload.item.id))) return;
       
       setClipboard(payloads.map(payload => payload.item));
       addToast('剪切已准备', 'success');
@@ -1598,7 +1605,7 @@ const Dashboard = () => {
           .filter(Boolean) as { item: TaskItem; designerId: string; date: string }[];
 
     if (selections.length === 0) return;
-    if (selections.some(selection => warnIfCellLocked(selection.designerId, selection.date))) return;
+    if (selections.some(selection => warnIfCellLocked(selection.designerId, selection.date, selection.item.id))) return;
 
     try {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
@@ -2502,7 +2509,9 @@ const Dashboard = () => {
                                 </td>
                                 {days.map(day => {
                                   const items = getItems(d.id, day.fullDate);
-                                  const editingSession = getEditingSession(d.id, day.fullDate);
+                                  // 单元格内全部编辑会话：按主任务粒度展示标记；itemId 为空的是旧版整格会话
+                                  const cellSessions = getCellSessions(d.id, day.fullDate);
+                                  const legacyCellSession = cellSessions.find(s => s.userId !== user?.id && s.itemId == null) || null;
                                   const isCellLocked = Boolean(getBlockingEditingSession(d.id, day.fullDate));
                                   // 主任务拖拽扫过本单元格时的预插入位置：itemId 命中某条主任务 → 其上方显示标记线；
                                   // itemId 为 null → 最下方显示追加标记线；duplicate 时红色（复制内容重复）
@@ -2558,12 +2567,13 @@ const Dashboard = () => {
                                                 metadataTitle={buildTaskMetadataTitle(item)}
                                                 gunDropTarget={gunDropTarget && !gunDropTarget.isSelf && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate && gunDropTarget.itemId === item.id ? (gunDropTarget.invalid ? 'invalid' : 'valid') : null}
                                                 taskInsertMarker={cellTaskDrop && cellTaskDrop.itemId === item.id ? (cellTaskDrop.duplicate ? 'invalid' : 'valid') : null}
+                                                editingMarkSession={cellSessions.find(s => s.userId !== user?.id && s.itemId === item.id && (canViewEditingUser || s.mode === 'colorMark')) || null}
                                                 onSelectTask={(itemId, designerId, date, append) => {
                                                   if (!canEditTasks) return;
-                                                  if (warnIfCellLocked(designerId, date)) return;
+                                                  if (warnIfCellLocked(designerId, date, itemId)) return;
                                                   handleSelectTask(itemId, designerId, date, append);
                                                   setSelectedCell(null);
-                                                  startEditingCell(designerId, date);
+                                                  startEditingCell(designerId, date, itemId);
                                                 }}
                                               />
                                             );
@@ -2584,14 +2594,14 @@ const Dashboard = () => {
                                             />
                                           )}
                                           {canEditTasks && (
-                                            <div 
+                                            <div
                                               className={`h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-blue-50/50'} ${selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? 'opacity-100 bg-blue-100 border border-blue-400' : ''}`}
                                               onClick={(e) => {
                                                 e.stopPropagation();
+                                                // 新增主任务不受他人主任务级编辑影响，仅旧版整格会话会拦截
                                                 if (warnIfCellLocked(d.id, day.fullDate)) return;
                                                 setSelectedCell({ designerId: d.id, date: day.fullDate });
                                                 setSelectedTasks([]);
-                                                startEditingCell(d.id, day.fullDate);
                                               }}
                                               onDoubleClick={(e) => {
                                                 e.stopPropagation();
@@ -2614,10 +2624,11 @@ const Dashboard = () => {
                                               <Plus size={14} />
                                             </div>
                                           )}
-                                          {user && editingSession && editingSession.userId !== user?.id && (canViewEditingUser || editingSession.mode === 'colorMark') && (
+                                          {/* 整格红色罩层仅保留给旧版整格会话；主任务级会话在对应任务行内显示标记 */}
+                                          {user && legacyCellSession && (canViewEditingUser || legacyCellSession.mode === 'colorMark') && (
                                             <div className="absolute inset-0 bg-red-200/85 flex items-center justify-center z-10">
                                               <span className="text-xs font-bold text-white bg-red-600 px-2 py-1 rounded border border-red-700 shadow-sm">
-                                                {editingSession.name || editingSession.username} {editingSession.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑'}
+                                                {legacyCellSession.name || legacyCellSession.username} {legacyCellSession.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑'}
                                               </span>
                                             </div>
                                           )}
