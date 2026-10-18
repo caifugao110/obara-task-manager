@@ -183,7 +183,7 @@ const WorkHours = () => {
   }, [authHeader, markOfflineIfNetworkError]);
 
   const fetchWorkHoursData = useCallback(async () => {
-    if (designers.length === 0) return;
+    if (designers.length === 0 || isOffline) return;
     setDataLoading(true);
     try {
       const activeWorkdayOverrides = await fetchWorkdayOverrides(false);
@@ -273,7 +273,7 @@ const WorkHours = () => {
     } finally {
       setDataLoading(false);
     }
-  }, [authHeader, currentDate, designers, fetchWorkdayOverrides, markOfflineIfNetworkError]);
+  }, [authHeader, currentDate, designers, fetchWorkdayOverrides, markOfflineIfNetworkError, isOffline]);
 
   useEffect(() => {
     fetchSettings();
@@ -506,7 +506,7 @@ const WorkHours = () => {
           {isAdmin && (
             <button
               onClick={handleWorkHoursExport}
-              disabled={exporting}
+              disabled={exporting || isOffline}
               className="flex items-center gap-2 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition"
               title={`导出 ${format(currentDate, 'yyyy年MM月')} 工时管理表`}
             >
@@ -516,9 +516,10 @@ const WorkHours = () => {
           )}
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className={`flex items-center space-x-4 ${isOffline ? 'offline-locked' : ''}`}>
           <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
             <button
+              disabled={isOffline}
               onClick={() => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
               className="p-1 hover:bg-white rounded-lg transition shadow-sm"
             >
@@ -529,6 +530,7 @@ const WorkHours = () => {
               <input
                 type="month"
                 className="delivery-date-input"
+                disabled={isOffline}
                 value={format(currentDate, 'yyyy-MM')}
                 onChange={(e) => {
                   if (e.target.value) {
@@ -539,6 +541,7 @@ const WorkHours = () => {
               />
             </span>
             <button
+              disabled={isOffline}
               onClick={() => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
               className="p-1 hover:bg-white rounded-lg transition shadow-sm"
             >
@@ -546,6 +549,7 @@ const WorkHours = () => {
             </button>
           </div>
           <button
+            disabled={isOffline}
             onClick={fetchWorkHoursData}
             className="p-2 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
             title="刷新数据"
@@ -572,7 +576,7 @@ const WorkHours = () => {
         </div>
       )}
 
-      <main className="flex-1 max-w-7xl mx-auto w-full overflow-y-auto">
+      <main className={`flex-1 max-w-7xl mx-auto w-full overflow-y-auto ${isOffline ? 'offline-locked' : ''}`}>
        <div className="p-8">
         {dataLoading ? (
           <div className="flex items-center justify-center py-20">
@@ -589,6 +593,7 @@ const WorkHours = () => {
                     {workHoursData.length > 10 && (
                       <button
                         className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-blue-200"
+                        disabled={isOffline}
                         onClick={() => setShowAllHours(!showAllHours)}
                       >
                         {showAllHours ? '收起' : '显示全部'}
@@ -602,6 +607,7 @@ const WorkHours = () => {
                         type="checkbox"
                         checked={excludeWeekendOvertime}
                         onChange={(e) => setExcludeWeekendOvertime(e.target.checked)}
+                        disabled={isOffline}
                         className="peer sr-only"
                       />
                       <span className="absolute inset-0 rounded-full bg-gray-300 transition peer-checked:bg-blue-500"></span>
@@ -686,6 +692,7 @@ const WorkHours = () => {
                     {workHoursData.length > 10 && (
                       <button
                         className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-red-200"
+                        disabled={isOffline}
                         onClick={() => setShowAllLeave(!showAllLeave)}
                       >
                         {showAllLeave ? '收起' : '显示全部'}
@@ -699,6 +706,7 @@ const WorkHours = () => {
                         type="checkbox"
                         checked={excludeVacationLeave}
                         onChange={(e) => setExcludeVacationLeave(e.target.checked)}
+                        disabled={isOffline}
                         className="peer sr-only"
                       />
                       <span className="absolute inset-0 rounded-full bg-gray-300 transition peer-checked:bg-red-500"></span>

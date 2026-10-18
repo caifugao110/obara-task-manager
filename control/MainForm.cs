@@ -1244,7 +1244,26 @@ namespace ObaraServiceController
         }
 
         private void StartAllBtn_Click(object sender, EventArgs e) { StartAll(); }
-        private void StopAllBtn_Click(object sender, EventArgs e) { StopAll(); }
+        private void StopAllBtn_Click(object sender, EventArgs e)
+        {
+            // taskkill (8s timeout) + WaitForExit + port scans are blocking —
+            // run them off the UI thread so the window doesn't freeze.
+            // LogMessage is queue-based and UpdateCardDisplay marshals via
+            // InvokeRequired, so background status updates are safe.
+            _stopAllBtn.Enabled = false;
+            Task.Run((Action)StopAll).ContinueWith(t =>
+            {
+                if (IsDisposed || Disposing) return;
+                try
+                {
+                    BeginInvoke(new MethodInvoker(delegate
+                    {
+                        if (!IsDisposed && !Disposing) _stopAllBtn.Enabled = true;
+                    }));
+                }
+                catch { }
+            });
+        }
         private void RefreshBtn_Click(object sender, EventArgs e) { UpdateAllStatusAsync(); }
         private void OpenBrowserBtn_Click(object sender, EventArgs e) { OpenBrowser(); }
 

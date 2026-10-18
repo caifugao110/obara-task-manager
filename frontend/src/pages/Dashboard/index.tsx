@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { axiosInstance } from '../../services/api';
 import { isAxiosError } from 'axios';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronUp, ChevronDown, X, Trophy, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Move, Maximize2, Minimize2 } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
+import { acquireSocket } from '../../utils/socketClient';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
 import { resolveGunHours, GunLocation } from '../../utils/gunHoursRules';
 import {
@@ -29,22 +30,18 @@ import {
   taskSelectionKey,
   editingSessionKey,
   isEditableKeyboardTarget,
-  normalizeTaskColor,
   isWhiteTaskColor,
-  hasStoredUserMarkColor,
   extractSpecNumber,
   splitDesignTaskName,
   getDeliveryDateSuffix,
   getDesignPlanClientName,
   buildSyncedSpecTaskName,
-  isTaskContentIdentical,
   hasInvalidNamedGunHours,
   hasDuplicateGunNames,
   getHoursInputValue,
   getGunHoursTotalInputValue,
   isMeaningfulTask,
   getTaskHours,
-  formatTaskMetaTime,
   buildTaskMetadataTitle,
 } from './utils';
 import type {
@@ -53,13 +50,11 @@ import type {
   TaskSheet,
   SpecInfoResponse,
   Designer,
-  User,
   TaskField,
   PendingChange,
   EditingSession,
   BatchReplaceMatch,
   SelectedTask,
-  GunDropTargetState,
   Toast,
 } from './types';
 
@@ -129,6 +124,8 @@ const Dashboard = () => {
   const [versionInfo, setVersionInfo] = useState<{ currentVersion: string; hasUpdate: boolean; latestVersion: string | null } | null>(null);
   const [clientInfo, setClientInfo] = useState<{ ip: string; browser: string; summary: string; lastLoginAt?: string | null; previousLoginAt?: string | null } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // 操作说明弹窗（仅管理员可见入口）
+  const [helpGuideOpen, setHelpGuideOpen] = useState(false);
   const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
   const [batchFindText, setBatchFindText] = useState('');
   const [batchReplaceText, setBatchReplaceText] = useState('');
@@ -167,6 +164,14 @@ const Dashboard = () => {
   useEffect(() => {
     isOfflineModeRef.current = isOfflineMode;
   }, [isOfflineMode]);
+
+  // 操作说明弹窗：Esc 关闭
+  useEffect(() => {
+    if (!helpGuideOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setHelpGuideOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [helpGuideOpen]);
 
   // 批量操作模态框关闭时恢复透明度并清理定位恢复计时器
   useEffect(() => {
@@ -254,7 +259,6 @@ const Dashboard = () => {
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const {
-    editingSessions,
     setEditingSessions,
     getCellSessions,
     getBlockingEditingSession,
@@ -290,8 +294,7 @@ const Dashboard = () => {
 
     setUpdatingWorkdayOverrideDate(date);
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axiosInstance.put('/settings/workday-overrides', { date, type }, authHeader);
+      const res = await axiosInstance.put('/settings/workday-overrides', { date, type });
       setWorkdayOverrides(normalizeWorkdayOverrides(res.data));
       socketRef.current?.emit('task_updated');
       addToast('工作日设置已保存', 'success');
@@ -605,7 +608,7 @@ const Dashboard = () => {
     setModalDate(date);
     setFocusTarget({ itemId: item.id, type, gunIndex });
     setIsAddMode(false);
-    // 记住该任务原有的纳期状态：任务名以 [M/D] 结尾则勾选“显示纳期”
+    // 记住该任务原有的纳期状态：任务名以 [M/D] 结尾则勾选"显示纳期"
     setShowDeadline(/\[\d{1,2}\/\d{1,2}\]\s*$/.test((item.taskName || '').trim()));
     setManualDeadline(false);
     setManualDeadlineInput('');
@@ -629,11 +632,10 @@ const Dashboard = () => {
     setAutoGunLookupItemId(itemId ?? null);
     setAutoGunLookupChecked(new Set());
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       // 并发拉取仕样信息和枪台账数据
       const [specInfo, ledgerRes] = await Promise.all([
         fetchSpecInfo(specNumber),
-        axiosInstance.get('/gun-ledger', authHeader),
+        axiosInstance.get('/gun-ledger'),
       ]);
       const clientName = specInfo.success && specInfo.clientName ? specInfo.clientName.trim() : '';
       const data = ledgerRes.data || {};
@@ -653,7 +655,7 @@ const Dashboard = () => {
         });
       });
       // 标记已被主任务使用的枪名（与台账页天蓝色标识含义一致）；拉取失败不影响匹配结果
-      const usedRes = await axiosInstance.get('/tasks/used-gun-names', authHeader).catch(() => null);
+      const usedRes = await axiosInstance.get('/tasks/used-gun-names').catch(() => null);
       const usedSet = new Set<string>((usedRes?.data?.gunNames || []).map((n: string) => String(n).trim()));
       matches.forEach(m => { m.used = usedSet.has(m.gunName); });
       setAutoGunLookupResults(matches);
@@ -804,7 +806,6 @@ const Dashboard = () => {
     debouncedSave.cancel();
 
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axiosInstance.post('/tasks/move-gun', {
         sourceDesignerId,
         sourceDate,
@@ -814,7 +815,7 @@ const Dashboard = () => {
         targetDate,
         targetItemId,
         newIndex
-      }, authHeader);
+      });
       if (res.data.sourceSheet) upsertSheet(res.data.sourceSheet);
       if (res.data.targetSheet) upsertSheet(res.data.targetSheet);
       addToHistory('moveGunBetweenItems', {
@@ -856,7 +857,6 @@ const Dashboard = () => {
     const rawTargetIdx = getAllItems(designerId, date).findIndex(i => i.id === targetItem.id);
     if (rawTargetIdx === -1) return;
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axiosInstance.post('/tasks/move', {
         sourceDesignerId: designerId,
         sourceDate: date,
@@ -864,7 +864,7 @@ const Dashboard = () => {
         targetDesignerId: designerId,
         targetDate: date,
         newIndex: rawTargetIdx
-      }, authHeader);
+      });
       if (res.data.sourceSheet) upsertSheet(res.data.sourceSheet);
       if (res.data.targetSheet) upsertSheet(res.data.targetSheet);
       addToHistory('batchMove', {
@@ -897,8 +897,7 @@ const Dashboard = () => {
 
   const fetchSpecInfo = async (specNumber: string): Promise<SpecInfoResponse> => {
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axiosInstance.post('/spec/spec-info', { specNumber }, { ...authHeader, timeout: 15000 });
+      const res = await axiosInstance.post('/spec/spec-info', { specNumber }, { timeout: 15000 });
       return res.data;
     } catch (err) {
       if (isAxiosError(err) && err.code === 'ECONNABORTED') {
@@ -912,8 +911,7 @@ const Dashboard = () => {
   // Fetch delivery date (纳期) for a spec number from the backend PDF parser
   const fetchSpecDeliveryDate = async (specNumber: string): Promise<{ success: boolean; date?: string; message?: string }> => {
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axiosInstance.post('/spec/delivery-date', { specNumber }, { ...authHeader, timeout: 10000 });
+      const res = await axiosInstance.post('/spec/delivery-date', { specNumber }, { timeout: 10000 });
       return res.data;
     } catch (err) {
       if (isAxiosError(err) && err.code === 'ECONNABORTED') {
@@ -1018,10 +1016,9 @@ const Dashboard = () => {
 
   const fetchSheets = useCallback(async () => {
     try {
-      const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
       const month = currentDate.getMonth() + 1;
       const year = currentDate.getFullYear();
-      const res = await axiosInstance.get(`/tasks?month=${month}&year=${year}`, authHeader);
+      const res = await axiosInstance.get(`/tasks?month=${month}&year=${year}`);
       setSheets(res.data);
     } catch (err: any) {
       console.error('Error fetching tasks:', err);
@@ -1046,9 +1043,8 @@ const Dashboard = () => {
     });
 
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const value = action === 'white' ? '#ffffff' : '__restore__';
-      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId: item.id, field: 'color', value }, authHeader);
+      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId: item.id, field: 'color', value });
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
@@ -1081,9 +1077,8 @@ const Dashboard = () => {
     });
 
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const value = action === 'white' ? '#ffffff' : '__restore__';
-      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId: item.id, field: 'gunColor', value, gunIndex }, authHeader);
+      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId: item.id, field: 'gunColor', value, gunIndex });
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
@@ -1211,16 +1206,11 @@ const Dashboard = () => {
     fetchData();
 
     if (token) {
-      socketRef.current = io('/', {
-        path: '/socket.io',
-        reconnectionAttempts: 10,
-        reconnectionDelay: 3000,
-        reconnectionDelayMax: 10000,
-        timeout: 10000,
-        auth: { token }
-      });
+      // 共享连接：AuthContext 启动时已建连，这里复用同一条，不再额外开一条 WebSocket
+      const handle = acquireSocket(token);
+      socketRef.current = handle.socket;
 
-      socketRef.current.on('task_refreshed', (payload?: { sheets?: TaskSheet[] }) => {
+      handle.on('task_refreshed', (payload?: { sheets?: TaskSheet[] }) => {
         // 增量：服务端已回传受影响的工时表，直接本地合并，
         // 无需重新拉取整月数据，也无需重拉工作日设置。
         const incoming = payload?.sheets;
@@ -1257,22 +1247,21 @@ const Dashboard = () => {
         fetchWorkdayOverrides();
       });
 
-      socketRef.current.on('connect', () => {
+      handle.on('connect', () => {
         setIsOnline(true);
         setOfflineCacheUsed(false);
         hasShownDisconnectToast.current = false;
         addToast('服务器已重新连接', 'success');
       });
 
-      socketRef.current.on('reconnect', (attempt: number) => {
+      handle.on('reconnect', (attempt: number) => {
         setIsOnline(true);
         setOfflineCacheUsed(false);
         hasShownDisconnectToast.current = false;
         addToast(`服务器重连成功 (第${attempt}次尝试)`, 'success');
       });
 
-      socketRef.current.on('connect_error', (err: any) => {
-        console.error('Socket connection error:', err?.message);
+      handle.on('connect_error', () => {
         setIsOnline(false);
         if (!hasShownDisconnectToast.current && !offlineCacheUsed) {
           hasShownDisconnectToast.current = true;
@@ -1280,16 +1269,21 @@ const Dashboard = () => {
           addToast('服务器连接断开，已自动保存数据', 'error');
         }
       });
-      socketRef.current.on('editing_state', (sessions: EditingSession[]) => {
+      // editing_state 是连接期快照：共享连接可能早于本页挂载建立，
+      // 事件不会重放，因此注册后用缓存补一次初始编辑锁状态
+      const applyEditingState = (sessions: EditingSession[]) => {
         const next: Record<string, EditingSession> = {};
         (Array.isArray(sessions) ? sessions : []).forEach(session => {
           if (!session?.designerId || !session?.date) return;
           next[editingSessionKey(session.designerId, session.date, session.itemId)] = session;
         });
         setEditingSessions(next);
-      });
+      };
+      handle.on('editing_state', applyEditingState);
+      const cachedEditingState = handle.getSnapshot<EditingSession[]>('editing_state');
+      if (cachedEditingState) applyEditingState(cachedEditingState);
 
-      socketRef.current.on('user_editing', (data: EditingSession) => {
+      handle.on('user_editing', (data: EditingSession) => {
         if (!data?.designerId || !data?.date) return;
         setEditingSessions(prev => ({
           ...prev,
@@ -1297,7 +1291,7 @@ const Dashboard = () => {
         }));
       });
 
-      socketRef.current.on('editing_blocked', (data: EditingSession) => {
+      handle.on('editing_blocked', (data: EditingSession) => {
         if (!data?.designerId || !data?.date) return;
         setEditingSessions(prev => ({
           ...prev,
@@ -1310,7 +1304,7 @@ const Dashboard = () => {
         addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? `正在修改${blockedTarget}的完成状态` : `正在编辑${blockedTarget}`}，暂无法操作`, 'error');
       });
 
-      socketRef.current.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
+      handle.on('user_stopped_editing', (data: { designerId: string, date: string, userId: string }) => {
         if (!data?.designerId || !data?.date) return;
         setEditingSessions(prev => {
           // 停止消息不带 itemId：移除该用户在此单元格内的全部主任务会话
@@ -1329,12 +1323,14 @@ const Dashboard = () => {
           window.clearTimeout(deferredRefreshTimerRef.current);
           deferredRefreshTimerRef.current = null;
         }
-        socketRef.current?.disconnect();
+        handle.release();
       };
     } else {
       setIsOnline(true);
     }
-  }, [fetchData, fetchSheets, fetchWorkdayOverrides, systemSettingsLoaded, user, upsertSheet]);
+    // token 必须进依赖：共享连接按 token 复用，若 token 变了而 effect 不重跑，
+    // 本页会一直持有 AuthContext 已释放并销毁的旧 socket，收不到任何事件
+  }, [fetchData, fetchSheets, fetchWorkdayOverrides, systemSettingsLoaded, user, token, upsertSheet]);
 
   // Online/offline event listeners
   useEffect(() => {
@@ -1425,9 +1421,8 @@ const Dashboard = () => {
       addToast('剪切已准备', 'success');
       
       try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         for (const payload of payloads) {
-          await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId: payload.designerId, date: payload.date, itemId: payload.item.id } });
+          await axiosInstance.delete('/tasks/item', { data: { designerId: payload.designerId, date: payload.date, itemId: payload.item.id } });
         }
         addToHistory('batchDelete', {
           items: payloads.map(payload => ({ designerId: payload.designerId, date: payload.date, item: payload.item }))
@@ -1454,12 +1449,11 @@ const Dashboard = () => {
       if (warnIfCellLocked(designerId, date)) return;
       addToast('任务已复制', 'success');
       try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axiosInstance.post('/tasks/item/batch', { 
           designerId, 
           date, 
           items: clipboardRef.current
-        }, authHeader);
+        });
         addToHistory('batchAdd', {
           items: (res.data.items || []).map((created: TaskItem, idx: number) => ({ 
             designerId, 
@@ -1608,11 +1602,8 @@ const Dashboard = () => {
     if (selections.some(selection => warnIfCellLocked(selection.designerId, selection.date, selection.item.id))) return;
 
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       for (const selection of selections) {
-        await axiosInstance.delete('/tasks/item', {
-          ...authHeader,
-          data: { designerId: selection.designerId, date: selection.date, itemId: selection.item.id }
+        await axiosInstance.delete('/tasks/item', { data: { designerId: selection.designerId, date: selection.date, itemId: selection.item.id }
         });
       }
 
@@ -1777,8 +1768,7 @@ const Dashboard = () => {
         }
         nextValue = normalizedGuns;
       }
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value: nextValue }, authHeader);
+      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value: nextValue });
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
@@ -1844,8 +1834,7 @@ const Dashboard = () => {
 
     setBatchSearchLoading(true);
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` }, timeout: 60000 };
-      const res = await axiosInstance.post('/tasks/batch-replace/search', getBatchReplacePayload(), authHeader);
+      const res = await axiosInstance.post('/tasks/batch-replace/search', getBatchReplacePayload());
       setBatchMatches(Array.isArray(res.data.matches) ? res.data.matches : []);
       setBatchMatchCount(res.data.matchCount || 0);
       setBatchSearchDone(true);
@@ -1910,8 +1899,7 @@ const Dashboard = () => {
 
     setBatchReplaceLoading(true);
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` }, timeout: 60000 };
-      const res = await axiosInstance.post('/tasks/batch-replace', getBatchReplacePayload(), authHeader);
+      const res = await axiosInstance.post('/tasks/batch-replace', getBatchReplacePayload());
 
       await fetchSheets();
       socketRef.current?.emit('task_updated');
@@ -2084,46 +2072,12 @@ const Dashboard = () => {
     }
   };
 
-  const addItem = async (designerId: string, date: string, taskType?: 'none' | 'trip' | 'sick' | 'vacation' | 'illness') => {
-    if (warnIfOfflineEdit()) return;
-    try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const leaveType = taskType === 'none' ? null : taskType === 'trip' ? 'trip' : taskType === 'sick' ? 'sick' : taskType === 'vacation' ? 'vacation' : taskType === 'illness' ? 'illness' : null;
-      const taskName = taskType === 'trip' ? '出差' : '';
-      const res = await axiosInstance.post('/tasks/item', { 
-        designerId, 
-        date, 
-        taskName, 
-        leaveType, 
-        hours: '' 
-      }, authHeader);
-      upsertSheet(res.data.sheet);
-      emitTaskUpdated(designerId);
-      
-      // Add to history for undo
-      if (res.data.sheet?.days?.[date]) {
-        const newItems = res.data.sheet.days[date];
-        const newItem = newItems[newItems.length - 1]; // Assume the last item is the newly added one
-        if (newItem) {
-          addToHistory('add', { designerId, date, itemId: newItem.id, taskName, leaveType });
-        }
-      }
-      
-      addToast('任务已添加', 'success');
-    } catch (err: any) {
-      addToast('添加任务失败', 'error');
-      console.error('Error adding task:', err);
-    }
-  };
-
   const deleteItem = async (designerId: string, date: string, itemId: string) => {
     if (warnIfOfflineEdit()) return;
     try {
       // Get the item data before deletion for undo
       const item = getItems(designerId, date).find(i => i.id === itemId);
-      
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId, date, itemId } });
+      const res = await axiosInstance.delete('/tasks/item', { data: { designerId, date, itemId } });
       upsertSheet(res.data.sheet);
       emitTaskUpdated(designerId);
       
@@ -2152,26 +2106,17 @@ const Dashboard = () => {
   );
 
 
-  const handleCopy = (designerId: string, date: string) => {
-    const items = getItems(designerId, date);
-    if (items.length > 0) {
-      setClipboard(items);
-      addToast('已复制该单元格内容', 'success');
-    }
-  };
-
   const handlePaste = async (designerId: string, date: string) => {
     if (warnIfOfflineEdit()) return;
     if (!clipboard || !user) return;
     if (warnIfCellLocked(designerId, date)) return;
     addToast('任务已复制', 'success');
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axiosInstance.post('/tasks/item/batch', { 
         designerId, 
         date, 
         items: clipboard 
-      }, authHeader);
+      });
       
       upsertSheet(res.data.sheet);
       addToHistory('batchAdd', {
@@ -2891,6 +2836,19 @@ const Dashboard = () => {
               <span className="font-medium" title={clientInfo.summary}>{clientInfo.browser}</span>
             </>
           )}
+          {isAdmin && (
+            <>
+              <div className="w-[1px] h-3 bg-gray-300"></div>
+              <button
+                type="button"
+                onClick={() => setHelpGuideOpen(true)}
+                title="操作说明：任务录入方式"
+                className="flex items-center justify-center w-[18px] h-[18px] rounded-full border border-gray-300 bg-white/70 text-gray-500 hover:text-white hover:bg-[#217346] hover:border-[#217346] hover:shadow-sm transition-all cursor-pointer focus:outline-none"
+              >
+                <HelpCircle size={12} strokeWidth={2.2} />
+              </button>
+            </>
+          )}
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <button
             type="button"
@@ -2903,6 +2861,135 @@ const Dashboard = () => {
           </button>
         </div>
       </footer>
+
+      {helpGuideOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => setHelpGuideOpen(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[620px] max-w-[94vw] max-h-[88vh] flex flex-col overflow-hidden border border-gray-200">
+            <div className="relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25">
+                  <HelpCircle size={18} />
+                </div>
+                <div>
+                  <div className="font-bold text-base leading-tight">操作说明</div>
+                  <div className="text-[11px] opacity-80 leading-tight mt-0.5">任务录入：拖拽与快捷键两种方式</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setHelpGuideOpen(false)}
+                className="p-1.5 rounded-full hover:bg-white/20 transition cursor-pointer"
+                title="关闭（Esc）"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-5 bg-gray-50/70 space-y-4">
+              <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 bg-green-50/60">
+                  <span className="flex items-center justify-center w-6 h-6 rounded-md bg-[#217346] text-white">
+                    <Move size={14} />
+                  </span>
+                  <span className="font-bold text-sm text-gray-800">拖拽录入</span>
+                  <span className="text-[11px] text-gray-400 ml-auto">鼠标即可完成全部录入</span>
+                </div>
+                <ul className="divide-y divide-gray-100">
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center justify-center w-7 h-7 rounded-md bg-blue-50 text-blue-600 shrink-0">
+                      <MousePointerClick size={15} />
+                    </span>
+                    <div className="text-[13px] text-gray-700">
+                      <span className="font-bold text-gray-800">双击空白单元格</span>
+                      <span className="mx-1.5 text-gray-300">|</span>
+                      快速新增该员工当天的任务
+                    </div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center justify-center w-7 h-7 rounded-md bg-green-50 text-green-600 shrink-0">
+                      <GripVertical size={15} />
+                    </span>
+                    <div className="text-[13px] text-gray-700">
+                      <span className="font-bold text-gray-800">拖动任务整行</span>
+                      <span className="mx-1.5 text-gray-300">|</span>
+                      移动到其他成员 / 日期或调整顺序（绿色插入线提示落点）
+                    </div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center justify-center w-7 h-7 rounded-md bg-amber-50 text-amber-600 shrink-0">
+                      <Copy size={15} />
+                    </span>
+                    <div className="text-[13px] text-gray-700">
+                      <span className="font-bold text-gray-800">按住 <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl</kbd> 拖动任务</span>
+                      <span className="mx-1.5 text-gray-300">|</span>
+                      复制到目标位置（内容重复时红色提示）
+                    </div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center justify-center w-7 h-7 rounded-md bg-purple-50 text-purple-600 shrink-0">
+                      <Hand size={15} />
+                    </span>
+                    <div className="text-[13px] text-gray-700">
+                      <span className="font-bold text-gray-800">拖动枪名左侧手柄</span>
+                      <span className="mx-1.5 text-gray-300">|</span>
+                      将枪名移入其他主任务
+                    </div>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 bg-green-50/60">
+                  <span className="flex items-center justify-center w-6 h-6 rounded-md bg-[#217346] text-white">
+                    <Keyboard size={14} />
+                  </span>
+                  <span className="font-bold text-sm text-gray-800">快捷键录入</span>
+                  <span className="text-[11px] text-gray-400 ml-auto">选中任务后生效</span>
+                </div>
+                <ul className="divide-y divide-gray-100">
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">单击</kbd>
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+单击</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">选中任务 / 多选任务</div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+C</kbd>
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+X</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">复制 / 剪切选中任务</div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+V</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">粘贴到目标单元格</div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Delete</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">删除选中任务</div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">双击任务</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">编辑任务详情</div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="shrink-0 px-5 py-2.5 border-t border-gray-100 bg-white flex items-center gap-1.5 text-[11px] text-gray-400">
+              <AlertCircle size={12} />
+              <span>以上录入操作仅管理员可用；点击遮罩或按 Esc 关闭本窗口</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {modalOpen && modalDate && modalDesignerId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -4147,7 +4234,6 @@ const Dashboard = () => {
                       }
                       
                       try {
-                        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
                         const res = await axiosInstance.post('/tasks/item', { 
                           designerId: modalDesignerId, 
                           date: modalDate, 
@@ -4156,7 +4242,7 @@ const Dashboard = () => {
                           hours,
                           color: addModeColor,
                           guns
-                        }, authHeader);
+                        });
                         upsertSheet(res.data.sheet);
                         emitTaskUpdated(modalDesignerId ?? undefined);
                         setPendingChanges([]);

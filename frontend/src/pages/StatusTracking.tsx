@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import {
   AlertCircle,
   CheckCircle,
@@ -18,7 +18,6 @@ import {
   Users,
   ChevronDown,
   Lock,
-  Unlock,
   AlertTriangle,
   Download,
   Eye,
@@ -31,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
+import { acquireSocket, getCurrentSocketId } from '../utils/socketClient';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 
 interface StatusItem {
@@ -175,10 +175,6 @@ const getCurrentMonthValue = (): string => {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 };
 
-const getItemPlanMonth = (item: StatusItem): string => {
-  return getItemPlanMonths(item)[0] || '';
-};
-
 const getItemPlanMonths = (item: StatusItem): string[] => {
   const months = Array.isArray(item.productionPlanMonths)
     ? item.productionPlanMonths.filter(Boolean)
@@ -281,11 +277,22 @@ const StatusTracking = () => {
   const [deliveryMonth, setDeliveryMonth] = useState(getCurrentMonthValue);
   const [factoryFilter, setFactoryFilter] = useState<string>('');
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
+  // editingSessions 的实时镜像：socket effect 的依赖只有 [token, logout]，
+  // 卸载清理时需要读取最新锁列表，直接闭包捕获会拿到过期值
+  const editingSessionsRef = useRef<EditingSession[]>([]);
+  editingSessionsRef.current = editingSessions;
+  // user 的实时镜像：刷新页面时 token 先就绪、user 后恢复，
+  // socket effect 不会因此重跑，闭包里的 user 可能还是 null
+  const userRef = useRef(user);
+  userRef.current = user;
   const [offlineWarning, setOfflineWarning] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [sortConfig, setSortConfig] = useState<{ key: 'deliveryDate' | 'designDeliveryDays'; direction: 'asc' | 'desc' } | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dateInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  // startEditing 的实时镜像：socket 重连回调里要重新占用焦点所在行，
+  // 而 socket effect 的依赖只有 [token, logout]，闭包捕获会拿到过期实现
+  const startEditingRef = useRef<(itemId: string) => void>(() => {});
 
   const openDatePicker = useCallback((itemId: string) => {
     const input = dateInputRefs.current.get(itemId);
@@ -503,6 +510,18 @@ const StatusTracking = () => {
     setAllItems(newItems);
   }, []);
 
+  // 写接口带上当前连接 id：服务端据此判断行锁是否属于本窗口，
+  // 避免同一账号的另一个窗口绕过前端锁定，改动别人正在编辑的行。
+  const writeAuthHeader = useCallback(() => {
+    const socketId = getCurrentSocketId();
+    return {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(socketId ? { 'x-socket-id': socketId } : {})
+      }
+    };
+  }, [token]);
+
   const createItemOnServer = useCallback(async (item: StatusItem) => {
     if (!token || !isAdmin) {
       throw new Error('Not authorized');
@@ -516,10 +535,10 @@ const StatusTracking = () => {
     if (!token || !isAdmin) {
       throw new Error('Not authorized');
     }
-    const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+    const authHeader = writeAuthHeader();
     const res = await axios.put(`/api/status-tracking/items/${item.id}`, item, authHeader);
     return res.data as StatusItem;
-  }, [token, isAdmin]);
+  }, [token, isAdmin, writeAuthHeader]);
 
   const handlePersistError = useCallback((err: unknown) => {
     console.error('Error syncing item to server:', err);
@@ -745,7 +764,7 @@ const StatusTracking = () => {
     }
 
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
+      const authHeader = writeAuthHeader();
       await axios.delete(`/api/status-tracking/items/${id}`, authHeader);
     } catch (err) {
       console.error('Error deleting item:', err);
@@ -755,7 +774,7 @@ const StatusTracking = () => {
     }
     
     addToast('记录已删除', 'success');
-  }, [allItems, token, isAdmin, saveItems, isOffline, loadItems]);
+  }, [allItems, token, isAdmin, saveItems, isOffline, loadItems, writeAuthHeader]);
 
   const updateItemInfo = useCallback(async (id: string) => {
     if (!isAdmin) {
@@ -825,18 +844,35 @@ const StatusTracking = () => {
 
   const startEditing = useCallback((itemId: string) => {
     if (!isAdmin) {
-      addToast('无权限编辑记录', 'error');
-      return;
-    }
-    if (isOffline) {
-      addToast('当前离线，禁止编辑', 'error');
+      addToast('无权限编辑记录，只有管理员可以修改状态跟踪', 'error');
       return;
     }
     if (!user || !socket) return;
-    
+
+    // 「被他人锁定」比「连接断开」更具体、更可操作，因此优先判定，
+    // 避免真正被占用时却给出泛化的离线提示。
+    // 判定口径与服务端一致：锁按「连接」归属，只有本连接持有才算自己的锁。
+    // 他人账号、以及同一账号的另一个标签页/设备持有的锁都不能抢占——
+    // 抢占等于替原持有者解锁，后来者换行走查时还会把抢来的锁随手放掉。
     const existingSession = editingSessions.find(s => s.itemId === itemId);
-    if (existingSession && existingSession.userId !== user.id) {
-      addToast(`${existingSession.username}正在编辑此记录`, 'error');
+    if (existingSession && socket.id && existingSession.socketId !== socket.id) {
+      const sameAccount = existingSession.userId === user.id;
+      addToast(
+        sameAccount
+          ? '该记录正在你的其他窗口/设备中编辑，请在该窗口继续或先退出编辑'
+          : `${existingSession.username || '他人'} 正在编辑此记录，请稍后再试`,
+        'error'
+      );
+      return;
+    }
+    // 本连接已持有该行锁：焦点在行内单元格之间移动时无需重复占用。
+    // 既避免高频 start_edit 触发服务端频率限制导致锁没抢上，
+    // 也减少无谓的全员广播。
+    if (existingSession && existingSession.socketId === socket.id) {
+      return;
+    }
+    if (isOffline || !socket.id) {
+      addToast('与服务器的连接已断开，暂时无法编辑此记录', 'error');
       return;
     }
 
@@ -847,10 +883,16 @@ const StatusTracking = () => {
     });
   }, [user, socket, editingSessions, isOffline, isAdmin]);
 
+  startEditingRef.current = startEditing;
+
   const stopEditing = useCallback((itemId: string) => {
     if (!socket) return;
+    // 只释放本连接持有的锁：他人（含同一账号其他窗口）持有的锁一律不碰，
+    // 服务端也会按 socketId 复核，这里提前挡掉可减少无谓事件。
+    const session = editingSessions.find(s => s.itemId === itemId);
+    if (session && session.socketId !== socket.id) return;
     socket.emit('status_tracking_stop_edit', { itemId });
-  }, [socket]);
+  }, [socket, editingSessions]);
 
   const handleExport = useCallback(async () => {
     if (!token) return;
@@ -931,28 +973,28 @@ const StatusTracking = () => {
       return;
     }
 
-    const newSocket = io('/', {
-      path: '/socket.io',
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 3000,
-      reconnectionDelayMax: 10000,
-      timeout: 10000,
-      auth: { token }
-    });
-    
-    newSocket.on('connect', () => {
-      console.log('Socket connected');
+    // 共享连接：全应用只维护一条 WebSocket，由 socketClient 按引用计数管理生命周期
+    const handle = acquireSocket(token);
+    const newSocket = handle.socket;
+
+    const applyConnected = () => {
       setSyncStatus('connected');
       setOfflineWarning(false);
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
-    });
+      // 重连后补占：旧连接断开时服务端已把它的行锁释放，而焦点可能仍停在
+      // 某一行的输入框里（用户毫无感知）。若不重新占用，别人就能趁虚介入，
+      // 表现为「编辑中的行锁莫名其妙没了」。
+      const focusedRow = document.activeElement?.closest?.('tr[data-item-id]');
+      const focusedItemId = focusedRow?.getAttribute('data-item-id');
+      if (focusedItemId) {
+        startEditingRef.current(focusedItemId);
+      }
+    };
 
-    newSocket.on('disconnect', () => {
-      console.log('Socket disconnected');
+    const applyDisconnected = () => {
       setSyncStatus('disconnected');
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -960,15 +1002,21 @@ const StatusTracking = () => {
       reconnectTimeoutRef.current = setTimeout(() => {
         setOfflineWarning(true);
       }, 3000);
-    });
+    };
 
-    newSocket.on('connect_error', (err) => {
-      console.log('Socket connect error:', err?.message);
+    // 关键：共享连接可能在本页挂载之前就已建立，connect 事件不会重放。
+    // 若不按当前状态校正一次，syncStatus 会一直停在初始的 'disconnected'，
+    // isOffline 恒为 true，于是所有编辑都被误判成「离线禁止」。
+    if (handle.socket.connected) applyConnected(); else applyDisconnected();
+
+    handle.on('connect', applyConnected);
+    handle.on('disconnect', applyDisconnected);
+
+    handle.on('connect_error', () => {
       setSyncStatus('disconnected');
     });
 
-    newSocket.on('session_invalidated', (data) => {
-      console.log('Session invalidated:', data);
+    handle.on('session_invalidated', (data) => {
       // 浏览器与系统分字段展示，替代原来笼统的 summary
       const deviceInfo = [data.newLoginBrowser, data.newLoginOs].filter(Boolean).join(' / ');
       addToast(`账号已在其他设备登录！\n时间: ${data.timestamp}\nIP: ${data.newLoginIp}\n浏览器/系统: ${deviceInfo}`, 'error');
@@ -977,8 +1025,7 @@ const StatusTracking = () => {
       }, 3000);
     });
 
-    newSocket.on('status_tracking_updated', async (data) => {
-      console.log('Status tracking updated:', data);
+    handle.on('status_tracking_updated', async (data) => {
       if (data.action === 'add') {
         setAllItems(prev => {
           const exists = prev.find(i => i.id === data.item.id);
@@ -1002,14 +1049,29 @@ const StatusTracking = () => {
       }
     });
 
-    newSocket.on('status_tracking_bulk', async (dataItems) => {
-      console.log('Status tracking bulk sync:', dataItems);
+    handle.on('status_tracking_bulk', async (dataItems) => {
       setAllItems(dataItems);
       localStorage.setItem('statusTrackingItems', JSON.stringify(dataItems));
     });
 
-    newSocket.on('status_tracking_edit_start', (data) => {
-      console.log('Edit start:', data);
+    // 连接期快照：后连接的客户端据此看到他人已持有的行锁，
+    // 不必等下一次编辑广播。共享连接可能早于本页挂载建立、事件不会重放，
+    // 因此注册后立刻用缓存补一次初始状态。
+    const applyStatusTrackingState = (sessions: EditingSession[]) => {
+      setEditingSessions((Array.isArray(sessions) ? sessions : []).filter(s => s?.itemId));
+    };
+    handle.on('status_tracking_editing_state', applyStatusTrackingState);
+    const cachedStatusTrackingState = handle.getSnapshot<EditingSession[]>('status_tracking_editing_state');
+    if (cachedStatusTrackingState) applyStatusTrackingState(cachedStatusTrackingState);
+
+    // 缓存快照可能已经很旧（连接建立时的那一份）：共享连接常驻不销毁，
+    // 页面来回切换时它仍是旧值，直接拿它覆盖会把别人正在持有的行锁
+    // 显示成「已释放」。因此挂载后向服务端要一份最新快照覆盖一次。
+    if (newSocket.connected) {
+      newSocket.emit('request_state', { event: 'status_tracking_editing_state' });
+    }
+
+    handle.on('status_tracking_edit_start', (data) => {
       setEditingSessions(prev => {
         const filtered = prev.filter(s => s.itemId !== data.itemId);
         return [...filtered, {
@@ -1021,9 +1083,40 @@ const StatusTracking = () => {
       });
     });
 
-    newSocket.on('status_tracking_edit_stop', (data) => {
-      console.log('Edit stop:', data);
+    handle.on('status_tracking_edit_stop', (data) => {
       setEditingSessions(prev => prev.filter(s => s.itemId !== data.itemId));
+    });
+
+    // 服务端仲裁拒绝：与客户端本地预判重复时只提示一次即可
+    handle.on('status_tracking_edit_blocked', (data) => {
+      // 把占用者写入本地锁状态：否则本行仍渲染为可编辑，用户会以为
+      // 「别人的锁被释放了」并继续输入（实际保存已被服务端 409 拒绝）。
+      // 本地已有该行记录但归属的是别的连接（陈旧状态）时，用服务端的占用者覆盖。
+      if (data?.itemId && data.userId) {
+        setEditingSessions(prev => {
+          const index = prev.findIndex(s => s.itemId === data.itemId);
+          const holder = {
+            itemId: data.itemId,
+            userId: data.userId,
+            username: data.username,
+            socketId: data.socketId
+          };
+          if (index === -1) return [...prev, holder];
+          if (prev[index].socketId === data.socketId) return prev;
+          const next = [...prev];
+          next[index] = holder;
+          return next;
+        });
+      }
+      // 占用者可能是他人，也可能是同一账号的另一个标签页/设备——
+      // 后者不要用「他人」文案把用户说糊涂
+      const sameAccount = data?.userId && data.userId === userRef.current?.id;
+      addToast(
+        sameAccount
+          ? '该记录正在你的其他窗口/设备中编辑，请在该窗口继续或先退出编辑'
+          : `${data?.username || '他人'} 正在编辑此记录，请稍后再试`,
+        'error'
+      );
     });
 
     setSocket(newSocket);
@@ -1033,7 +1126,14 @@ const StatusTracking = () => {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
-      newSocket.disconnect();
+      // 离开页面时释放本连接持有的行锁。共享 socket 由其他页面续命不会断开，
+      // 若不主动释放，离开前聚焦的那一行会一直显示「他人正在编辑」挡住别人。
+      // 只放自己的锁（userId + socketId 双匹配），不会碰他人持有的行。
+      const mySocketId = newSocket.id;
+      editingSessionsRef.current
+        .filter(s => s.userId === userRef.current?.id && s.socketId === mySocketId)
+        .forEach(s => newSocket.emit('status_tracking_stop_edit', { itemId: s.itemId }));
+      handle.release();
     };
   }, [token, logout]);
 
@@ -1518,11 +1618,34 @@ const StatusTracking = () => {
                 ) : (
                   filteredItems.map((item, index) => {
                     const editingSession = editingSessions.find(s => s.itemId === item.id);
-                    const isEditing = editingSession && editingSession.userId === user?.id;
-                    const isLocked = editingSession && editingSession.userId !== user?.id;
+                    // 锁按「连接」归属：只有本连接持有的锁才算自己的。
+                    // 他人账号、以及同一账号的另一个窗口/设备持有的锁都要锁住本行，
+                    // 否则后来者一点就把原持有者的锁顶掉了。
+                    const lockedByOtherConnection = Boolean(editingSession) && editingSession!.socketId !== socket?.id;
+                    const lockedBySameAccount = lockedByOtherConnection && editingSession!.userId === user?.id;
+                    const isLocked = lockedByOtherConnection;
+                    const lockHint = lockedBySameAccount
+                      ? '该记录正在你的其他窗口/设备中编辑，请在该窗口继续或先退出编辑'
+                      : `${editingSession?.username || '他人'} 正在编辑此记录，请稍后再试`;
 
                     return (
-                      <tr key={item.id} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                      <tr
+                        key={item.id}
+                        // 供重连后按焦点所在行补占行锁（见 applyConnected）
+                        data-item-id={item.id}
+                        className={`${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'} ${isLocked ? 'cursor-not-allowed' : ''}`}
+                        // 被锁定时整行输入都是 disabled，无法触发 onFocus，
+                        // 也就不会有任何提示；用 title 让用户 hover 即知原因
+                        title={isLocked ? lockHint : undefined}
+                        // 行级获取/释放编辑锁：startEditing/stopEditing 此前从未被调用，
+                        // 编辑锁功能实际上一直不生效。焦点在本行内单元格之间移动时
+                        // 不应释放锁，因此只在焦点离开整行时才 stop。
+                        onFocus={() => startEditing(item.id)}
+                        onBlur={(e) => {
+                          const next = e.relatedTarget as Node | null;
+                          if (!next || !e.currentTarget.contains(next)) stopEditing(item.id);
+                        }}
+                      >
                         <td className="px-2 py-2 border-b border-gray-200 text-center overflow-hidden">
                           <select
                             value={item.factory}
@@ -1732,7 +1855,7 @@ const StatusTracking = () => {
                             {isLocked ? (
                               <div className="flex items-center gap-1 text-gray-400">
                                 <Lock size={14} />
-                                <span className="text-xs">{editingSession?.username}正在编辑</span>
+                                <span className="text-xs">{lockedBySameAccount ? '你的其他窗口' : editingSession?.username}正在编辑</span>
                               </div>
                             ) : isAdmin ? (
                               <>

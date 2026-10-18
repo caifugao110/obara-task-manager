@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, Clock, Calendar, TrendingUp, Medal, Sun, Cloud, Umbrella, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
+import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface DesignerData {
@@ -54,9 +54,11 @@ const Leaderboard = () => {
   const { specNumberDigits } = useSystemSettings();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [designers, setDesigners] = useState<DesignerData[]>([]);
-  const [leaderboardData, setLeaderboardData] = useState<LeaderboardData[]>([]);
+  // 只写不读：计算出的工时统计数据目前没有任何渲染处消费（见评审报告），保留 setter 以免影响取数逻辑
+  const [, setLeaderboardData] = useState<LeaderboardData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  // 只写不读：加载标记实际未被消费，保留 setter 以免影响调用方
+  const [, setLeaderboardLoading] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   
   // Specification tracking
@@ -75,8 +77,6 @@ const Leaderboard = () => {
   
   const [leaderboardSettings, setLeaderboardSettings] = useState({ enabled: true, allowAdmins: true, allowViewers: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [showAllHours, setShowAllHours] = useState(false);
-  const [showAllLeave, setShowAllLeave] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   const isOffline = !isOnline;
@@ -149,6 +149,7 @@ const Leaderboard = () => {
   }, [specGunListMode, specResultsFiltered]);
 
   const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean) => {
+    if (isOffline) return;
     const targetSpec = currentSpec !== undefined ? currentSpec : specNumber;
     if (targetSpec.length !== specNumberDigits) {
       setSpecResults([]);
@@ -194,9 +195,10 @@ const Leaderboard = () => {
       markOfflineIfNetworkError(err);
       addToast('搜索失败', 'error');
     }
-  }, [specNumber, currentDate, designers, token, specFullSearch, specNumberDigits, markOfflineIfNetworkError]);
+  }, [specNumber, currentDate, designers, token, specFullSearch, specNumberDigits, markOfflineIfNetworkError, isOffline]);
 
   const searchByGunName = useCallback(async (currentGunName?: string, fullSearchOverride?: boolean) => {
+    if (isOffline) return;
     const targetGunName = (currentGunName !== undefined ? currentGunName : gunName).trim();
     if (!targetGunName) {
       setGunResults([]);
@@ -241,9 +243,13 @@ const Leaderboard = () => {
       markOfflineIfNetworkError(err);
       addToast('枪名搜索失败', 'error');
     }
-  }, [gunName, currentDate, designers, token, gunFullSearch, markOfflineIfNetworkError]);
+  }, [gunName, currentDate, designers, token, gunFullSearch, markOfflineIfNetworkError, isOffline]);
 
   const refreshSearches = () => {
+    if (isOffline) {
+      addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
     if (specNumber.length === specNumberDigits) searchBySpecNumber(specNumber);
     if (gunName.trim()) searchByGunName(gunName);
   };
@@ -352,7 +358,7 @@ const Leaderboard = () => {
       tasks.forEach((sheet: any) => {
         const designerData = leaderboardMap.get(sheet.designerId);
         if (designerData) {
-          (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([date, items]) => {
+          (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([, items]) => {
             items.forEach((item: any) => {
               if (item.leaveType === 'sick') {
                 const hours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
@@ -382,7 +388,7 @@ const Leaderboard = () => {
     } catch (err: any) {
       console.error('Error fetching leaderboard data:', err);
       markOfflineIfNetworkError(err);
-      addToast('无法加载排行数据', 'error');
+      addToast('无法加载统计数据', 'error');
     } finally {
       setLeaderboardLoading(false);
     }
@@ -450,25 +456,6 @@ const Leaderboard = () => {
   }, [currentDate, specFullSearch, gunFullSearch]);
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
-
-  const sortedByHours = useMemo(() => 
-    [...leaderboardData].sort((a, b) => b.hours - a.hours), 
-    [leaderboardData]
-  );
-
-  const sortedByLeave = useMemo(() => 
-    [...leaderboardData].sort((a, b) => (b.sickDays + b.vacationDays + b.illnessDays) - (a.sickDays + a.vacationDays + a.illnessDays)), 
-    [leaderboardData]
-  );
-
-  const getRankIcon = (index: number) => {
-    switch (index) {
-      case 0: return <Medal className="text-yellow-500" size={20} />;
-      case 1: return <Medal className="text-gray-400" size={20} />;
-      case 2: return <Medal className="text-amber-600" size={20} />;
-      default: return <span className="text-gray-400 font-bold text-sm">{index + 1}</span>;
-    }
-  };
 
   if (loading || !settingsLoaded) return (
     <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -570,9 +557,10 @@ const Leaderboard = () => {
           </h2>
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className={`flex items-center space-x-4 ${isOffline ? 'offline-locked' : ''}`}>
           <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-            <button 
+            <button
+              disabled={isOffline}
               onClick={() => {
                 const newDate = new Date(currentDate);
                 newDate.setMonth(newDate.getMonth() - 1);
@@ -587,6 +575,7 @@ const Leaderboard = () => {
               <input
                 type="month"
                 className="delivery-date-input"
+                disabled={isOffline}
                 value={format(currentDate, 'yyyy-MM')}
                 onChange={(e) => {
                   if (e.target.value) {
@@ -596,7 +585,8 @@ const Leaderboard = () => {
                 }}
               />
             </span>
-            <button 
+            <button
+              disabled={isOffline}
               onClick={() => {
                 const newDate = new Date(currentDate);
                 newDate.setMonth(newDate.getMonth() + 1);
@@ -607,7 +597,8 @@ const Leaderboard = () => {
               <ChevronLeft size={18} className="rotate-180" />
             </button>
           </div>
-          <button 
+          <button
+            disabled={isOffline}
             onClick={refreshSearches}
             className="p-2 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
             title="刷新搜索"
@@ -634,7 +625,7 @@ const Leaderboard = () => {
         </div>
       )}
 
-      <main className="flex-1 px-8 pb-8 max-w-7xl mx-auto w-full overflow-y-auto">
+      <main className={`flex-1 px-8 pb-8 max-w-7xl mx-auto w-full overflow-y-auto ${isOffline ? 'offline-locked' : ''}`}>
         {/* Specification Progress Management */}
         <div className="bg-white rounded-2xl shadow-xl border border-gray-100 my-8">
           <div className="sticky top-0 z-30 rounded-t-2xl shadow-lg px-6 py-5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
@@ -643,7 +634,7 @@ const Leaderboard = () => {
                 <BarChart2 className="mr-2" size={22} />
                 仕样进度管理
               </h2>
-              <div className="flex items-center gap-6">
+              <div className={`flex items-center gap-6 ${isOffline ? 'offline-locked' : ''}`}>
                 <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
                   <span>未标记完成状态任务</span>
                   <span className="relative inline-flex h-5 w-9 items-center">
@@ -651,6 +642,7 @@ const Leaderboard = () => {
                       type="checkbox"
                       checked={specHideCompleted}
                       onChange={(e) => setSpecHideCompleted(e.target.checked)}
+                      disabled={isOffline}
                       className="peer sr-only"
                     />
                     <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
@@ -664,6 +656,7 @@ const Leaderboard = () => {
                       type="checkbox"
                       checked={specGunListMode}
                       onChange={(e) => setSpecGunListMode(e.target.checked)}
+                      disabled={isOffline}
                       className="peer sr-only"
                     />
                     <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
@@ -681,6 +674,7 @@ const Leaderboard = () => {
                         setSpecFullSearch(next);
                         if (specNumber.length === specNumberDigits) searchBySpecNumber(specNumber, next);
                       }}
+                      disabled={isOffline}
                       className="peer sr-only"
                     />
                     <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
@@ -701,6 +695,7 @@ const Leaderboard = () => {
                     type="text"
                     maxLength={specNumberDigits}
                     value={specNumber}
+                    disabled={isOffline}
                     onChange={(e) => {
                       const val = e.target.value.replace(/\D/g, '').slice(0, specNumberDigits);
                       setSpecNumber(val);
@@ -803,7 +798,7 @@ const Leaderboard = () => {
                 <TrendingUp className="mr-2" size={22} />
                 枪名周期管理
               </h2>
-              <label className="flex items-center gap-2 text-xs font-bold text-emerald-50 cursor-pointer select-none">
+              <label className={`flex items-center gap-2 text-xs font-bold text-emerald-50 cursor-pointer select-none ${isOffline ? 'offline-locked' : ''}`}>
                 <span>全表搜索</span>
                 <span className="relative inline-flex h-5 w-9 items-center">
                   <input
@@ -814,6 +809,7 @@ const Leaderboard = () => {
                       setGunFullSearch(next);
                       if (gunName.trim()) searchByGunName(gunName, next);
                     }}
+                    disabled={isOffline}
                     className="peer sr-only"
                   />
                   <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
@@ -831,6 +827,7 @@ const Leaderboard = () => {
                 <input
                   type="text"
                   value={gunName}
+                  disabled={isOffline}
                   onChange={(e) => {
                     const val = e.target.value;
                     setGunName(val);

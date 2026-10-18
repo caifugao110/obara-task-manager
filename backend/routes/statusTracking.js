@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const db = require('../db');
 const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
 const asyncHandler = require('express-async-handler');
@@ -8,6 +9,25 @@ const multer = require('multer');
 const Joi = require('joi');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
+const { getStatusTrackingLock } = require('../utils/statusTrackingLocks');
+
+// 行锁归属判定：与 socket 层的占用仲裁同一口径。
+//   1) 锁归他人账号 → 拒绝（他人不得改动我正在编辑的行）；
+//   2) 锁归同一账号的另一条连接（另一个标签页/设备） → 也拒绝，
+//      否则「同一账号多窗口共用」时后开的窗口可以顶掉先编辑者的锁，
+//      等于替别人解锁。请求带 x-socket-id 时才做这层判定，
+//      不带（脚本/旧客户端）时退化为按账号判定。
+const rowLockConflictMessage = (lock, req) => {
+  if (!lock) return null;
+  if (lock.userId !== req.user.id) {
+    return `该记录正在被 ${lock.name || lock.username || '他人'} 编辑，请稍后再试`;
+  }
+  const requesterSocketId = String(req.get('x-socket-id') || '').trim();
+  if (requesterSocketId && lock.socketId && lock.socketId !== requesterSocketId) {
+    return '该记录正在你的其他窗口/设备中编辑，请在该窗口继续或先退出编辑';
+  }
+  return null;
+};
 
 const statusTrackingItemSchema = Joi.object({
   id: Joi.string().allow(''),
@@ -111,7 +131,9 @@ router.post('/items', [authMiddleware, adminMiddleware, accessSettingsMiddleware
   const payload = getItemPayload(value);
   const newItem = {
     ...payload,
-    id: Date.now().toString(),
+    // 用 UUID 而非 Date.now()：同毫秒内创建多条会产生重复 id，
+    // 而 id 会用于后续编辑/删除/批量导入的主键匹配
+    id: crypto.randomUUID(),
     productionPlanMonth: payload.productionPlanMonth || getCurrentMonthValue(),
     productionPlanMonths: payload.productionPlanMonths || [payload.productionPlanMonth || getCurrentMonthValue()],
     designDeliveryDays: calculateDesignDeliveryDays(payload.deliveryDate),
@@ -133,12 +155,19 @@ router.post('/items', [authMiddleware, adminMiddleware, accessSettingsMiddleware
 router.put('/items/:id', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
-  
+
   const index = data.statusTrackingItems.findIndex(item => item.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ message: '记录未找到' });
   }
-  
+
+  // 行锁校验：该行被其他用户（或本人其他窗口）占用时拒绝保存，
+  // 防止绕过前端锁定直接覆盖他人正在编辑的数据
+  const lockConflict = rowLockConflictMessage(getStatusTrackingLock(req.params.id), req);
+  if (lockConflict) {
+    return res.status(409).json({ message: lockConflict });
+  }
+
   const { error, value } = statusTrackingItemSchema.validate(req.body, { stripUnknown: true });
   if (error) {
     return res.status(400).json({ message: '数据验证失败', details: error.details.map(d => d.message) });
@@ -172,12 +201,19 @@ router.put('/items/:id', [authMiddleware, adminMiddleware, accessSettingsMiddlew
 router.delete('/items/:id', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   if (!data.statusTrackingItems) data.statusTrackingItems = [];
-  
+
   const item = data.statusTrackingItems.find(i => i.id === req.params.id);
   if (!item) {
     return res.status(404).json({ message: '记录未找到' });
   }
-  
+
+  // 行锁校验：该行被其他用户（或本人其他窗口）占用时禁止删除，
+  // 避免编辑者的行在其编辑期间被移除
+  const lockConflict = rowLockConflictMessage(getStatusTrackingLock(req.params.id), req);
+  if (lockConflict) {
+    return res.status(409).json({ message: lockConflict });
+  }
+
   data.statusTrackingItems = data.statusTrackingItems.filter(i => i.id !== req.params.id);
   await db.writeDb(data);
   

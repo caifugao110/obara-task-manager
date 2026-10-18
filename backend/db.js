@@ -631,6 +631,29 @@ const readDb = () => {
   return deepClone(_cache);
 };
 
+// ---------------------------------------------------------------------------
+// 窄读接口
+//
+// readDb() 会 structuredClone 整个缓存（users + designers + settings +
+// statusTrackingItems + gunLedger）。而鉴权中间件、Socket 鉴权、会话校验等
+// 高频只读路径往往只需要 users 或 settings 其中之一，且每个请求会被调用
+// 多次（authMiddleware 一次、hasAccessSettings 一次、路由处理器再一次）。
+// 台账数据（gunLedger）体积最大，每次请求全量克隆数 MB 纯属浪费。
+// 这些接口只克隆需要的那一个集合，语义与 readDb() 一致（返回克隆，
+// 调用方可安全读写而不污染 _cache）；需要改库时仍应使用 readDb()。
+// ---------------------------------------------------------------------------
+const readSettings = () => {
+  if (!_cache) init();
+  return deepClone(_cache.settings || {});
+};
+
+// 按 id 取单个用户（克隆）：鉴权热路径只关心一条记录，连整个 users 数组都不必克隆
+const findUserById = (id) => {
+  if (!_cache) init();
+  const user = (_cache.users || []).find(u => u.id === id);
+  return user ? deepClone(user) : undefined;
+};
+
 const processQueue = () => {
   if (isWriting || writeQueue.length === 0) return;
   isWriting = true;
@@ -668,7 +691,8 @@ const initAdmin = async () => {
     const defaultPassword = explicitPassword || crypto.randomBytes(9).toString('base64url');
     const hashedPassword = bcrypt.hashSync(defaultPassword, 10);
     _cache.users.push({
-      id: Date.now().toString(),
+      // 用 UUID 而非 Date.now()：与 users 路由保持一致的 id 生成方式
+      id: crypto.randomUUID(),
       username: process.env.DEFAULT_ADMIN_USERNAME || 'superadmin',
       password: hashedPassword,
       role: 'superadmin',
@@ -700,6 +724,9 @@ const getDbPath = () => sqlitePath;
 
 module.exports = {
   readDb,
+  // 只读场景优先使用窄读接口，避免每个请求多次全库深拷贝
+  readSettings,
+  findUserById,
   writeDb,
   initAdmin,
   getRawDb,

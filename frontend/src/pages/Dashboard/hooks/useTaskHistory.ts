@@ -33,7 +33,6 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
       return null;
     }
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const op: any = { ...operation, data: { ...operation.data } };
 
       switch (op.operation) {
@@ -49,7 +48,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               color: item.color || '',
               guns: item.guns || [],
               leaveType: item.leaveType || null
-            }, authHeader);
+            });
             // 记录恢复后的新 itemId，供重做（再次删除）使用
             op.data.restoredItemId = res.data.item?.id;
             upsertSheet(res.data.sheet);
@@ -62,7 +61,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
           // Remove added task
           {
             const { designerId: addDesignerId, date: addDate, itemId } = op.data;
-            await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId: addDesignerId, date: addDate, itemId } });
+            await axiosInstance.delete('/tasks/item', { data: { designerId: addDesignerId, date: addDate, itemId } });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -73,9 +72,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
           {
             const { items } = op.data;
             for (const added of items || []) {
-              await axiosInstance.delete('/tasks/item', {
-                ...authHeader,
-                data: { designerId: added.designerId, date: added.date, itemId: added.itemId }
+              await axiosInstance.delete('/tasks/item', { data: { designerId: added.designerId, date: added.date, itemId: added.itemId }
               });
             }
           }
@@ -96,7 +93,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
                 color: deleted.item.color || '',
                 guns: deleted.item.guns || [],
                 leaveType: deleted.item.leaveType || null
-              }, authHeader);
+              });
               if (res.data.item?.id) {
                 restoredItems.push({ designerId: deleted.designerId, date: deleted.date, itemId: res.data.item.id });
               }
@@ -119,7 +116,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               itemId: moveItemId,
               targetDesignerId: sourceDesignerId,
               targetDate: sourceDate
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -134,7 +131,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               itemId: moved.itemId,
               targetDesignerId: moved.sourceDesignerId,
               targetDate: moved.sourceDate
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -151,7 +148,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               itemId: gunItemId,
               field: 'guns',
               value: originalGuns
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -174,7 +171,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
                 color: snap.color || '',
                 guns: [],
                 leaveType: snap.leaveType || null
-              }, authHeader);
+              });
               if (res.data.item?.id) {
                 restoredSourceItemId = res.data.item.id;
                 // 更新历史记录中的源任务 id，保证重做指向重建后的任务
@@ -190,7 +187,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               targetDate: d.sourceDate,
               targetItemId: restoredSourceItemId,
               newIndex: d.sourceGunIndex
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -207,7 +204,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               itemId: fieldItemId,
               field: fieldName,
               value: fieldOriginalValue
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -232,7 +229,6 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
       return null;
     }
     try {
-      const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const op: any = { ...operation, data: { ...operation.data } };
 
       switch (op.operation) {
@@ -240,7 +236,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
           // 重做删除操作：删除撤销时恢复的任务
           {
             const { designerId, date, restoredItemId } = op.data;
-            await axiosInstance.delete('/tasks/item', { ...authHeader, data: { designerId, date, itemId: restoredItemId } });
+            await axiosInstance.delete('/tasks/item', { data: { designerId, date, itemId: restoredItemId } });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -257,7 +253,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               taskName: taskName || '',
               leaveType: leaveType || null,
               hours: ''
-            }, authHeader);
+            });
             op.data.itemId = res.data.item?.id;
             upsertSheet(res.data.sheet);
           }
@@ -275,7 +271,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
                 designerId,
                 date,
                 items: items.map((it: any) => it.item)
-              }, authHeader);
+              });
               const createdItems = res.data.items || [];
               op.data.items = items.map((it: any, idx: number) => ({
                 ...it,
@@ -293,9 +289,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
           {
             const restoredItems = op.data.restoredItems || [];
             for (const restored of restoredItems) {
-              await axiosInstance.delete('/tasks/item', {
-                ...authHeader,
-                data: { designerId: restored.designerId, date: restored.date, itemId: restored.itemId }
+              await axiosInstance.delete('/tasks/item', { data: { designerId: restored.designerId, date: restored.date, itemId: restored.itemId }
               });
             }
           }
@@ -314,7 +308,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               targetDesignerId,
               targetDate,
               itemId: moveItemId
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -330,7 +324,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               itemId: moved.itemId,
               targetDesignerId: moved.targetDesignerId,
               targetDate: moved.targetDate
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -348,7 +342,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               itemId,
               field: 'guns',
               value: newGuns
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -368,7 +362,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               targetDate: d.targetDate,
               targetItemId: d.targetItemId,
               newIndex: d.newIndex
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');
@@ -385,7 +379,7 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               itemId,
               field,
               value: newValue
-            }, authHeader);
+            });
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');

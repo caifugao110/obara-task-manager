@@ -13,10 +13,30 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const [sessionPolicy, setSessionPolicy] = useState<{ displayText: string } | null>(null);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const isOffline = !isOnline;
   const { login } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirectTarget = sanitizeRedirect(searchParams.get('redirect'));
+
+  // 浏览器网络 + 后端服务可达性监听：离线时禁止提交登录表单
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    const handleServerUnreachable = () => setIsOnline(false);
+    const handleServerOnline = () => setIsOnline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('server-unreachable', handleServerUnreachable);
+    window.addEventListener('server-online', handleServerOnline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('server-unreachable', handleServerUnreachable);
+      window.removeEventListener('server-online', handleServerOnline);
+    };
+  }, []);
 
   useEffect(() => {
     // 退出登录提示：由 AuthContext 登出时写入 sessionStorage，读取一次即清除
@@ -34,6 +54,10 @@ const Login = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (isOffline) {
+      setError('当前网络离线，无法登录，请待网络恢复后重试');
+      return;
+    }
     setLoading(true);
     try {
       const response = await axios.post('/api/auth/login', { username, password });
@@ -44,6 +68,9 @@ const Login = () => {
         navigate(redirectTarget, { replace: true });
       }
     } catch (err: any) {
+      if (!navigator.onLine || err?.code === 'ERR_NETWORK' || err?.message === 'Network Error') {
+        setIsOnline(false);
+      }
       setError(err.response?.data?.message || '登录失败，请检查网络连接');
     } finally {
       setLoading(false);
@@ -67,6 +94,13 @@ const Login = () => {
           </div>
 
           <div className="bg-white shadow-sm border border-gray-300 p-8 rounded-lg">
+            {isOffline && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-lg mb-6 flex items-start gap-3">
+                <AlertCircle size={20} className="mt-0.5 shrink-0" />
+                <div className="text-sm font-bold">当前网络离线，无法登录，网络恢复后自动解除限制</div>
+              </div>
+            )}
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-lg mb-6 flex items-start gap-3">
                 <AlertCircle size={20} className="mt-0.5 shrink-0" />
@@ -88,12 +122,13 @@ const Login = () => {
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
                     <User size={18} />
                   </div>
-                  <input 
-                    type="text" 
-                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+                  <input
+                    type="text"
+                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     placeholder="请输入您的登录账号"
+                    disabled={isOffline}
                     required
                   />
                 </div>
@@ -105,12 +140,13 @@ const Login = () => {
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
                     <Lock size={18} />
                   </div>
-                  <input 
-                    type={showPassword ? 'text' : 'password'} 
-                    className="w-full pl-11 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    className="w-full pl-11 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="请输入您的登录密码"
+                    disabled={isOffline}
                     required
                   />
                   <button
@@ -127,10 +163,10 @@ const Login = () => {
                 <p className="text-xs text-gray-500 ml-1">首次登录或密码被管理员重置后，系统会要求您设置新密码。</p>
               </div>
 
-              <button 
-                type="submit" 
-                disabled={loading}
-                className={`w-full bg-[#217346] text-white py-3 rounded-lg font-bold text-base hover:bg-[#1a5c38] transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2 ${loading ? 'opacity-70 cursor-not-allowed' : ''}`}
+              <button
+                type="submit"
+                disabled={loading || isOffline}
+                className={`w-full bg-[#217346] text-white py-3 rounded-lg font-bold text-base hover:bg-[#1a5c38] transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2 ${loading || isOffline ? 'opacity-70 cursor-not-allowed' : ''}`}
               >
                 {loading ? (
                   <>

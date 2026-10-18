@@ -90,6 +90,26 @@ const touchItem = (item, user) => {
   item.updatedBy = getUserMeta(user);
 };
 
+// 枪名增删/移动后同步主任务标记状态（与 gunColor 手动标记的联动规则一致）：
+// 存在枪名且全部为白色 → 主任务自动标白（记录恢复色）；
+// 存在非白枪名且主任务为白色 → 主任务恢复原色
+const syncTaskColorWithGuns = (item) => {
+  const guns = Array.isArray(item.guns) ? item.guns : [];
+  if (guns.length === 0) return;
+  const allGunsWhite = guns.every(g => isWhiteColor(g.color));
+  if (allGunsWhite) {
+    if (!isWhiteColor(item.color)) {
+      item.colorBeforeUserMark = item.color || '';
+      item.colorMarkedBy = { id: 'auto', username: 'auto', name: '系统自动' };
+      item.color = '#ffffff';
+    }
+  } else if (isWhiteColor(item.color)) {
+    item.color = item.colorBeforeUserMark || '';
+    delete item.colorBeforeUserMark;
+    delete item.colorMarkedBy;
+  }
+};
+
 const canUserMarkDesignPlanColor = (data, user, designerId, item) => {
   if (!user) return false;
   if (user.role === 'admin' || user.role === 'superadmin') {
@@ -636,24 +656,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     item.guns = guns;
 
     // Auto-sync main task color based on all guns' state
-    const allGuns = Array.isArray(item.guns) ? item.guns : [];
-    const hasAllGuns = allGuns.length > 0;
-    if (hasAllGuns) {
-      const allGunsWhite = allGuns.every(g => isWhiteColor(g.color));
-      if (allGunsWhite) {
-        // All guns are white, auto-mark main task white if not already white
-        if (!isWhiteColor(item.color)) {
-          item.colorBeforeUserMark = item.color || '';
-          item.colorMarkedBy = { id: 'auto', username: 'auto', name: '系统自动' };
-          item.color = '#ffffff';
-        }
-      } else if (isWhiteColor(item.color)) {
-        // Some gun restored, main task is white, restore it to original color
-        item.color = item.colorBeforeUserMark || '';
-        delete item.colorBeforeUserMark;
-        delete item.colorMarkedBy;
-      }
-    }
+    syncTaskColorWithGuns(item);
 
     touchItem(item, req.user);
     sheet.days[date] = items;
@@ -681,6 +684,8 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     delete item.colorMarkedBy;
   } else if (field === 'guns') {
     item.guns = value;
+    // 删除/编辑枪名后同步主任务标记状态（如只剩一个白色枪名时主任务自动标白）
+    syncTaskColorWithGuns(item);
   } else if (field === 'leaveType') {
     item.leaveType = value;
   } else {
@@ -841,6 +846,8 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
     sourceItemDeleted = true;
   } else {
     touchItem(sourceItem, req.user);
+    // 移走枪名后同步源主任务标记状态（如只剩一个白色枪名时主任务自动标白）
+    syncTaskColorWithGuns(sourceItem);
   }
   if (sItems.length === 0) {
     delete sSheet.days[sDate];
@@ -856,6 +863,8 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
   } else {
     targetItem.guns.push(gun);
   }
+  // 移入枪名后同步目标主任务标记状态
+  syncTaskColorWithGuns(targetItem);
   touchItem(targetItem, req.user);
 
   taskStore.saveSheets(isSameSheet ? [sSheet] : [sSheet, tSheet]);

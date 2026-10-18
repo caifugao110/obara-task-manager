@@ -160,21 +160,7 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   offlineBackupDir: 'backups/offline'
 };
 
-const defaultSettings: SystemSettingsData = {
-  allowMultiDevice: true,
-  allowUserDesignPlanColorMark: true,
-  allowUserEditOwnTaskColor: true,
-  allowUserChangePassword: false,
-  specNumberDigits: 5,
-  auditLogMaxRows: 5000,
-  randomDesignPlanColor: false,
-  randomAssignmentColor: false,
-  defaultGunHours: {
-    confirm: { C: 1.5, X: 2 },
-    design: { C: 2.5, X: 3 },
-    confirmModify: { C: 0.5, X: 0.75 }
-  }
-};
+
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
 const SystemSettings = () => {

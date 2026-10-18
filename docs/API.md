@@ -821,6 +821,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 普通用户需满足：系统开启 `allowUserDesignPlanColorMark`（或旧开关 `allowUserEditOwnTaskColor`）、任务非请假条、且本人姓名与该设计人员姓名一致；普通用户只允许白色标记（`#ffffff`/`#fff`/`white`）或恢复（`value` 传 `__restore__`），否则返回 `403`。
 - 标记白色时，系统会保存原始颜色到 `colorBeforeUserMark`，并记录标记人信息到 `colorMarkedBy`；恢复时还原原始颜色并删除这两个字段。
 - 联动规则：主任务标记白色时，其下所有枪名联动标记为白色（枪名 `colorMarkedBy` 为 `{ id: 'auto', name: '系统联动' }`）；所有枪名都为白色时，主任务自动标记白色（`colorMarkedBy` 为 `{ id: 'auto', name: '系统自动' }`）；任一枪名恢复非白色时，主任务联动恢复原始颜色。
+- **枪名结构变更后同样重算主任务颜色**：除颜色标记外，`field` 为 `guns`（整体替换枪名）、以及 `POST /api/tasks/move-gun` 的移出/移入枪名，都会按同一规则重新同步主任务颜色——枪名全部为白色则主任务自动标白（原色存入 `colorBeforeUserMark`），只要存在非白枪名且主任务为白色则恢复原色，因此「删到只剩白色枪名」后主任务会自动变为完成态。
 - 请假条（`leaveType` 非空）不允许标记颜色。
 
 响应：
@@ -956,6 +957,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 目标主任务已存在同名枪名时返回 `400`（`目标主任务已存在枪名「xxx」，无法移动`）；同一主任务内重排时排除枪名自身。
 - 枪名移走后源主任务没有任何枪名时，该源主任务会被一并删除（响应 `sourceItemDeleted=true`），前端撤销时据此快照重建。
 - 源与目标的主任务 `updatedAt` / `updatedBy` 均会更新；操作成功后由前端发出 `task_updated` 通知其他客户端刷新。
+- 枪名移入/移出后会按枪名状态重算源、目标主任务的颜色标记（规则同 `PUT /api/tasks/item` 的 `guns` 联动：全白枪名 → 主任务自动标白，存在非白枪名 → 主任务恢复原色）。
 
 响应：
 
@@ -1229,7 +1231,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 主页面日期表头中的管理员复选框使用该接口保存。
-- 工作日工时、周末加班工时、主页面底部周末加班统计、工时管理排行和工时管理表导出均使用该规则。
+- 工作日工时、周末加班工时、主页面底部周末加班统计、工时管理统计和工时管理表导出均使用该规则。
 - 当传入的 `type` 与该日期的自然属性（自然工作日/自然周末）相同，或 `type` 为空时，后端会删除该日期的覆盖键（等效于恢复自然日）；GET/PUT 均会经过规范化处理，只保留有效覆盖项。
 
 ### 获取组长规则
@@ -1666,15 +1668,23 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 | 事件 | 说明 | 参数 | 权限与限流 |
 |------|------|------|------------|
-| `status_tracking_start_edit` | 通知开始编辑状态追踪记录 | `{ itemId }`（`userId`/`username` 由服务端会话注入，客户端传入的值被忽略；缺少 `itemId` 时回发 `error: Missing itemId`） | 仅 `admin`/`superadmin`（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；每个连接 10 秒最多 30 次（超限 `error: 操作过于频繁，请稍后再试`） |
-| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录 | `{ itemId }` | 需已认证 |
+| `status_tracking_start_edit` | 通知开始编辑状态追踪记录 | `{ itemId }`（`userId`/`username`/`name` 由服务端会话注入，客户端传入的值被忽略；缺少 `itemId` 时回发 `error: Missing itemId`） | 仅 `admin`/`superadmin`（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；每个连接 10 秒最多 30 次（超限 `error: 操作过于频繁，请稍后再试`） |
+| `status_tracking_stop_edit` | 通知停止编辑状态追踪记录 | `{ itemId }` | 需已认证；只释放**本连接自己持有**的该行锁，不能替其他连接上的他人解锁 |
+
+行锁仲裁规则（服务端维护，键为 `itemId`）：
+
+- **互斥**：该行已被其他连接占用时，`status_tracking_start_edit` 不覆盖他人锁，改为向发起方单独回发 `status_tracking_edit_blocked`（载荷为占用会话 `{ itemId, userId, username, name, socketId }`）。
+- **单行锁**：同一连接只持有一行锁，改锁别的行时自动释放旧行并广播 `status_tracking_edit_stop`。
+- **断线清理**：连接断开时释放该连接持有的全部行锁，避免行永远显示为「他人正在编辑」。
 
 服务端事件：
 
 | 事件 | 说明 | 参数 |
 |------|------|------|
-| `status_tracking_edit_start` | 某用户开始编辑指定记录 | `{ itemId, userId, username, socketId }` |
-| `status_tracking_edit_stop` | 某用户停止编辑指定记录 | `{ itemId }` |
+| `status_tracking_edit_start` | 某用户开始编辑指定记录 | `{ itemId, userId, username, name, socketId }` |
+| `status_tracking_edit_stop` | 某用户停止编辑指定记录 | `{ itemId, userId }` |
+| `status_tracking_edit_blocked` | 行锁申请被他人占用拒绝 | 占用会话 `{ itemId, userId, username, name, socketId }` |
+| `status_tracking_editing_state` | 连接建立时下发一次的行锁快照 | 会话数组 `[{ itemId, userId, username, name, socketId }]` |
 | `status_tracking_updated` | 状态追踪记录更新 | `{ action, item, itemId }` |
 | `status_tracking_bulk` | 状态追踪批量更新 | `[所有记录列表]` |
 
@@ -2688,7 +2698,7 @@ PUT 请求：
 - 操作日志最多保留 `auditLogMaxRows` 条（系统设置 → 日志管理，默认 5000），超过时自动清理最旧的记录。
 - 仅记录已登录用户的请求（匿名请求不记）；登录成功的请求会从登录响应中补取用户信息后记录。
 - `GET /api/system/login-logs*` 与 `/api/system/audit-logs*`（含查询、筛选选项、导出）本身不记录，避免日志自我膨胀；系统设置变更、维护等其他接口（如 `PUT /api/system/settings`）均正常记录。
-- GET 请求不记录响应消息，POST/PUT 请求记录请求体（最大 2000 字符）。
+- GET 请求不记录响应消息，POST/PUT/DELETE 请求记录请求体（脱敏后最大 2000 字符；DELETE 的请求体用于说明删除了哪条记录，如 `DELETE /api/tasks/item`、`DELETE /api/users/:id`）。
 - 请求体在入库前递归脱敏：嵌套对象与数组中的字段名只要匹配 `password`、`passwd`、`secret`、`token`、`api_key`/`apikey`、`authorization`（不区分大小写），值一律替换为 `[REDACTED]`。
 - IP 取 `req.ip`（`trust proxy='loopback'`），不直接采信客户端发送的 `X-Forwarded-For` / `X-Real-IP`。
 - `browserInfo` 包含浏览器名称和版本号、操作系统和版本号、设备类型，`summary` 为拼接后的简要描述。
@@ -3663,7 +3673,9 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
 - `Authentication error: Account disabled`：账号已禁用
 - `Authentication error: Session invalidated`：会话已失效（单设备登录限制）
 
-连接成功后，用户信息会附加到 `socket.data.user`，包含 `id`、`username`、`name`、`role` 字段。服务端会立即下发 `editing_state`（主页面编辑状态）、`gun_ledger_editing_state`（焊枪台账行编辑状态）和 `gun_ledger_table_locks_state`（焊枪台账表级锁快照）。
+连接成功后，用户信息会附加到 `socket.data.user`，包含 `id`、`username`、`name`、`role` 字段。服务端会立即下发 `editing_state`（主页面编辑状态）、`gun_ledger_editing_state`（焊枪台账行编辑状态）、`gun_ledger_table_locks_state`（焊枪台账表级锁快照）和 `status_tracking_editing_state`（状态追踪行锁快照）。
+
+> 前端约定：这几个快照事件**只在连接建立时下发一次**，不会在页面挂载时重放。前端 `src/utils/socketClient.ts` 以引用计数方式全应用共享一条连接，并缓存这些事件的最近载荷；晚于连接挂载的页面需通过 `getSnapshot()` 补齐初始状态（编辑会话、行锁、表锁），否则会看不到他人已占用的编辑/锁状态。
 
 ### 编辑状态管理
 
@@ -3873,7 +3885,7 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 | `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 | `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
-| `SMOKE_DB_PATH` | 空 | 仅 `backend/tests/smoke-relational.js` 冒烟测试读取：优先用它覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；服务端运行时不读取 |
+| `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先用它覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；`npm test`（`backend/tests/run-all.js`）会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
 
 ### CORS 配置示例
 

@@ -57,7 +57,8 @@ export const useGunDragDrop = ({
   getSelectedTaskPayloads,
   designers,
   setDesigners,
-  token,
+  // 保留在接口中但本 hook 不再使用，下划线前缀标记为有意忽略
+  token: _token,
   addToHistory,
   upsertSheet,
   fetchSheets,
@@ -103,7 +104,7 @@ export const useGunDragDrop = ({
 
   const handleDragStart = (event: DragStartEvent) => {
     if (!canEditTasks) return;
-    const { active, active: { data } } = event;
+    const { active: { data } } = event;
     const data_current = data.current;
 
     const isCtrlDrag = event.activatorEvent &&
@@ -459,7 +460,6 @@ export const useGunDragDrop = ({
         if (hitIndex >= 0) newIndex = hitIndex;
       }
       try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date });
         const duplicatePayload = payloads.find(payload => targetItems.some(i => isTaskContentIdentical(i, payload.item)));
         if (duplicatePayload) {
@@ -472,7 +472,7 @@ export const useGunDragDrop = ({
           date: targetDate,
           items: payloads.map(payload => payload.item),
           newIndex
-        }, authHeader);
+        });
         addToHistory('batchAdd', {
           items: (res.data.items || []).map((created: TaskItem, idx: number) => ({
             designerId: targetDesignerId,
@@ -512,8 +512,7 @@ export const useGunDragDrop = ({
       setDesigners(nextDesigners);
 
       try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-        await axiosInstance.post('/designers/reorder', { ids: nextIds }, authHeader);
+        await axiosInstance.post('/designers/reorder', { ids: nextIds });
         addToast('排序已保存', 'success');
       } catch (err) {
         addToast('排序保存失败', 'error');
@@ -551,7 +550,6 @@ export const useGunDragDrop = ({
       }
 
       try {
-        const authHeader = { headers: { Authorization: `Bearer ${token}` } };
         const payloads = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceDesignerId, date: sourceDate });
         // 多选时排除已在目标单元格中的任务，避免同单元格重复挪动导致顺序抖动
         const movedPayloads = payloads.filter(payload => !(payload.designerId === targetDesignerId && payload.date === targetDate));
@@ -576,7 +574,7 @@ export const useGunDragDrop = ({
             targetDesignerId,
             targetDate,
             newIndex: movedPayloads.length === 1 ? newIndex : undefined
-          }, authHeader);
+          });
         }
 
         // Add to history for undo

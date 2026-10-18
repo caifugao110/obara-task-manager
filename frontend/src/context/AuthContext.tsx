@@ -1,7 +1,8 @@
-﻿﻿import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { axiosInstance } from '../services/api';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
+import { acquireSocket } from '../utils/socketClient';
 import { notifySessionExpired } from '../utils/redirect';
 
 interface User {
@@ -91,22 +92,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    if (!token) {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
-      return;
-    }
+    if (!token) return;
 
-    const socket = io('/', {
-      path: '/socket.io',
-      reconnection: true,
-      auth: { token }
-    });
-    socketRef.current = socket;
+    // 共享连接：全应用只维护一条 WebSocket，由 socketClient 按引用计数管理生命周期
+    const handle = acquireSocket(token);
+    socketRef.current = handle.socket;
 
-    socket.on('session_invalidated', (data: { reason?: string; timestamp?: string; newLoginIp?: string; newLoginBrowser?: string; newLoginOs?: string; newLoginDevice?: string }) => {
+    handle.on('session_invalidated', (data: { reason?: string; timestamp?: string; newLoginIp?: string; newLoginBrowser?: string; newLoginOs?: string; newLoginDevice?: string }) => {
       // notifySessionExpired 自带防重复：等登出请求发完再跳转，
       // 否则导航会中断 /api/auth/logout 的吊销请求
       // 浏览器 / 系统分开展示更准确；桌面端类型（Windows/macOS 已隐含）仅在移动端时提示
@@ -125,7 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     return () => {
-      socket.disconnect();
+      handle.release();
       socketRef.current = null;
     };
   }, [token, logout]);
@@ -135,9 +127,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const validateSession = async () => {
       try {
-        const response = await axiosInstance.get('/auth/validate', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        // 无需手工带 Authorization：axiosInstance 的请求拦截器已统一注入
+        const response = await axiosInstance.get('/auth/validate');
         const forceChange = response.data.forcePasswordChange;
         if (forceChange !== undefined) {
           setForcePasswordChange(forceChange);

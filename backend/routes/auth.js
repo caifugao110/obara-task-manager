@@ -242,23 +242,27 @@ router.get('/validate', asyncHandler(async (req, res) => {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE
     });
-    const data = db.readDb();
-
-    const user = data.users.find(u => u.id === decoded.id);
+    // /validate 由前端每 60 秒轮询一次，是最热的只读接口：
+    // 常规路径只取用户与 settings，只有需要清除失效原因时才整库读改写
+    const user = db.findUserById(decoded.id);
 
     if (!user || user.disabled) {
       return res.status(401).json({ valid: false, code: user?.disabled ? 'ACCOUNT_DISABLED' : 'USER_NOT_FOUND' });
     }
 
-    const systemSettings = data.settings?.system || { allowMultiDevice: true };
+    const systemSettings = db.readSettings()?.system || { allowMultiDevice: true };
     // 会话校验：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
     if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
       // 优先返回一次性失效原因（如密码被修改/重置）的准确提示，而非统一误报「在其他设备登录」
       const message = getSessionInvalidationMessage(user, systemSettings.allowMultiDevice);
       if (user.sessionInvalidationReason) {
         // 一次性原因：读后即清，避免后续被顶下线时仍误报为密码修改/重置
-        user.sessionInvalidationReason = undefined;
-        await db.writeDb(data);
+        const data = db.readDb();
+        const userIndex = data.users.findIndex(u => u.id === user.id);
+        if (userIndex !== -1) {
+          data.users[userIndex].sessionInvalidationReason = undefined;
+          await db.writeDb(data);
+        }
       }
       return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message });
     }
@@ -382,8 +386,7 @@ router.get('/client-info', authMiddleware, asyncHandler(async (req, res) => {
   const userAgent = req.headers['user-agent'] || '';
   const browserInfo = getBrowserInfo(userAgent);
   // 上次登录时间：本次登录之前的那次登录；首次登录时回退为本次登录时间
-  const data = db.readDb();
-  const currentUser = data.users.find(u => u.id === req.user.id);
+  const currentUser = db.findUserById(req.user.id);
   let lastLoginAt = currentUser?.lastLoginAt || null;
   const previousLoginAt = currentUser?.previousLoginAt || null;
   // 老账号在新增字段前从未重新登录：回落到登录日志表的最近一次成功登录

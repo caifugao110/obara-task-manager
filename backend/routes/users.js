@@ -90,7 +90,9 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
   }
 
   const newUser = {
-    id: Date.now().toString(),
+    // 用 UUID 而非 Date.now()：同毫秒内创建多个用户会产生重复 id，
+    // 而 id 会写入 JWT 并用于会话校验
+    id: crypto.randomUUID(),
     username,
     password: bcrypt.hashSync(password, 10),
     role: targetRole,

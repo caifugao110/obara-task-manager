@@ -46,8 +46,13 @@ const sanitizeBody = (value) => {
   return sanitized;
 };
 
+// DELETE 同样纳入记录：删除类接口（如 DELETE /api/tasks/item、/api/users/:id）
+// 通过请求体携带操作对象，若不记录则审计链上缺少「删了谁/删了哪条」的关键信息。
+// GET/HEAD/OPTIONS 无请求体，PATCH 目前未被本项目路由使用，保持不记录。
+const LOGGED_BODY_METHODS = ['POST', 'PUT', 'DELETE'];
+
 const formatRequestBody = (method, body) => {
-  if (!['POST', 'PUT'].includes(method)) return null;
+  if (!LOGGED_BODY_METHODS.includes(method)) return null;
   if (body == null) return null;
   const sanitized = sanitizeBody(body);
   return truncateText(JSON.stringify(sanitized), MAX_REQUEST_BODY_LENGTH);
@@ -121,7 +126,7 @@ const getActionDescription = (method, path, body) => {
     'tasks/batch-replace': '批量替换任务',
     'tasks/move': '移动任务',
     'settings': method === 'PUT' ? '更新设置' : '查看设置',
-    'settings/leaderboard': method === 'PUT' ? '更新排行榜设置' : '查看排行榜设置',
+    'settings/leaderboard': method === 'PUT' ? '更新任务报表设置' : '查看任务报表设置',
     'settings/work-hours': method === 'PUT' ? '更新工时设置' : '查看工时设置',
     'settings/status-tracking': method === 'PUT' ? '更新状态跟踪设置' : '查看状态跟踪设置',
     'settings/system-settings': method === 'PUT' ? '更新系统设置权限' : '查看系统设置权限',

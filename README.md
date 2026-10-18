@@ -98,8 +98,8 @@ npm run dev
 | 页面 | 路径 | 说明 |
 |------|------|------|
 | 主页面 | `/` | Excel 风格任务录入、拖拽移动、多选、复制、剪切、粘贴、撤销 |
-| 任务报表 | `/leaderboard` | 仕样进度管理、枪名周期管理、月度工时与请假排行 |
-| 工时管理 | `/work-hours` | 月度工时排行、请假排行、周末加班与出差明细 |
+| 任务报表 | `/leaderboard` | 仕样进度管理、枪名周期管理 |
+| 工时管理 | `/work-hours` | 月度工时统计、请假统计、周末加班与出差明细 |
 | 管理后台 | `/admin` | 设计人员列表、登录用户列表、批量导入 |
 | 登录 | `/login` | 管理员和普通用户登录 |
 | 修改密码 | `/change-password` | 首次登录或被重置密码后强制修改密码 |
@@ -143,7 +143,7 @@ npm run dev
   - 拖拽移动/复制主任务时：**源主任务按主任务粒度校验**，目标单元格只做整格级（旧版会话）校验——因为在他人主任务之间插入新位置并不修改那个主任务。
 - **任务变更的实时刷新策略**：编辑者保存后按「设计人员 + 年月」发送增量广播，服务端从数据库读取该工时表的最新数据再广播，其他客户端只本地合并受影响的表（仅限当前查看月份），不必重新拉取整月数据；批量操作、跨人员移动、工作日设置变更等影响范围不明确的场景退化为全量刷新信号。无编辑权限的只读客户端把全量刷新合并为 3 秒一次，页面在后台时挂起、切回前台再补刷一次，避免多人在线时反复全量拉取。
 - 底部统计会显示本月任务条目、周末加班、员工出差和员工请假汇总。
-- 主页面日期表头支持管理员设置工作日覆盖规则：一般管理员和超级管理员将鼠标悬停在日期上时，可勾选“将今日设为普通工作日”或“将今日设为周末加班日”。未勾选时按自然周六/周日判断；勾选后主页面周末底色、底部周末加班统计、工时管理排行和工时导出表均按覆盖后的有效工作日/周末计算。
+- 主页面日期表头支持管理员设置工作日覆盖规则：一般管理员和超级管理员将鼠标悬停在日期上时，可勾选“将今日设为普通工作日”或“将今日设为周末加班日”。未勾选时按自然周六/周日判断；勾选后主页面周末底色、底部周末加班统计、工时管理统计和工时导出表均按覆盖后的有效工作日/周末计算。
 - **纳期更新功能：手动点击纳期更新时，将所有与该任务内容同一仕样号的计划任务一同更新或添加纳期（如果没有）。完成后提示已为多少个相同仕样号的计划任务添加纳期。**
 - **手动输入纳期：任务编辑模态框中可手动设置纳期日期，支持自定义覆盖仕样书 PDF 提取的纳期。**
 - **「批量操作」按钮与「显示纳期」/手动输入纳期入口仅对设计计划任务显示**：任务类型为出差、事假、休假、病假等非设计计划类型时（新增模式切换了任务类型，或编辑对象为请假类任务）自动隐藏这些入口。
@@ -153,6 +153,7 @@ npm run dev
 - **打开主页面时自动将“今日”任务列滚动到视图中央展示；点击左下角状态圆点（就绪/离线）可随时重新定位到今日列**（仅滚动定位，不触发重连或数据刷新；非当前月份时不生效）。
 - **页脚展示「上次登录」时间**（精确到分钟，本地时区）：取本次登录之前那次成功登录的时间，首次登录时展示本次登录时间。历史账号在该字段上线前未重新登录时，后端自动回落到登录日志中最近一次成功登录时间。
 - **页脚提供「全屏 / 退出全屏」按钮**：点击切换浏览器全屏显示，按钮图标与文案随状态变化；用 `F11` 或 `Esc` 等方式退出时状态也会同步。
+- **页脚提供「操作说明」弹窗**（仅管理员可见入口）：点击问号图标打开，内含「拖拽录入」与「快捷键录入」两栏，讲解双击空白单元格新增任务、拖动任务整行移动/排序、`Ctrl`+拖拽复制等鼠标操作与对应快捷键；`Esc` 或点击遮罩关闭。
 - **点击页面右上角用户姓名可打开修改密码弹窗**（无需跳转页面），支持当前/新密码的显示与隐藏切换。该入口仅在系统设置「允许用户自主改密」开启时显示（默认关闭，见「系统设置 → 登录管理」）。
 - **新增枪名行时自动填充默认工时**：确认图、确认图修改、设计三类任务在任务编辑模态框中添加枪名后，按「枪名所在台账表专用规则 → 机型 C/X 回退规则 → 固定兜底（2/0.75/3h）」的优先级自动填充空工时，已手动输入的工时不被覆盖。
 - **设计人员按分组显示，支持点击分组标题折叠/展开，状态保存在 localStorage。**
@@ -177,13 +178,16 @@ npm run dev
   - 非管理员仅允许标记白色或恢复，后端会校验并拒绝其他颜色值。
   - 标记操作会通过 Socket.IO 实时同步到所有客户端，标记期间其他用户会在**该主任务行（或具体枪名行）**看到「正在修改任务状态」的行内脉冲徽标；整格红色罩层只保留给兼容期的旧版整格会话。
   - 每个任务和枪名会记录 `colorMarkedBy`（标记者信息，系统自动标记为 `auto`），管理员悬浮任务时可查看。
+  - **枪名增删/移动后自动重算主任务完成态**：编辑枪名、删除枪名、把单个枪名移出或移入主任务时，后端都会重新按枪名状态同步主任务颜色——枪名全部为白色时主任务自动标白（记录 `colorBeforeUserMark` 原色），只要有一个非白枪名且主任务为白色，主任务自动恢复原色。该联动与手动标记规则一致，无需人工再点一次主任务。
 
 ### 离线模式
 
 - 离线检测双通道：
   - 通道一（全页面）：浏览器断网，靠 `navigator.onLine` 与 `online`/`offline` 事件。
-  - 通道二（部分页面）：后端进程停止但浏览器仍在线时，axios 响应拦截器捕获 `ERR_NETWORK`/`ECONNABORTED` 后广播全局 `server-unreachable` 事件（恢复时广播 `server-online`）。**当前订阅该事件的页面为：管理后台、任务报表、工时管理、系统设置、操作日志**；主页面、状态追踪、焊枪台账未订阅，它们依赖 `navigator.onLine`、Socket 重连与接口错误码兜底。
+  - 通道二（部分页面）：后端进程停止但浏览器仍在线时，axios 响应拦截器捕获 `ERR_NETWORK`/`ECONNABORTED` 后广播全局 `server-unreachable` 事件（恢复时广播 `server-online`）。**当前订阅该事件的页面为：登录、修改密码、管理后台、任务报表、工时管理、系统设置、操作日志**；主页面、状态追踪、焊枪台账未订阅，它们依赖 `navigator.onLine`、Socket 重连与接口错误码兜底。
 - 覆盖页面：主页面（含 localStorage 缓存浏览）、管理后台、任务报表、工时管理、系统设置、焊枪台账、状态追踪，均显示橙色横幅「当前处于离线模式，此页面禁止编辑」并拦截所有写操作（提示「当前离线，禁止编辑」）。
+- 登录页与修改密码页同样离线禁用：两者监听 `online`/`offline`/`server-unreachable`/`server-online`，离线时输入框与提交按钮禁用，顶部琥珀色提示「当前网络离线，无法登录，网络恢复后自动解除限制」/「当前网络离线，无法修改密码，网络恢复后自动解除限制」，提交时提示「当前网络离线，无法登录，请待网络恢复后重试」/「当前网络离线，无法修改密码，请待网络恢复后重试」。
+- 任务报表、工时管理、操作日志在离线时进一步禁用交互控件（月份切换、刷新、开关、仕样号/枪名输入框、导出按钮等），容器加灰度样式；任务报表的仕样号/枪名搜索与工时管理的数据拉取在离线时直接跳过，并提示「当前离线，禁止编辑」。
 - 主页面额外支持离线缓存：首次断开时自动保存当前数据到浏览器 localStorage，刷新页面后如果后端仍不可用，直接使用缓存数据浏览；缓存仅用于离线浏览，不会覆盖服务器数据。
   - 缓存**只在离线状态下写入**（在线时数据以服务端为准，不再每次变更都全量写 localStorage，避免他人每次编辑都触发本地序列化开销），离线期间的连续编辑按 800ms 防抖合并写入；断网瞬间由 `offline` 事件与 Socket `connect_error` 即时补写一次。
   - 缓存写入失败（如 localStorage 配额不足）不影响在线功能。
@@ -206,10 +210,10 @@ npm run dev
 
 ### 工时管理
 
-- “月度工时排行”可开启“不包含周末加班”，重新按去除周末后的工时排行。这里的周末加班按主页面日期覆盖规则计算。
+- “月度工时统计”可开启“不包含周末加班”，重新按去除周末后的工时统计。这里的周末加班按主页面日期覆盖规则计算。
 - 人员名称下方会显示周末加班工时，统计口径同主页面日期覆盖规则。
 - 将鼠标悬停在人员上时可查看设计计划总工时、出差总工时、出差日期和每日出差工时。
-- “月度请假排行”可开启“不包含休假”，重新按去除休假后的请假工时排行。
+- “月度请假统计”可开启“不包含休假”，重新按去除休假后的请假工时统计。
 - 将鼠标悬停在人员上时可查看请假明细。
 - 超级管理员可设置工时管理查看权限；未登录用户不能进入 `/work-hours`，`allowViewers` 仅控制普通用户访问。
 - “启用工时管理”关闭后，“一般管理员”和“普通用户”会自动关闭。
@@ -245,7 +249,7 @@ npm run dev
 - 组长列与工厂字段按营业担当自动匹配规则填充（组长规则 / 工厂规则）。
 - 管理员可「导出显示结果」为 `.xls`（按当前筛选条件导出），文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`；超级管理员可批量导入状态追踪数据，导入前支持「仕样号 + 添加时间月」组合重复检查，可选择覆盖导入。
 - 支持按纳期月或添加时间月清理历史状态追踪记录（仅超级管理员，在系统设置「数据库维护」中操作）。
-- 实时同步：数据变更通过 Socket.IO 广播通知所有客户端；编辑记录时其他人可见编辑占用提示。
+- 实时同步：数据变更通过 Socket.IO 广播通知所有客户端；编辑占用按行获取：点击/聚焦某一行即申请该行编辑锁，焦点移出整行（或页面卸载、断开连接）时释放，他人锁定期间整行输入框禁用。行锁由**服务端仲裁**：同一行已被他人占用时 `status_tracking_start_edit` 被拒绝并回发 `status_tracking_edit_blocked`（提示「AAA 正在编辑此记录，请稍后再试」），不会出现静默抢锁；同一连接同时只持有一行锁，切换到别的行会自动释放旧行；新连接的客户端会先收到 `status_tracking_editing_state` 快照，直接看到他人已占用的行。
 - **「组长/工厂规则」入口在本页面**：管理员可见 teal 色「组长/工厂规则」按钮，弹窗内含「组长规则」与「工厂规则」两个标签页——组长规则维护组长归属关系；工厂规则维护营业担当到工厂（`O/NJG`、`O/SHA`）的映射并设置默认工厂。超级管理员可一键重置为默认规则。
 - 超级管理员可设置状态追踪页面访问权限；未登录用户不能进入 `/status-tracking`，`allowViewers` 仅控制普通用户访问。
 - 普通用户（开启 `allowViewers` 后）进入页面为只读模式：顶部显示「当前为只读模式，仅可查看数据，无法编辑」提示条，所有编辑控件禁用，添加/导出/导入入口不可见。
@@ -497,6 +501,7 @@ npm run start:backend
 npm run start:frontend
 npm run lint
 npm run lint:frontend
+npm test
 npm run test:backend
 ```
 
@@ -514,18 +519,37 @@ npm run test:backend
 | `npm run start:backend` | 使用 `node server.js` 启动后端 |
 | `npm run start:frontend` | 预览前端构建产物（`vite preview`） |
 | `npm run lint` | 运行前端 ESLint 检查（等同 `lint:frontend`） |
-| `npm run lint:frontend` | 对 `frontend/src` 下的 `ts/tsx` 文件运行 ESLint，未使用规则告警阈值为 0 |
-| `npm run test:backend` | 后端测试入口（当前为占位脚本，会返回失败） |
+| `npm run lint:frontend` | 对 `frontend/src` 下的 `ts/tsx` 文件运行 ESLint，配置见 `frontend/.eslintrc.cjs`，未使用变量等告警阈值为 0 |
+| `npm test` | 后端测试总入口（等同 `test:backend`，调用 `backend/tests/run-all.js`） |
+| `npm run test:backend` | 后端测试总入口，依次执行单元测试与关系表冒烟测试 |
 
-关系表冒烟测试（`backend/tests/smoke-relational.js`，验证 `taskStore` 与独立日志表的读写，不属于 `npm test` 入口）：
+后端测试的细分命令（需在 `backend` 目录下执行）：
+
+| 命令 | 说明 |
+|------|------|
+| `npm test` | 测试入口：先跑 `tests/unit/*.test.js` 单元测试，再在数据库快照副本上跑关系表冒烟测试，任一部分失败即返回非 0 退出码 |
+| `npm run test:unit` | 仅跑单元测试（`node --test tests/unit/*.test.js`），纯函数测试，不依赖数据库与外网 |
+| `npm run test:smoke` | 仅跑关系表冒烟测试（`tests/smoke-relational.js`），**会写入数据**，必须指定数据库副本 |
+
+单元测试（`tests/unit/`，基于 `node:test`）覆盖鉴权中间件的纯函数（会话校验、访问设置归一化、失效原因文案）、文件上传安全（Excel 类型校验、公式注入转义）与工作日工具（周末判断、覆盖规则）。
+
+关系表冒烟测试（`backend/tests/smoke-relational.js`，验证 `taskStore` 与独立日志表的读写）现在由 `npm test` 自动调度：入口脚本会先用 `VACUUM INTO` 为生产库生成**只读快照副本**（用 `VACUUM INTO` 而非直接复制文件，避免 WAL 模式下丢掉未 checkpoint 的提交或拷到写一半的中间状态），在副本上跑冒烟测试，结束后清理 `backend/tests/.tmp/`，全程不触碰生产 `data.db`。
 
 ```bat
 cd backend
-set SMOKE_DB_PATH=%CD%\data-smoke.db
-node tests\smoke-relational.js
+npm test
 ```
 
-> 必须在**数据库副本**上运行：脚本会写入并删除测试数据。未设置 `SMOKE_DB_PATH` 时会直接使用 `SQLITE_DB_PATH`（即生产库），请勿对生产库执行。
+也可单独执行（此时需自备副本）：
+
+```bat
+cd backend
+npm run test:unit
+set SMOKE_DB_PATH=%CD%\data-smoke.db
+npm run test:smoke
+```
+
+> 冒烟测试会写入并删除测试数据，因此**必须在数据库副本上运行**：`npm test` 会自动生成快照；手工执行时若未设置 `SMOKE_DB_PATH`，脚本会退化为使用 `SQLITE_DB_PATH`（即生产库），请勿对生产库执行。
 
 其他脚本：
 
@@ -551,7 +575,7 @@ node --check backend\routes\system.js
 node --check backend\routes\tasks.js
 ```
 
-> 目前 `npm run test` 会调用后端占位测试脚本并返回失败；提交或部署前优先执行前端类型检查、前端 ESLint、后端语法检查和关键页面手动验证。
+> 提交或部署前建议按顺序执行：前端 ESLint（`npm run lint`）→ 后端测试（`npm test`）→ 前端类型检查 → 关键页面手动验证。
 
 ## 环境变量
 
@@ -665,7 +689,7 @@ node --check backend\routes\tasks.js
 - 日志包含操作描述、HTTP 方法、路径、IP、浏览器信息、状态码、耗时、请求体和响应消息。
 - 操作类型和描述均为中文，例如「用户登录」「添加任务」「更新任务」「删除任务」「移动任务」「重新排序设计员」「批量替换任务」「导出任务数据」「导入任务数据」等。
 - 浏览器信息存储浏览器名称和版本号、操作系统和版本号、设备类型，但页面和导出表格中仅显示浏览器名称（如「Chrome」）。
-- GET 请求不记录响应消息（避免存储大体积任务数据），POST/PUT 请求记录请求体（最大 2000 字符）。
+- GET 请求不记录响应消息（避免存储大体积任务数据），POST/PUT/DELETE 请求记录请求体（脱敏后最大 2000 字符；DELETE 的请求体用于说明「删了谁/删了哪条」，GET/HEAD/OPTIONS 无请求体故不记录）。
 - 操作日志默认最多保留 5000 条（可在「系统设置 → 日志管理」中调整），超过自动清理最旧记录。
 - 仅超级管理员可在「操作日志」页面查看，支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
 - 筛选下拉框中的操作类型按拼音排序。
@@ -729,7 +753,9 @@ obara-task-manager/
 │   │   └── spec-pdf/
 │   ├── tests/
 │   │   ├── pdf/
-│   │   └── smoke-relational.js   # 关系表存储（taskStore/独立日志表）冒烟测试
+│   │   ├── run-all.js            # 测试入口（npm test）：单元测试 + 快照副本冒烟测试
+│   │   ├── smoke-relational.js   # 关系表存储（taskStore/独立日志表）冒烟测试
+│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / uploadSecurity / workday
 │   ├── utils/
 │   │   ├── auditLogDisplay.js
 │   │   ├── dbMaintenance.js
@@ -768,6 +794,7 @@ obara-task-manager/
 ├── docs/
 │   └── API.md
 ├── frontend/
+│   ├── .eslintrc.cjs             # ESLint 8 配置（规则按「当前代码库可过」裁剪，见「核心模块说明」）
 │   ├── index.html
 │   ├── package.json
 │   ├── package-lock.json
@@ -790,10 +817,6 @@ obara-task-manager/
 │       ├── context/
 │       │   ├── AuthContext.tsx
 │       │   └── SystemSettingsContext.tsx
-│       ├── hooks/
-│       │   ├── index.ts
-│       │   ├── useSocket.ts
-│       │   └── useTasks.ts
 │       ├── pages/
 │       │   ├── Admin.tsx
 │       │   ├── ChangePassword.tsx
@@ -823,6 +846,7 @@ obara-task-manager/
 │           ├── gunHoursRules.ts   # 默认工时解析（表级专用 → 机型 C/X → 兜底）与内置规则镜像
 │           ├── loginLogs.ts
 │           ├── redirect.ts
+│           ├── socketClient.ts    # 共享 Socket.IO 单例（引用计数 + 快照事件回放）
 │           └── workdayOverrides.ts
 ├── weknora/                      # WeKnora 知识库服务（Docker Compose 本地部署）
 │   ├── .env.example              # 环境变量模板（真实 .env 由脚本生成，不入库）
@@ -853,11 +877,13 @@ obara-task-manager/
 
 | 模块 | 路径 | 说明 |
 |------|------|------|
-| 前端 API 服务层 | `frontend/src/services/api.ts` | 导出统一的 `axiosInstance`（JWT 注入、会话失效处理、后端不可达时广播 `server-unreachable`/`server-online`），并封装认证、用户、设计人员、任务、设置和系统维护接口函数。**当前各页面实际只使用 `axiosInstance` 直接发请求**，其余分组函数仅作类型化参考（其中 `tasksAPI` 被 `hooks/useTasks.ts` 使用，该 hook 暂未被页面引用） |
+| 前端 API 服务层 | `frontend/src/services/api.ts` | **只导出**配置好拦截器的 `axiosInstance`：请求自动附带 JWT Token，响应统一处理「后端不可达」「账号禁用」「会话失效」三类情况（不可达时广播 `server-unreachable`/`server-online`）。页面一律通过该实例 + 路径字符串直接发请求，不再维护 `authAPI`/`tasksAPI` 等分组封装 |
+| 共享 Socket 连接 | `frontend/src/utils/socketClient.ts` | 全应用共享一条 Socket.IO 连接：`acquireSocket(token)` 返回句柄，同一 token 复用同一条连接，`release()` 归还引用，归零后延迟 1 秒回收；统一重连参数；缓存 `editing_state` / `gun_ledger_editing_state` / `gun_ledger_table_locks_state` / `status_tracking_editing_state` 快照事件，晚挂载的页面用 `getSnapshot()` 补一次初始状态 |
 | 类型定义 | `frontend/src/types/index.ts` | TypeScript 类型定义，包含用户、任务、设计人员、报表等核心类型 |
 | 认证中间件 | `backend/middleware/auth.js` | JWT 认证、角色校验 |
 | Socket.IO 认证 | `backend/middleware/socketAuth.js` | WebSocket 连接认证和单设备登录限制 |
-| 操作日志 | `backend/middleware/auditLog.js` | 自动记录所有已登录用户的 API 请求 |
+| 操作日志 | `backend/middleware/auditLog.js` | 自动记录所有已登录用户的 API 请求；`POST`/`PUT`/`DELETE` 记录请求体（脱敏后最大 2000 字符） |
+| 数据库缓存读接口 | `backend/db.js` | `readDb()` 返回整库克隆；只读场景优先使用窄读接口 `readSettings()`（只读 `settings`）与 `findUserById(id)`（单用户克隆），避免鉴权、Socket 鉴权、会话校验等高频路径反复深拷贝整库；写库仍用 `readDb()` + `writeDb()` |
 | 数据库维护 | `backend/utils/dbMaintenance.js` | 自动备份、任务导出、断网备份、年度清理等维护功能 |
 | 任务关系表存储 | `backend/taskStore.js` | 任务工时表的关系型存储层（`task_sheets`/`task_entries`），按设计人员/年月索引读写单张表，对外保持原 sheet 数据形状 |
 | IP 黑名单 | `backend/utils/ipBlacklist.js` | 黑名单规则校验/归一化/匹配（精确 IP、CIDR、IPv4 通配符）与全局拦截中间件 |
@@ -877,6 +903,8 @@ obara-task-manager/
 | 构建版本生成 | `control/ObaraServiceController.csproj` | MSBuild 编译前自动生成 `Properties/GeneratedVersion.cs`，版本号按构建日期生成，无需手工维护 |
 | 控制台主题 | `control/Utils/ThemeColors.cs` | 暗色科技风 UI 配色与渐变定义 |
 | CI/CD | `.github/workflows/build-and-deploy.yml` | 自动构建控制台 EXE 并发布 Release，同时把 README 与 docs/ 部署到 GitHub Pages |
+| 测试入口 | `backend/tests/run-all.js` | `npm test` 调度脚本：先跑 `tests/unit/*.test.js` 单元测试（`node:test`），再用 `VACUUM INTO` 生成生产库只读快照并在副本上跑关系表冒烟测试，结束清理 `tests/.tmp/`，任一部分失败返回非 0 退出码 |
+| 前端静态检查 | `frontend/.eslintrc.cjs` | ESLint 8 配置，规则按「当前代码库能通过」裁剪：关闭 `no-explicit-any`、`exhaustive-deps` 等既有技术债规则，开启未使用变量、`no-empty`、`no-var` 等能真实反映缺陷的规则，使 `--max-warnings 0` 可长期通过 |
 
 ## 前端加载与构建产物
 
@@ -1033,8 +1061,9 @@ obara-task-manager/
 
 ### 功能
 
-- 服务启停：单独启停后端 / 前端，或一键启动、一键停止。
+- 服务启停：单独启停后端 / 前端，或一键启动、一键停止。**「一键停止」在后台线程执行**（`taskkill`、等待进程退出与端口探测均为阻塞操作），期间按钮自动禁用，结束后恢复，避免停止过程中界面卡死无响应。
 - 实时监控：定时探测前后端端口（默认 2 秒一次），显示进程 PID、端口延迟和运行 / 停止 / 异常状态。
+- 进程状态健壮性：进程对象从未成功启动或已释放时访问 `HasExited`/`Id` 会抛异常，控制台对状态读取、退出事件日志、启动失败与释放路径均做了防护（释放前先置空字段、启动失败即释放残留对象），避免误报「后端进程已退出 (PID: 0)」或状态卡片卡在运行中。
 - 端口配置：可在界面修改前后端端口并持久化到本地配置（默认后端 `5000`、前端 `5173`）。
 - 路径绑定：自动从 EXE 所在目录向上查找 `backend/` 与 `frontend/`，**不硬编码绝对路径**，整个项目目录移动后仍可直接使用。
 - 一键打开浏览器：点击「打开浏览器」可直接访问运行中的前端界面。

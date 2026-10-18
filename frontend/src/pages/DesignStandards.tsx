@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import {
   ChevronLeft,
   BookOpen,
@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
+import { acquireSocket } from '../utils/socketClient';
 
 /* ==================== 类型 ==================== */
 
@@ -457,28 +458,24 @@ const DesignStandards: React.FC = () => {
   // 后端服务在线状态：socket 连接断开即视为后端离线，重连成功后自动刷新知识库状态
   useEffect(() => {
     if (!token || !canViewDesignStandards) return;
-    const socket = io('/', {
-      path: '/socket.io',
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 3000,
-      timeout: 10000,
-      auth: { token },
-    });
-    socketRef.current = socket;
+    // 共享连接：可能在本页挂载前就已建立，connect 事件不会再触发一次，
+    // 因此先用 socket.connected 校正一次在线状态，避免误显示「后端离线」
+    const handle = acquireSocket(token);
+    socketRef.current = handle.socket;
+    setBackendOnline(handle.socket.connected);
     let hasConnectedOnce = false;
 
-    socket.on('connect', () => {
+    handle.on('connect', () => {
       setBackendOnline(true);
       // 断线重连后重新拉取知识库状态（期间 WeKnora 可能也发生过变化）
       if (hasConnectedOnce) fetchStatus();
       hasConnectedOnce = true;
     });
-    socket.on('disconnect', () => setBackendOnline(false));
-    socket.on('connect_error', () => setBackendOnline(false));
+    handle.on('disconnect', () => setBackendOnline(false));
+    handle.on('connect_error', () => setBackendOnline(false));
 
     return () => {
-      socket.disconnect();
+      handle.release();
       socketRef.current = null;
     };
   }, [token, canViewDesignStandards, fetchStatus]);

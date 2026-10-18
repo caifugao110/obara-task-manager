@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -17,10 +17,30 @@ const ChangePassword = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const isOffline = !isOnline;
   const { setForcePasswordChange } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirectTarget = sanitizeRedirect(searchParams.get('redirect'));
+
+  // 浏览器网络 + 后端服务可达性监听：离线时禁止提交表单
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    const handleServerUnreachable = () => setIsOnline(false);
+    const handleServerOnline = () => setIsOnline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('server-unreachable', handleServerUnreachable);
+    window.addEventListener('server-online', handleServerOnline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('server-unreachable', handleServerUnreachable);
+      window.removeEventListener('server-online', handleServerOnline);
+    };
+  }, []);
 
   const togglePasswordVisibility = (field: keyof typeof visiblePasswords) => {
     setVisiblePasswords((current) => ({
@@ -41,10 +61,11 @@ const ChangePassword = () => {
       </div>
       <input
         type={visiblePasswords[field] ? 'text' : 'password'}
-        className="w-full pl-11 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
+        className="w-full pl-11 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        disabled={isOffline}
         required
       />
       <button
@@ -72,6 +93,11 @@ const ChangePassword = () => {
 
     if (!oldPassword || !newPassword) {
       setError('请填写所有字段');
+      return;
+    }
+
+    if (isOffline) {
+      setError('当前网络离线，无法修改密码，请待网络恢复后重试');
       return;
     }
 
@@ -109,6 +135,13 @@ const ChangePassword = () => {
           </div>
 
           <div className="bg-white shadow-sm border border-gray-300 p-8 rounded-lg">
+            {isOffline && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-lg mb-6 flex items-start gap-3">
+                <AlertCircle size={20} className="mt-0.5 shrink-0" />
+                <div className="text-sm font-bold">当前网络离线，无法修改密码，网络恢复后自动解除限制</div>
+              </div>
+            )}
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-lg mb-6 flex items-start gap-3">
                 <AlertCircle size={20} className="mt-0.5 shrink-0" />
@@ -139,10 +172,10 @@ const ChangePassword = () => {
                 {renderPasswordInput('confirm', confirmPassword, setConfirmPassword, '请再次输入新密码')}
               </div>
 
-              <button 
-                type="submit" 
-                disabled={loading}
-                className={`w-full bg-[#217346] text-white py-3 rounded-lg font-bold text-base hover:bg-[#1a5c38] transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2 ${loading ? 'opacity-70 cursor-not-allowed' : ''}`}
+              <button
+                type="submit"
+                disabled={loading || isOffline}
+                className={`w-full bg-[#217346] text-white py-3 rounded-lg font-bold text-base hover:bg-[#1a5c38] transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2 ${loading || isOffline ? 'opacity-70 cursor-not-allowed' : ''}`}
               >
                 {loading ? (
                   <>

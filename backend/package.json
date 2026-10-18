@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon --ignore tests server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node tests/run-all.js",
+    "test:unit": "node --test tests/unit/*.test.js",
+    "test:smoke": "node tests/smoke-relational.js"
   },
   "keywords": [],
   "author": "",

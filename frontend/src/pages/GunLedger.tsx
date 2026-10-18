@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import {
   ChevronLeft,
   ClipboardList,
@@ -33,6 +33,7 @@ import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsContext';
 import { useDebounce } from '../utils/debounce';
+import { acquireSocket } from '../utils/socketClient';
 import {
   BUILTIN_TABLE_GUN_HOURS,
   FALLBACK_GUN_HOURS,
@@ -280,7 +281,8 @@ const GunLedger: React.FC = () => {
   const [ledger, setLedger] = useState<GunLedgerData | null>(null);
   const [accessSettings, setAccessSettings] = useState(defaultAccessSettings);
   const [accessLoaded, setAccessLoaded] = useState(false);
-  const [ledgerLoaded, setLedgerLoaded] = useState(false);
+  // 只写不读：加载标记实际未被消费，保留 setter 以免影响调用方
+  const [, setLedgerLoaded] = useState(false);
   const [activeCategory, setActiveCategory] = useState<string>('X2C');
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -316,7 +318,7 @@ const GunLedger: React.FC = () => {
   const [tableHoursDraft, setTableHoursDraft] = useState<TableHoursDraft>({});
   const [fallbackHoursDraft, setFallbackHoursDraft] = useState<DefaultGunHours | null>(null);
   const [hoursSaving, setHoursSaving] = useState(false);
-  const [specLookupLoading, setSpecLookupLoading] = useState(false);
+  const [, setSpecLookupLoading] = useState(false);
   // 已被主任务使用的焊枪名集合：命中者枪名显示天蓝色
   const [usedGunNames, setUsedGunNames] = useState<Set<string>>(new Set());
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
@@ -391,7 +393,7 @@ const GunLedger: React.FC = () => {
   // 仕样号 → 客户名查询
   const fetchSpecInfo = useCallback(async (specNumber: string): Promise<SpecInfoResponse> => {
     try {
-      const res = await axiosInstance.post('/spec/spec-info', { specNumber }, { ...authHeader, timeout: 15000 } as any);
+      const res = await axiosInstance.post('/spec/spec-info', { specNumber }, { timeout: 15000 } as any);
       return res.data;
     } catch {
       return { success: false, message: '获取仕样信息超时' };
@@ -438,7 +440,7 @@ const GunLedger: React.FC = () => {
   // 加载数据（同时归一化序号，保证 1..N 严格连续）
   const fetchLedger = useCallback(async () => {
     try {
-      const res = await axiosInstance.get('/gun-ledger', authHeader);
+      const res = await axiosInstance.get('/gun-ledger');
       setLedger(normalizeLedgerSerials(res.data));
     } catch (err: any) {
       // 网络不可达视为离线（与主页面一致），页面已有数据时继续只读展示
@@ -463,7 +465,7 @@ const GunLedger: React.FC = () => {
   // 拉取已被主任务使用的焊枪名集合（用于枪名天蓝色标识）
   const fetchUsedGunNames = useCallback(async () => {
     try {
-      const res = await axiosInstance.get('/tasks/used-gun-names', authHeader);
+      const res = await axiosInstance.get('/tasks/used-gun-names');
       setUsedGunNames(new Set((res.data?.gunNames || []).map((n: string) => String(n).trim())));
     } catch {
       // 拉取失败仅影响高亮，不打断台账本身的使用
@@ -477,7 +479,7 @@ const GunLedger: React.FC = () => {
   // 获取设计人员列表（任务分配模式下拉用）
   const fetchDesigners = useCallback(async () => {
     try {
-      const res = await axiosInstance.get('/designers', authHeader);
+      const res = await axiosInstance.get('/designers');
       const list = Array.isArray(res.data) ? res.data : [];
       // 按姓名姓氏 A-Z 排序（中文按拼音，英文按字母）
       list.sort((a: Designer, b: Designer) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
@@ -544,7 +546,6 @@ const GunLedger: React.FC = () => {
     const [yearStr, monthStr] = assignDate.split('-');
     axiosInstance.get('/tasks', {
       params: { designerId: assignDesignerId, month: parseInt(monthStr, 10), year: parseInt(yearStr, 10) },
-      ...authHeader,
     })
       .then((res: any) => {
         if (cancelled) return;
@@ -805,7 +806,7 @@ const GunLedger: React.FC = () => {
           itemId,
           field: 'guns',
           value: allGuns,
-        }, authHeader);
+        });
         const totalHours = allGuns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
         await axiosInstance.put('/tasks/item', {
           designerId: assignDesignerId,
@@ -813,7 +814,7 @@ const GunLedger: React.FC = () => {
           itemId,
           field: 'hours',
           value: totalHours,
-        }, authHeader);
+        });
         mergedGunCount += target.guns.length;
       }
       if (items.length > 0) {
@@ -821,7 +822,7 @@ const GunLedger: React.FC = () => {
           designerId: assignDesignerId,
           date: assignDate,
           items,
-        }, authHeader);
+        });
       }
       socketRef.current?.emit('task_updated');
       fetchUsedGunNames();
@@ -1174,7 +1175,7 @@ const GunLedger: React.FC = () => {
     const name = String(rawName || '').trim();
     if (!name || !ledger) return;
     try {
-      const res = await axiosInstance.post(`/gun-ledger/categories/${encodeURIComponent(activeCategory)}/tables`, { name }, authHeader);
+      const res = await axiosInstance.post(`/gun-ledger/categories/${encodeURIComponent(activeCategory)}/tables`, { name });
       // 服务端先广播后响应，socket 的 add_table 可能已先一步追加；此处同样按 id 去重，避免同一新表出现两条
       setLedger(prev => {
         if (!prev) return prev;
@@ -1199,7 +1200,7 @@ const GunLedger: React.FC = () => {
     if (name.length > 30) { addToast('分类名不超过 30 字符', 'error'); return; }
     if (Object.prototype.hasOwnProperty.call(ledger.categories, name)) { addToast('已存在同名分类', 'error'); return; }
     try {
-      await axiosInstance.post('/gun-ledger/categories', { name }, authHeader);
+      await axiosInstance.post('/gun-ledger/categories', { name });
       // socket 广播可能先于响应到达，按分类名去重
       setLedger(prev => prev ? { ...prev, categories: { ...prev.categories, [name]: prev.categories[name] || [] } } : prev);
       setActiveCategory(name);
@@ -1236,7 +1237,7 @@ const GunLedger: React.FC = () => {
     if (warnIfOffline()) return;
     setDeleting(true);
     try {
-      await axiosInstance.delete(`/gun-ledger/categories/${encodeURIComponent(deleteCategoryTarget.name)}`, authHeader);
+      await axiosInstance.delete(`/gun-ledger/categories/${encodeURIComponent(deleteCategoryTarget.name)}`);
       setLedger(prev => {
         if (!prev) return prev;
         const categories = { ...prev.categories };
@@ -1262,7 +1263,7 @@ const GunLedger: React.FC = () => {
     const name = renameValue.trim();
     if (!name) { setRenamingTableId(null); return; }
     try {
-      await axiosInstance.patch(`/gun-ledger/tables/${tableId}`, { name }, authHeader);
+      await axiosInstance.patch(`/gun-ledger/tables/${tableId}`, { name });
       setLedger(prev => {
         if (!prev) return prev;
         const categories = { ...prev.categories };
@@ -1310,7 +1311,7 @@ const GunLedger: React.FC = () => {
     if (warnIfOffline()) return;
     setDeleting(true);
     try {
-      await axiosInstance.delete(`/gun-ledger/tables/${deleteTableTarget.id}`, authHeader);
+      await axiosInstance.delete(`/gun-ledger/tables/${deleteTableTarget.id}`);
       setLedger(prev => {
         if (!prev) return prev;
         const categories = { ...prev.categories };
@@ -1349,7 +1350,7 @@ const GunLedger: React.FC = () => {
     setAccessSettings(updated);
     if (!isSuperAdmin) return;
     try {
-      await axiosInstance.put('/settings/gun-ledger', updated, authHeader);
+      await axiosInstance.put('/settings/gun-ledger', updated);
       addToast('权限设置已保存', 'success');
     } catch {
       addToast('保存权限设置失败', 'error');
@@ -1388,7 +1389,7 @@ const GunLedger: React.FC = () => {
     }
     setRuleSavingId(tableId);
     try {
-      await axiosInstance.put(`/gun-ledger/tables/${tableId}/gun-name-rule`, rule, authHeader);
+      await axiosInstance.put(`/gun-ledger/tables/${tableId}/gun-name-rule`, rule);
       patchTable(tableId, t => ({ ...t, gunNameRule: rule }));
       addToast(`表「${tableName}」初始化设置已保存`, 'success');
     } catch (err: any) {
@@ -1405,7 +1406,7 @@ const GunLedger: React.FC = () => {
     setClearingTableId(tableId);
     try {
       // 请求体必须发送 {} 而非 null：后端 body-parser 严格模式会将 "null" 视为非法 JSON 拒绝（400）
-      await axiosInstance.post(`/gun-ledger/tables/${tableId}/initialize-gun-names`, {}, authHeader);
+      await axiosInstance.post(`/gun-ledger/tables/${tableId}/initialize-gun-names`);
       addToast('已初始化：该表已恢复为 10 个原始焊枪名', 'success');
       setConfirmClearId(null);
       // update_rows 广播会刷新所有客户端的行数据
@@ -1430,7 +1431,7 @@ const GunLedger: React.FC = () => {
         ? '/gun-ledger/initialize-all'
         : `/gun-ledger/categories/${encodeURIComponent(target.category)}/initialize-all`;
       // 同单表初始化：请求体必须为 {} 而非 null，避免后端严格 JSON 解析报 400
-      const res = await axiosInstance.post(url, {}, authHeader);
+      const res = await axiosInstance.post(url);
       const info = res.data || {};
       const tableCount = Number(info.initializedTables) || 0;
       const rowCount = Number(info.clearedRows) || 0;
@@ -1581,7 +1582,7 @@ const GunLedger: React.FC = () => {
         defaultGunHours: fallbackHoursDraft,
         tableGunHours,
       };
-      await axiosInstance.put('/system/settings', updated, authHeader);
+      await axiosInstance.put('/system/settings', updated);
       setSettings(updated);
       addToast('默认工时规则已保存', 'success');
       setShowHoursPanel(false);
@@ -1599,7 +1600,7 @@ const GunLedger: React.FC = () => {
     if (!p || !ledger) return;
     const list = Array.from(new Set([...(ledger.defaultResponsiblePersons || []), p]));
     try {
-      await axiosInstance.put('/gun-ledger/default-persons', list, authHeader);
+      await axiosInstance.put('/gun-ledger/default-persons', list);
       setLedger(prev => prev ? { ...prev, defaultResponsiblePersons: list } : prev);
       setNewPersonInput('');
       addToast('已添加担当人员', 'success');
@@ -1613,7 +1614,7 @@ const GunLedger: React.FC = () => {
     if (!ledger) return;
     const list = (ledger.defaultResponsiblePersons || []).filter(p => p !== person);
     try {
-      await axiosInstance.put('/gun-ledger/default-persons', list, authHeader);
+      await axiosInstance.put('/gun-ledger/default-persons', list);
       setLedger(prev => prev ? { ...prev, defaultResponsiblePersons: list } : prev);
       addToast('已移除', 'success');
     } catch {
@@ -1626,7 +1627,7 @@ const GunLedger: React.FC = () => {
     if (warnIfOffline()) return;
     setResettingPersons(true);
     try {
-      const res = await axiosInstance.post('/gun-ledger/default-persons/reset', {}, authHeader);
+      const res = await axiosInstance.post('/gun-ledger/default-persons/reset');
       const list = Array.isArray(res.data) ? res.data : [];
       setLedger(prev => prev ? { ...prev, defaultResponsiblePersons: list } : prev);
       setShowResetConfirm(false);
@@ -1656,7 +1657,7 @@ const GunLedger: React.FC = () => {
       nextOrder.forEach(k => { rebuilt[k] = prev.categories[k] || []; });
       return { ...prev, categories: rebuilt };
     });
-    axiosInstance.patch('/gun-ledger/categories/order', { order: nextOrder }, authHeader)
+    axiosInstance.patch('/gun-ledger/categories/order', { order: nextOrder })
       .catch(() => addToast('分类顺序保存失败', 'error'));
   }, [ledger, authHeader, addToast, warnIfOffline]);
 
@@ -1680,7 +1681,7 @@ const GunLedger: React.FC = () => {
       categories[activeCategory] = nextOrder.map(id => byId.get(id)!).filter(Boolean);
       return { ...prev, categories };
     });
-    axiosInstance.patch('/gun-ledger/tables/order', { category: activeCategory, order: nextOrder }, authHeader)
+    axiosInstance.patch('/gun-ledger/tables/order', { category: activeCategory, order: nextOrder })
       .catch(() => addToast('表格顺序保存失败', 'error'));
   }, [ledger, activeCategory, authHeader, addToast, warnIfOffline]);
 
@@ -1690,7 +1691,7 @@ const GunLedger: React.FC = () => {
     setRestoring(true);
     try {
       if (restoreTarget === 'categories') {
-        const res = await axiosInstance.post('/gun-ledger/categories/order/default', {}, authHeader);
+        const res = await axiosInstance.post('/gun-ledger/categories/order/default');
         const order: string[] = res.data?.order || [];
         setLedger(prev => {
           if (!prev) return prev;
@@ -1701,7 +1702,7 @@ const GunLedger: React.FC = () => {
         });
         addToast('分类顺序已恢复为默认排序', 'success');
       } else {
-        const res = await axiosInstance.post('/gun-ledger/tables/order/default', { category: activeCategory }, authHeader);
+        const res = await axiosInstance.post('/gun-ledger/tables/order/default', { category: activeCategory });
         const order: string[] = res.data?.order || [];
         setLedger(prev => {
           if (!prev) return prev;
@@ -1762,7 +1763,6 @@ const GunLedger: React.FC = () => {
       const response = await axiosInstance.get('/gun-ledger/export', {
         params: { categories: exportCats.join(',') },
         responseType: 'blob',
-        ...authHeader
       });
       const fallback = exportCats.length === 1 ? `${exportCats[0]}.xls` : '焊枪编号台账导出.zip';
       const fileName = parseDownloadName(response.headers['content-disposition'] || '', fallback);
@@ -1793,36 +1793,43 @@ const GunLedger: React.FC = () => {
   // Socket 连接
   useEffect(() => {
     if (!token || !canAccess) return;
-    const socket = io('/', { path: '/socket.io', reconnection: true, reconnectionAttempts: 10, reconnectionDelay: 3000, timeout: 10000, auth: { token } });
-    socketRef.current = socket;
+    // 共享连接：全应用只维护一条 WebSocket，由 socketClient 按引用计数管理生命周期
+    const handle = acquireSocket(token);
+    socketRef.current = handle.socket;
     let hasConnectedOnce = false;
 
-    socket.on('connect', () => {
+    handle.on('connect', () => {
       setOnline(true);
       // 断线重连后：刷新台账数据并重新申请表级锁；若期间锁被他人取得，会收到 blocked 事件并自动关闭
       if (hasConnectedOnce) fetchLedger();
       hasConnectedOnce = true;
       fetchUsedGunNames();
       const tid = activeTableIdRef.current;
-      if (tid && isAdminRef.current) socket.emit('gun_ledger_lock_table', { tableId: tid });
+      if (tid && isAdminRef.current) handle.socket.emit('gun_ledger_lock_table', { tableId: tid });
     });
-    socket.on('disconnect', () => { setOnline(false); stopRowLock(); });
-    socket.on('connect_error', () => { setOnline(false); });
+    handle.on('disconnect', () => { setOnline(false); stopRowLock(); });
+    handle.on('connect_error', () => { setOnline(false); });
 
     // 主页面任务变更后服务端广播 task_refreshed：同步刷新已用枪名（天蓝色标识）
-    socket.on('task_refreshed', () => {
+    handle.on('task_refreshed', () => {
       fetchUsedGunNames();
     });
 
     // ===== 表级独占编辑锁事件 =====
-    socket.on('gun_ledger_table_locks_state', (sessions: TableLockSession[]) => {
+    // 下列两个是连接期快照：共享连接可能早于本页挂载建立、事件不会重放，
+    // 因此注册后用缓存补一次初始状态
+    const applyTableLocksState = (sessions: TableLockSession[]) => {
       const next: Record<string, TableLockSession> = {};
       (Array.isArray(sessions) ? sessions : []).forEach(s => {
         if (s?.tableId) next[s.tableId] = s;
       });
       setTableLocks(next);
-    });
-    socket.on('gun_ledger_table_locked', (s: TableLockSession) => {
+    };
+    handle.on('gun_ledger_table_locks_state', applyTableLocksState);
+    const cachedTableLocks = handle.getSnapshot<TableLockSession[]>('gun_ledger_table_locks_state');
+    if (cachedTableLocks) applyTableLocksState(cachedTableLocks);
+
+    handle.on('gun_ledger_table_locked', (s: TableLockSession) => {
       if (!s?.tableId) return;
       setTableLocks(prev => ({ ...prev, [s.tableId]: s }));
       // 自己正打开着该表，但锁被他人取得（如他人在同一刻抢先打开）→ 自动关闭并提示
@@ -1833,11 +1840,11 @@ const GunLedger: React.FC = () => {
         setActiveTableId(null);
       }
     });
-    socket.on('gun_ledger_table_unlocked', (data: { tableId: string }) => {
+    handle.on('gun_ledger_table_unlocked', (data: { tableId: string }) => {
       if (!data?.tableId) return;
       setTableLocks(prev => { const n = { ...prev }; delete n[data.tableId]; return n; });
     });
-    socket.on('gun_ledger_table_lock_blocked', (data: { tableId: string; holder: TableLockSession }) => {
+    handle.on('gun_ledger_table_lock_blocked', (data: { tableId: string; holder: TableLockSession }) => {
       if (!data?.tableId) return;
       const holder = data.holder;
       addToast(`「${holder?.name || holder?.username || '他人'}」正在编辑该表，无法打开`, 'error');
@@ -1845,25 +1852,29 @@ const GunLedger: React.FC = () => {
       setActiveTableId(prev => (prev === data.tableId ? null : prev));
     });
 
-    socket.on('gun_ledger_editing_state', (sessions: EditingSession[]) => {
+    const applyGunEditingState = (sessions: EditingSession[]) => {
       const next: Record<string, EditingSession> = {};
       (Array.isArray(sessions) ? sessions : []).forEach(s => {
         if (s?.tableId && s.serialNumber !== undefined) next[sessionKey(s.tableId, s.serialNumber)] = s;
       });
       setEditingSessions(next);
-    });
-    socket.on('gun_ledger_edit_start', (s: EditingSession) => {
+    };
+    handle.on('gun_ledger_editing_state', applyGunEditingState);
+    const cachedGunEditing = handle.getSnapshot<EditingSession[]>('gun_ledger_editing_state');
+    if (cachedGunEditing) applyGunEditingState(cachedGunEditing);
+
+    handle.on('gun_ledger_edit_start', (s: EditingSession) => {
       if (!s?.tableId || s.serialNumber === undefined) return;
       setEditingSessions(prev => ({ ...prev, [sessionKey(s.tableId, s.serialNumber)]: s }));
     });
-    socket.on('gun_ledger_edit_stop', (data: { tableId: string; serialNumber: number }) => {
+    handle.on('gun_ledger_edit_stop', (data: { tableId: string; serialNumber: number }) => {
       if (!data?.tableId || data.serialNumber === undefined) return;
       setEditingSessions(prev => { const n = { ...prev }; delete n[sessionKey(data.tableId, data.serialNumber)]; return n; });
     });
-    socket.on('gun_ledger_edit_blocked', (s: EditingSession) => {
+    handle.on('gun_ledger_edit_blocked', (s: EditingSession) => {
       addToast(`${s.name || s.username} 正在编辑该行`, 'error');
     });
-    socket.on('gun_ledger_updated', (data: { action: string; tableId?: string; rows?: GunRow[]; category?: string; table?: GunTable; name?: string; defaultResponsiblePersons?: string[]; order?: string[]; rule?: GunNameRule }) => {
+    handle.on('gun_ledger_updated', (data: { action: string; tableId?: string; rows?: GunRow[]; category?: string; table?: GunTable; name?: string; defaultResponsiblePersons?: string[]; order?: string[]; rule?: GunNameRule }) => {
       if (!data) return;
       if (data.action === 'add_category' && data.category) {
         setLedger(prev => prev && !(data.category! in prev.categories) ? { ...prev, categories: { ...prev.categories, [data.category!]: [] } } : prev);
@@ -1981,7 +1992,7 @@ const GunLedger: React.FC = () => {
     const onBeforeUnload = () => {
       stopRowLock();
       const tid = activeTableIdRef.current;
-      if (tid) socket.emit('gun_ledger_unlock_table', { tableId: tid });
+      if (tid) handle.socket.emit('gun_ledger_unlock_table', { tableId: tid });
     };
     window.addEventListener('beforeunload', onBeforeUnload);
 
@@ -1989,10 +2000,9 @@ const GunLedger: React.FC = () => {
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('beforeunload', onBeforeUnload);
       stopRowLock();
-      socket.disconnect();
+      handle.release();
       socketRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, canAccess]);
 
   // 浏览器网络在线/离线事件（拔网线等场景比 socket 探测更即时）

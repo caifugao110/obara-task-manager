@@ -55,8 +55,9 @@ const authMiddleware = (req, res, next) => {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE
     });
-    const data = db.readDb();
-    const user = data.users.find(u => u.id === decoded.id);
+    // 鉴权是每请求必经的热路径：只取当前用户与 settings，
+    // 不必克隆 designer / gunLedger 等与鉴权无关的大集合
+    const user = db.findUserById(decoded.id);
 
     if (!user) {
       return res.status(401).json({ message: '用户不存在' });
@@ -66,7 +67,7 @@ const authMiddleware = (req, res, next) => {
       return res.status(403).json({ message: '账号已被禁用，请联系管理员', code: 'ACCOUNT_DISABLED' });
     }
 
-    const systemSettings = data.settings?.system || { allowMultiDevice: true };
+    const systemSettings = db.readSettings()?.system || { allowMultiDevice: true };
     // 会话校验：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
     if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
       // 优先返回一次性失效原因（如密码被修改/重置）的准确提示；
@@ -126,8 +127,7 @@ const normalizeAccessSettings = (settings = defaultAccessSettings) => {
 const hasAccessSettings = (user, settingsKey) => {
   if (!user) return false;
   if (user.role === 'superadmin') return true;
-  const data = db.readDb();
-  const settings = normalizeAccessSettings(data.settings?.[settingsKey]);
+  const settings = normalizeAccessSettings(db.readSettings()?.[settingsKey]);
   if (settingsKey === 'systemSettings') settings.allowViewers = false;
   if (!settings.enabled) return false;
   if (user.role === 'admin' && settings.allowAdmins) return true;

@@ -273,7 +273,7 @@ const SystemLogs = () => {
         )}
       </div>
 
-      <main className="flex-1 p-8 max-w-7xl mx-auto w-full">
+      <main className={`flex-1 p-8 max-w-7xl mx-auto w-full ${isOffline ? 'offline-locked' : ''}`}>
         <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
           <div className="flex items-center justify-between mb-6">
             <div>

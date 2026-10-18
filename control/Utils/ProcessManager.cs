@@ -411,12 +411,23 @@ namespace ObaraServiceController.Utils
 
         public bool IsBackendRunning
         {
-            get { return _backendProcess != null && !_backendProcess.HasExited; }
+            // HasExited throws InvalidOperationException ("没有与此对象关联的进程")
+            // when the Process object has no associated process (never started
+            // or already disposed), so guard every read path.
+            get
+            {
+                try { return _backendProcess != null && !_backendProcess.HasExited; }
+                catch { return false; }
+            }
         }
 
         public bool IsFrontendRunning
         {
-            get { return _frontendProcess != null && !_frontendProcess.HasExited; }
+            get
+            {
+                try { return _frontendProcess != null && !_frontendProcess.HasExited; }
+                catch { return false; }
+            }
         }
 
         public int BackendPid
@@ -561,7 +572,9 @@ namespace ObaraServiceController.Utils
                 };
                 _backendProcess.Exited += (s, e) =>
                 {
-                    OnLogMessage(new ProcessEventArgs(ServiceType.Backend, string.Format("后端进程已退出 (PID: {0})", _backendProcess != null ? _backendProcess.Id : 0), port));
+                    int exitedPid = 0;
+                    try { if (_backendProcess != null) exitedPid = _backendProcess.Id; } catch { }
+                    OnLogMessage(new ProcessEventArgs(ServiceType.Backend, string.Format("后端进程已退出 (PID: {0})", exitedPid), port));
                     OnStatusChanged(new ProcessEventArgs(ServiceType.Backend, "stopped", port));
                 };
 
@@ -576,6 +589,11 @@ namespace ObaraServiceController.Utils
             catch (Exception ex)
             {
                 OnLogMessage(new ProcessEventArgs(ServiceType.Backend, string.Format("后端启动失败: {0}", ex.Message), port));
+                // Start() failed after the field was assigned — never leave a
+                // never-started Process behind, its HasExited throws on every
+                // later IsBackendRunning/BackendPid access.
+                try { if (_backendProcess != null) { _backendProcess.Dispose(); _backendProcess = null; } }
+                catch { _backendProcess = null; }
                 return false;
             }
         }
@@ -670,7 +688,9 @@ namespace ObaraServiceController.Utils
                 };
                 _frontendProcess.Exited += (s, e) =>
                 {
-                    OnLogMessage(new ProcessEventArgs(ServiceType.Frontend, string.Format("前端进程已退出 (PID: {0})", _frontendProcess != null ? _frontendProcess.Id : 0), port));
+                    int exitedPid = 0;
+                    try { if (_frontendProcess != null) exitedPid = _frontendProcess.Id; } catch { }
+                    OnLogMessage(new ProcessEventArgs(ServiceType.Frontend, string.Format("前端进程已退出 (PID: {0})", exitedPid), port));
                     OnStatusChanged(new ProcessEventArgs(ServiceType.Frontend, "stopped", port));
                 };
 
@@ -685,6 +705,9 @@ namespace ObaraServiceController.Utils
             catch (Exception ex)
             {
                 OnLogMessage(new ProcessEventArgs(ServiceType.Frontend, string.Format("前端启动失败: {0}", ex.Message), port));
+                // See StartBackend: never leave a never-started Process behind.
+                try { if (_frontendProcess != null) { _frontendProcess.Dispose(); _frontendProcess = null; } }
+                catch { _frontendProcess = null; }
                 return false;
             }
         }
@@ -749,7 +772,15 @@ namespace ObaraServiceController.Utils
                     catch { }
                 }
 
-                try { if (_backendProcess != null) { _backendProcess.Dispose(); _backendProcess = null; } }
+                // Null the field BEFORE disposing: the Exited handler runs on
+                // a thread-pool thread and a disposed Process throws on any
+                // member access — never let the field reference one.
+                try
+                {
+                    var proc = _backendProcess;
+                    _backendProcess = null;
+                    if (proc != null) proc.Dispose();
+                }
                 catch { _backendProcess = null; }
             }
 
@@ -792,7 +823,12 @@ namespace ObaraServiceController.Utils
                     catch { }
                 }
 
-                try { if (_frontendProcess != null) { _frontendProcess.Dispose(); _frontendProcess = null; } }
+                try
+                {
+                    var proc = _frontendProcess;
+                    _frontendProcess = null;
+                    if (proc != null) proc.Dispose();
+                }
                 catch { _frontendProcess = null; }
             }
 

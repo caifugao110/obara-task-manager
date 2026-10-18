@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const db = require('../db');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
@@ -48,7 +49,8 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
   }
 
   const newDesigner = {
-    id: Date.now().toString(),
+    // 用 UUID 而非 Date.now()：同毫秒内创建多条会产生重复 id
+    id: crypto.randomUUID(),
     name: String(name).trim(),
     group: group || '',
     hidden: hidden || false,

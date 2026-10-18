@@ -25,8 +25,8 @@ const socketAuthMiddleware = (socket, next) => {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE
     });
-    const data = db.readDb();
-    const user = data.users.find(u => u.id === decoded.id);
+    // 与 HTTP 鉴权一致：只取需要的集合，避免每次连接克隆整库
+    const user = db.findUserById(decoded.id);
 
     if (!user) {
       return next(new Error('Authentication error: User not found'));
@@ -43,7 +43,7 @@ const socketAuthMiddleware = (socket, next) => {
       return next(new Error('Authentication error: Password change required'));
     }
 
-    const systemSettings = data.settings?.system || { allowMultiDevice: true };
+    const systemSettings = db.readSettings()?.system || { allowMultiDevice: true };
     // 与 HTTP 层对齐：多设备模式认可 sessionTokens 列表，单设备模式仅认可最新 sessionToken
     if (!isSessionValid(user, decoded.sessionId, systemSettings.allowMultiDevice)) {
       return next(new Error('Authentication error: Session invalidated'));

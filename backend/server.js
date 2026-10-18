@@ -84,6 +84,12 @@ app.use('/api', ipBlacklist.middleware);
 const db = require('./db');
 const { startMaintenanceScheduler, createOfflineBackup } = require('./utils/dbMaintenance');
 const gunTableLocks = require('./utils/gunTableLocks');
+const {
+  statusTrackingSessions,
+  statusTrackingKey,
+  publicStatusTrackingSessions,
+  removeStatusTrackingSessions
+} = require('./utils/statusTrackingLocks');
 const taskStore = require('./taskStore');
 
 // Middleware
@@ -192,6 +198,32 @@ const removeGunLedgerSessions = (predicate) => {
   return removed;
 };
 
+// 状态跟踪：按行锁定会话（锁键 itemId）。
+// 锁状态存储在 utils/statusTrackingLocks.js（与 HTTP 写接口共享同一份），
+// 这里负责 socket 事件的仲裁与广播。
+const broadcastStatusTrackingStopped = (sessions, sourceSocket) => {
+  sessions.forEach(session => {
+    const payload = { itemId: session.itemId, userId: session.userId };
+    if (sourceSocket) {
+      sourceSocket.broadcast.emit('status_tracking_edit_stop', payload);
+      sourceSocket.emit('status_tracking_edit_stop', payload);
+    } else {
+      io.emit('status_tracking_edit_stop', payload);
+    }
+  });
+};
+
+// 状态快照按需补发：服务端只在「连接建立」时下发一次 editing_state 等快照。
+// 共享连接由 AuthContext 常驻持有，页面来回切换时客户端缓存的快照早已过期；
+// 若拿旧快照覆盖本地状态，会把别人正在持有的行锁显示成「已释放」。
+// 因此允许客户端主动请求一次最新快照（限流，避免被高频轮询放大）。
+const stateSnapshotProviders = {
+  editing_state: publicEditingSessions,
+  gun_ledger_editing_state: publicGunLedgerSessions,
+  gun_ledger_table_locks_state: () => gunTableLocks.snapshot(),
+  status_tracking_editing_state: publicStatusTrackingSessions
+};
+
 // Socket 事件频率限制：按连接计数，防止单个客户端高频广播造成全体刷新风暴。
 // 计数挂在 socket.data 上，连接断开时随对象一起回收，不会累积占用内存。
 const socketRateLimit = (socket, eventName, limit, windowMs) => {
@@ -221,6 +253,9 @@ io.on('connection', (socket) => {
   socket.emit('editing_state', publicEditingSessions());
   socket.emit('gun_ledger_editing_state', publicGunLedgerSessions());
   socket.emit('gun_ledger_table_locks_state', gunTableLocks.snapshot());
+  // 状态跟踪行锁快照：后连接的客户端据此渲染「被他人编辑」状态，
+  // 不必等下一次编辑广播才能看到锁
+  socket.emit('status_tracking_editing_state', publicStatusTrackingSessions());
 
   // task_updated 事件：验证用户身份
   socket.on('task_updated', (payload) => {
@@ -353,14 +388,44 @@ io.on('connection', (socket) => {
         return;
       }
       
+      // 服务端仲裁：行锁按「连接」归属——一个正在编辑的人就是一条连接。
+      // 1) 该行已被其他在线连接占用：一律拒绝。无论是他人账号，还是同一账号的
+      //    另一个标签页/设备，都不允许抢占：抢占等于「替原持有者解锁」，
+      //    而后来者换行走查时还会把这个抢来的锁顺手释放掉，
+      //    表现就是「别人点一下就把刚才人的锁放掉了」。
+      // 2) 持有者连接已不存在（进程重启/掉线残留的僵死锁）：允许接管并补一次
+      //    释放广播，避免该行被永久锁死。
+      const key = statusTrackingKey(data.itemId);
+      const existingSession = statusTrackingSessions.get(key);
+      if (existingSession && existingSession.socketId !== socket.id) {
+        const holderSocket = io.of('/').sockets.get(existingSession.socketId);
+        if (holderSocket) {
+          socket.emit('status_tracking_edit_blocked', existingSession);
+          return;
+        }
+        // 僵死锁：先清理并广播释放，再由本连接接管
+        const staleSessions = removeStatusTrackingSessions(s => s.itemId === key);
+        broadcastStatusTrackingStopped(staleSessions, socket);
+      }
+
+      // 同一连接只保留一行锁：焦点移到其他行时释放自己之前占用的行。
+      // 注意过滤条件是 socketId——只会释放自己的锁，永远不会碰到他人持有的锁，
+      // 因此「编辑其他行」不可能导致别人的行锁被释放。
+      const removedOwnSessions = removeStatusTrackingSessions(session =>
+        session.socketId === socket.id && session.itemId !== key
+      );
+      broadcastStatusTrackingStopped(removedOwnSessions, socket);
+
       // 使用服务器端验证的用户信息
       const session = {
-        itemId: data.itemId,
+        itemId: key,
         userId: authenticatedUser.id,
         username: authenticatedUser.username,
+        name: authenticatedUser.name,
         socketId: socket.id
       };
-      
+
+      statusTrackingSessions.set(key, session);
       socket.broadcast.emit('status_tracking_edit_start', session);
       socket.emit('status_tracking_edit_start', session);
     } catch (err) {
@@ -378,8 +443,30 @@ io.on('connection', (socket) => {
         return;
       }
 
-      socket.broadcast.emit('status_tracking_edit_stop', { itemId: data.itemId });
-      socket.emit('status_tracking_edit_stop', { itemId: data.itemId });
+      // 只释放「本连接自己持有」的锁：他人连接上的锁（包括同一用户其他
+      // 标签页接管后的锁）不受影响，任何客户端都无法替别人解锁。
+      const removedSessions = removeStatusTrackingSessions(session =>
+        session.socketId === socket.id && session.itemId === statusTrackingKey(data.itemId)
+      );
+
+      broadcastStatusTrackingStopped(removedSessions, socket);
+    } catch (err) {
+      socket.emit('error', { message: err.message });
+    }
+  });
+
+  // request_state：主动索取一次最新状态快照（见 stateSnapshotProviders 说明）。
+  // 事件名走白名单，避免被当成任意事件转发器；限流防高频轮询。
+  socket.on('request_state', (data) => {
+    try {
+      requireSocketAuth(socket);
+      const eventName = typeof data?.event === 'string' ? data.event : '';
+      const provider = Object.prototype.hasOwnProperty.call(stateSnapshotProviders, eventName)
+        ? stateSnapshotProviders[eventName]
+        : null;
+      if (!provider) return;
+      if (!socketRateLimit(socket, 'request_state', 20, 10 * 1000)) return;
+      socket.emit(eventName, provider());
     } catch (err) {
       socket.emit('error', { message: err.message });
     }
@@ -503,6 +590,9 @@ io.on('connection', (socket) => {
     broadcastStoppedSessions(removedSessions, socket);
     const removedGunSessions = removeGunLedgerSessions(s => s.socketId === socket.id);
     broadcastGunLedgerStopped(removedGunSessions, socket);
+    // 释放该连接持有的状态跟踪行锁，否则掉线后行会一直显示为「他人正在编辑」
+    const removedStatusTracking = removeStatusTrackingSessions(s => s.socketId === socket.id);
+    broadcastStatusTrackingStopped(removedStatusTracking, socket);
     // 释放该 socket 持有的表级编辑锁（引用归零才真正释放并广播）
     const releasedTableIds = gunTableLocks.releaseSocket(socket.id);
     releasedTableIds.forEach(tableId => {

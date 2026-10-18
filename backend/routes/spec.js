@@ -11,8 +11,8 @@ const specPdfParser = require('../utils/specPdfParser');
 // 获取系统配置的仕样号位数（默认 5，可配置为 5 或 6）
 function getConfiguredSpecDigits() {
   try {
-    const data = db.readDb();
-    const digits = data?.settings?.system?.specNumberDigits;
+    // 只需要 settings：不必克隆整库
+    const digits = db.readSettings()?.system?.specNumberDigits;
     return digits === 6 ? 6 : 5;
   } catch (e) {
     return 5;
