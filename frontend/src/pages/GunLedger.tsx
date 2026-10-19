@@ -318,6 +318,8 @@ const GunLedger: React.FC = () => {
   const [tableHoursDraft, setTableHoursDraft] = useState<TableHoursDraft>({});
   const [fallbackHoursDraft, setFallbackHoursDraft] = useState<DefaultGunHours | null>(null);
   const [hoursSaving, setHoursSaving] = useState(false);
+  // 默认工时规则恢复内置二次确认：'all' 全部恢复；字符串为分类名；null 关闭
+  const [confirmHoursReset, setConfirmHoursReset] = useState<'all' | string | null>(null);
   const [, setSpecLookupLoading] = useState(false);
   // 已被主任务使用的焊枪名集合：命中者枪名显示天蓝色
   const [usedGunNames, setUsedGunNames] = useState<Set<string>>(new Set());
@@ -594,7 +596,7 @@ const GunLedger: React.FC = () => {
 
   // 担当下拉项：默认人员 + 当前用户
   const responsibleOptions = useMemo(() => {
-    const list = ledger?.defaultResponsiblePersons || ['张啸', '张明', '陈青松', '陈大仪'];
+    const list = ledger?.defaultResponsiblePersons || ['张啸', '张明', '陈青松', '陈大仪', '翟世学', '朱海洋'];
     const set = new Set(list);
     if (user?.name) set.add(user.name);
     return Array.from(set);
@@ -1086,7 +1088,8 @@ const GunLedger: React.FC = () => {
     debouncedSave(activeTable.id);
   }, [activeTable, isAdmin, online, activeTableReadOnly, patchTableRows, user, debouncedSave]);
 
-  // 向下复制：把当前行的「客户名/时间/担当」复制到该行下方最新的「客户名为空」的行
+  // 向下复制：把当前行的「客户名」复制到该行下方最新的「客户名为空」的行
+  // 时间列填当前日期（与时间列 Clock 按钮同格式），担当列填当前操作者
   // 加号按钮前的数字框决定复制行数（默认 1，范围 1~20）；占位行会被提升为真实行
   const handleCopyDown = useCallback((row: GunRow) => {
     if (!activeTable || !isAdmin || !online || activeTableReadOnly) return;
@@ -1095,8 +1098,8 @@ const GunLedger: React.FC = () => {
       addToast('当前行客户名为空，无法复制', 'error');
       return;
     }
-    const srcTime = row.time;
-    const srcPerson = row.responsiblePerson;
+    const nowTime = todayStr();
+    const currentPerson = user?.name || '';
     // 读取该行数字框的复制数量（非受控，点击时取值并夹到 1~10）
     const inputEl = countInputRefs.current[row.id];
     let count = 1;
@@ -1128,8 +1131,8 @@ const GunLedger: React.FC = () => {
             serialNumber: t.serialNumber,
             gunName: t.gunName,
             customer: srcCustomer,
-            time: srcTime,
-            responsiblePerson: srcPerson,
+            time: nowTime,
+            responsiblePerson: currentPerson,
             remarks: '',
             createdAt: nowIso,
             createdBy: userMeta,
@@ -1141,7 +1144,7 @@ const GunLedger: React.FC = () => {
         } else {
           // 已有空行：写入客户/时间/担当，保留焊枪名/序号/备注
           next = next.map(r => r.id === t.id
-            ? { ...r, customer: srcCustomer, time: srcTime, responsiblePerson: srcPerson, updatedAt: nowIso, updatedBy: userMeta }
+            ? { ...r, customer: srcCustomer, time: nowTime, responsiblePerson: currentPerson, updatedAt: nowIso, updatedBy: userMeta }
             : r);
           dirtyRowIdsRef.current.add(t.id);
         }
@@ -2831,7 +2834,7 @@ const GunLedger: React.FC = () => {
                               </td>
                             );
                           })}
-                          {/* 操作列：[复制数量][向下复制][清除] —— 加号把当前行客户/时间/担当复制到下方最新的空行 */}
+                          {/* 操作列：[复制数量][向下复制][清除] —— 加号把当前行客户名复制到下方最新的空行，时间填当前日期、担当填当前操作者 */}
                           <td className="border border-gray-300 px-1 py-1">
                             <div className="flex items-center justify-center gap-1">
                               <input
@@ -2855,7 +2858,7 @@ const GunLedger: React.FC = () => {
                               <button
                                 onClick={() => handleCopyDown(row)}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()}
-                                title="向下复制：把本行客户/时间/担当复制到下方最新的空行"
+                                title="向下复制：复制本行客户名到下方空行，时间填当前日期、担当填当前操作者"
                                 className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
                               >
                                 <Plus size={14} />
@@ -3563,7 +3566,7 @@ const GunLedger: React.FC = () => {
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">机型回退规则（按枪名首个「-」前字符 C / X）</div>
                   <button
-                    onClick={resetAllHoursDraft}
+                    onClick={() => setConfirmHoursReset('all')}
                     disabled={hoursSaving}
                     className="text-xs font-semibold text-gray-500 hover:text-emerald-600 disabled:opacity-50"
                     title="表专用规则与机型回退规则全部恢复为系统内置值"
@@ -3635,7 +3638,7 @@ const GunLedger: React.FC = () => {
                 <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
                   <span className="text-xs text-gray-400">共 {hoursDetailTables.length} 张表，单位：小时（h）</span>
                   <button
-                    onClick={() => resetCategoryHoursDraft(hoursDetailCategory)}
+                    onClick={() => { if (hoursDetailCategory) setConfirmHoursReset(hoursDetailCategory); }}
                     disabled={hoursSaving}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-lg transition disabled:opacity-40"
                     title="将本分类全部表的专用工时恢复为系统内置值"
@@ -3775,6 +3778,61 @@ const GunLedger: React.FC = () => {
               >
                 {batchInitializing && <RefreshCw size={14} className="animate-spin" />}
                 {batchInitializing ? '初始化中...' : '确认初始化'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 默认工时规则恢复内置二次确认弹窗（全部 / 某分类） */}
+      {confirmHoursReset !== null && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setConfirmHoursReset(null)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-orange-500 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <AlertCircle size={20} />
+                {confirmHoursReset === 'all' ? '全部恢复内置默认' : `恢复分类「${confirmHoursReset}」内置默认`}
+              </div>
+              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setConfirmHoursReset(null)}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <AlertCircle size={22} className="text-amber-500 shrink-0 mt-0.5" />
+                <div className="text-sm text-gray-700 leading-relaxed">
+                  <div className="font-bold text-amber-700 mb-1">将覆盖当前未保存的修改</div>
+                  {confirmHoursReset === 'all' ? (
+                    <div>
+                      所有分类的表专用工时规则与 C/X 机型回退规则都将恢复为系统内置值，自建表专用工时将被清空（留空走机型回退）。
+                    </div>
+                  ) : (
+                    <div>
+                      分类「<span className="font-bold text-gray-900">{confirmHoursReset}</span>」下所有表的专用工时将恢复为系统内置值，自建表专用工时将被清空（留空走机型回退）。
+                    </div>
+                  )}
+                  <div className="mt-1">恢复后需点击「保存」才会生效。</div>
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition"
+                onClick={() => setConfirmHoursReset(null)}
+              >
+                取消
+              </button>
+              <button
+                className="px-5 py-2 rounded-lg bg-amber-600 text-white font-bold hover:bg-amber-700 transition flex items-center gap-1.5"
+                onClick={() => {
+                  if (confirmHoursReset === 'all') resetAllHoursDraft();
+                  else if (confirmHoursReset) resetCategoryHoursDraft(confirmHoursReset);
+                  setConfirmHoursReset(null);
+                }}
+              >
+                <RotateCcw size={14} />
+                确认恢复
               </button>
             </div>
           </div>

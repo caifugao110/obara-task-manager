@@ -362,7 +362,7 @@ const buildDefaultGunLedger = () => {
         300
       )
     },
-    defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪']
+    defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪', '翟世学', '朱海洋']
   };
 };
 
@@ -467,9 +467,15 @@ const normalizeGunLedger = (gunLedger) => {
       merged[cat] = normalizeTableList(categories[cat]);
     }
   }
-  const defaultResponsiblePersons = Array.isArray(gunLedger.defaultResponsiblePersons) && gunLedger.defaultResponsiblePersons.length
+  // 兼容迁移：存量名单若仍为旧版默认值（未做过自定义），自动升级为新默认名单；
+  // 已自定义过的名单保持原样
+  const OLD_DEFAULT_RESPONSIBLE_PERSONS = ['张啸', '张明', '陈青松', '陈大仪'];
+  const storedPersons = Array.isArray(gunLedger.defaultResponsiblePersons) && gunLedger.defaultResponsiblePersons.length
     ? gunLedger.defaultResponsiblePersons.map(p => String(p)).filter(Boolean)
     : base.defaultResponsiblePersons;
+  const isLegacyDefault = storedPersons.length === OLD_DEFAULT_RESPONSIBLE_PERSONS.length
+    && OLD_DEFAULT_RESPONSIBLE_PERSONS.every((p, i) => storedPersons[i] === p);
+  const defaultResponsiblePersons = isLegacyDefault ? base.defaultResponsiblePersons : storedPersons;
   return { categories: merged, defaultResponsiblePersons };
 };
 

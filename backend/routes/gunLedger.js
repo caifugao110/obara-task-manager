@@ -44,7 +44,7 @@ const tableNameSchema = Joi.object({
 const defaultPersonsSchema = Joi.array().items(Joi.string().min(1)).min(0);
 
 // 默认担当人员名单（系统初始值，可通过"重置为默认人员"恢复）
-const DEFAULT_RESPONSIBLE_PERSONS = ['张啸', '张明', '陈青松', '陈大仪'];
+const DEFAULT_RESPONSIBLE_PERSONS = ['张啸', '张明', '陈青松', '陈大仪', '翟世学', '朱海洋'];
 
 // 焊枪名自动生成规则（台账初始化设置）
 const gunNameRuleSchema = Joi.object({
