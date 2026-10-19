@@ -2677,9 +2677,20 @@ const GunLedger: React.FC = () => {
                       disabled={!online}
                       onChange={e => {
                         if (warnIfOffline()) return;
-                        setAssignmentMode(e.target.checked);
+                        const checked = e.target.checked;
+                        setAssignmentMode(checked);
                         setSelectedGunRowIds(new Set());
                         setShowAssignPanel(false);
+                        // 启用时检查是否存在可分配的枪名（已取号且未被主任务使用）
+                        if (checked && activeTable) {
+                          const hasAvailable = (activeTable.rows || []).some(r => {
+                            const name = String(r.gunName || '').trim();
+                            return name && !usedGunNames.has(name);
+                          });
+                          if (!hasAvailable) {
+                            addToast('当前表没有可分配的枪名：所有已取号枪名均已被主任务使用，或尚未取号', 'error');
+                          }
+                        }
                       }}
                       className="w-4 h-4 accent-blue-600 border-gray-300 rounded focus:ring-blue-400 disabled:cursor-not-allowed"
                     />

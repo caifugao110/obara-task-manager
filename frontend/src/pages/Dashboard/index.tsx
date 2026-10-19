@@ -4,7 +4,7 @@ import { isAxiosError } from 'axios';
 import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
@@ -62,6 +62,7 @@ const Dashboard = () => {
   const { user, token, logout } = useAuth();
   const { specNumberDigits, settings: systemSettings } = useSystemSettings();
   const location = useLocation();
+  const navigate = useNavigate();
   const jumpTarget = useMemo(() => {
     const params = new URLSearchParams(location.search);
     const date = params.get('date');
@@ -388,6 +389,19 @@ const Dashboard = () => {
       target?.focus({ preventScroll: true });
     }, 120);
   }, [jumpTarget, loading, sheets, designers]);
+
+  // URL 定位链接指向的任务不存在（人员缺失/日期无效/任务已删除）时，重定向回主页面（replace 清除查询参数）
+  useEffect(() => {
+    if (!jumpTarget || loading) return;
+    const [year, month] = jumpTarget.date.split('-').map(Number);
+    const designerExists = designers.some(d => d.id === jumpTarget.designerId);
+    const sheet = sheets.find(s => s.designerId === jumpTarget.designerId);
+    const targetExists = sheet?.days?.[jumpTarget.date]?.some(item => item.id === jumpTarget.itemId);
+    if (!year || !month || !designerExists || !targetExists) {
+      addToast('链接指向的任务不存在，已返回主页面', 'error');
+      navigate('/', { replace: true });
+    }
+  }, [jumpTarget, loading, sheets, designers, navigate, addToast]);
 
   // 将今日列滚动到视图中央展示（打开主页面自动定位、点击左下角状态手动定位均复用）
   // 日期表头始终渲染且带有 data-date，整月无任务（sheets 为空）、当日无任务或分组全部折叠时也能定位到今日列

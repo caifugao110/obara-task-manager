@@ -43,10 +43,28 @@ interface Toast {
   id: number;
 }
 
+// 构造主任务定位链接（designerId + date + itemId 定位到主页面具体任务）
+const buildTaskUrl = (designerId: string, date: string, itemId: string) =>
+  `/?designerId=${encodeURIComponent(designerId)}&date=${encodeURIComponent(date)}&itemId=${encodeURIComponent(itemId)}`;
+
 // 白色标记 = 已完成状态（与后端 isWhiteColor 规则一致）
 const isCompletedColor = (value?: string | null) => {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized === '#ffffff' || normalized === '#fff' || normalized === 'white';
+};
+
+// 仕样进度分类徽标配色（三色明显区分，避免与进度条绿/橙混淆）
+const PROGRESS_BADGE_STYLES: Record<string, string> = {
+  confirm: 'bg-blue-600',
+  confirmModify: 'bg-violet-600',
+  design: 'bg-rose-600'
+};
+
+// 已完成百分比按进度阶段着色（不区分任务类型）：≥67% 接近完成（绿）、34%~66% 进行中（橙）、≤33% 刚起步（红）
+const completedPctColorClass = (pct: number) => {
+  if (pct >= 67) return 'text-emerald-600';
+  if (pct >= 34) return 'text-amber-600';
+  return 'text-red-600';
 };
 
 const Leaderboard = () => {
@@ -65,8 +83,6 @@ const Leaderboard = () => {
   const [specNumber, setSpecNumber] = useState('');
   const [specResults, setSpecResults] = useState<TaskSearchResult[]>([]);
   const [specFullSearch, setSpecFullSearch] = useState(false);
-  // 新增：获取仕样号所有枪名列表模式开关
-  const [specGunListMode, setSpecGunListMode] = useState(false);
   // 新增：未标记完成状态任务开关（开启后去除已完成的主任务/枪名）
   const [specHideCompleted, setSpecHideCompleted] = useState(false);
 
@@ -92,9 +108,7 @@ const Leaderboard = () => {
     return false;
   }, []);
 
-  const buildTaskLink = (result: TaskSearchResult) => (
-    `/?designerId=${encodeURIComponent(result.designerId)}&date=${encodeURIComponent(result.date)}&itemId=${encodeURIComponent(result.itemId)}`
-  );
+  const buildTaskLink = (result: TaskSearchResult) => buildTaskUrl(result.designerId, result.date, result.itemId);
 
   const buildTasksUrl = (fullSearch: boolean) => {
     if (fullSearch) return '/api/tasks';
@@ -143,10 +157,44 @@ const Leaderboard = () => {
       }));
   }, [specResults, specHideCompleted]);
 
-  const specGunListFiltered = useMemo(() => {
-    if (!specGunListMode) return [];
-    return extractGunNames(specResultsFiltered);
-  }, [specGunListMode, specResultsFiltered]);
+  // 枪名列表为默认功能：输入仕样号自动出现，不受“未标记完成状态任务”开关影响
+  const specGunListFiltered = useMemo(() => extractGunNames(specResults), [specResults]);
+
+  // 仕样进度统计：按「确认图」「确认图修改」「设计」三类汇总，每个枪名计为一个小任务；
+  // 主任务标记完成（白色）时其下枪名视为已完成；不受“未标记完成状态任务”开关影响，始终基于全部搜索结果统计
+  const specProgressStats = useMemo(() => {
+    const categories = [
+      { key: 'confirm', label: '确认图', match: (name: string) => name.includes('确认图') && !name.includes('确认图修改') },
+      { key: 'confirmModify', label: '确认图修改', match: (name: string) => name.includes('确认图修改') },
+      { key: 'design', label: '设计', match: (name: string) => name.includes('设计') }
+    ];
+    return categories.map(({ key, label, match }) => {
+      const collected: { name: string; done: boolean; link: string }[] = [];
+      specResults.forEach(result => {
+        if (!match(String(result.taskName || ''))) return;
+        const taskCompleted = isCompletedColor(result.color);
+        const guns = result.guns || [];
+        const link = buildTaskUrl(result.designerId, result.date, result.itemId);
+        if (guns.length === 0) {
+          // 无枪名的主任务本身计为一个小任务
+          collected.push({ name: String(result.taskName || '').trim(), done: taskCompleted, link });
+          return;
+        }
+        guns.forEach(gun => {
+          collected.push({
+            name: String(gun.name || '').trim(),
+            done: taskCompleted || isCompletedColor(gun.color),
+            link
+          });
+        });
+      });
+      const total = collected.length;
+      const completed = collected.filter(unit => unit.done).length;
+      // 展示排序：已完成靠左、未完成靠右（组内保持原有顺序），避免交错
+      const units = [...collected.filter(unit => unit.done), ...collected.filter(unit => !unit.done)];
+      return { key, label, units, total, completed, unfinished: total - completed };
+    });
+  }, [specResults]);
 
   const searchBySpecNumber = useCallback(async (currentSpec?: string, fullSearchOverride?: boolean) => {
     if (isOffline) return;
@@ -650,20 +698,6 @@ const Leaderboard = () => {
                   </span>
                 </label>
                 <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
-                  <span>获取仕样号所有枪名列表</span>
-                  <span className="relative inline-flex h-5 w-9 items-center">
-                    <input
-                      type="checkbox"
-                      checked={specGunListMode}
-                      onChange={(e) => setSpecGunListMode(e.target.checked)}
-                      disabled={isOffline}
-                      className="peer sr-only"
-                    />
-                    <span className="absolute inset-0 rounded-full bg-white/30 transition peer-checked:bg-white/80"></span>
-                    <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4 peer-checked:bg-blue-600"></span>
-                  </span>
-                </label>
-                <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
                   <span>全表搜索</span>
                   <span className="relative inline-flex h-5 w-9 items-center">
                     <input
@@ -714,6 +748,75 @@ const Leaderboard = () => {
 
             {specResults.length > 0 ? (
               <div className="space-y-4">
+                {specProgressStats.some(stat => stat.total > 0) && (
+                  <div className="bg-gradient-to-br from-blue-50 via-indigo-50 to-white border-2 border-blue-100 rounded-xl p-4">
+                    <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+                      <span className="text-sm font-bold text-gray-700 flex items-center gap-1.5">
+                        <BarChart2 size={16} className="text-blue-600" />
+                        仕样进度
+                      </span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] text-gray-400">每个枪名计为一个小任务</span>
+                        <span className="flex items-center gap-1 text-[11px] text-gray-500">
+                          <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block"></span>已完成
+                        </span>
+                        <span className="flex items-center gap-1 text-[11px] text-gray-500">
+                          <span className="w-2.5 h-2.5 rounded-sm bg-amber-400 inline-block"></span>未完成
+                        </span>
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      {specProgressStats.map(stat => {
+                        const completedPct = stat.total > 0 ? Math.round((stat.completed / stat.total) * 100) : 0;
+                        const unfinishedPct = stat.total > 0 ? Math.round((stat.unfinished / stat.total) * 100) : 0;
+                        const segmented = stat.total > 0 && stat.total <= 50;
+                        return (
+                          <div key={stat.key} className="flex items-center gap-3">
+                            <span
+                              className={`w-20 shrink-0 px-1 py-1 rounded-lg text-xs font-bold text-white text-center ${PROGRESS_BADGE_STYLES[stat.key] ?? 'bg-blue-600'}`}
+                            >
+                              {stat.label}
+                            </span>
+                            {stat.total > 0 ? (
+                              <>
+                                <div className="flex-1 h-4 min-w-0">
+                                  {segmented ? (
+                                    <div className="h-full flex gap-[3px]">
+                                      {stat.units.map((unit, unitIndex) => (
+                                        <Link
+                                          key={`unit-${stat.key}-${unitIndex}`}
+                                          to={unit.link}
+                                          title={`${unit.name}：${unit.done ? '已完成' : '未完成'}，点击定位主任务`}
+                                          className={`flex-1 rounded-sm transition-all hover:opacity-75 hover:ring-2 hover:ring-blue-300 ${unit.done ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                                        ></Link>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="h-full bg-amber-100 rounded-full overflow-hidden border border-blue-100">
+                                      <div
+                                        className="h-full bg-emerald-500 transition-all duration-500"
+                                        style={{ width: `${completedPct}%` }}
+                                      ></div>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="w-36 shrink-0 flex items-center justify-between text-sm font-bold text-gray-600 whitespace-nowrap">
+                                  <span>
+                                    已完成 <span className="text-emerald-600">{stat.completed}</span>
+                                    <span className="text-gray-400">/{stat.total}</span>
+                                  </span>
+                                  <span className={completedPctColorClass(completedPct)}>（{completedPct}%）</span>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="flex-1 text-xs text-gray-400">暂无{stat.label}相关任务</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {specGunListFiltered.length > 0 ? (
                   <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
                     <div className="mb-3">
