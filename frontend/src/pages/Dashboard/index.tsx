@@ -2658,7 +2658,7 @@ const Dashboard = () => {
               <div className={`flex border ${taskDropDuplicate ? 'border-red-400' : 'border-blue-400'} shadow-2xl rounded opacity-90 scale-105 bg-white overflow-hidden pointer-events-none`}>
                 <div className="w-[18rem] border-r border-gray-200 flex flex-col bg-white">
                   <div
-                    className="px-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium"
+                    className="px-1.5 py-1.5 min-h-[28px] flex items-center break-all leading-relaxed text-[11px] font-medium"
                     style={{ backgroundColor: activeTask.item.color || 'transparent' }}
                   >
                     {(() => {
@@ -2686,7 +2686,7 @@ const Dashboard = () => {
                 </div>
                 <div className="w-12 flex flex-col bg-white">
                   <div
-                    className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold"
+                    className="px-1 py-1.5 min-h-[28px] flex items-center justify-center font-mono text-blue-700 font-bold"
                     style={{ backgroundColor: activeTask.item.color || 'transparent' }}
                   >
                     {activeTask.item.guns && activeTask.item.guns.length > 0 ? '' : activeTask.item.hours}

@@ -151,7 +151,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       )}
       {/* Main Task Row */}
       <div
-        className={`pl-2 pr-1.5 py-1 min-h-[24px] flex items-center break-all leading-tight text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
+        className={`pl-2 pr-1.5 py-1.5 min-h-[28px] flex items-center break-all leading-relaxed text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
       >
         <div className={`flex items-center ${item.leaveType ? 'justify-center' : 'justify-start'} w-full pr-1`}>
             {/* Mark buttons before task text */}
