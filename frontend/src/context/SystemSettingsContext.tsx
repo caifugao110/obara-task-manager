@@ -4,6 +4,8 @@ import {
   BUILTIN_TABLE_GUN_HOURS,
   TableGunHoursMap,
   GunHoursCell,
+  ExtraTaskHours,
+  DEFAULT_EXTRA_TASK_HOURS,
 } from '../utils/gunHoursRules';
 
 export interface GunHoursByType {
@@ -30,6 +32,8 @@ export interface SystemSettingsData {
   defaultGunHours?: DefaultGunHours;
   // 分类 → 表名 → 专用工时（内置值 + 超管覆盖值的合并结果）
   tableGunHours?: TableGunHoursMap;
+  // 设计变更 / 既制审图 的固定工时（不区分 C/X、不套用任何专用规则）
+  extraTaskHours?: ExtraTaskHours;
 }
 
 const defaultGunHours: DefaultGunHours = {
@@ -48,7 +52,20 @@ const defaultSettings: SystemSettingsData = {
   randomDesignPlanColor: false,
   randomAssignmentColor: false,
   defaultGunHours,
-  tableGunHours: BUILTIN_TABLE_GUN_HOURS
+  tableGunHours: BUILTIN_TABLE_GUN_HOURS,
+  extraTaskHours: DEFAULT_EXTRA_TASK_HOURS
+};
+
+// 固定工时归一化：非法/缺失时回退默认值（设计变更 1.5h / 既制审图 0.5h）
+const normalizeExtraTaskHours = (raw: unknown): ExtraTaskHours => {
+  const source = raw && typeof raw === 'object' ? (raw as Partial<ExtraTaskHours>) : {};
+  const pick = (key: keyof ExtraTaskHours) => {
+    const value = source[key];
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 24
+      ? value
+      : DEFAULT_EXTRA_TASK_HOURS[key];
+  };
+  return { designChange: pick('designChange'), drawingReview: pick('drawingReview') };
 };
 
 // 专用工时归一化：以内置值为底，覆盖服务端返回值；非法/缺失单元格回退内置值
@@ -127,7 +144,8 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
           design: mergeGunType('design'),
           confirmModify: mergeGunType('confirmModify')
         },
-        tableGunHours: normalizeTableGunHours(res.data.tableGunHours)
+        tableGunHours: normalizeTableGunHours(res.data.tableGunHours),
+        extraTaskHours: normalizeExtraTaskHours(res.data.extraTaskHours)
       });
     } catch {
       // 静默失败，保留默认值

@@ -33,7 +33,7 @@ export const splitDesignTaskName = (taskName: string) => {
   const withoutDeadline = deadlineMatch && typeof deadlineMatch.index === 'number'
     ? trimmed.slice(0, deadlineMatch.index).trim()
     : trimmed;
-  const typeMatch = withoutDeadline.match(/\s+(确认图|设计)$/);
+  const typeMatch = withoutDeadline.match(/\s+(确认图修改|确认图|设计变更|既制审图|设计)$/);
   const baseName = typeMatch && typeof typeMatch.index === 'number'
     ? withoutDeadline.slice(0, typeMatch.index).trim()
     : withoutDeadline;

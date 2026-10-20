@@ -125,12 +125,22 @@ const Leaderboard = () => {
     const gunSet = new Set<string>();
     results.forEach(result => {
       (result.guns || []).forEach(gun => {
-        let gunName = String(gun.name || '').trim();
         // 去除中文后缀/括号备注（如「改造」「（备注）」），再去掉变体后缀，归一化到 base 枪名：
         //   SRTX-2C23712L / -X2 / LX2 / L-X2 / -LX5 / -X3 / -X2改造 → SRTX-2C23712
+        //   SDZX-3C30500修改+解析 → SDZX-3C30500
         // 变体后缀顺序：可选 L/R 变体（带可选 -），再可选 X+数字变体（带可选 -）
-        gunName = gunName.replace(/（[^）]*）|\([^)]*\)|[-+][\d]*[\u4e00-\u9fa5]+|[\u4e00-\u9fa5]+$/g, '').trim();
-        gunName = gunName.replace(/(?:-?[LR])?(?:-?X\d+)?$/i, '').trim();
+        // 注意：必须循环剥离直到稳定。单次全局替换处理不了「中文后缀 + 分隔符 + 中文」的组合：
+        //   如 SDZX-3C30500修改+解析 会先命中 +解析，正则指针跳到串尾，前面的「修改」
+        //   不会再被结尾中文分支处理，残留出 SDZX-3C30500修改。
+        let gunName = String(gun.name || '').trim();
+        let prevName = '';
+        while (gunName !== prevName) {
+          prevName = gunName;
+          gunName = gunName
+            .replace(/（[^）]*）|\([^)]*\)|[-+][\d]*[\u4e00-\u9fa5]+|[\u4e00-\u9fa5]+$/g, '')
+            .replace(/(?:-?[LR])?(?:-?X\d+)?$/i, '')
+            .trim();
+        }
         if (gunName) {
           gunSet.add(gunName);
         }

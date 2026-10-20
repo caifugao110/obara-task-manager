@@ -10,7 +10,7 @@ import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-f
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
-import { resolveGunHours, GunLocation } from '../../utils/gunHoursRules';
+import { resolveAutoFillHours, GunLocation } from '../../utils/gunHoursRules';
 import {
     DndContext,
     DragOverlay,
@@ -57,6 +57,10 @@ import type {
   SelectedTask,
   Toast,
 } from './types';
+
+// 主任务「任务内容」复选框对应的类型：
+// 确认图 / 设计 / 确认图修改 按枪名规则取工时；设计变更 / 既制审图 取系统设置中的固定工时
+type DesignTaskType = 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' | 'drawingReview';
 
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
@@ -508,8 +512,8 @@ const Dashboard = () => {
   const [autoGunLookupItemId, setAutoGunLookupItemId] = useState<string | null>(null);
   const [autoGunLookupChecked, setAutoGunLookupChecked] = useState<Set<number>>(new Set());
   const [addModeColor, setAddModeColor] = useState<string>('#86efac');
-  const [addModeTaskType, setAddModeTaskType] = useState<'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange'>('none');
-  const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' }>>({});
+  const [addModeTaskType, setAddModeTaskType] = useState<DesignTaskType>('none');
+  const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: DesignTaskType }>>({});
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const addModeSpecLookupSeqRef = useRef(0);
 
@@ -547,30 +551,61 @@ const Dashboard = () => {
   }, [token]);
 
   // 根据任务类型 + 枪名获取默认工时：
-  // 枪名所在表专用规则 → C/X 机型回退 → 固定兜底（2 / 0.75 / 3）；非三类任务返回 null
+  // 设计变更 / 既制审图 → 系统设置中的固定工时（不分 C/X、不套用专用规则）；
+  // 其余三类 → 枪名所在表专用规则 → C/X 机型回退 → 固定兜底（2 / 0.75 / 3）；请假、出差等返回 null
   const getDefaultGunHoursFor = (
-    taskType: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange',
+    taskType: DesignTaskType,
     gunName: string
   ): number | null => {
-    if (taskType !== 'confirm' && taskType !== 'design' && taskType !== 'confirmModify') return null;
     const name = String(gunName || '').trim();
     const location = name ? (gunLocations[name] || null) : null;
-    return resolveGunHours(taskType, name, location, systemSettings);
+    return resolveAutoFillHours(taskType, name, location, systemSettings);
   };
 
-  // 新增任务模式下：按当前任务类型给单个枪名应用默认工时
-  // 仅当该枪当前工时为空时填充，已手动输入的工时不覆盖
-  const applyDefaultHoursToGun = (
+  // 切换任务内容时重算枪名工时：已填枪名的行一律覆盖为新任务内容对应的工时
+  // （枪名为空的行保持原样；没有枪名时不写总工时，由用户手动输入总工时）
+  const applyTaskTypeToGuns = (
     guns: GunItem[],
-    taskType: 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange'
+    taskType: DesignTaskType
   ): GunItem[] => {
-    if (taskType !== 'confirm' && taskType !== 'design' && taskType !== 'confirmModify') return guns;
+    if (taskType === 'none') return guns;
     return guns.map(gun => {
-      const currentHours = String(gun.hours ?? '').trim();
-      if (currentHours !== '') return gun;
-      const defaultHours = getDefaultGunHoursFor(taskType, gun.name);
-      return defaultHours !== null ? { ...gun, hours: defaultHours } : gun;
+      if (!String(gun.name || '').trim()) return gun;
+      const hours = getDefaultGunHoursFor(taskType, gun.name);
+      return hours !== null ? { ...gun, hours } : gun;
     });
+  };
+
+  // 枪名变化时的工时处理：
+  // 1. 工时空缺 → 按新枪名 + 当前任务内容补默认工时；
+  // 2. 工时是自动填充值（等于旧枪名的默认工时）→ 跟随新枪名切换；
+  // 3. 工时是手动输入的 → 保留，不覆盖。
+  const fillHoursForGunName = (
+    gun: GunItem,
+    nextName: string,
+    taskType: DesignTaskType
+  ): GunItem => {
+    const nextHours = getDefaultGunHoursFor(taskType, nextName);
+    const nextGun = { ...gun, name: nextName };
+    if (nextHours === null) return nextGun;
+    const currentHours = String(gun.hours ?? '').trim();
+    if (currentHours === '') return { ...nextGun, hours: nextHours };
+    const prevAutoHours = getDefaultGunHoursFor(taskType, gun.name);
+    const numericHours = parseFloat(currentHours);
+    return prevAutoHours !== null && numericHours === prevAutoHours
+      ? { ...nextGun, hours: nextHours }
+      : nextGun;
+  };
+
+  // 从任务名后缀反推任务内容（编辑模式复选框依赖任务名后缀）
+  const getTaskTypeFromName = (taskName?: string): DesignTaskType => {
+    const name = String(taskName || '');
+    if (name.includes('设计变更')) return 'designChange';
+    if (name.includes('既制审图')) return 'drawingReview';
+    if (name.includes('确认图修改')) return 'confirmModify';
+    if (name.includes('确认图')) return 'confirm';
+    if (name.includes('设计')) return 'design';
+    return 'none';
   };
 
   const openModal = (designerId: string, date: string, addMode: boolean = false) => {
@@ -701,7 +736,7 @@ const Dashboard = () => {
       const newGuns = picked.map(name => ({ id: `gun-new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' }));
       setAddModeGuns(prev => [
         ...prev,
-        ...applyDefaultHoursToGun(newGuns, addModeTaskType)
+        ...applyTaskTypeToGuns(newGuns, addModeTaskType)
       ]);
       addToast(`已添加 ${picked.length} 个枪名`, 'success');
     } else if (autoGunLookupContext === 'edit' && autoGunLookupItemId) {
@@ -713,9 +748,15 @@ const Dashboard = () => {
       const currentItem = item ? getItemWithPendingChanges(item) : null;
       if (!currentItem) return;
       const baseGuns = currentItem.guns || [];
+      // 新追加的枪名按当前任务内容自动补工时，已有枪名的工时保持不变
+      const lookupTaskType = getTaskTypeFromName(currentItem.taskName);
       const newGuns: GunItem[] = [
         ...baseGuns,
-        ...picked.map(name => ({ id: `gun-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' })),
+        ...picked.map(name => fillHoursForGunName(
+          { id: `gun-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: '', hours: '' },
+          name,
+          lookupTaskType
+        )),
       ];
       setTaskTypeDrafts(prev => ({
         ...prev,
@@ -1941,7 +1982,16 @@ const Dashboard = () => {
   // 处理任务项的字段变更，将更改存入 pendingChanges 并实时更新界面。
   // 此函数会触发后端 API 调用，自动更新任务的 `updatedAt` 和 `updatedBy` 字段。
   // 所有操作都会记录到历史中以便撤销。
-  const handleItemChange = (designerId: string, date: string, itemId: string, field: TaskField, raw: any) => {
+  // options.immediate=true 时跳过防抖直接保存（防抖为单槽，连续多次调用只有最后一次生效，
+  // 一次性修改多个字段的场景需顺序 await 保存，避免后到的响应把尚未保存的字段回滚）
+  const handleItemChange = (
+    designerId: string,
+    date: string,
+    itemId: string,
+    field: TaskField,
+    raw: any,
+    options?: { immediate?: boolean }
+  ): Promise<void> | undefined => {
     // 获取原始值以便撤销
     if (warnIfOfflineEdit()) return;
     const sheet = sheets.find(s => s.designerId === designerId);
@@ -1982,7 +2032,32 @@ const Dashboard = () => {
       const filtered = prev.filter(change => !(change.designerId === designerId && change.date === date && change.itemId === itemId && change.field === field));
       return [...filtered, { designerId, date, itemId, field, value }];
     });
+    if (options?.immediate) return saveItem(designerId, date, itemId, field, value);
     debouncedSave(designerId, date, itemId, field, value);
+  };
+
+  // 编辑模式切换任务内容：任务名后缀 + 枪名工时 + 总工时一起同步。
+  // - 有枪名：逐个枪名按新任务内容重算工时，总工时 = 各枪名工时之和；
+  // - 无枪名：只改任务名后缀，总工时留给用户手动输入（不自动赋值）。
+  // 顺序：枪名 → 工时 → 任务名（任务名最后，避免前两步的响应把尚未保存的任务名回滚）。
+  const applyTaskTypeToItem = async (
+    itemId: string,
+    taskType: DesignTaskType,
+    guns: GunItem[],
+    newName: string
+  ) => {
+    if (!modalDesignerId || !modalDate) return;
+    const namedGuns = (guns || []).filter(gun => String(gun.name || '').trim());
+    if (namedGuns.length > 0) {
+      const nextGuns = applyTaskTypeToGuns(guns, taskType);
+      const totalHours = nextGuns.reduce((sum, gun) => {
+        const parsed = typeof gun.hours === 'number' ? gun.hours : parseFloat(String(gun.hours));
+        return sum + (Number.isFinite(parsed) ? parsed : 0);
+      }, 0);
+      await handleItemChange(modalDesignerId, modalDate, itemId, 'guns', nextGuns, { immediate: true });
+      await handleItemChange(modalDesignerId, modalDate, itemId, 'hours', Number(totalHours.toFixed(2)), { immediate: true });
+    }
+    handleItemChange(modalDesignerId, modalDate, itemId, 'taskName', newName);
   };
 
   // 切换"显示纳期"复选框
@@ -3158,7 +3233,7 @@ const Dashboard = () => {
                           </div>
                         ) : (
                           <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                               <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
                               <label className="flex items-center gap-2 cursor-pointer">
                                 <input
@@ -3168,7 +3243,7 @@ const Dashboard = () => {
                                     if (e.target.checked) {
                                       const nextType = 'confirm';
                                       setAddModeTaskType(nextType);
-                                      setAddModeGuns(prev => applyDefaultHoursToGun(prev, nextType));
+                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, nextType));
                                     } else if (addModeTaskType === 'confirm') {
                                       setAddModeTaskType('none');
                                     }
@@ -3185,7 +3260,7 @@ const Dashboard = () => {
                                     if (e.target.checked) {
                                       const nextType = 'design';
                                       setAddModeTaskType(nextType);
-                                      setAddModeGuns(prev => applyDefaultHoursToGun(prev, nextType));
+                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, nextType));
                                     } else if (addModeTaskType === 'design') {
                                       setAddModeTaskType('none');
                                     }
@@ -3202,7 +3277,7 @@ const Dashboard = () => {
                                     if (e.target.checked) {
                                       const nextType = 'confirmModify';
                                       setAddModeTaskType(nextType);
-                                      setAddModeGuns(prev => applyDefaultHoursToGun(prev, nextType));
+                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, nextType));
                                     } else if (addModeTaskType === 'confirmModify') {
                                       setAddModeTaskType('none');
                                     }
@@ -3218,6 +3293,7 @@ const Dashboard = () => {
                                   onChange={(e) => {
                                     if (e.target.checked) {
                                       setAddModeTaskType('designChange');
+                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, 'designChange'));
                                     } else if (addModeTaskType === 'designChange') {
                                       setAddModeTaskType('none');
                                     }
@@ -3225,6 +3301,22 @@ const Dashboard = () => {
                                   className="w-4 h-4 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500"
                                 />
                                 <span className="text-sm font-medium text-yellow-600">设计变更</span>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={addModeTaskType === 'drawingReview'}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setAddModeTaskType('drawingReview');
+                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, 'drawingReview'));
+                                    } else if (addModeTaskType === 'drawingReview') {
+                                      setAddModeTaskType('none');
+                                    }
+                                  }}
+                                  className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
+                                />
+                                <span className="text-sm font-medium text-orange-600">既制审图</span>
                               </label>
                             </div>
                             <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
@@ -3400,14 +3492,7 @@ const Dashboard = () => {
                                   const nextName = e.target.value;
                                   setAddModeGuns(prev => {
                                     const next = [...prev];
-                                    const currentHours = String(next[gIdx].hours ?? '').trim();
-                                    const shouldFillHours = currentHours === '';
-                                    const defaultHours = shouldFillHours ? getDefaultGunHoursFor(addModeTaskType, nextName) : null;
-                                    next[gIdx] = {
-                                      ...next[gIdx],
-                                      name: nextName,
-                                      ...(defaultHours !== null ? { hours: defaultHours } : {})
-                                    };
+                                    next[gIdx] = fillHoursForGunName(next[gIdx], nextName, addModeTaskType);
                                     return next;
                                   });
                                 }}
@@ -3631,14 +3716,14 @@ const Dashboard = () => {
                               </div>
                             ) : (
                             <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
                                 <label className="flex items-center gap-2 cursor-pointer">
                                   <input
                                     type="checkbox"
                                     checked={currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('确认图修改')}
                                     onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
                                       const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                       const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                       let newName = baseName + deadline;
@@ -3649,7 +3734,11 @@ const Dashboard = () => {
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'confirm' : 'none' }
                                       }));
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      if (e.target.checked) {
+                                        void applyTaskTypeToItem(currentItem.id, 'confirm', currentItem.guns || [], newName);
+                                      } else {
+                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      }
                                     }}
                                     className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
                                   />
@@ -3660,7 +3749,7 @@ const Dashboard = () => {
                                     type="checkbox"
                                     checked={currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('设计变更')}
                                     onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
                                       const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                       const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                       let newName = baseName + deadline;
@@ -3671,7 +3760,11 @@ const Dashboard = () => {
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'design' : 'none' }
                                       }));
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      if (e.target.checked) {
+                                        void applyTaskTypeToItem(currentItem.id, 'design', currentItem.guns || [], newName);
+                                      } else {
+                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      }
                                     }}
                                     className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
                                   />
@@ -3682,7 +3775,7 @@ const Dashboard = () => {
                                     type="checkbox"
                                     checked={currentItem.taskName.includes('确认图修改')}
                                     onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
                                       const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                       const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                       let newName = baseName + deadline;
@@ -3693,7 +3786,11 @@ const Dashboard = () => {
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'confirmModify' : 'none' }
                                       }));
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      if (e.target.checked) {
+                                        void applyTaskTypeToItem(currentItem.id, 'confirmModify', currentItem.guns || [], newName);
+                                      } else {
+                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      }
                                     }}
                                     className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
                                   />
@@ -3704,7 +3801,7 @@ const Dashboard = () => {
                                     type="checkbox"
                                     checked={currentItem.taskName.includes('设计变更')}
                                     onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
                                       const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                       const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                       let newName = baseName + deadline;
@@ -3715,11 +3812,41 @@ const Dashboard = () => {
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'designChange' : 'none' }
                                       }));
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      if (e.target.checked) {
+                                        void applyTaskTypeToItem(currentItem.id, 'designChange', currentItem.guns || [], newName);
+                                      } else {
+                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      }
                                     }}
                                     className="w-4 h-4 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500"
                                   />
                                   <span className="text-sm font-medium text-yellow-600">设计变更</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={currentItem.taskName.includes('既制审图')}
+                                    onChange={(e) => {
+                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
+                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
+                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
+                                      let newName = baseName + deadline;
+                                      if (e.target.checked) {
+                                        newName = `${baseName} 既制审图${deadline}`;
+                                      }
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'drawingReview' : 'none' }
+                                      }));
+                                      if (e.target.checked) {
+                                        void applyTaskTypeToItem(currentItem.id, 'drawingReview', currentItem.guns || [], newName);
+                                      } else {
+                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      }
+                                    }}
+                                    className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
+                                  />
+                                  <span className="text-sm font-medium text-orange-600">既制审图</span>
                                 </label>
                               </div>
                               <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
@@ -3728,9 +3855,9 @@ const Dashboard = () => {
                                 <input
                                   ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
                                   className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                                  value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更)?\s*(\[\d+\/\d+\])?$/, '')}
+                                  value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '')}
                                   onChange={(e) => {
-                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更))?\s*(\[\d+\/\d+\])?$/);
+                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更|既制审图))?\s*(\[\d+\/\d+\])?$/);
                                     const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
                                     const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                     let deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
@@ -3994,7 +4121,11 @@ const Dashboard = () => {
                                     title={isDuplicateName ? '枪名重复，请修改后再保存' : undefined}
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
-                                      newGuns[gIdx] = { ...newGuns[gIdx], name: e.target.value };
+                                      newGuns[gIdx] = fillHoursForGunName(
+                                        newGuns[gIdx],
+                                        e.target.value,
+                                        getTaskTypeFromName(currentItem.taskName)
+                                      );
                                       setTaskTypeDrafts(prev => ({
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
@@ -4226,6 +4357,8 @@ const Dashboard = () => {
                           taskName += ' 确认图修改';
                         } else if (addModeTaskType === 'designChange') {
                           taskName += ' 设计变更';
+                        } else if (addModeTaskType === 'drawingReview') {
+                          taskName += ' 既制审图';
                         }
                       }
                       

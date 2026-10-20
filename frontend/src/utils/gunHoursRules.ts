@@ -98,6 +98,24 @@ export const GUN_HOURS_TASK_LABELS: { key: GunHoursTaskType; label: string }[] =
   { key: 'design', label: '设计' },
 ];
 
+// 设计变更 / 既制审图：固定的任务级工时，不区分枪名机型 C/X，也不套用任何表专用规则
+export type ExtraTaskHoursType = 'designChange' | 'drawingReview';
+
+export interface ExtraTaskHours {
+  designChange: number;
+  drawingReview: number;
+}
+
+export const DEFAULT_EXTRA_TASK_HOURS: ExtraTaskHours = {
+  designChange: 1.5,
+  drawingReview: 0.5,
+};
+
+export const EXTRA_TASK_HOURS_LABELS: { key: ExtraTaskHoursType; label: string }[] = [
+  { key: 'designChange', label: '设计变更' },
+  { key: 'drawingReview', label: '既制审图' },
+];
+
 // 从枪名提取机型标识：枪名首个「-」前的字符（SRTC->C, SRTX->X, SRTV->V...）
 export const getGunTypeFromName = (gunName: string): 'C' | 'X' | null => {
   const name = String(gunName || '').trim();
@@ -165,4 +183,36 @@ export const resolveGunHours = (
   }
 
   return FALLBACK_GUN_HOURS[taskType];
+};
+
+/**
+ * 解析「设计变更 / 既制审图」的固定工时：
+ * 只取系统设置中的一个数值，不区分 C/X、不套用任何表专用规则；非这两类返回 null。
+ */
+export const resolveExtraTaskHours = (
+  taskType: string,
+  settings: { extraTaskHours?: Partial<ExtraTaskHours> }
+): number | null => {
+  if (taskType !== 'designChange' && taskType !== 'drawingReview') return null;
+  const configured = settings.extraTaskHours?.[taskType];
+  return isFiniteHours(configured) ? configured : DEFAULT_EXTRA_TASK_HOURS[taskType];
+};
+
+/**
+ * 解析某个枪名在指定任务类型下的自动填充工时（按枪名逐个填充时使用）：
+ * 设计变更 / 既制审图 → 固定工时；确认图 / 确认图修改 / 设计 → 表专用规则 → C/X 回退 → 兜底。
+ */
+export const resolveAutoFillHours = (
+  taskType: string,
+  gunName: string,
+  location: GunLocation | null | undefined,
+  settings: {
+    tableGunHours?: TableGunHoursMap;
+    defaultGunHours?: DefaultGunHoursLike;
+    extraTaskHours?: Partial<ExtraTaskHours>;
+  }
+): number | null => {
+  const extra = resolveExtraTaskHours(taskType, settings);
+  if (extra !== null) return extra;
+  return resolveGunHours(taskType, gunName, location, settings);
 };

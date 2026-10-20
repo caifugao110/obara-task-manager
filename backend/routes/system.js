@@ -108,7 +108,12 @@ const defaultSystemSettings = {
     confirmModify: { C: 0.5, X: 0.75 }
   },
   // 分类 → 表名 → { confirm, confirmModify, design }，未配置的表回退 defaultGunHours
-  tableGunHours: BUILTIN_TABLE_GUN_HOURS
+  tableGunHours: BUILTIN_TABLE_GUN_HOURS,
+  // 设计变更 / 既制审图 的固定工时：不区分枪名机型 C/X，也不套用任何表专用规则
+  extraTaskHours: {
+    designChange: 1.5,
+    drawingReview: 0.5
+  }
 };
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
@@ -138,6 +143,12 @@ const tableGunHoursCellSchema = Joi.object({
   design: Joi.number().min(0).max(24).required()
 });
 
+// 设计变更 / 既制审图的固定工时（h，0-24；不区分 C/X）
+const extraTaskHoursSchema = Joi.object({
+  designChange: Joi.number().min(0).max(24).required(),
+  drawingReview: Joi.number().min(0).max(24).required()
+});
+
 const systemSettingsSchema = Joi.object({
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
@@ -155,7 +166,8 @@ const systemSettingsSchema = Joi.object({
   tableGunHours: Joi.object().pattern(
     Joi.string().trim().min(1).max(30),
     Joi.object().pattern(Joi.string().trim().min(1).max(50), tableGunHoursCellSchema)
-  ).optional()
+  ).optional(),
+  extraTaskHours: extraTaskHoursSchema.optional()
 });
 
 const maintenanceSettingsSchema = Joi.object({
@@ -186,6 +198,19 @@ const normalizeGunHours = (raw, fallback) => {
     C: typeof src.C === 'number' && Number.isFinite(src.C) ? src.C : fallback.C,
     X: typeof src.X === 'number' && Number.isFinite(src.X) ? src.X : fallback.X
   };
+};
+
+// 设计变更 / 既制审图的固定工时归一化：非法/缺失回退内置值
+const normalizeExtraTaskHours = (raw) => {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const fallback = defaultSystemSettings.extraTaskHours;
+  const pick = (key) => {
+    const value = src[key];
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 24
+      ? value
+      : fallback[key];
+  };
+  return { designChange: pick('designChange'), drawingReview: pick('drawingReview') };
 };
 
 const isValidHoursCell = (cell) => {
@@ -253,7 +278,8 @@ const normalizeSystemSettings = (settings = {}) => {
       design: normalizeGunHours(rawGunHours.design, fallbackGunHours.design),
       confirmModify: normalizeGunHours(rawGunHours.confirmModify, fallbackGunHours.confirmModify)
     },
-    tableGunHours: normalizeTableGunHours(merged.tableGunHours)
+    tableGunHours: normalizeTableGunHours(merged.tableGunHours),
+    extraTaskHours: normalizeExtraTaskHours(merged.extraTaskHours)
   };
 };
 

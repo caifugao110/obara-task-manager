@@ -38,6 +38,10 @@ import {
   BUILTIN_TABLE_GUN_HOURS,
   FALLBACK_GUN_HOURS,
   GUN_HOURS_TASK_LABELS,
+  EXTRA_TASK_HOURS_LABELS,
+  DEFAULT_EXTRA_TASK_HOURS,
+  ExtraTaskHours,
+  ExtraTaskHoursType,
   GunHoursTaskType,
   TableGunHoursMap,
   getEffectiveTableGunHours,
@@ -317,6 +321,10 @@ const GunLedger: React.FC = () => {
   const [hoursPanelCategory, setHoursPanelCategory] = useState<string | null>(null);
   const [tableHoursDraft, setTableHoursDraft] = useState<TableHoursDraft>({});
   const [fallbackHoursDraft, setFallbackHoursDraft] = useState<DefaultGunHours | null>(null);
+  // 设计变更 / 既制审图的固定工时草稿（不区分 C/X、不套用表专用规则）
+  const [extraHoursDraft, setExtraHoursDraft] = useState<ExtraTaskHours>(DEFAULT_EXTRA_TASK_HOURS);
+  // 首页页签：三类规则分页展示，避免三张表纵向堆叠把弹窗拉长
+  const [hoursPanelTab, setHoursPanelTab] = useState<'fallback' | 'extra' | 'table'>('fallback');
   const [hoursSaving, setHoursSaving] = useState(false);
   // 默认工时规则恢复内置二次确认：'all' 全部恢复；字符串为分类名；null 关闭
   const [confirmHoursReset, setConfirmHoursReset] = useState<'all' | string | null>(null);
@@ -1481,7 +1489,9 @@ const GunLedger: React.FC = () => {
           confirmModify: { ...fb.confirmModify },
         }
       : null);
+    setExtraHoursDraft({ ...DEFAULT_EXTRA_TASK_HOURS, ...(systemSettings.extraTaskHours || {}) });
     setHoursPanelCategory(null);
+    setHoursPanelTab('fallback');
     setShowHoursPanel(true);
   }, [ledger, systemSettings, warnIfOffline]);
 
@@ -1520,6 +1530,13 @@ const GunLedger: React.FC = () => {
     setFallbackHoursDraft(prev => prev ? { ...prev, [key]: { ...prev[key], [gunType]: num } } : prev);
   };
 
+  // 设计变更 / 既制审图 的固定工时（单一数值，不分 C/X）
+  const updateExtraHoursDraft = (key: ExtraTaskHoursType, raw: string) => {
+    const num = parseFloat(raw);
+    if (!Number.isFinite(num) || num < 0 || num > 24) return;
+    setExtraHoursDraft(prev => ({ ...prev, [key]: num }));
+  };
+
   // 某分类恢复为内置专用规则（无内置值的自建表清空）
   const resetCategoryHoursDraft = (category: string) => {
     if (!ledger) return;
@@ -1554,6 +1571,7 @@ const GunLedger: React.FC = () => {
       design: { C: 2.5, X: 3 },
       confirmModify: { C: 0.5, X: 0.75 },
     });
+    setExtraHoursDraft({ ...DEFAULT_EXTRA_TASK_HOURS });
   };
 
   const saveHoursRules = useCallback(async () => {
@@ -1584,6 +1602,7 @@ const GunLedger: React.FC = () => {
         ...systemSettings,
         defaultGunHours: fallbackHoursDraft,
         tableGunHours,
+        extraTaskHours: extraHoursDraft,
       };
       await axiosInstance.put('/system/settings', updated);
       setSettings(updated);
@@ -1594,7 +1613,7 @@ const GunLedger: React.FC = () => {
     } finally {
       setHoursSaving(false);
     }
-  }, [fallbackHoursDraft, tableHoursDraft, systemSettings, authHeader, setSettings, addToast, warnIfOffline]);
+  }, [fallbackHoursDraft, tableHoursDraft, extraHoursDraft, systemSettings, authHeader, setSettings, addToast, warnIfOffline]);
 
   // 默认担当人员管理
   const handleAddPerson = useCallback(async (person: string) => {
@@ -2391,7 +2410,7 @@ const GunLedger: React.FC = () => {
               <button
                 onClick={openHoursPanel}
                 className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
-                title="默认工时规则：按分类/表设置确认图、确认图修改、设计的默认工时"
+                title="默认工时规则：按分类/表设置确认图、确认图修改、设计的默认工时，并为设计变更、既制审图设置固定工时"
               >
                 <Clock size={18} /><span>默认工时规则</span>
               </button>
@@ -3562,96 +3581,172 @@ const GunLedger: React.FC = () => {
             </div>
 
             {hoursDetailCategory === null ? (
-              /* ===== 首页：规则说明 + C/X 回退规则 + 分类入口 ===== */
-              <div className="p-5 overflow-auto">
-                {/* 取值优先级说明 */}
-                <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 mb-4">
-                  <div className="font-bold text-sky-800 text-sm mb-2">自动填充工时的取值顺序</div>
-                  <ol className="text-xs text-sky-900/90 leading-relaxed space-y-1 list-decimal list-inside">
-                    <li>枪名存在于台账某张表中时，直接使用该表的<span className="font-bold">专用规则</span>；</li>
-                    <li>未匹配到专用规则时，按枪名首个「-」前字符（C / X）使用下方<span className="font-bold">机型回退规则</span>；</li>
-                    <li>
-                      仍无法匹配时使用固定兜底值：确认图
-                      <span className="font-bold"> {FALLBACK_GUN_HOURS.confirm}h</span>、确认图修改
-                      <span className="font-bold"> {FALLBACK_GUN_HOURS.confirmModify}h</span>、设计
-                      <span className="font-bold"> {FALLBACK_GUN_HOURS.design}h</span>。
-                    </li>
-                  </ol>
+              /* ===== 首页：取值顺序 + 三类规则页签（机型回退 / 固定工时 / 表专用规则） ===== */
+              <div className="flex-1 min-h-0 flex flex-col">
+                {/* 取值顺序：单行紧凑链路，替代原先的四行说明 */}
+                <div className="px-5 pt-3.5 shrink-0 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
+                  <span className="font-black uppercase tracking-widest text-gray-400">取值顺序</span>
+                  <span className="px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700 font-bold">① 表专用规则</span>
+                  <ChevronRight size={12} className="text-gray-300" />
+                  <span className="px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700 font-bold">② C / X 机型回退</span>
+                  <ChevronRight size={12} className="text-gray-300" />
+                  <span className="px-2 py-0.5 rounded-full bg-gray-50 border border-gray-200 text-gray-600 font-bold">
+                    ③ 兜底 {FALLBACK_GUN_HOURS.confirm} / {FALLBACK_GUN_HOURS.confirmModify} / {FALLBACK_GUN_HOURS.design} h
+                  </span>
+                  <span className="text-gray-400">· 设计变更 / 既制审图 直接取固定工时</span>
                 </div>
 
-                {/* C/X 机型回退规则 */}
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">机型回退规则（按枪名首个「-」前字符 C / X）</div>
+                {/* 三类规则分页展示，避免三张表纵向堆叠 */}
+                <div className="px-5 mt-2.5 shrink-0 flex items-end justify-between gap-2 border-b border-gray-200">
+                  <div className="flex items-center gap-1">
+                    {([
+                      { key: 'fallback', label: '机型回退规则', hint: 'C / X' },
+                      { key: 'extra', label: '固定任务工时', hint: '不分 C/X' },
+                      { key: 'table', label: '表专用规则', hint: `${initTotalTables} 张表` },
+                    ] as const).map(tab => {
+                      const active = hoursPanelTab === tab.key;
+                      return (
+                        <button
+                          key={tab.key}
+                          onClick={() => setHoursPanelTab(tab.key)}
+                          className={`px-3 py-2 -mb-px border-b-2 text-xs font-bold transition whitespace-nowrap ${active ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
+                        >
+                          {tab.label}
+                          <span className={`ml-1.5 text-[10px] font-semibold ${active ? 'text-emerald-500/80' : 'text-gray-300'}`}>{tab.hint}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                   <button
                     onClick={() => setConfirmHoursReset('all')}
                     disabled={hoursSaving}
-                    className="text-xs font-semibold text-gray-500 hover:text-emerald-600 disabled:opacity-50"
-                    title="表专用规则与机型回退规则全部恢复为系统内置值"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-emerald-600 disabled:opacity-50 shrink-0 pb-1.5"
+                    title="表专用规则、机型回退规则与固定任务工时全部恢复为系统内置值"
                   >
-                    全部恢复内置默认
+                    <RotateCcw size={12} />
+                    全部恢复内置
                   </button>
                 </div>
-                <div className="overflow-hidden rounded-xl border border-gray-200 mb-5">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-gray-100 text-gray-600">
-                        <th className="px-4 py-2.5 text-left font-bold">任务类型</th>
-                        <th className="px-4 py-2.5 text-center font-bold">C 类枪名</th>
-                        <th className="px-4 py-2.5 text-center font-bold">X 类枪名</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {GUN_HOURS_TASK_LABELS.map(row => (
-                        <tr key={row.key} className="border-t border-gray-200">
-                          <td className="px-4 py-2.5 font-bold text-gray-700">{row.label}</td>
-                          {(['C', 'X'] as const).map(type => (
-                            <td key={type} className="px-4 py-2.5 text-center">
-                              <input
-                                type="number"
-                                step="0.25"
-                                min="0"
-                                max="24"
-                                value={fallbackHoursDraft?.[row.key]?.[type] ?? ''}
-                                onChange={(e) => updateFallbackHoursDraft(row.key, type, e.target.value)}
-                                disabled={hoursSaving}
-                                className="w-20 h-9 text-center bg-white border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-400 font-bold text-emerald-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              />
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
 
-                <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 ml-1">选择分类编辑各表专用规则</div>
-                {initCategoryNames.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">暂无分类</div>}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {initCategoryNames.map(cat => {
-                    const stat = initCategoryStats[cat] || { tables: 0, rows: 0 };
-                    return (
-                      <div key={cat} className="group rounded-xl border border-gray-200 bg-gray-50/70 hover:border-emerald-300 hover:bg-emerald-50/60 transition overflow-hidden">
-                        <button
-                          onClick={() => setHoursPanelCategory(cat)}
-                          className="w-full p-4 flex items-center gap-3 text-left"
-                        >
-                          <span className="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-                            <FolderOpen size={18} />
-                          </span>
-                          <span className="flex-1 min-w-0">
-                            <span className="block font-bold text-gray-800 text-sm truncate">{cat}</span>
-                            <span className="block text-xs text-gray-400 mt-0.5">{stat.tables} 张表</span>
-                          </span>
-                          <ChevronRight size={18} className="text-gray-300 group-hover:text-emerald-600 transition shrink-0" />
-                        </button>
+                <div className="p-5 overflow-auto flex-1 min-h-0">
+                  {hoursPanelTab === 'fallback' && (
+                    <>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                        按枪名首个「-」前字符判定 C / X 机型
                       </div>
-                    );
-                  })}
+                      <div className="overflow-hidden rounded-xl border border-gray-200">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-gray-100 text-gray-600">
+                              <th className="px-4 py-2.5 text-left font-bold">任务类型</th>
+                              <th className="px-4 py-2.5 text-center font-bold">C 类枪名</th>
+                              <th className="px-4 py-2.5 text-center font-bold">X 类枪名</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {GUN_HOURS_TASK_LABELS.map(row => (
+                              <tr key={row.key} className="border-t border-gray-200">
+                                <td className="px-4 py-2.5 font-bold text-gray-700">{row.label}</td>
+                                {(['C', 'X'] as const).map(type => (
+                                  <td key={type} className="px-4 py-2.5 text-center">
+                                    <input
+                                      type="number"
+                                      step="0.25"
+                                      min="0"
+                                      max="24"
+                                      value={fallbackHoursDraft?.[row.key]?.[type] ?? ''}
+                                      onChange={(e) => updateFallbackHoursDraft(row.key, type, e.target.value)}
+                                      disabled={hoursSaving}
+                                      className="w-20 h-9 text-center bg-white border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-400 font-bold text-emerald-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                    />
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+                        枪名未匹配到表专用规则时使用这里的数值；连机型也判定不出时取兜底值 {FALLBACK_GUN_HOURS.confirm}h / {FALLBACK_GUN_HOURS.confirmModify}h / {FALLBACK_GUN_HOURS.design}h（确认图 / 确认图修改 / 设计）。
+                      </p>
+                    </>
+                  )}
+
+                  {hoursPanelTab === 'extra' && (
+                    <>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                        固定任务工时（不分 C / X，不套用任何专用规则）
+                      </div>
+                      <div className="overflow-hidden rounded-xl border border-gray-200">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-gray-100 text-gray-600">
+                              <th className="px-4 py-2.5 text-left font-bold">任务类型</th>
+                              <th className="px-4 py-2.5 text-center font-bold">默认工时</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {EXTRA_TASK_HOURS_LABELS.map(row => (
+                              <tr key={row.key} className="border-t border-gray-200">
+                                <td className="px-4 py-2.5 font-bold text-gray-700">{row.label}</td>
+                                <td className="px-4 py-2.5 text-center">
+                                  <input
+                                    type="number"
+                                    step="0.25"
+                                    min="0"
+                                    max="24"
+                                    value={extraHoursDraft[row.key] ?? ''}
+                                    onChange={(e) => updateExtraHoursDraft(row.key, e.target.value)}
+                                    disabled={hoursSaving}
+                                    className="w-20 h-9 text-center bg-white border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-400 font-bold text-emerald-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  />
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+                        勾选「设计变更」/「既制审图」后填写枪名，每个枪名的工时按此值自动计算，总工时 = 各枪名工时之和；没有枪名时不自动赋值，总工时由用户手动输入。
+                      </p>
+                    </>
+                  )}
+
+                  {hoursPanelTab === 'table' && (
+                    <>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                        选择分类编辑各表专用规则
+                      </div>
+                      {initCategoryNames.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">暂无分类</div>}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {initCategoryNames.map(cat => {
+                          const stat = initCategoryStats[cat] || { tables: 0, rows: 0 };
+                          return (
+                            <div key={cat} className="group rounded-xl border border-gray-200 bg-gray-50/70 hover:border-emerald-300 hover:bg-emerald-50/60 transition overflow-hidden">
+                              <button
+                                onClick={() => setHoursPanelCategory(cat)}
+                                className="w-full p-3.5 flex items-center gap-3 text-left"
+                              >
+                                <span className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                                  <FolderOpen size={16} />
+                                </span>
+                                <span className="flex-1 min-w-0">
+                                  <span className="block font-bold text-gray-800 text-sm truncate">{cat}</span>
+                                  <span className="block text-xs text-gray-400 mt-0.5">{stat.tables} 张表</span>
+                                </span>
+                                <ChevronRight size={18} className="text-gray-300 group-hover:text-emerald-600 transition shrink-0" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             ) : (
               /* ===== 分类详情：逐表专用工时编辑 ===== */
-              <div className="p-5 overflow-auto">
+              <div className="p-5 overflow-auto flex-1 min-h-0">
                 <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
                   <span className="text-xs text-gray-400">共 {hoursDetailTables.length} 张表，单位：小时（h）</span>
                   <button
@@ -3822,7 +3917,7 @@ const GunLedger: React.FC = () => {
                   <div className="font-bold text-amber-700 mb-1">将覆盖当前未保存的修改</div>
                   {confirmHoursReset === 'all' ? (
                     <div>
-                      所有分类的表专用工时规则与 C/X 机型回退规则都将恢复为系统内置值，自建表专用工时将被清空（留空走机型回退）。
+                      所有分类的表专用工时规则、C/X 机型回退规则与固定任务工时（设计变更 / 既制审图）都将恢复为系统内置值，自建表专用工时将被清空（留空走机型回退）。
                     </div>
                   ) : (
                     <div>
