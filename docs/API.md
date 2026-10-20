@@ -2994,20 +2994,14 @@ PUT 请求：
     "fileName": "db-backup-20260710-103000.db",
     "filePath": "D:\\project\\backend\\backups\\database\\db-backup-20260710-103000.db",
     "dir": "D:\\project\\backend\\backups\\database",
-    "size": 1048576,
-    "secondaryBackup": {
-      "dir": "\\\\192.168.160.2\\生产管理部3d\\3D 资料\\check\\check27\\Version control\\obara-task-manager\\backups",
-      "filePath": "\\\\192.168.160.2\\生产管理部3d\\3D 资料\\check\\check27\\Version control\\obara-task-manager\\backups\\db-backup-20260710-103000.db",
-      "size": 1048576,
-      "success": true
-    }
+    "size": 1048576
   }
 }
 ```
 
 > 备份使用 SQLite 在线备份 API 生成，并会切换到 DELETE 日志模式把 WAL 内容合并进主文件，最终只保留单个干净的 `.db` 文件，不产生 `.db-wal`/`.db-shm` 伴随文件。
 
-> 双备份：数据库备份除写入配置的备份目录外，还会固定复制一份到上表 `secondaryBackup.dir` 指向的网络共享目录。该网络地址为固定值，仅接收数据库备份，且其中的文件不参与过期清理（永久保留）。网络不可达或权限不足时 `secondaryBackup.success` 为 `false` 并返回 `error`，不影响主备份结果。
+> 备份只写入配置的数据库备份目录（默认 `backups/database/`）。此前存在「额外复制到固定网络共享地址」的双写逻辑，该逻辑与 `secondaryBackup` 响应字段已移除。
 
 ### 手动导出任务数据
 

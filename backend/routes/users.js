@@ -59,15 +59,27 @@ const batchResetPasswordSchema = Joi.object({
   })
 });
 
+// 对外下发的用户字段白名单。
+// 只投影界面真正需要的字段：password / sessionToken / sessionTokens /
+// sessionInvalidationReason 一律不外发——会话标识属于认证元数据，
+// 管理员没有查看的必要，且一旦未来出现「会话 ID 即凭据」的设计会直接变成接管漏洞。
+// 采用白名单而非「排除敏感字段」的黑名单：新增敏感字段时默认不会泄漏。
+const toSafeUser = (u = {}) => ({
+  id: u.id,
+  username: u.username,
+  name: u.name,
+  role: u.role,
+  group: u.group,
+  disabled: Boolean(u.disabled),
+  forcePasswordChange: Boolean(u.forcePasswordChange),
+  lastLoginAt: u.lastLoginAt || null,
+  previousLoginAt: u.previousLoginAt || null
+});
+
 // Get all login users
 router.get('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
-
-  const users = data.users.map(u => {
-    const { password, sessionToken, ...rest } = u;
-    return rest;
-  });
-  res.json(users);
+  res.json((data.users || []).map(toSafeUser));
 }));
 
 // Create login user (SuperAdmin can create any role, Admin can create normal users)
@@ -105,8 +117,7 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
   data.users.push(newUser);
   await db.writeDb(data);
 
-  const { password: _, sessionToken: __, ...userResponse } = newUser;
-  res.status(201).json(userResponse);
+  res.status(201).json(toSafeUser(newUser));
 }));
 
 // Update login user (SuperAdmin can update anyone)
@@ -179,8 +190,7 @@ router.put('/:id', [authMiddleware, adminMiddleware, maybeSelfServicePasswordLim
 
   await db.writeDb(data);
 
-  const { password: _, sessionToken: __, ...userResponse } = targetUser;
-  res.json(userResponse);
+  res.json(toSafeUser(targetUser));
 }));
 
 // Batch delete login users (SuperAdmin only)

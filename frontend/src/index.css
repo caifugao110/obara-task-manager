@@ -90,9 +90,10 @@ input[type="number"] {
   opacity: 0;
   cursor: pointer;
 }
-.delivery-date-input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* 该 input 是叠在文字上的透明触发层，必须始终 opacity:0；
+   .offline-locked input (0,1,1) 特异性更高，会把覆盖层半透明化导致月份文字重叠，故用更高特异性覆盖 */
+.offline-locked .delivery-date-input {
+  opacity: 0;
 }
 
 /* Table header sticky styles */

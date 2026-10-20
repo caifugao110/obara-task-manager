@@ -804,10 +804,6 @@ const SystemSettings = () => {
     const data = await runMaintenanceAction('/api/system/maintenance/backup');
     if (!data) return;
     addToast(`数据库备份已完成：${data.backup.fileName}（${formatFileSize(data.backup.size)}）`, 'success');
-    const secondary = data.backup?.secondaryBackup;
-    if (secondary && !secondary.success) {
-      addToast(`双备份地址写入失败：${secondary.error}`, 'error');
-    }
   };
 
   const handleManualGunLedgerExport = async () => {

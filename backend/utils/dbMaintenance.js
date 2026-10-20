@@ -160,24 +160,6 @@ const ensureDir = (dirPath) => {
   fs.mkdirSync(dirPath, { recursive: true });
 };
 
-// 双备份地址：数据库备份除写入配置的备份目录外，固定再复制一份到该网络共享目录。
-// 仅数据库备份写入此处，且该目录内的文件不参与过期清理（永久保留）。
-// 该路径不受 resolveManagedDir 的 backend/ 边界限制：它是网络共享位置，需跳出本地目录树。
-const SECONDARY_BACKUP_DIR = String.raw`\\192.168.160.2\生产管理部3d\3D 资料\check\check27\Version control\obara-task-manager\backups`;
-
-// 将备份文件复制到固定双备份地址。网络共享可能因网络不通或权限不足不可达：
-// 失败时只记录告警并返回错误信息，不抛出异常，避免影响主备份结果。
-const copyBackupToSecondaryDir = (sourcePath, fileName) => {
-  try {
-    ensureDir(SECONDARY_BACKUP_DIR);
-    const targetPath = path.join(SECONDARY_BACKUP_DIR, fileName);
-    fs.copyFileSync(sourcePath, targetPath);
-    return { dir: SECONDARY_BACKUP_DIR, filePath: targetPath, size: fs.statSync(targetPath).size, success: true };
-  } catch (err) {
-    console.warn(`[backup] 双备份写入第二地址失败 (${SECONDARY_BACKUP_DIR}): ${err.message}`);
-    return { dir: SECONDARY_BACKUP_DIR, success: false, error: err.message };
-  }
-};
 
 const writeJsonFile = (filePath, payload) => {
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
@@ -287,9 +269,8 @@ const createDatabaseBackup = async (options = {}) => {
   // 切换到 DELETE 日志模式，合并 WAL 并删除伴随文件，只保留单个 .db
   finalizeBackup(filePath);
   const size = fs.statSync(filePath).size;
-  // 双备份：主备份完成后额外复制一份到固定网络地址
-  const secondaryBackup = copyBackupToSecondaryDir(filePath, fileName);
-  return { fileName, filePath, dir: backupDir, size, secondaryBackup };
+  // 备份只写入配置的本地备份目录（backups/database），不再复制到固定的网络共享地址。
+  return { fileName, filePath, dir: backupDir, size };
 };
 
 const createOfflineBackup = (userId, username, options = {}) => {

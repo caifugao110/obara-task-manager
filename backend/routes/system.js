@@ -1759,19 +1759,33 @@ const filterAuditLogs = (logs, { username, action, method, ip, from, to } = {}) 
   });
 };
 
+// 操作日志分页参数上限。
+// 不加约束时：limit 可传 99999999 把整张日志表序列化进单个响应（内存与带宽放大），
+// page 可传极大值让 (page-1)*pageSize 溢出为不可控偏移。两者都必须 clamp。
+const AUDIT_LOG_MAX_PAGE_SIZE = 500;
+const AUDIT_LOG_MAX_PAGE = 10000;
+
+const parseClampedInt = (raw, fallback, min, max) => {
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+};
+
 router.get('/audit-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const { limit = 100, page = 1, username, action, method, ip, from, to } = req.query;
 
-  // 操作日志已迁至 audit_logs 独立表，不再随整库读出
+  // 操作日志已迁至 audit_logs 独立表，不再随整库读出。
+  // 表内条数由 auditLogMaxRows 限制（默认 5000，上限 100000），
+  // 因此这里一次读取全表再做内存筛选的代价可控；分页只截取需要的一段。
   let logs = filterAuditLogs(db.listAuditLogs(), { username, action, method, ip, from, to });
-  
+
   logs = logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  
-  const pageSize = parseInt(limit, 10) || 100;
-  const pageNum = parseInt(page, 10) || 1;
+
+  const pageSize = parseClampedInt(limit, 100, 1, AUDIT_LOG_MAX_PAGE_SIZE);
+  const pageNum = parseClampedInt(page, 1, 1, AUDIT_LOG_MAX_PAGE);
   const start = (pageNum - 1) * pageSize;
   const end = start + pageSize;
-  
+
   res.json({
     logs: logs.slice(start, end),
     total: logs.length,

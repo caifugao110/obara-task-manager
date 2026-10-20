@@ -501,18 +501,14 @@ POST /api/system/maintenance/backup
 
 系统也会在每日配置的时间点（最多两个，默认 `00:30` 和 `12:30`）自动备份，并在服务关闭前自动生成断网备份。
 
-#### 数据库双备份（网络共享第二地址）
+#### 数据库备份
 
-手动备份与每日定时备份在主备份成功后，都会把同一个 `.db` 文件额外复制到固定网络共享地址：
+手动备份与每日定时备份都会在配置的数据库备份目录（默认 `backups/database/`）生成一致性快照：
 
-```text
-\\192.168.160.2\生产管理部3d\3D 资料\check\check27\Version control\obara-task-manager\backups
-```
-
-- 该第二地址写死在后端（`backend/utils/dbMaintenance.js` 的 `SECONDARY_BACKUP_DIR`），不通过环境变量或界面配置；部署前需确认运行后端服务的 Windows 账号对该共享有写入权限（建议在服务账号下预先挂载并保存凭据）。
-- 仅数据库备份双写；任务表导出、编号台账导出和关机时的断网备份不写入第二地址。
-- 第二地址不执行过期清理，备份文件永久保留，容量由共享存储侧管理。
-- 共享不可达或写入失败时不影响主备份：手动备份接口仍返回成功，响应体 `backup.secondaryBackup` 中 `success=false` 且带 `error`（页面会弹出「双备份地址写入失败」红色提示）；定时备份仅在后端日志输出告警。巡检时如看到该提示，应检查网络共享连通性与权限。
+- 使用 SQLite 在线备份 API，数据库运行中也可安全生成；完成后合并 WAL，只保留单个 `.db` 文件。
+- **备份只写本地备份目录，不再复制到固定的网络共享地址**（原 `SECONDARY_BACKUP_DIR` 已从 `backend/utils/dbMaintenance.js` 移除），避免业务数据库副本长期落在共享盘上。
+- 任务表导出、编号台账导出和关机时的断网备份同样只写各自配置的本地目录。
+- 如需异机冗余，请在运维侧对备份目录配置独立同步任务，并为该副本单独设定访问权限与保留策略。
 
 手动复制数据库文件时**必须先停止后端服务**，否则可能复制到不一致的状态：
 
@@ -889,7 +885,7 @@ backend/
 
 - 触发时机：后端收到 `SIGINT`/`SIGTERM` 信号（即 `Ctrl+C` 或服务停止）时，会先创建一次断网备份再退出。
 - 防抖机制：同一次会话内 5 分钟内只生成一次，避免短时间内重复备份。
-- 存储位置：独立目录 `backups/offline/`，便于与日常备份区分；断网备份不写入双备份网络共享地址。
+- 存储位置：独立目录 `backups/offline/`，便于与日常备份区分。
 - 备份文件名：
   - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
   - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
@@ -933,7 +929,7 @@ backend/
 |-----|------|------|------|
 | `/api/system/maintenance` | GET | 超级管理员 | 获取维护状态和配置 |
 | `/api/system/maintenance` | PUT | 超级管理员 | 更新维护配置 |
-| `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份；主备份成功后自动复制到双备份网络地址，响应 `backup.secondaryBackup` 含第二地址写入结果（失败不影响主备份） |
+| `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份，响应 `backup` 含文件名、路径与大小 |
 | `/api/system/maintenance/offline-backup` | POST | 环回匿名 / 外部超管 | 手动触发断网备份 |
 | `/api/system/maintenance/export-tasks` | POST | 超级管理员 | 手动导出任务数据 |
 | `/api/system/maintenance/export-gun-ledger` | POST | 超级管理员 | 手动导出全部焊枪编号台账为单个 `.zip`（每个分类一个独立 `.xls`） |
@@ -974,7 +970,7 @@ backend/
 3. **设置合理的数据保留年限**：根据业务需求设置 `yearlyTaskRetentionYears`
 4. **定期手动备份**：在执行重大操作（如升级、批量导入）前手动执行备份
 5. **清理日志**：定期清理登录日志和操作日志，减少数据库体积
-6. **检查双备份地址**：确认服务账号可访问 `\\192.168.160.2\...\backups` 共享；手动备份后如页面提示「双备份地址写入失败」，应排查网络/权限（第二地址不自动清理，还需在共享侧关注容量）
+6. **检查备份目录可写性**：确认服务账号对 `backups/database/`、`backups/task-exports/`、`backups/offline/` 等维护目录有写权限，并关注磁盘剩余空间；备份失败会写入后端日志
 7. **测试恢复流程**：定期测试从备份恢复数据的流程
 
 最后更新：2026-10-18
