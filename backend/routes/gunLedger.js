@@ -196,6 +196,30 @@ const buildGunNumber = (rule, serialNumber) => {
   return String(num).padStart(rule.pad, '0');
 };
 
+// 焊枪名编号归一化（与前端 GunLedger.tsx 的 normalizeGunNameNumber 完全一致）：
+// 编号由规则决定（不可修改），前缀与编号之后的后缀都可自由编辑。
+// 例：规则编号 15015 时，SRTC-2C15015 / SRTC-2C15015L / SRTC-2C15015-EL / SRTC-2C15015L-WL
+// 均视为合法名称——编号位置被校正为规则值，前后文字原样保留。
+const normalizeGunNameNumber = (rule, serialNumber, rawName) => {
+  const value = String(rawName ?? '').trim();
+  if (!value || !rule || !rule.enabled) return value;
+  const expected = buildGunNumber(rule, serialNumber);
+  const prefix = String(rule.prefix || '');
+  // 规则前缀未被改动时，编号必须紧跟在前缀之后；前缀被改过则在整串里定位编号
+  const anchored = prefix !== '' && value.startsWith(prefix);
+  const from = anchored ? prefix.length : 0;
+  const runs = Array.from(value.matchAll(/\d+/g)).filter(m => (m.index ?? 0) >= from);
+  if (runs.length) {
+    // 优先取位数与规则编号一致的数字段；都没有时取第一个数字段
+    const target = runs.find(m => m[0].length === expected.length) || runs[0];
+    if (target[0] === expected) return value;
+    const start = target.index ?? 0;
+    return value.slice(0, start) + expected + value.slice(start + target[0].length);
+  }
+  // 整串已没有数字（编号被删空）：前缀未变则补回前缀之后，否则追加到末尾
+  return anchored ? prefix + expected + value.slice(prefix.length) : value + expected;
+};
+
 // 用户的可序列化信息
 const userMeta = (req) => req.user ? { id: req.user.id, username: req.user.username, name: req.user.name } : null;
 
@@ -684,22 +708,19 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
     });
   }
 
-  // 焊枪名编号校验：有生效规则时，非空焊枪名的尾部编号必须与规则计算的一致
-  // 编号不可编辑，前缀可编辑
+  // 焊枪名编号校验：有生效规则时，非空焊枪名的编号必须与规则计算的一致
+  // 编号不可编辑；前缀可编辑；编号之后可追加任意后缀（L / -EL / L-WL 等）
   const rule = getEffectiveGunNameRule(found.category, found.table);
   if (rule) {
     const invalidNumbers = value.filter(r => {
       const name = String(r.gunName || '').trim();
       if (!name) return false;
-      const expectedNum = buildGunNumber(rule, Number(r.serialNumber));
-      const match = name.match(/(\d+)$/);
-      const actualNum = match ? match[1] : '';
-      return actualNum !== expectedNum;
+      return normalizeGunNameNumber(rule, Number(r.serialNumber), name) !== name;
     });
     if (invalidNumbers.length) {
       const detail = invalidNumbers.map(r => {
         const expected = buildGunNumber(rule, Number(r.serialNumber));
-        return `序号 ${r.serialNumber}（应为 ${expected}）`;
+        return `序号 ${r.serialNumber}（编号应为 ${expected}，可在编号后追加后缀）`;
       }).join('、');
       return res.status(400).json({
         message: `焊枪名编号不可修改：${detail}`,

@@ -236,6 +236,29 @@ const buildGunName = (rule: GunNameRule | null, serialNumber: number): string =>
   return rule.prefix + String(num).padStart(rule.pad, '0');
 };
 
+// 焊枪名编号归一化：编号由规则决定（不可修改），前缀与编号之后的后缀都可自由编辑。
+// 例：规则编号 15015 时，SRTC-2C15015 / SRTC-2C15015L / SRTC-2C15015-EL / SRTC-2C15015L-WL
+// 均视为合法名称——编号位置被自动校正为规则值，前后文字原样保留。
+const normalizeGunNameNumber = (rule: GunNameRule | null, serialNumber: number, rawValue: string): string => {
+  const value = String(rawValue ?? '').trim();
+  if (!value || !rule || !rule.enabled) return value;
+  const expected = String(rule.start + (serialNumber - 1)).padStart(rule.pad, '0');
+  const prefix = String(rule.prefix || '');
+  // 规则前缀未被改动时，编号必须紧跟在前缀之后；前缀被改过则在整串里定位编号
+  const anchored = prefix !== '' && value.startsWith(prefix);
+  const from = anchored ? prefix.length : 0;
+  const runs = Array.from(value.matchAll(/\d+/g)).filter(m => (m.index ?? 0) >= from);
+  if (runs.length) {
+    // 优先取位数与规则编号一致的数字段；都没有时取第一个数字段
+    const target = runs.find(m => m[0].length === expected.length) || runs[0];
+    if (target[0] === expected) return value;
+    const start = target.index ?? 0;
+    return value.slice(0, start) + expected + value.slice(start + target[0].length);
+  }
+  // 整串已没有数字（编号被删空）：前缀未变则补回前缀之后，否则追加到末尾
+  return anchored ? prefix + expected + value.slice(prefix.length) : value + expected;
+};
+
 // 打开「台账初始化」弹窗时某张表的规则草稿：已配置的取已配置值，否则预填内置默认
 const buildRuleDraft = (category: string, table: GunTable): GunNameRule => {
   if (table.gunNameRule) return { ...table.gunNameRule };
@@ -985,29 +1008,12 @@ const GunLedger: React.FC = () => {
     const { id, serialNumber } = row;
     const isPlaceholder = String(id).startsWith('__placeholder__');
 
-    // 焊枪名编号不可编辑 + 前缀可编辑 + 同表不可重复
+    // 焊枪名编号不可编辑 + 前缀可编辑 + 编号之后可追加后缀 + 同表不可重复
     if (field === 'gunName') {
       const rule = getEffectiveGunNameRule(activeCategory, activeTable);
       if (rule && rule.enabled) {
-        const trimmedValue = value.trim();
-        if (trimmedValue) {
-          // 计算该行应有的编号（由规则决定，不可编辑）
-          const expectedNum = rule.start + (serialNumber - 1);
-          const expectedNumberStr = String(expectedNum).padStart(rule.pad, '0');
-          // 从新值尾部提取数字
-          const match = trimmedValue.match(/^(.*?)(\d+)$/);
-          if (match) {
-            const userPrefix = match[1];
-            const userNumber = match[2];
-            if (userNumber !== expectedNumberStr) {
-              // 编号被修改：自动修正为规则编号，前缀保留用户输入
-              value = userPrefix + expectedNumberStr;
-            }
-          } else {
-            // 新值不含尾部数字：自动追加规则编号
-            value = trimmedValue + expectedNumberStr;
-          }
-        }
+        // 编号自动校正为规则值；前缀与编号之后的后缀（L / -EL / L-WL 等）原样保留
+        value = normalizeGunNameNumber(rule, serialNumber, value);
       }
       // 同表内焊枪名不可重复（空值不计入）
       const trimmedNewName = value.trim();
@@ -3526,7 +3532,7 @@ const GunLedger: React.FC = () => {
                   </button>
                 </div>
                 <p className="text-xs text-gray-400 leading-relaxed mb-4">
-                  配置预留行的焊枪名自动生成规则（前缀 + 起始编号 + 编号位数），初始化前请先「保存设置」使最新规则生效；「焊枪名初始化」删除该表所有原有内容，表恢复为仅显示 10 个原始焊枪名预留行的全新状态。
+                  配置预留行的焊枪名自动生成规则（前缀 + 起始编号 + 编号位数），初始化前请先「保存设置」使最新规则生效；表中焊枪名的编号由规则自动决定、不可修改，前缀与编号之后的后缀（如 L、-EL、L-WL）可自由编辑；「焊枪名初始化」删除该表所有原有内容，表恢复为仅显示 10 个原始焊枪名预留行的全新状态。
                 </p>
                 {initDetailTables.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">该分类下暂无表格</div>}
                 <div className="space-y-2">
