@@ -1365,11 +1365,22 @@ const Dashboard = () => {
         addToast('网络已断开，已自动保存数据', 'error');
       }
     };
+    // 后端 HTTP 可达性（全局心跳广播）：socket 之外的第二判定源。
+    // 后端恢复时只清理离线标记，不重复弹提示——socket 重连已自带「服务器已重新连接」
+    const handleServerOnline = () => {
+      setIsOnline(true);
+      setOfflineCacheUsed(false);
+      hasShownDisconnectToast.current = false;
+    };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    window.addEventListener('server-unreachable', handleOffline);
+    window.addEventListener('server-online', handleServerOnline);
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('server-unreachable', handleOffline);
+      window.removeEventListener('server-online', handleServerOnline);
     };
   }, [fetchData, sheets, user]);
 

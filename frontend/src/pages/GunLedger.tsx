@@ -2018,9 +2018,15 @@ const GunLedger: React.FC = () => {
     const handleOffline = () => setOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    // 后端 HTTP 可达性（全局心跳广播）：与浏览器网络事件共用同一套在线判定，
+    // 后端进程停止时不必等 socket 超时
+    window.addEventListener('server-online', handleOnline);
+    window.addEventListener('server-unreachable', handleOffline);
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('server-online', handleOnline);
+      window.removeEventListener('server-unreachable', handleOffline);
     };
   }, [fetchLedger, fetchUsedGunNames]);
 

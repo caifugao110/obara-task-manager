@@ -272,6 +272,9 @@ const StatusTracking = () => {
   const [resettingRules, setResettingRules] = useState(false);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [syncStatus, setSyncStatus] = useState<'connected' | 'disconnected'>('disconnected');
+  // 后端 HTTP 可达性（全局心跳广播）：socket 只反映 WebSocket 存活，二者取并集判定离线，
+  // 避免 socket 状态滞后时仍发起注定失败的写请求
+  const [backendUnreachable, setBackendUnreachable] = useState(false);
   const [monthFilterMode, setMonthFilterMode] = useState<'production' | 'delivery'>('production');
   const [currentMonth, setCurrentMonth] = useState(getCurrentMonthValue);
   const [deliveryMonth, setDeliveryMonth] = useState(getCurrentMonthValue);
@@ -301,9 +304,21 @@ const StatusTracking = () => {
     }
   }, []);
 
+  useEffect(() => {
+    const handleServerUnreachable = () => setBackendUnreachable(true);
+    const handleServerOnline = () => setBackendUnreachable(false);
+    window.addEventListener('server-unreachable', handleServerUnreachable);
+    window.addEventListener('server-online', handleServerOnline);
+    return () => {
+      window.removeEventListener('server-unreachable', handleServerUnreachable);
+      window.removeEventListener('server-online', handleServerOnline);
+    };
+  }, []);
+
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
-  const isOffline = syncStatus === 'disconnected';
+  // 离线 = socket 断开 或 后端 HTTP 不可达（取并集，任一不满足即禁止编辑）
+  const isOffline = syncStatus === 'disconnected' || backendUnreachable;
   const isRealtimeSyncAvailable = Boolean(token);
   const syncDotClass = !isRealtimeSyncAvailable
     ? 'bg-amber-500'

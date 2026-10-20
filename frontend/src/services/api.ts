@@ -44,6 +44,27 @@ axiosInstance.interceptors.request.use(
 // server-unreachable / server-online 事件进入/退出离线模式。
 let serverReachable = true;
 
+/**
+ * 判断一次请求失败是否意味着「后端服务本身不可达」。
+ *
+ * 只认 ERR_NETWORK 是不够的：当前端与后端之间隔着代理时，后端进程停止并不会让连接
+ * 直接失败，而是由代理回一个 5xx —— 开发环境的 Vite 代理会返回 Content-Type 为
+ * text/plain 的空 body 500，生产反向代理（nginx 等）通常是 502/503/504。
+ * 这类响应没有应用层语义，是「后端不在」的信号；若只看 ERR_NETWORK，
+ * serverReachable 会永远保持 true，页面也就永远显示在线。
+ *
+ * 后端自己抛出的 5xx 会带 application/json 的错误体，属于应用层错误，
+ * 不能据此判定服务不可达，因此用 Content-Type 区分。
+ */
+const isBackendUnreachable = (error: AxiosError): boolean => {
+  // 没有任何响应 = 连不上（ERR_NETWORK / 超时 / 代理断开）
+  if (!error.response) return true;
+  const { status, headers } = error.response;
+  if (status < 500) return false;
+  const contentType = String(headers?.['content-type'] ?? '');
+  return !contentType.includes('application/json');
+};
+
 // 响应拦截器 - 处理错误
 axiosInstance.interceptors.response.use(
   (response) => {
@@ -54,12 +75,7 @@ axiosInstance.interceptors.response.use(
     return response;
   },
   (error: AxiosError) => {
-    // 网络层失败（后端停止/不可达/请求超时）说明服务已不可达
-    if (serverReachable && !error.response && (
-      error.code === 'ERR_NETWORK' ||
-      error.code === 'ECONNABORTED' ||
-      error.message === 'Network Error'
-    )) {
+    if (serverReachable && isBackendUnreachable(error)) {
       serverReachable = false;
       window.dispatchEvent(new CustomEvent('server-unreachable'));
     }
@@ -97,6 +113,54 @@ axiosInstance.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// ==================== 全局后端心跳 ====================
+
+// 空闲页面没有任何请求流量时 serverReachable 永远不会翻转：登录后唯一的周期性请求是
+// AuthContext 每 60 秒一次的会话校验，意味着后端停服最多要 60–70 秒后才被察觉
+// （登录页此前更是全程无流量，完全感知不到）。这里统一挂一个全局心跳，无论登录与否都在运行，
+// 把「发现停服」与「发现恢复」都压到一个心跳周期内，各页面无须再各自轮询探测。
+const HEARTBEAT_INTERVAL_MS = 5000;
+
+// 探针选用未鉴权且不写审计日志的 session-policy：审计中间件只对 req.user 存在的请求落库，
+// 该路由不挂 authMiddleware，因此 5 秒一次的探测不会污染操作日志
+//（/auth/validate 会被记录为「验证登录」，不能高频调用）。
+const HEARTBEAT_PATH = '/auth/session-policy';
+
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+export const startBackendHeartbeat = () => {
+  // 全局单例：重复调用（如 StrictMode 下重复挂载）不应再起一个定时器
+  if (heartbeatTimer !== null) return;
+
+  const probe = async () => {
+    // 页面在后台时不必探测，避免所有后台标签页空转；切回前台由下面的监听立即补一次
+    if (typeof document !== 'undefined' && document.hidden) return;
+    try {
+      await axiosInstance.get(HEARTBEAT_PATH);
+      // 恢复方向交给响应拦截器（仅在 serverReachable 翻转时广播 server-online），
+      // 避免各页面的「已重新连接」提示被反复弹出
+    } catch (err: any) {
+      // 与拦截器共用同一判定：既覆盖网络层失败，也覆盖代理在后端停止时回的 5xx。
+      // 有响应且是应用层错误（如鉴权失败）说明服务仍在运行，不算不可达。
+      if (isBackendUnreachable(err)) {
+        serverReachable = false;
+        // 每轮都广播，而不是只依赖拦截器的「翻转时广播」：
+        // 页面可能在服务已经不可达之后才挂载，只广播一次会让它错过并一直误显示在线
+        window.dispatchEvent(new CustomEvent('server-unreachable'));
+      }
+    }
+  };
+
+  probe();
+  heartbeatTimer = setInterval(probe, HEARTBEAT_INTERVAL_MS);
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) probe();
+    });
+  }
+};
 
 export { axiosInstance };
 export default axiosInstance;
