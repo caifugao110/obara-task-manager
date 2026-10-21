@@ -259,6 +259,24 @@ const normalizeGunNameNumber = (rule: GunNameRule | null, serialNumber: number, 
   return anchored ? prefix + expected + value.slice(prefix.length) : value + expected;
 };
 
+// 从某行焊枪名中拆出「编号之前的前缀」与「编号之后的后缀」。
+// 编号定位逻辑与 normalizeGunNameNumber 完全一致：规则前缀未被改动时编号紧跟其后，
+// 前缀被改过则取位数与规则编号一致的数字段（都没有时取第一个数字段）。
+// 返回 null 表示无法拆分（焊枪名为空或整串不含数字）。
+const splitGunNameByRule = (rule: GunNameRule, serialNumber: number, name: string): { prefix: string; suffix: string } | null => {
+  const value = String(name ?? '').trim();
+  if (!value) return null;
+  const expected = String(rule.start + (serialNumber - 1)).padStart(rule.pad, '0');
+  const rulePrefix = String(rule.prefix || '');
+  const anchored = rulePrefix !== '' && value.startsWith(rulePrefix);
+  const from = anchored ? rulePrefix.length : 0;
+  const runs = Array.from(value.matchAll(/\d+/g)).filter(m => (m.index ?? 0) >= from);
+  if (!runs.length) return null;
+  const target = runs.find(m => m[0].length === expected.length) || runs[0];
+  const start = target.index ?? 0;
+  return { prefix: value.slice(0, start), suffix: value.slice(start + target[0].length) };
+};
+
 // 打开「台账初始化」弹窗时某张表的规则草稿：已配置的取已配置值，否则预填内置默认
 const buildRuleDraft = (category: string, table: GunTable): GunNameRule => {
   if (table.gunNameRule) return { ...table.gunNameRule };
@@ -1104,6 +1122,8 @@ const GunLedger: React.FC = () => {
 
   // 向下复制：把当前行的「客户名」复制到该行下方最新的「客户名为空」的行
   // 时间列填当前日期（与时间列 Clock 按钮同格式），担当列填当前操作者
+  // 焊枪名：不再沿用目标行按表默认规则预填的名字，而是继承当前行焊枪名的前缀与后缀，
+  // 仅编号替换为目标行规则编号（prefix + 目标行编号 + suffix），即整列焊枪名仅编号不一致
   // 加号按钮前的数字框决定复制行数（默认 1，范围 1~20）；占位行会被提升为真实行
   const handleCopyDown = useCallback((row: GunRow) => {
     if (!activeTable || !isAdmin || !online || activeTableReadOnly) return;
@@ -1112,6 +1132,9 @@ const GunLedger: React.FC = () => {
       addToast('当前行客户名为空，无法复制', 'error');
       return;
     }
+    // 拆分当前行焊枪名的前缀/后缀（无生效规则或无法拆分时不改写目标行焊枪名）
+    const rule = getEffectiveGunNameRule(activeCategory, activeTable);
+    const split = rule && rule.enabled ? splitGunNameByRule(rule, row.serialNumber, row.gunName) : null;
     const nowTime = todayStr();
     const currentPerson = user?.name || '';
     // 读取该行数字框的复制数量（非受控，点击时取值并夹到 1~10）
@@ -1137,13 +1160,17 @@ const GunLedger: React.FC = () => {
       const nowIso = new Date().toISOString();
       const userMeta = user ? { id: user.id, username: user.username, name: user.name } : null;
       for (const t of targets) {
+        // 目标行焊枪名：当前行前缀 + 目标行规则编号 + 当前后缀（无法拆分时保留原名）
+        const newGunName = split && rule
+          ? split.prefix + String(rule.start + (t.serialNumber - 1)).padStart(rule.pad, '0') + split.suffix
+          : t.gunName;
         const isPlaceholder = String(t.id).startsWith('__placeholder__');
         if (isPlaceholder) {
-          // 占位行：提升为真实行，保留其预填焊枪名与序号，写入客户/时间/担当
+          // 占位行：提升为真实行，写入继承自当前行的焊枪名与客户/时间/担当
           const promoted: GunRow = {
             id: newRowId(),
             serialNumber: t.serialNumber,
-            gunName: t.gunName,
+            gunName: newGunName,
             customer: srcCustomer,
             time: nowTime,
             responsiblePerson: currentPerson,
@@ -1156,9 +1183,9 @@ const GunLedger: React.FC = () => {
           next = [...next, promoted];
           dirtyRowIdsRef.current.add(promoted.id);
         } else {
-          // 已有空行：写入客户/时间/担当，保留焊枪名/序号/备注
+          // 已有空行：改写焊枪名（继承当前行前缀/后缀，仅编号不同）并写入客户/时间/担当，保留备注
           next = next.map(r => r.id === t.id
-            ? { ...r, customer: srcCustomer, time: nowTime, responsiblePerson: currentPerson, updatedAt: nowIso, updatedBy: userMeta }
+            ? { ...r, gunName: newGunName, customer: srcCustomer, time: nowTime, responsiblePerson: currentPerson, updatedAt: nowIso, updatedBy: userMeta }
             : r);
           dirtyRowIdsRef.current.add(t.id);
         }
@@ -1170,7 +1197,7 @@ const GunLedger: React.FC = () => {
     if (targets.length < count) {
       addToast(`下方仅有 ${targets.length} 行客户名为空，已复制 ${targets.length} 行`, 'success');
     }
-  }, [activeTable, isAdmin, online, activeTableReadOnly, displayRows, patchTableRows, user, debouncedSave, addToast]);
+  }, [activeTable, activeCategory, isAdmin, online, activeTableReadOnly, displayRows, patchTableRows, user, debouncedSave, addToast]);
 
   // 键盘导航：Enter 下移
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>, rowIdx: number, colIdx: number) => {
@@ -2876,7 +2903,7 @@ const GunLedger: React.FC = () => {
                               </td>
                             );
                           })}
-                          {/* 操作列：[复制数量][向下复制][清除] —— 加号把当前行客户名复制到下方最新的空行，时间填当前日期、担当填当前操作者 */}
+                          {/* 操作列：[复制数量][向下复制][清除] —— 加号把当前行客户名复制到下方最新的空行，时间填当前日期、担当填当前操作者；焊枪名继承当前行前缀/后缀，仅编号按目标行规则变化 */}
                           <td className="border border-gray-300 px-1 py-1">
                             <div className="flex items-center justify-center gap-1">
                               <input
@@ -2900,7 +2927,7 @@ const GunLedger: React.FC = () => {
                               <button
                                 onClick={() => handleCopyDown(row)}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()}
-                                title="向下复制：复制本行客户名到下方空行，时间填当前日期、担当填当前操作者"
+                                title="向下复制：复制本行客户名到下方空行（时间填当前日期、担当填当前操作者）；下方行焊枪名继承本行前缀/后缀，仅编号不同"
                                 className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
                               >
                                 <Plus size={14} />

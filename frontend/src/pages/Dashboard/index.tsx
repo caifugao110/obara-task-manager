@@ -229,7 +229,10 @@ const Dashboard = () => {
       .catch(() => {});
   }, []);
 
-  // 同步全屏状态（支持通过 F11 / Esc 等方式退出）
+  // 同步全屏状态（支持通过 Esc 等方式退出）
+  // 注意：浏览器 F11 走的是原生全屏，不触发 fullscreenchange、也不设置 fullscreenElement，
+  // 因此在下方拦截 F11 按键改走 toggleFullscreen()（Fullscreen API），
+  // 使 F11 与右下角按钮效果一致、按钮文字可正确同步为「退出全屏」
   useEffect(() => {
     const syncFullscreenState = () => setIsFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', syncFullscreenState);
@@ -259,6 +262,19 @@ const Dashboard = () => {
       // 浏览器拒绝全屏请求时忽略（例如非用户手势触发）
     }
   }, []);
+
+  // F11 拦截：改走 toggleFullscreen()（Fullscreen API），等价于点击右下角全屏按钮，
+  // 从而让按钮文字与 F11 全屏状态保持同步（原生 F11 不触发 fullscreenchange）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F11') {
+        e.preventDefault();
+        void toggleFullscreen();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [toggleFullscreen]);
 
   // Input refs for modal focus
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});

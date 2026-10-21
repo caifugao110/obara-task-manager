@@ -189,6 +189,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 - `expiresIn` 为 `JWT_EXPIRES_IN` 环境变量的原始配置值。
 - `displayText` 为后端将 `expiresIn`（支持 `d`/`h`/`m`/`s` 单位）格式化后的中文描述，如 `3 天`、`12 小时`；格式无法解析时回退为 `3 天`。
+- **该接口同时是前端全局后端心跳的探针**：前端应用启动后由 `frontend/src/services/api.ts` 中的 `startBackendHeartbeat()` 每 5 秒调用一次（页面处于后台标签页时跳过，切回前台立即补一次），用于统一检测后端可达性并广播 `server-unreachable` / `server-online`。选用本接口是因为它不挂鉴权中间件，也不会被操作日志记录（审计中间件只对已登录请求落库），5 秒一次的高频探测不会污染审计数据；`/auth/validate` 会被记录为「验证登录」，不能用作心跳。
 
 ### 修改密码
 
@@ -3921,4 +3922,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
 
-最后更新：2026-10-18
+最后更新：2026-10-21
