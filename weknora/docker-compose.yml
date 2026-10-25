@@ -1,7 +1,7 @@
 # =============================================================================
 # Obara Task Manager - WeKnora 知识库服务（精简版）
 #
-# 源自 https://github.com/Tencent/WeKnora v0.8.2 官方 docker-compose.yml，
+# 源自 https://github.com/Tencent/WeKnora v0.8.3 官方 docker-compose.yml，
 # 只保留本系统实际使用的 5 个服务：
 #   frontend  WeKnora 管理控制台（默认 http://localhost）
 #   app       WeKnora 后端 API（默认 http://localhost:8080，供本系统后端代理调用）
@@ -22,7 +22,7 @@
 
 services:
   frontend:
-    image: wechatopenai/weknora-ui:${WEKNORA_VERSION:-latest}
+    image: wechatopenai/weknora-ui:${WEKNORA_VERSION:-v0.8.3}
     container_name: WeKnora-frontend
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-80}:80"
@@ -40,7 +40,7 @@ services:
     restart: unless-stopped
 
   app:
-    image: wechatopenai/weknora-app:${WEKNORA_VERSION:-latest}
+    image: wechatopenai/weknora-app:${WEKNORA_VERSION:-v0.8.3}
     container_name: WeKnora-app
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
@@ -103,7 +103,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   docreader:
-    image: wechatopenai/weknora-docreader:${WEKNORA_VERSION:-latest}
+    image: wechatopenai/weknora-docreader:${WEKNORA_VERSION:-v0.8.3}
     container_name: WeKnora-docreader
     # gRPC 50051 只给 app 容器用，不发布到宿主机
     expose:
@@ -127,7 +127,11 @@ services:
       - "host.docker.internal:host-gateway"
 
   postgres:
-    image: paradedb/paradedb:v0.22.6-pg17
+    # v0.8.3 已将 ParadeDB 从 v0.22.6-pg17 升级到 v0.25.11-pg17（同为 PG17，
+    # 数据卷可直接复用）。替换镜像后必须同步执行 ALTER EXTENSION pg_search UPDATE，
+    # 否则扩展 catalog 与二进制版本不一致会导致 PostgreSQL 崩溃。
+    # 详见官网 website-docs/01-getting-started/06-paradedb-upgrade.md
+    image: paradedb/paradedb:v0.25.11-pg17
     container_name: WeKnora-postgres
     environment:
       - POSTGRES_USER=${DB_USER}

@@ -3467,7 +3467,7 @@ PUT 请求：
 
 权限：`admin`、`superadmin`。
 
-从共享目录 `\\192.168.160.6\仕样书$\` 搜索指定仕样号的最新 PDF，并尝试提取纳期信息。
+从 `SPEC_SHARE_PATH` 配置的共享目录搜索指定仕样号的最新 PDF，并尝试提取纳期信息。
 
 请求：
 
@@ -3872,7 +3872,7 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 | `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流：每个 IP 15 分钟最大请求数，覆盖全部 `/api` 接口；`OPTIONS` 预检与本机环回不计数，超限返回 `429` |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在后端控制台显示一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时首次启动后应立即修改 |
-| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
+| `SPEC_SHARE_PATH` | 空 | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`） |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
@@ -3920,6 +3920,6 @@ GITEE_REPO_NAME=obara-task-manager
 | `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
 | `rateLimit.windowMs` / `rateLimit.max` | 配置块仍保留，但当前三层限流器均未读取这两个值：全局限流阈值取环境变量 `API_RATE_LIMIT_MAX`（默认 3000），窗口固定 15 分钟；登录/改密独立限流阈值在 `backend/routes/auth.js` 内硬编码 |
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
-| `spec.sharePath` | 仕样书 PDF 共享目录路径，默认 `\\192.168.160.6\仕样书$` |
+| `spec.sharePath` | 仕样书 PDF 共享目录路径（`SPEC_SHARE_PATH`，无默认值） |
 
 最后更新：2026-10-21

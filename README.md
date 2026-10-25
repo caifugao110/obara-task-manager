@@ -601,7 +601,7 @@ node --check backend\routes\tasks.js
 | `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流阈值：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
 | `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流阈值：每个 IP 15 分钟内最大请求数，覆盖所有 `/api` 接口；`OPTIONS` 预检与本机环回请求不计数，超限返回 `429` |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
-| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录 |
+| `SPEC_SHARE_PATH` | 空 | 仕样书 PDF 共享目录（如 `\\server\仕样书$`） |
 | `CORS_ORIGIN` | 开发环境默认 `*`；**生产环境必填** | 允许的前端地址，多个用逗号分隔；开发环境未配置时允许任意来源且不启用 CORS credentials；**生产环境未配置将导致服务启动失败（`process.exit(1)`），必须设置显式白名单** |
 | `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
 | `GITEE_REPO_OWNER` | `caifugao110` | Gitee 仓库所有者 |
@@ -648,7 +648,7 @@ node --check backend\routes\tasks.js
 
 系统支持从共享目录读取仕样书 PDF 文件，提取纳期和详细信息：
 
-- 搜索路径：默认 `\\192.168.160.6\仕样书$\`，可通过 `SPEC_SHARE_PATH` 配置
+- 搜索路径：通过 `SPEC_SHARE_PATH` 配置（如 `\\server\仕样书$`），无默认值
 - 支持按仕样号搜索（位数由系统设置 `specNumberDigits` 控制，5 或 6 位），自动查找最新版本（如 `12345.PDF`、`12345.01.PDF` 等）
 - 可提取纳期、中间商、最终客户、项目名称、数量、营业担当等信息
 - 纳期获取超时时间为 9 秒，完整信息获取超时时间为 15 秒

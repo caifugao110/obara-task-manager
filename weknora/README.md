@@ -3,7 +3,7 @@
 本目录包含 obara-task-manager「设计规范知识库」功能所需的**全部**部署物料。
 **部署新服务器时，只需要本目录 + 本文件，无需再访问原 WeKnora 源码仓库。**
 
-底层引擎：[Tencent/WeKnora](https://github.com/Tencent/WeKnora) v0.8.2（使用官方预构建镜像）。
+底层引擎：[Tencent/WeKnora](https://github.com/Tencent/WeKnora) v0.8.3（使用官方预构建镜像）。
 
 ---
 
@@ -40,7 +40,7 @@ WeKnora 的地址与 API Key 只保存在 `backend/.env`，**不下发到浏览�
 
 | 项 | 默认值 | 说明 |
 |----|--------|------|
-| `WEKNORA_VERSION` | `v0.8.2` | `wechatopenai/weknora-{ui,app,docreader}` 三个官方镜像的标签 |
+| `WEKNORA_VERSION` | `v0.8.3` | `wechatopenai/weknora-{ui,app,docreader}` 三个官方镜像的标签 |
 | 向量/关系库 | `paradedb/paradedb:v0.22.6-pg17` | 在 `docker-compose.yml` 中固定，不受 `WEKNORA_VERSION` 影响 |
 | 缓存/任务队列 | `redis:7.0-alpine` | 同上 |
 | `APP_PORT` / `FRONTEND_PORT` | `8080` / `80` | 发布到 `BIND_ADDRESS` 指定的地址（默认仅回环） |
@@ -120,7 +120,7 @@ weknora/
 ├── docker-compose.yml      # 精简版编排：frontend/app/docreader/postgres/redis
 ├── .env.example            # 环境变量模板（含密钥生成说明）
 ├── .env                    # 实际配置（gen-env.js 生成，已 gitignore）
-├── config/config.yaml      # WeKnora app 配置（分块/检索阈值等，来自官方 v0.8.2）
+├── config/config.yaml      # WeKnora app 配置（分块/检索阈值等，来自官方 v0.8.3）
 ├── knowledge/              # 知识库源数据与提示词模板
 │   ├── X2C-C-knowledge.xlsx        # C 枪焊枪选型数据表（X2C 系列）
 │   ├── X2C-X-knowledge.xlsx        # X 枪焊枪选型数据表（X2C 系列）

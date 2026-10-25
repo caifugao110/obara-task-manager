@@ -222,7 +222,7 @@ nssm remove ObaraTaskManager
 6. `npm run lint` 与 `npm test` 均通过（ESLint 与后端单元测试/关系表冒烟测试；冒烟测试自动在数据库快照副本上运行，不影响生产库）。
 7. 后端启动后匿名访问 `http://localhost:5000/api/system/version` 返回 `401` JSON（该接口已要求登录，避免匿名探测版本号）；带登录 Token 请求时返回 `200` 版本信息。
 8. 前端能打开并完成登录、主页面加载、任务保存、导出文件下载等关键流程。
-9. 如果使用仕样 PDF 搜索，运行后端的 Windows 用户能访问 `\\192.168.160.6\仕样书$\`。
+9. 如果使用仕样 PDF 搜索，运行后端的 Windows 用户能访问 `SPEC_SHARE_PATH` 配置的共享目录。
 
 ### 健康检查
 
@@ -280,7 +280,7 @@ GITEE_TOKEN=your-gitee-token
 GITEE_REPO_OWNER=caifugao110
 GITEE_REPO_NAME=obara-task-manager
 SQLITE_DB_PATH=./data.db
-SPEC_SHARE_PATH=\\192.168.160.6\仕样书$
+SPEC_SHARE_PATH=\\<server>\仕样书$
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
 LOGIN_IP_RATE_LIMIT_MAX=300
@@ -302,7 +302,7 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `GITEE_REPO_OWNER` | - | Gitee 仓库用户名 |
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
-| `SPEC_SHARE_PATH` | `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径 |
+| `SPEC_SHARE_PATH` | 空 | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`） |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；登录/改密独立限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被独立限流器使用 |
 | `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流阈值：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
@@ -544,7 +544,7 @@ copy backend\data.db backups\db-before-upgrade-20260705.db
 
 系统支持从网络共享目录读取仕样书 PDF 文件：
 
-- 默认共享路径：`\\192.168.160.6\仕样书$\`，可通过 `SPEC_SHARE_PATH` 配置
+- 共享路径通过 `SPEC_SHARE_PATH` 配置（如 `\\server\仕样书$`），无默认值
 - 需要服务器或运行后端的主机能够访问该共享目录
 - 权限要求：需要有读取共享目录文件的权限
 - 超时时间：纳期获取 9 秒，完整信息获取 15 秒
@@ -552,7 +552,7 @@ copy backend\data.db backups\db-before-upgrade-20260705.db
 
 配置说明：
 
-1. 确保服务器网络能够访问 `192.168.160.6`
+1. 确保服务器网络能够访问 `SPEC_SHARE_PATH` 指定的共享目录服务器
 2. 确保共享目录 `仕样书$` 有读取权限
 3. PDF 文件命名格式：`仕样号.PDF` 或 `仕样号.01.PDF`、`仕样号.02.PDF` 等版本文件
 4. 系统会自动查找最新版本的 PDF 文件
@@ -665,7 +665,7 @@ taskkill /PID <PID> /F
 
 ### 仕样信息搜索失败
 
-1. 确认网络共享目录 `\\192.168.160.6\仕样书$\` 可访问
+1. 确认 `SPEC_SHARE_PATH` 配置的网络共享目录可访问
 2. 确认服务器主机有读取共享目录的权限
 3. 确认仕样号对应的 PDF 文件存在于共享目录中
 4. 确认 PDF 文件命名格式正确（如 `12345.PDF`、`12345.01.PDF`）
