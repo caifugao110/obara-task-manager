@@ -53,12 +53,12 @@ const GunDragHandle = ({ item, designerId, date, gunIndex, gun, disabled }: {
       }}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
-      className={`shrink-0 p-1 transition-all cursor-grab active:cursor-grabbing ${isDragging ? 'opacity-30' : 'opacity-0 group-hover/gun-row:opacity-100 text-gray-300 hover:text-blue-600'}`}
+      className={`shrink-0 h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm transition-colors cursor-grab active:cursor-grabbing ${isDragging ? 'opacity-30' : 'opacity-0 group-hover/gun-row:opacity-100 hover:bg-blue-600 hover:text-white hover:border-blue-700'}`}
       style={{ touchAction: 'none' }}
       title="按住拖动到其他主任务"
       tabIndex={-1}
     >
-      <Move size={13} />
+      <Move size={13} strokeWidth={3} />
     </button>
   );
 };

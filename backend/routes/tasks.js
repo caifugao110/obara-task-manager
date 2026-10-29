@@ -201,7 +201,9 @@ const moveItemSchema = Joi.object({
 });
 
 // 跨主任务移动单个枪名：从源主任务的 guns 中移除，插入目标主任务 guns 的 newIndex
-// 位置（未传则追加到最下面）；源与目标可为同一主任务（此时为重排）
+// 位置（未传则追加到最下面）；源与目标可为同一主任务（此时为重排）；
+// targetItemId 传空且带 createTaskName 时，表示落点单元格没有主任务，
+// 先按 createTaskName（通常是源主任务名称）新建一个主任务承接该枪名
 const moveGunSchema = Joi.object({
   sourceDesignerId: Joi.string().required(),
   sourceDate: Joi.string().isoDate().required(),
@@ -209,7 +211,11 @@ const moveGunSchema = Joi.object({
   gunId: Joi.string().required(),
   targetDesignerId: Joi.string().required(),
   targetDate: Joi.string().isoDate().required(),
-  targetItemId: Joi.string().required(),
+  targetItemId: Joi.string().allow('').default(''),
+  createTaskName: Joi.string().allow('').optional(),
+  // 仅前端撤销流程使用：撤销时源主任务可能已被删除并按快照重建（guns 为空），
+  // 需要允许把枪名移回这个暂时没有枪名的任务
+  allowEmptyTarget: Joi.boolean().default(false),
   newIndex: Joi.number().integer().min(0).optional()
 });
 
@@ -784,7 +790,7 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
-  const { sourceDesignerId, sourceDate, sourceItemId, gunId, targetDesignerId, targetDate, targetItemId, newIndex } = validated;
+  const { sourceDesignerId, sourceDate, sourceItemId, gunId, targetDesignerId, targetDate, targetItemId, createTaskName, allowEmptyTarget, newIndex } = validated;
   const sDate = normalizeDate(sourceDate);
   const tDate = normalizeDate(targetDate);
 
@@ -815,7 +821,39 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
   const isSameSheet = sourceDesignerId === targetDesignerId && sMY.month === tMY.month && sMY.year === tMY.year;
   const tSheet = isSameSheet ? sSheet : taskStore.getOrCreateSheet(targetDesignerId, tMY.month, tMY.year);
   const tItems = Array.isArray(tSheet.days[tDate]) ? tSheet.days[tDate] : [];
-  const targetItem = tItems.find(i => i.id === targetItemId);
+  let targetItem = targetItemId ? tItems.find(i => i.id === targetItemId) : null;
+  // 落点没有主任务（targetItemId 为空）：按 createTaskName 复制一个主任务承接该枪名，
+  // 名称由前端传入（取自源主任务）；完成状态（颜色标记）与被移动的枪名保持一致：
+  // 枪名为白色（完成）→ 新主任务同样标白，并优先记录源主任务原色用于后续「未完成」恢复；
+  // 枪名带其他颜色 → 新主任务沿用同一颜色；
+  // 枪名未完成但没有颜色 → 优先沿用源主任务颜色，源主任务也是白色/无色时随机取色，
+  // 并把该枪名一并染成该色——白色在系统中表示"已完成"，未完成的枪名不能落到白底上
+  let targetItemCreated = false;
+  if (!targetItem && !targetItemId && createTaskName !== undefined) {
+    const gunColor = String(gun?.color || '');
+    const gunIsWhite = isWhiteColor(gunColor);
+    const sourceColor = String(sourceItem?.color || '');
+    let createdColor = gunIsWhite ? '#ffffff' : gunColor;
+    if (!gunIsWhite && !gunColor) {
+      createdColor = (sourceColor && !isWhiteColor(sourceColor)) ? sourceColor : randomTaskColor();
+      if (gun) gun.color = createdColor;
+    }
+    targetItem = withCreateMeta({
+      id: `item-${Date.now().toString()}${Math.random().toString(36).slice(2, 9)}`,
+      taskName: createTaskName,
+      hours: 0,
+      color: createdColor,
+      colorBeforeUserMark: gunIsWhite && sourceColor && !isWhiteColor(sourceColor) ? sourceColor : '',
+      colorMarkedBy: gunIsWhite ? { id: 'auto', username: 'auto', name: '系统自动' } : undefined,
+      guns: [],
+      leaveType: null,
+      fontSize: '',
+      textColor: ''
+    }, req.user);
+    tItems.push(targetItem);
+    tSheet.days[tDate] = tItems;
+    targetItemCreated = true;
+  }
   if (!targetItem) {
     return res.status(404).json({ message: '目标主任务不存在' });
   }
@@ -823,6 +861,14 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '不能移动到请假/出差类任务' });
   }
   const targetGuns = Array.isArray(targetItem.guns) ? targetItem.guns : [];
+
+  // 目标主任务没有任何枪名时不允许把枪名移进去：这类行只有主任务自身的内容（工时/名称），
+  // 一旦塞入枪名，主任务工时会被枪名工时取代而丢失原意。
+  // 例外：① 本次请求按 createTaskName 新建的目标主任务（就是靠这次移动塞入第一个枪名）；
+  //       ② 前端撤销流程（allowEmptyTarget=true）——源主任务被删除后按快照重建，此时还没有枪名
+  if (!targetItemCreated && targetGuns.length === 0 && !allowEmptyTarget) {
+    return res.status(400).json({ message: '目标主任务没有枪名，不能移入枪名' });
+  }
 
   // 目标主任务已存在同名枪名时禁止移动（同一主任务内重排时排除枪名自身）
   const gunName = String(gun?.name || '').trim();
@@ -837,7 +883,7 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
   sourceGuns.splice(gunIdx, 1);
   sourceItem.guns = sourceGuns;
 
-  const isSameItem = sourceDesignerId === targetDesignerId && sDate === tDate && sourceItemId === targetItemId;
+  const isSameItem = sourceDesignerId === targetDesignerId && sDate === tDate && sourceItemId === targetItem.id;
   // 源主任务只剩这一个枪名且被移走：整个源主任务一并删除
   let sourceItemDeleted = false;
   if (!isSameItem && sourceGuns.length === 0) {
@@ -868,9 +914,14 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
   touchItem(targetItem, req.user);
 
   taskStore.saveSheets(isSameSheet ? [sSheet] : [sSheet, tSheet]);
+  const message = targetItemCreated
+    ? '已按源主任务名称新建主任务，枪名已移入'
+    : (sourceItemDeleted ? '枪名已移动，源主任务已删除' : '枪名已移动');
   res.json({
-    message: sourceItemDeleted ? '枪名已移动，源主任务已删除' : '枪名已移动',
+    message,
     sourceItemDeleted,
+    targetItemId: targetItem.id,
+    targetItemCreated,
     sourceSheet: sSheet,
     targetSheet: tSheet
   });

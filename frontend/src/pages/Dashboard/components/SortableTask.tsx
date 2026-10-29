@@ -63,6 +63,19 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
 
   const isLeaveType = item.leaveType === 'sick' || item.leaveType === 'vacation' || item.leaveType === 'illness';
 
+  // 没有枪名 → 这一行只有一行内容（主任务、请假、出差行都只有一行），按钮不占布局宽度，内容按整行真居中
+  const isSingleLineRow = (item.guns || []).length === 0;
+  // 主任务名的居中只针对普通任务行；请假/出差行显示状态徽标，徽标本身在整行居中
+  const centerTaskName = !item.leaveType && isSingleLineRow;
+  // 单行内容的行：按钮绝对定位，不占位，文字/徽标按整行宽度居中
+  // 有多行内容（带枪名）的行：按钮留在流内占位，文字只在按钮之间的剩余宽度里排布，长名字换行也不会被按钮压住
+  const markBtnClass = isSingleLineRow
+    ? 'absolute left-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-1'
+    : 'flex items-center gap-1 mr-1 shrink-0';
+  const moveBtnClass = isSingleLineRow
+    ? 'absolute right-1.5 top-1/2 -translate-y-1/2 z-10 flex items-center gap-1'
+    : 'flex items-center gap-1 ml-1 shrink-0';
+
   // 他人在本主任务上的编辑/标记会话：gunIndex 为 null/undefined 时标记主任务行，否则标记对应枪名行
   const editingMarkName = editingMarkSession ? (editingMarkSession.name || editingMarkSession.username) : '';
   const isMainMarkTarget = Boolean(editingMarkSession) && editingMarkSession?.gunIndex == null;
@@ -118,7 +131,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
         }
       }}
       tabIndex={isAdmin ? 0 : -1}
-      className={`relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
+      className={`task-row relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
     >
       {/* 枪名拖拽路径扫过时的预选中高亮：整条主任务描边变色（绿=可放置，红=重复不可放置） */}
       {gunDropTarget && (
@@ -151,16 +164,16 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       )}
       {/* Main Task Row */}
       <div
-        className={`pl-2 pr-1.5 py-1.5 min-h-[28px] flex items-center break-all leading-relaxed text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
+        className={`relative pl-2 pr-1.5 py-1.5 min-h-[28px] flex items-center break-all leading-relaxed text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}
       >
-        <div className={`flex items-center ${item.leaveType ? 'justify-center' : 'justify-start'} w-full pr-1`}>
-            {/* Mark buttons before task text */}
+        <div className="flex items-center w-full">
+            {/* Mark buttons before task text（居中行绝对定位不占位；多行内容的行留在流内避让文字） */}
             {!item.leaveType && canMarkColor && (
-              <div className="flex items-center gap-0.5 mr-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
+              <div className={`${markBtnClass} opacity-0 group-hover/task:opacity-100 transition-opacity`}>
                 {showMarkWhite && (
                   <button
                     type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    className="h-[18px] w-[18px] rounded bg-white border border-blue-300 shadow-sm flex-shrink-0 transition-all hover:border-blue-500 hover:ring-2 hover:ring-blue-300"
                     title="任务完成"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -171,51 +184,62 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                 {canRestoreColor && (
                   <button
                     type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    className="h-[18px] w-[18px] rounded bg-blue-100 border border-blue-300 shadow-sm flex items-center justify-center text-blue-600 transition-colors hover:bg-blue-600 hover:text-white hover:border-blue-700 flex-shrink-0"
                     title={isAutoMarked ? '任务未完成（联动恢复主任务及所有枪名）' : hasStoredUserMarkColor(item) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkColor(item, designerId, date, 'restore');
                     }}
                   >
-                    <RefreshCw size={10} />
+                    <RefreshCw size={11} strokeWidth={3} />
                   </button>
                 )}
               </div>
             )}
             {typeLabel ? (
-              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'bg-pink-100 text-pink-700' : 'bg-yellow-100 text-yellow-800'}`}>
-                {typeLabel}
-              </span>
+              /* 请假/出差徽标：单行内容，按钮已绝对定位不占位，徽标在整行真居中；
+                 对称内边距只用来挡住两端的按钮，不改变居中位置 */
+              <div className={`flex-1 min-w-0 flex items-center justify-center ${isSingleLineRow ? 'px-12' : ''}`}>
+                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'bg-pink-100 text-pink-700' : 'bg-yellow-100 text-yellow-800'}`}>
+                  {typeLabel}
+                </span>
+              </div>
             ) : (
-              item.taskName || <span className="text-gray-300 italic">无</span>
+              /* 主任务名占满剩余宽度（居中行绝对定位的按钮浮在两侧，用对称内边距把文字挡在按钮之间，
+                 对称 padding 不改变居中位置）；本条任务没有枪名（只有一行内容）时文字水平居中 */
+              <div className={`task-name flex-1 min-w-0 ${centerTaskName ? 'text-center px-12' : ''}`}>
+                {item.taskName || <span className="text-gray-300 italic">无</span>}
+              </div>
             )}
-            {isMainMarkTarget && editingMarkBadge}
-            {/* Move up/down buttons after task text（他人正在编辑/标记本主任务时隐藏，避免对本任务的操作） */}
-            {!item.leaveType && isAdmin && !isMainMarkTarget && (canMoveUp || canMoveDown) && (
-              <div className="flex items-center gap-0.5 ml-1 shrink-0 opacity-0 group-hover/task:opacity-100 transition-opacity">
+            {isMainMarkTarget && (
+              <div className={isSingleLineRow ? 'absolute right-1.5 top-1/2 -translate-y-1/2 z-10' : 'flex items-center'}>{editingMarkBadge}</div>
+            )}
+            {/* Move up/down buttons（居中行绝对定位贴行右端，不占布局宽度；多行内容的行留在流内，
+                长名换行不会被按钮覆盖；请假/出差同样可排序；他人正在编辑/标记本主任务时隐藏） */}
+            {isAdmin && !isMainMarkTarget && (canMoveUp || canMoveDown) && (
+              <div className={`${moveBtnClass} opacity-0 group-hover/task:opacity-100 transition-opacity`}>
                 {canMoveUp && (
                   <button
-                    className="p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                    className="h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
                     title="上移"
                     onClick={(e) => {
                       e.stopPropagation();
                       onMoveTask(item, designerId, date, 'up');
                     }}
                   >
-                    <ChevronUp size={14} />
+                    <ChevronUp size={14} strokeWidth={3} />
                   </button>
                 )}
                 {canMoveDown && (
                   <button
-                    className="p-0.5 text-gray-300 hover:text-blue-600 transition-opacity"
+                    className="h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
                     title="下移"
                     onClick={(e) => {
                       e.stopPropagation();
                       onMoveTask(item, designerId, date, 'down');
                     }}
                   >
-                    <ChevronDown size={14} />
+                    <ChevronDown size={14} strokeWidth={3} />
                   </button>
                 )}
               </div>
@@ -241,16 +265,16 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
         <React.Fragment key={gun.id}>
           <div
             data-gun-index={index}
-            className="border-r border-gray-200 px-2 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
+            className="gun-row border-r border-gray-200 px-2 py-1.5 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
             style={{ backgroundColor: gun.color || 'transparent' }}
           >
             {/* Gun mark buttons before gun name */}
             {canMarkColor && (
-              <div className="flex items-center gap-0.5 mr-1 shrink-0 opacity-0 group-hover/gun-row:opacity-100 transition-opacity">
+              <div className="flex items-center gap-1 mr-1 shrink-0 opacity-0 group-hover/gun-row:opacity-100 transition-opacity">
                 {gunShowMarkWhite && (
                   <button
                     type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    className="h-[18px] w-[18px] rounded bg-white border border-blue-300 shadow-sm flex-shrink-0 transition-all hover:border-blue-500 hover:ring-2 hover:ring-blue-300"
                     title="任务完成"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -261,14 +285,14 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                 {gunCanRestore && (
                   <button
                     type="button"
-                    className="h-4 w-4 rounded border border-gray-300 bg-white shadow-sm flex items-center justify-center text-gray-600 hover:text-blue-600 hover:ring-1 hover:ring-blue-400 flex-shrink-0"
+                    className="h-[18px] w-[18px] rounded bg-blue-100 border border-blue-300 shadow-sm flex items-center justify-center text-blue-600 transition-colors hover:bg-blue-600 hover:text-white hover:border-blue-700 flex-shrink-0"
                     title={hasStoredUserMarkColor(gun) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkGunColor(item, designerId, date, index, 'restore');
                     }}
                   >
-                    <RefreshCw size={10} />
+                    <RefreshCw size={11} strokeWidth={3} />
                   </button>
                 )}
               </div>
@@ -279,7 +303,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             {/* 他人正在修改本枪名完成状态时：隐藏悬停操作按钮组，原位显示「正在修改」标记 */}
             {editingMarkSession?.gunIndex === index ? editingMarkBadge : (
             /* 枪名操作按钮组：拖动 / 上移 / 下移 / 删除，拉开间距避免相互干扰 */
-            <div className="flex items-center gap-2 shrink-0 pl-1">
+            <div className="flex items-center gap-1 shrink-0 pl-1">
             {isAdmin && (
               <GunDragHandle
                 item={item}
@@ -292,37 +316,38 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             )}
             {canMoveUp && (
               <button
-                className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-blue-600 transition-opacity"
+                className="opacity-0 group-hover/gun-row:opacity-100 h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
                 title="上移"
                 onClick={(e) => {
                   e.stopPropagation();
                   onMoveGun(item, designerId, date, index, 'up');
                 }}
               >
-                <ChevronUp size={14} />
+                <ChevronUp size={14} strokeWidth={3} />
               </button>
             )}
             {canMoveDown && (
               <button
-                className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-blue-600 transition-opacity"
+                className="opacity-0 group-hover/gun-row:opacity-100 h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
                 title="下移"
                 onClick={(e) => {
                   e.stopPropagation();
                   onMoveGun(item, designerId, date, index, 'down');
                 }}
               >
-                <ChevronDown size={14} />
+                <ChevronDown size={14} strokeWidth={3} />
               </button>
             )}
              {isAdmin && (
                <button
-                 className="opacity-0 group-hover/gun-row:opacity-100 p-1 text-gray-300 hover:text-red-500 transition-opacity"
+                 className="opacity-0 group-hover/gun-row:opacity-100 h-[18px] w-[18px] flex items-center justify-center rounded bg-red-100 text-red-600 border border-red-300 shadow-sm hover:bg-red-600 hover:text-white hover:border-red-700 transition-colors"
+                 title="删除枪名"
                  onClick={(e) => {
                    e.stopPropagation();
                    onDeleteGun(item, designerId, date, index);
                  }}
                >
-                 <Trash2 size={12} />
+                 <Trash2 size={13} strokeWidth={3} />
                </button>
              )}
             </div>

@@ -157,7 +157,8 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
 
         case 'moveGunBetweenItems':
           // 撤销跨主任务移动枪名：把枪名从目标主任务移回源主任务原位置；
-          // 若源主任务因最后一个枪名被移走而被删除，则先按快照重建（空 guns）再移回
+          // 若源主任务因最后一个枪名被移走而被删除，则先按快照重建（空 guns）再移回；
+          // 目标主任务是「落点空白单元格自动新建」的，移回后它已无枪名，后端会自动删除，无需额外处理
           {
             const d = op.data;
             let restoredSourceItemId = d.sourceItemId;
@@ -186,6 +187,8 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               targetDesignerId: d.sourceDesignerId,
               targetDate: d.sourceDate,
               targetItemId: restoredSourceItemId,
+              // 源主任务可能是刚按快照重建的（guns 为空），撤销必须允许把枪名移回去
+              allowEmptyTarget: true,
               newIndex: d.sourceGunIndex
             });
           }
@@ -353,16 +356,22 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
           // 重做跨主任务移动枪名
           {
             const d = op.data;
-            await axiosInstance.post('/tasks/move-gun', {
+            // 目标主任务是本次移动时新建的：撤销移回后它会因枪名为空被自动删除，
+            // 重做需按记录的名称重新新建，并回写新的目标主任务 id
+            const res = await axiosInstance.post('/tasks/move-gun', {
               sourceDesignerId: d.sourceDesignerId,
               sourceDate: d.sourceDate,
               sourceItemId: d.sourceItemId,
               gunId: d.gunId,
               targetDesignerId: d.targetDesignerId,
               targetDate: d.targetDate,
-              targetItemId: d.targetItemId,
-              newIndex: d.newIndex
+              targetItemId: d.targetItemCreated ? '' : d.targetItemId,
+              ...(d.targetItemCreated ? { createTaskName: d.createdTaskName ?? '' } : {}),
+              newIndex: d.targetItemCreated ? undefined : d.newIndex
             });
+            if (d.targetItemCreated && res.data.targetItemId) {
+              d.targetItemId = res.data.targetItemId;
+            }
           }
           fetchSheets();
           socketRef.current?.emit('task_updated');

@@ -23,6 +23,7 @@ interface UseGunDragDropParams {
   canEditTasks: boolean;
   warnIfCellLocked: (designerId: string, date: string, itemId?: string | null) => boolean;
   getAllItems: (designerId: string, date: string) => TaskItem[];
+  getVisibleItems: (designerId: string, date: string) => TaskItem[];
   getSelectedTaskPayloads: (fallback: { item: TaskItem; designerId: string; date: string }) => { item: TaskItem; designerId: string; date: string }[];
   designers: Designer[];
   setDesigners: React.Dispatch<React.SetStateAction<Designer[]>>;
@@ -42,6 +43,7 @@ interface UseGunDragDropParams {
     targetDesignerId: string;
     targetDate: string;
     targetItemId: string;
+    createTaskName?: string;
     newIndex?: number;
     sourceItemSnapshot?: TaskItem;
   }) => Promise<void>;
@@ -54,6 +56,7 @@ export const useGunDragDrop = ({
   canEditTasks,
   warnIfCellLocked,
   getAllItems,
+  getVisibleItems,
   getSelectedTaskPayloads,
   designers,
   setDesigners,
@@ -74,8 +77,12 @@ export const useGunDragDrop = ({
   // 正在拖拽的枪名（十字箭头手柄按住不放触发）；dims 为原枪名行两格（枪名格+工时格）的实测尺寸，用于浮层等比复刻
   const [activeGun, setActiveGun] = useState<{gun: GunItem, item: TaskItem, designerId: string, date: string, gunIndex: number, dims?: {width: number, height: number, hoursWidth: number, offsetX?: number, offsetY?: number}} | null>(null);
   // 枪名拖拽过程中，指针扫过的目标主任务（预选中反馈）：
-  // invalid = 目标已有同名枪名（红），isSelf = 扫过的是源主任务自身（不预选中、禁止拖拽调整）
-  const [gunDropTarget, setGunDropTarget] = useState<{ designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean } | null>(null);
+  // invalid = 不可放置（红）——目标已有同名枪名（noGuns=false）或目标主任务没有任何枪名（noGuns=true）；
+  // isSelf = 扫过的是源主任务自身（不预选中、禁止拖拽调整）；
+  // create = 指针落在可新建主任务的位置（松手会按源主任务名称新建主任务，itemId 恒为 ''）：
+  //   append=false → 落在没有任何主任务的空白单元格上（整格高亮）；
+  //   append=true  → 落在已有主任务单元格最下方的加号区（新建的主任务追加到该格最下面）
+  const [gunDropTarget, setGunDropTarget] = useState<{ designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean, noGuns?: boolean, create?: boolean, append?: boolean } | null>(null);
   const gunDropTargetRef = useRef<string>('');
   // 主任务拖拽过程中，指针扫过的目标位置（预选中反馈）：
   // itemId = 预插入到该主任务上方；itemId 为 null = 预追加到目标单元格最下方；
@@ -181,9 +188,9 @@ export const useGunDragDrop = ({
   };
 
   // 更新「指针扫过的目标主任务 + 是否可放置」：同步 ref/state，并切换禁止放置光标
-  const setGunDropTargetState = (next: { designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean } | null) => {
+  const setGunDropTargetState = (next: { designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean, noGuns?: boolean, create?: boolean, append?: boolean } | null) => {
     const key = next
-      ? `${next.designerId}|${next.date}|${next.itemId}|${next.invalid ? '1' : '0'}|${next.isSelf ? '1' : '0'}`
+      ? `${next.designerId}|${next.date}|${next.itemId}|${next.invalid ? '1' : '0'}|${next.isSelf ? '1' : '0'}|${next.noGuns ? '1' : '0'}|${next.create ? '1' : '0'}|${next.append ? '1' : '0'}`
       : '';
     if (gunDropTargetRef.current === key) return;
     gunDropTargetRef.current = key;
@@ -192,18 +199,43 @@ export const useGunDragDrop = ({
     document.body.style.cursor = next && (next.invalid || next.isSelf) ? 'not-allowed' : '';
   };
 
-  // 指针位置命中主任务容器（带 data-task-id 的元素）
-  const hitTestTaskContainer = (cx: number, cy: number): HTMLElement | null => {
+  // 枪名拖拽落点：一次性命中枪名行 / 主任务容器 / 单元格 / 单元格最下方加号区（每层取最外层匹配）
+  // 拖拽过程中每次 mousemove 都要判定，合并成单次 elementsFromPoint 避免大表格上重复计算
+  const hitTestGunDropLayers = (cx: number, cy: number): {
+    gunEl: HTMLElement | null,
+    taskEl: HTMLElement | null,
+    cellEl: HTMLElement | null,
+    plusEl: HTMLElement | null,
+  } => {
     const stack = document.elementsFromPoint(cx, cy);
+    let gunEl: HTMLElement | null = null;
+    let taskEl: HTMLElement | null = null;
+    let cellEl: HTMLElement | null = null;
+    let plusEl: HTMLElement | null = null;
     for (const el of stack) {
       if (!(el instanceof HTMLElement)) continue;
-      const t = el.closest('[data-task-id]');
-      if (t instanceof HTMLElement) return t;
+      if (!gunEl) {
+        const g = el.closest('[data-gun-index]');
+        if (g instanceof HTMLElement) gunEl = g;
+      }
+      if (!taskEl) {
+        const t = el.closest('[data-task-id]');
+        if (t instanceof HTMLElement) taskEl = t;
+      }
+      if (!cellEl) {
+        const c = el.closest('[data-cell-designer-id]');
+        if (c instanceof HTMLElement) cellEl = c;
+      }
+      if (!plusEl) {
+        const p = el.closest('[data-cell-plus]');
+        if (p instanceof HTMLElement) plusEl = p;
+      }
+      if (gunEl && taskEl && cellEl && plusEl) break;
     }
-    return null;
+    return { gunEl, taskEl, cellEl, plusEl };
   };
 
-  // 由拖拽事件换算指针实际位置：激活事件坐标 + 位移 delta（键盘拖拽等无坐标场景返回 null）
+  // 拖拽事件的指针实际位置：激活事件坐标 + 位移 delta（键盘拖拽等无坐标场景返回 null）
   const getDragPointer = (event: DragMoveEvent | DragEndEvent): { x: number, y: number } | null => {
     const ev = event.activatorEvent as PointerEvent | MouseEvent | undefined;
     if (!ev || !('clientX' in ev) || !('clientY' in ev)) return null;
@@ -319,9 +351,32 @@ export const useGunDragDrop = ({
     // 比光标偏左约半行宽，悬停在右格左半区时会误判到左侧相邻人员单元格。
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
-    const taskEl = hitTestTaskContainer(cx, cy);
+    const { taskEl, cellEl, plusEl } = hitTestGunDropLayers(cx, cy);
     if (!taskEl) {
-      setGunDropTargetState(null);
+      // 落点没有主任务：可新建主任务的位置有两种——
+      // ① 整格没有任何主任务的空白单元格（整格预选中）；
+      // ② 已有主任务的单元格最下方加号区（只在加号上预选中，新主任务追加到该格最下面）
+      const cellDesignerId = cellEl?.getAttribute('data-cell-designer-id') || '';
+      const cellDate = cellEl?.getAttribute('data-cell-date') || '';
+      if (!cellDesignerId || !cellDate) {
+        setGunDropTargetState(null);
+        return;
+      }
+      const overPlus = Boolean(plusEl && plusEl.closest('[data-cell-designer-id]') === cellEl);
+      const hasTasks = getVisibleItems(cellDesignerId, cellDate).length > 0;
+      if (!hasTasks || overPlus) {
+        setGunDropTargetState({
+          designerId: cellDesignerId,
+          date: cellDate,
+          itemId: '',
+          invalid: false,
+          isSelf: false,
+          create: true,
+          append: hasTasks,
+        });
+      } else {
+        setGunDropTargetState(null);
+      }
       return;
     }
     const designerId = taskEl.getAttribute('data-designer-id') || '';
@@ -334,12 +389,16 @@ export const useGunDragDrop = ({
     // 扫过的是源主任务自身：不做预选中高亮，且禁止拖拽调整顺序
     // （同主任务内调整枪名顺序请使用行内的上移/下移箭头）
     const isSelf = designerId === sourceData.designerId && date === sourceData.date && itemId === sourceData.item.id;
+    // 目标主任务没有任何枪名：不允许把枪名移进去（该行只有主任务自身的内容，需先有枪名才能承接枪名）
+    const targetItem = getAllItems(designerId, date).find(i => i.id === itemId);
+    const noGuns = Boolean(targetItem && !(targetItem.guns || []).length);
     setGunDropTargetState({
       designerId,
       date,
       itemId,
-      invalid: isSelf ? false : isGunDropDuplicate(taskEl, sourceData),
+      invalid: isSelf ? false : (noGuns || isGunDropDuplicate(taskEl, sourceData)),
       isSelf,
+      noGuns: isSelf ? false : noGuns,
     });
   };
 
@@ -381,24 +440,46 @@ export const useGunDragDrop = ({
       // data-gun-index/data-task-id，closest 匹配为空后循环会继续穿透到下方真实行。
       const cx = translatedRect.left + translatedRect.width / 2;
       const cy = translatedRect.top + translatedRect.height / 2;
-      const stack = document.elementsFromPoint(cx, cy);
-      let gunTargetEl: HTMLElement | null = null;
-      let taskTargetEl: HTMLElement | null = null;
-      for (const el of stack) {
-        if (!(el instanceof HTMLElement)) continue;
-        if (!gunTargetEl) {
-          const g = el.closest('[data-gun-index]');
-          if (g instanceof HTMLElement) gunTargetEl = g;
-        }
-        if (!taskTargetEl) {
-          const t = el.closest('[data-task-id]');
-          if (t instanceof HTMLElement) taskTargetEl = t;
-        }
-        if (gunTargetEl && taskTargetEl) break;
-      }
+      const layers = hitTestGunDropLayers(cx, cy);
+      let gunTargetEl = layers.gunEl;
+      const taskTargetEl = layers.taskEl;
+      const cellTargetEl = layers.cellEl;
+      const plusTargetEl = layers.plusEl;
       // 命中的枪名必须属于同一个主任务容器
       if (gunTargetEl && taskTargetEl && gunTargetEl.closest('[data-task-id]') !== taskTargetEl) gunTargetEl = null;
-      if (!taskTargetEl) return; // 未落在任何主任务上，取消移动
+
+      // 落点没有主任务：两种情况可按源主任务名称新建主任务承接该枪名——
+      // ① 整格没有任何主任务的空白单元格；
+      // ② 已有主任务的单元格最下方加号区（新主任务追加到该格最下面）
+      if (!taskTargetEl) {
+        const cellDesignerId = cellTargetEl?.getAttribute('data-cell-designer-id') || '';
+        const cellDate = cellTargetEl?.getAttribute('data-cell-date') || '';
+        if (!cellDesignerId || !cellDate) return; // 未落在表格单元格上，取消移动
+        const plusCellEl = plusTargetEl?.closest('[data-cell-designer-id]');
+        const overPlus = Boolean(plusTargetEl && plusCellEl === cellTargetEl);
+        // 松手回到源单元格空白处：视为取消，不提示（落在加号上除外，加号是明确的新建意图）
+        if (!overPlus && cellDesignerId === sourceData.designerId && cellDate === sourceData.date) return;
+        const hasTasks = getVisibleItems(cellDesignerId, cellDate).length > 0;
+        if (hasTasks && !overPlus) {
+          addToast('该位置没有主任务，请拖到已有主任务上，或拖到该格最下面的加号上新建主任务', 'error');
+          return;
+        }
+        if (warnIfCellLocked(cellDesignerId, cellDate)) return;
+        await onMoveGunToTask({
+          sourceDesignerId: sourceData.designerId,
+          sourceDate: sourceData.date,
+          sourceItemId: sourceData.item.id,
+          sourceGunIndex: sourceData.gunIndex,
+          gunId: sourceData.gun.id,
+          targetDesignerId: cellDesignerId,
+          targetDate: cellDate,
+          // targetItemId 为空：由后端按 createTaskName 新建主任务承接该枪名
+          targetItemId: '',
+          createTaskName: String(sourceData.item?.taskName || ''),
+          sourceItemSnapshot: sourceData.item,
+        });
+        return;
+      }
 
       const targetDesignerId = taskTargetEl.getAttribute('data-designer-id') || '';
       const targetDate = taskTargetEl.getAttribute('data-date') || '';
@@ -412,11 +493,16 @@ export const useGunDragDrop = ({
         addToast('同一主任务内请使用枪名行的上移/下移箭头调整顺序', 'error');
         return;
       }
+      // 目标主任务没有任何枪名：不允许把枪名移进去（前后端双重拦截，后端 /tasks/move-gun 同样校验）
+      const targetItemForCheck = getAllItems(targetDesignerId, targetDate).find(i => i.id === targetItemId);
+      if (targetItemForCheck && !(targetItemForCheck.guns || []).length) {
+        addToast('目标主任务没有枪名，不能移入枪名', 'error');
+        return;
+      }
       // 目标主任务存在同名枪名：前端直接拦截并提示（后端 /tasks/move-gun 同样有校验兜底）
       const movingGunName = String(sourceData.gun?.name || '').trim();
-      if (movingGunName) {
-        const targetItemForCheck = getAllItems(targetDesignerId, targetDate).find(i => i.id === targetItemId);
-        if (targetItemForCheck && (targetItemForCheck.guns || []).some(g => String(g?.name || '').trim() === movingGunName)) {
+      if (movingGunName && targetItemForCheck) {
+        if ((targetItemForCheck.guns || []).some(g => String(g?.name || '').trim() === movingGunName)) {
           addToast(`目标主任务已存在枪名「${movingGunName}」，无法移动`, 'error');
           return;
         }

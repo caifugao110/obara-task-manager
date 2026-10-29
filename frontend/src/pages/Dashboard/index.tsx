@@ -451,12 +451,60 @@ const Dashboard = () => {
   }, [loading, sheets, designers, currentDate, jumpTarget, scrollTodayColumnIntoView]);
 
   // 点击左下角状态指示（就绪/离线）时定位到今日列，不触发任何重连或数据刷新
+  // 连按两次 Ctrl 的快捷操作复用同一入口，行为与点击完全一致
   const handleFooterStatusClick = useCallback(() => {
     if (loading) return;
     window.setTimeout(() => {
       scrollTodayColumnIntoView();
     }, 0);
   }, [loading, scrollTodayColumnIntoView]);
+
+  // 快捷操作：连按两次 Ctrl（间隔 400ms 内）= 点击左下角状态指示「定位到今日任务」
+  // 只要两次 Ctrl 之间插入了其它按键（Ctrl+C 等组合键）或鼠标按下（Ctrl+单击多选、Ctrl+拖动复制），
+  // 即打断判定并重新计数，避免与录入类快捷键冲突
+  useEffect(() => {
+    const DOUBLE_CTRL_INTERVAL = 400;
+    let lastCtrlAt = 0;
+    let ctrlComboUsed = false;
+
+    const resetTap = () => { lastCtrlAt = 0; };
+
+    const handleDoubleCtrlKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control') {
+        if (e.repeat || ctrlComboUsed) return;
+        const now = Date.now();
+        if (lastCtrlAt && now - lastCtrlAt <= DOUBLE_CTRL_INTERVAL) {
+          resetTap();
+          if (loading) return;
+          if (!scrollTodayColumnIntoView()) {
+            addToast('当前不在本月视图，无法定位今日任务', 'error');
+          }
+        } else {
+          lastCtrlAt = now;
+        }
+        return;
+      }
+      // 按住 Ctrl 时按下其它键（Ctrl+C / Ctrl+V 等）会打断双击判定，避免误触
+      if (e.ctrlKey || e.metaKey) ctrlComboUsed = true;
+      resetTap();
+    };
+
+    const handleDoubleCtrlKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control') ctrlComboUsed = false;
+    };
+
+    // Ctrl+单击多选任务、Ctrl+拖动复制等鼠标组合操作同样打断判定
+    const handleDoubleCtrlMouseDown = () => { resetTap(); };
+
+    window.addEventListener('keydown', handleDoubleCtrlKeyDown);
+    window.addEventListener('keyup', handleDoubleCtrlKeyUp);
+    window.addEventListener('mousedown', handleDoubleCtrlMouseDown);
+    return () => {
+      window.removeEventListener('keydown', handleDoubleCtrlKeyDown);
+      window.removeEventListener('keyup', handleDoubleCtrlKeyUp);
+      window.removeEventListener('mousedown', handleDoubleCtrlMouseDown);
+    };
+  }, [loading, scrollTodayColumnIntoView, addToast]);
 
 
 
@@ -841,7 +889,8 @@ const Dashboard = () => {
     handleItemChange(designerId, date, item.id, 'guns', newGuns);
   };
 
-  // 移动单个枪名到其他主任务（支持跨人员/跨日期；newIndex 为空时追加到目标 guns 最下面）
+  // 移动单个枪名到其他主任务（支持跨人员/跨日期；newIndex 为空时追加到目标 guns 最下面）；
+  // targetItemId 为空 + createTaskName 时，表示落点单元格没有主任务，先按源主任务名称新建再移入
   const onMoveGunToTask = async (args: {
     sourceDesignerId: string;
     sourceDate: string;
@@ -851,6 +900,7 @@ const Dashboard = () => {
     targetDesignerId: string;
     targetDate: string;
     targetItemId: string;
+    createTaskName?: string;
     newIndex?: number;
     sourceItemSnapshot?: TaskItem;
   }) => {
@@ -858,7 +908,7 @@ const Dashboard = () => {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    const { sourceDesignerId, sourceDate, sourceItemId, sourceGunIndex, gunId, targetDesignerId, targetDate, targetItemId, newIndex } = args;
+    const { sourceDesignerId, sourceDate, sourceItemId, sourceGunIndex, gunId, targetDesignerId, targetDate, targetItemId, createTaskName, newIndex } = args;
 
     // 先落盘源/目标单元格此前的挂起编辑，并取消尚未触发的防抖保存，
     // 避免旧 guns 数组延迟回写覆盖本次移动结果
@@ -886,10 +936,13 @@ const Dashboard = () => {
         targetDesignerId,
         targetDate,
         targetItemId,
+        // 仅在需要新建主任务时下发（后端据此判断是否落点是空白单元格）
+        ...(createTaskName !== undefined ? { createTaskName } : {}),
         newIndex
       });
       if (res.data.sourceSheet) upsertSheet(res.data.sourceSheet);
       if (res.data.targetSheet) upsertSheet(res.data.targetSheet);
+      const targetItemCreated = Boolean(res.data.targetItemCreated);
       addToHistory('moveGunBetweenItems', {
         sourceDesignerId,
         sourceDate,
@@ -897,7 +950,10 @@ const Dashboard = () => {
         sourceGunIndex,
         targetDesignerId,
         targetDate,
-        targetItemId,
+        // 新建主任务时以服务端返回的新 id 为准（撤销把枪名移回后该主任务会自动删除，重做需按名称重建）
+        targetItemId: res.data.targetItemId || targetItemId,
+        targetItemCreated,
+        createdTaskName: targetItemCreated ? (createTaskName ?? '') : undefined,
         gunId,
         newIndex,
         // 源主任务因最后一个枪名被移走而被删除时，记录快照供撤销重建
@@ -1627,6 +1683,7 @@ const Dashboard = () => {
     canEditTasks,
     warnIfCellLocked,
     getAllItems,
+    getVisibleItems: getItems,
     getSelectedTaskPayloads,
     designers,
     setDesigners,
@@ -1645,6 +1702,12 @@ const Dashboard = () => {
 
   const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);
   const gunDropSelf = Boolean(gunDropTarget?.isSelf);
+  // 目标主任务没有任何枪名：同样不可放置，浮层提示文案与「重复枪名」区分
+  const gunDropNoGuns = Boolean(gunDropTarget?.noGuns && !gunDropTarget?.isSelf);
+  // 枪名拖拽扫过可新建主任务的位置：空白单元格整格高亮，或已有任务单元格最下方的加号高亮，
+  // 松手后按源主任务名称新建主任务
+  const gunDropCreateCell = Boolean(gunDropTarget?.create);
+  const gunDropCreateAppend = Boolean(gunDropTarget?.create && gunDropTarget?.append);
   const taskDropDuplicate = Boolean(taskDropTarget?.duplicate);
 
   useEffect(() => {
@@ -2570,17 +2633,25 @@ const Dashboard = () => {
                                   const cellSessions = getCellSessions(d.id, day.fullDate);
                                   const legacyCellSession = cellSessions.find(s => s.userId !== user?.id && s.itemId == null) || null;
                                   const isCellLocked = Boolean(getBlockingEditingSession(d.id, day.fullDate));
+                                  const isCellSelected = selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate;
+                                  // 本格只有一行内容（一条主任务且没有枪名）：同行其他格子更高时让内容垂直居中，避免吊在顶部
+                                  const singleLineCell = items.length === 1 && !(items[0].guns && items[0].guns.length > 0);
                                   // 主任务拖拽扫过本单元格时的预插入位置：itemId 命中某条主任务 → 其上方显示标记线；
                                   // itemId 为 null → 最下方显示追加标记线；duplicate 时红色（复制内容重复）
                                   const cellTaskDrop = taskDropTarget && taskDropTarget.designerId === d.id && taskDropTarget.date === day.fullDate ? taskDropTarget : null;
                                   const showAppendMarker = Boolean(cellTaskDrop && cellTaskDrop.itemId === null);
+                                  // 枪名拖拽扫过本单元格：整格无主任务 → 整格高亮（松手新建）；
+                                  // 已有主任务但指针停在最下方加号上 → 只高亮加号（松手在该格最下面新建）
+                                  const gunCreate = gunDropTarget?.create && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate;
+                                  const isGunCreateCell = Boolean(gunCreate && !gunDropTarget?.append);
+                                  const isGunCreatePlus = Boolean(gunCreate && gunDropTarget?.append);
                                   return (
                                     <DroppableCell 
                                       key={`${d.id}-${day.fullDate}`}
                                       designerId={d.id}
                                       date={day.fullDate}
                                       colSpan={2}
-                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] min-w-[21rem] relative group/cell`}
+                                      className={`border border-gray-300 p-0 ${singleLineCell ? 'align-middle' : 'align-top'} ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] min-w-[21rem] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
                                       onClick={(e: React.MouseEvent) => {
                                         if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
                                           setSelectedTasks([]);
@@ -2590,7 +2661,7 @@ const Dashboard = () => {
                                       }}
                                     >
                                       <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
-                                        <div className="flex flex-col min-h-[40px]">
+                                        <div className="task-cell-list flex flex-col min-h-[40px]">
                                           {items.map((item, itemIndex) => {
                                             const canMarkColor = Boolean(
                                               token &&
@@ -2650,9 +2721,13 @@ const Dashboard = () => {
                                               }}
                                             />
                                           )}
+                                          {/* 加号区：默认隐藏，仅当指针停在本格空白处时显形（见 index.css 的 .task-cell-plus 规则）；
+                                              指针停在已有任务行上时不显示。data-cell-plus 供枪名拖拽命中判定：
+                                              拖到加号上松手 → 按源主任务名称在本格最下面新建主任务 */}
                                           {canEditTasks && (
                                             <div
-                                              className={`h-[24px] flex items-center justify-center text-gray-300 opacity-0 group-hover/cell:opacity-100 transition-opacity ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-blue-50/50'} ${selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? 'opacity-100 bg-blue-100 border border-blue-400' : ''}`}
+                                              data-cell-plus="1"
+                                              className={`task-cell-plus min-h-[24px] flex items-start justify-center pt-[3px] rounded transition-colors ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer'}${isGunCreatePlus ? ' ring-2 ring-inset ring-emerald-500 !opacity-100 bg-emerald-50' : ''}`}
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 // 新增主任务不受他人主任务级编辑影响，仅旧版整格会话会拦截
@@ -2676,9 +2751,18 @@ const Dashboard = () => {
                                                 }
                                               }}
                                               tabIndex={0}
-                                              title={selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate ? "双击此处添加任务" : ""}
+                                              title={isCellSelected ? "双击此处添加任务" : ""}
                                             >
-                                              <Plus size={14} />
+                                              <span
+                                                className={`inline-flex items-center justify-center h-[18px] w-[18px] rounded-full ring-1 shadow-sm transition-colors ${isCellLocked
+                                                  ? 'bg-gray-100 text-gray-400 ring-gray-300'
+                                                  : isGunCreatePlus
+                                                    ? 'bg-emerald-600 text-white ring-emerald-700 shadow-md'
+                                                    : 'bg-blue-100 text-blue-600 ring-blue-400 hover:bg-blue-600 hover:text-white hover:ring-blue-700 hover:shadow-md'
+                                                  }`}
+                                              >
+                                                <Plus size={12} strokeWidth={3.5} />
+                                              </span>
                                             </div>
                                           )}
                                           {/* 整格红色罩层仅保留给旧版整格会话；主任务级会话在对应任务行内显示标记 */}
@@ -2821,6 +2905,35 @@ const Dashboard = () => {
                     : undefined,
               }}
             >
+              {/* 落点可新建主任务：空白单元格（整格高亮）或已有任务单元格最下方的加号（加号高亮）；
+                  提示松手后会按源主任务名称新建主任务 */}
+              {gunDropCreateCell && !gunDropInvalid && !gunDropSelf && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    bottom: '100%',
+                    marginBottom: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    flexShrink: 0,
+                    whiteSpace: 'nowrap',
+                    fontSize: 11,
+                    lineHeight: '16px',
+                    fontWeight: 700,
+                    color: '#ffffff',
+                    backgroundColor: '#16a34a',
+                    border: '1px solid #15803d',
+                    borderRadius: 4,
+                    padding: '1px 6px',
+                    boxShadow: '0 2px 6px rgba(22,163,74,0.45)',
+                  }}
+                >
+                  <Plus size={11} />
+                  {gunDropCreateAppend ? '松手在下方新建主任务' : '松手新建主任务'}
+                </div>
+              )}
               {/* 禁止/重复提示：浮在拖拽枪名的正上方（而非右侧），更醒目 */}
               {(gunDropInvalid || gunDropSelf) && (
                 <div
@@ -2848,7 +2961,7 @@ const Dashboard = () => {
                   }}
                 >
                   <AlertCircle size={11} />
-                  {gunDropSelf ? '同任务内请用箭头' : '重复枪名'}
+                  {gunDropSelf ? '同任务内请用箭头' : gunDropNoGuns ? '目标无枪名，不能移入' : '重复枪名'}
                 </div>
               )}
               {/* 等比复刻原枪名行：枪名格 + 工时格，宽高与原行一致，内容显示实际枪名与工时 */}
@@ -2910,11 +3023,12 @@ const Dashboard = () => {
           <button
             type="button"
             onClick={handleFooterStatusClick}
-            title="点击定位到今日任务"
+            title="点击或连按两次 Ctrl 定位到今日任务"
             className="flex items-center gap-1.5 hover:text-gray-700 transition-colors cursor-pointer focus:outline-none"
           >
             <div className={`w-2 h-2 rounded-full ${footerStatusDotClass}`}></div>
             <span className={footerStatusTextClass}>{footerStatusText}</span>
+            <kbd className="ml-0.5 px-1 py-[1px] text-[10px] font-mono leading-none text-gray-400 bg-white/70 border border-gray-300 rounded shadow-sm">Ctrl×2</kbd>
           </button>
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <div className="flex items-center gap-1.5">
@@ -2977,7 +3091,7 @@ const Dashboard = () => {
       {helpGuideOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => setHelpGuideOpen(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-[620px] max-w-[94vw] max-h-[88vh] flex flex-col overflow-hidden border border-gray-200">
+          <div className="relative bg-white rounded-xl shadow-2xl w-[760px] max-w-[94vw] max-h-[88vh] flex flex-col overflow-hidden border border-gray-200">
             <div className="relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25">
@@ -3042,9 +3156,9 @@ const Dashboard = () => {
                       <Hand size={15} />
                     </span>
                     <div className="text-[13px] text-gray-700">
-                      <span className="font-bold text-gray-800">拖动枪名左侧手柄</span>
+                      <span className="font-bold text-gray-800">拖动枪名右侧手柄</span>
                       <span className="mx-1.5 text-gray-300">|</span>
-                      将枪名移入其他主任务
+                      移入其他主任务，也可拖到空白格或加号上新建
                     </div>
                   </li>
                 </ul>
@@ -3090,6 +3204,31 @@ const Dashboard = () => {
                       <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">双击任务</kbd>
                     </span>
                     <div className="text-[13px] text-gray-700">编辑任务详情</div>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 bg-green-50/60">
+                  <span className="flex items-center justify-center w-6 h-6 rounded-md bg-[#217346] text-white">
+                    <Crosshair size={14} />
+                  </span>
+                  <span className="font-bold text-sm text-gray-800">界面快捷操作</span>
+                  <span className="text-[11px] text-gray-400 ml-auto">任意位置均可触发</span>
+                </div>
+                <ul className="divide-y divide-gray-100">
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl</kbd>
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">连按两次 Ctrl 定位到今日任务（等同点击左下角状态）</div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">F11</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">全屏 / 退出全屏</div>
                   </li>
                 </ul>
               </div>
