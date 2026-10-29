@@ -115,6 +115,7 @@ const getActionDescription = (method, path, body) => {
     'auth/validate': '验证登录',
     'users': method === 'POST' ? '创建用户' : method === 'PUT' ? '更新用户' : method === 'DELETE' ? '删除用户' : '查看用户',
     'users/batch-delete': '批量删除用户',
+    'users/batch-disabled': '批量禁用/启用用户',
     'designers': method === 'POST' ? '添加设计员' : method === 'PUT' ? '更新设计员' : method === 'DELETE' ? '删除设计员' : '查看设计员',
     'designers/manage': '管理设计员',
     'designers/reorder': '重新排序设计员',

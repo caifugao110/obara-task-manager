@@ -3,22 +3,7 @@ import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
 import { buildLoginUrl } from '../utils/redirect';
-import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download, Settings, Search, Plus, MoreHorizontal } from 'lucide-react';
-import {
-  DndContext,
-  closestCenter,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent,
-} from '@dnd-kit/core';
-import {
-  arrayMove,
-  SortableContext,
-  verticalListSortingStrategy,
-  useSortable,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, Key, Edit2, X, ToggleLeft, ToggleRight, Upload, Download, Settings, Search, Plus, MoreHorizontal, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 interface DesignerData {
   id: string;
@@ -33,10 +18,71 @@ const FIELD_INPUT = 'w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py
 const MENU_ITEM = 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40';
 const BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3.5 py-2 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50';
 
-const SortableDesignerRow = ({
+// 中文排序统一用 Intl.Collator：ICU 的 zh 排序规则按拼音（姓氏 A-Z）比较，
+// 不使用 localeCompare 逐次调用是为了避免长列表排序时的重复构造开销。
+const zhCollator = (() => {
+  try {
+    return new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+  } catch {
+    return new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  }
+})();
+
+const compareZh = (a: string, b: string) => zhCollator.compare(a || '', b || '');
+
+// 多音字姓氏：ICU 给出的默认读音与姓氏读音不一致（如“翟”姓读 zhái，ICU 读 dí），
+// 比较前先把首字换成同音字，保证按姓氏拼音落位。
+const POLYPHONIC_SURNAME: Record<string, string> = {
+  翟: '宅', 曾: '增', 单: '山', 解: '谢', 仇: '求', 区: '欧',
+  查: '扎', 缪: '妙', 覃: '秦', 朴: '票', 盖: '葛', 乐: '岳',
+  尉: '玉', 秘: '必', 折: '舌', 长: '常'
+};
+
+const nameSortKey = (name: string) => {
+  const first = name.slice(0, 1);
+  const replacement = POLYPHONIC_SURNAME[first];
+  return replacement ? replacement + name.slice(1) : name;
+};
+
+const compareByName = (a: string, b: string) => compareZh(nameSortKey(a), nameSortKey(b));
+
+type SortDir = 'asc' | 'desc';
+interface SortState<T extends string> { key: T; dir: SortDir }
+
+// 表头排序按钮：同一列再次点击反转方向，切换列时回到升序
+const SortHeader = <T extends string>({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  className = ''
+}: {
+  label: string;
+  sortKey: T;
+  sort: SortState<T>;
+  onSort: (key: T) => void;
+  className?: string;
+}) => {
+  const active = sort.key === sortKey;
+  const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown;
+  return (
+    <th className={`px-3 py-2.5 ${className}`} aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        title={`按${label}排序`}
+        className={`group/th inline-flex items-center gap-1 rounded transition hover:text-gray-800 ${active ? 'text-gray-800' : ''}`}
+      >
+        {label}
+        <Icon size={12} className={active ? 'text-blue-600' : 'text-gray-300 group-hover/th:text-gray-500'} />
+      </button>
+    </th>
+  );
+};
+
+const DesignerRow = ({
   designer,
   selected,
-  dragDisabled,
   onSelect,
   onEdit,
   onToggleHide,
@@ -44,34 +90,13 @@ const SortableDesignerRow = ({
 }: {
   designer: DesignerData,
   selected: boolean,
-  dragDisabled: boolean,
   onSelect: (id: string, selected: boolean) => void,
   onEdit: (id: string) => void,
   onToggleHide: (id: string, hidden: boolean) => void,
   onDelete: (id: string) => void
 }) => {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging
-  } = useSortable({ id: designer.id, disabled: dragDisabled });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-    zIndex: isDragging ? 10 : 1,
-  };
-
   return (
-    <tr
-      ref={setNodeRef}
-      style={style}
-      className={`group transition-colors hover:bg-blue-50/40 ${isDragging ? 'bg-blue-50 shadow-lg' : ''}`}
-    >
+    <tr className="group transition-colors hover:bg-blue-50/40">
       <td className="w-10 py-2.5 pl-4 pr-0 align-middle">
         <input
           type="checkbox"
@@ -82,18 +107,6 @@ const SortableDesignerRow = ({
       </td>
       <td className="px-3 py-2.5 align-middle">
         <div className="flex items-center gap-2.5">
-          <div
-            {...attributes}
-            {...listeners}
-            className={`shrink-0 rounded p-0.5 ${
-              dragDisabled
-                ? 'cursor-not-allowed opacity-30'
-                : 'cursor-grab hover:bg-gray-100 active:cursor-grabbing'
-            }`}
-            title={dragDisabled ? '清除筛选后可调整顺序' : '拖拽调整顺序'}
-          >
-            <GripVertical size={14} className="text-gray-400" />
-          </div>
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[11px] font-bold text-blue-700">
             {designer.name.slice(0, 1)}
           </span>
@@ -283,6 +296,9 @@ const Admin = () => {
   const [bulkImportSubmitting, setBulkImportSubmitting] = useState(false);
   const [selectedDesignerIds, setSelectedDesignerIds] = useState<string[]>([]);
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  // 禁用/启用确认弹窗（单个与批量通用）：待操作的 id 列表 + 目标状态
+  const [disableConfirm, setDisableConfirm] = useState<{ ids: string[]; disabled: boolean } | null>(null);
+  const [disableSubmitting, setDisableSubmitting] = useState(false);
   const [initializingDesigners, setInitializingDesigners] = useState(false);
   const [confirmInitDesigners, setConfirmInitDesigners] = useState(false);
   // 删除确认弹窗（登录用户/设计人员共用，单个与批量通用，记录类型与待删除 id 列表）
@@ -297,6 +313,9 @@ const Admin = () => {
   const [designerGroup, setDesignerGroup] = useState('all');
   const [userQuery, setUserQuery] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState<'all' | 'admin' | 'user' | 'disabled'>('all');
+  // 表头排序状态：设计人员默认按姓名拼音 A-Z，登录用户默认同样按姓名 A-Z
+  const [designerSort, setDesignerSort] = useState<SortState<'name' | 'group'>>({ key: 'name', dir: 'asc' });
+  const [userSort, setUserSort] = useState<SortState<'name' | 'role' | 'status'>>({ key: 'name', dir: 'asc' });
   // 抽屉模式：新增/编辑设计人员、新增登录用户共用同一侧滑容器
   const [drawerMode, setDrawerMode] = useState<'designer-add' | 'designer-edit' | 'user-add' | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -311,6 +330,11 @@ const Admin = () => {
   const [credentialKind, setCredentialKind] = useState<'init' | 'batchReset'>('init');
   
   const isSuperAdmin = currentUser?.role === 'superadmin';
+  // 账号管理能力分层：禁用/启用、删除（含批量）一般管理员也可执行；
+  // 设置权限与重置密码仍为超级管理员专属。
+  const canManageUsers = isSuperAdmin || currentUser?.role === 'admin';
+  // 只能操作「权限低于自己」的账号：超管可管所有非超管账号，一般管理员只能管普通用户
+  const canManageTarget = (target: UserData) => isSuperAdmin || target.role === 'user';
   const canInitializeDesigners = isSuperAdmin && designers.length === 0;
   const canInitializeUsers = isSuperAdmin && users.filter(u => u.role !== 'superadmin').length === 0;
 
@@ -318,14 +342,6 @@ const Admin = () => {
   const credentialMeta = credentialKind === 'batchReset'
     ? { title: '批量重置后的新密码', passwordHeader: '新密码', okLabel: '已重置', copyLabel: '新密码', copyToast: '已复制全部新密码' }
     : { title: '初始登录密码', passwordHeader: '初始密码', okLabel: '已创建', copyLabel: '初始密码', copyToast: '已复制成功用户的初始密码' };
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 5,
-      },
-    })
-  );
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
@@ -379,8 +395,10 @@ const Admin = () => {
   const formatElapsed = (startedAt: number) => `${((performance.now() - startedAt) / 1000).toFixed(2)} 秒`;
 
   const selectableUserIds = useMemo(
-    () => users.filter(u => u.id !== currentUser?.id && u.role !== 'superadmin').map(u => u.id),
-    [currentUser?.id, users]
+    () => users
+      .filter(u => u.id !== currentUser?.id && u.role !== 'superadmin' && (isSuperAdmin || u.role === 'user'))
+      .map(u => u.id),
+    [currentUser?.id, users, isSuperAdmin]
   );
 
   // —— 工具栏筛选：分组/角色下拉与搜索关键词（本地过滤，不发请求）——
@@ -412,8 +430,6 @@ const Admin = () => {
     });
   }, [users, userQuery, userRoleFilter]);
 
-  // 处于筛选态时禁止拖拽排序：只重排可见子集会导致整体顺序错乱
-  const canReorderDesigners = filteredDesigners.length === designers.length;
   const activeRows = activeTab === 'designers' ? filteredDesigners.length : filteredUsers.length;
   const activeTotal = activeTab === 'designers' ? designers.length : users.length;
   const isFiltered = activeRows !== activeTotal;
@@ -422,6 +438,58 @@ const Admin = () => {
   const selectableFilteredUserIds = filteredUsers
     .filter(u => selectableUserIds.includes(u.id))
     .map(u => u.id);
+
+  // 点击表头：同列再次点击切换升降序，换列时默认升序
+  const toggleDesignerSort = (key: SortState<'name' | 'group'>['key']) => {
+    setDesignerSort(prev => prev.key === key
+      ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: 'asc' });
+  };
+  const toggleUserSort = (key: SortState<'name' | 'role' | 'status'>['key']) => {
+    setUserSort(prev => prev.key === key
+      ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: 'asc' });
+  };
+
+  // 角色排序权重：超级管理员恒置顶（不参与排序），其余按 管理员 → 普通用户
+  const roleRank: Record<UserData['role'], number> = { superadmin: 0, admin: 1, user: 2 };
+
+  // 表头排序后的展示列表：纯前端排序，不改变筛选结果，也不写回后端顺序
+  const sortedDesigners = useMemo(() => {
+    const factor = designerSort.dir === 'asc' ? 1 : -1;
+    return [...filteredDesigners].sort((a, b) => {
+      if (designerSort.key === 'group') {
+        // 空分组统一排在最后（不随升降序翻转），同组内仍按姓名 A-Z
+        const ga = a.group || '';
+        const gb = b.group || '';
+        if (!ga && gb) return 1;
+        if (ga && !gb) return -1;
+        const byGroup = compareZh(ga, gb) * factor;
+        if (byGroup !== 0) return byGroup;
+        return compareByName(a.name, b.name);
+      }
+      return compareByName(a.name, b.name) * factor;
+    });
+  }, [filteredDesigners, designerSort]);
+
+  const sortedUsers = useMemo(() => {
+    const factor = userSort.dir === 'asc' ? 1 : -1;
+    const superAdmins = filteredUsers.filter(u => u.role === 'superadmin');
+    const others = filteredUsers.filter(u => u.role !== 'superadmin');
+    others.sort((a, b) => {
+      let result = 0;
+      if (userSort.key === 'role') {
+        result = (roleRank[a.role] - roleRank[b.role]) * factor;
+      } else if (userSort.key === 'status') {
+        result = (Number(!!a.disabled) - Number(!!b.disabled)) * factor;
+      }
+      // 主键相同时按姓名 A-Z 兜底，保证列表顺序稳定
+      if (result === 0) result = compareByName(a.name, b.name);
+      if (result === 0) result = compareZh(a.username, b.username);
+      return result;
+    });
+    return [...superAdmins, ...others];
+  }, [filteredUsers, userSort]);
 
   const isMissingBatchRoute = (err: any) => err?.response?.status === 404;
 
@@ -731,32 +799,22 @@ const Admin = () => {
     }
   };
 
-  const handleDragEnd = async (event: DragEndEvent) => {
-    if (guardOffline()) return;
-    const { active, over } = event;
-    if (over && active.id !== over.id) {
-      const oldIndex = designers.findIndex((d) => d.id === active.id);
-      const newIndex = designers.findIndex((d) => d.id === over.id);
-      const newDesigners = arrayMove(designers, oldIndex, newIndex);
-      
-      setDesigners(newDesigners);
-      
-      try {
-        await axiosInstance.post('/designers/reorder', { ids: newDesigners.map(d => d.id) });
-        addToast('排序已保存', 'success');
-      } catch (err: any) {
-        markOfflineIfNetworkError(err);
-        addToast('排序保存失败', 'error');
-        fetchData();
-      }
-    }
-  };
-
   const handleDeleteUser = (id: string) => {
     if (guardOffline()) return;
-    if (!isSuperAdmin) return;
+    if (!canManageUsers) return;
+    const target = users.find(u => u.id === id);
+    if (!target) return;
     if (id === currentUser?.id) {
       addToast('不能删除自己', 'error');
+      return;
+    }
+    // 超级管理员账号不可删除：删掉最后一个超管会让系统失去唯一权限入口
+    if (target.role === 'superadmin') {
+      addToast('不能删除超级管理员账号', 'error');
+      return;
+    }
+    if (!canManageTarget(target)) {
+      addToast('只能操作权限低于自己的账号', 'error');
       return;
     }
     setBatchDeleteConfirm({ kind: 'users', ids: [id] });
@@ -764,7 +822,7 @@ const Admin = () => {
 
   const handleBatchDeleteUsers = () => {
     if (guardOffline()) return;
-    if (!isSuperAdmin) return;
+    if (!canManageUsers) return;
     const ids = selectedUserIds.filter(id => id !== currentUser?.id);
     const selectedUsers = users.filter(u => ids.includes(u.id));
     if (ids.length === 0) {
@@ -773,6 +831,10 @@ const Admin = () => {
     }
     if (selectedUsers.some(u => u.role === 'superadmin')) {
       addToast('不能批量删除超级管理员账号', 'error');
+      return;
+    }
+    if (selectedUsers.some(u => !canManageTarget(u))) {
+      addToast('只能操作权限低于自己的账号', 'error');
       return;
     }
     setBatchDeleteConfirm({ kind: 'users', ids });
@@ -805,9 +867,10 @@ const Admin = () => {
     setShowResetPassword(true);
   };
 
-  const handleToggleUserDisabled = async (id: string) => {
+  // 单个禁用/启用：先弹确认框，确认后才写后端
+  const handleToggleUserDisabled = (id: string) => {
     if (guardOffline()) return;
-    if (!isSuperAdmin) return;
+    if (!canManageUsers) return;
     const user = users.find(u => u.id === id);
     if (!user) return;
     // 超级管理员账号不允许禁用（含自己）：禁用最后一个超管会导致系统失去唯一权限入口
@@ -819,14 +882,62 @@ const Admin = () => {
       addToast('不能禁用当前登录账号', 'error');
       return;
     }
+    if (!canManageTarget(user)) {
+      addToast('只能操作权限低于自己的账号', 'error');
+      return;
+    }
+    setDisableConfirm({ ids: [id], disabled: !user.disabled });
+  };
+
+  // 执行禁用/启用：一次性提交，后端原子写入；老版本后端无该路由时降级为逐个 PUT
+  const runToggleDisabled = async (ids: string[], disabled: boolean) => {
+    if (guardOffline()) return;
+    if (disableSubmitting) return;
+    setDisableSubmitting(true);
     try {
-      await axiosInstance.put(`/users/${id}`, { disabled: !user.disabled });
-      addToast(user.disabled ? '账号已启用' : '账号已禁用', 'success');
+      try {
+        await axiosInstance.post('/users/batch-disabled', { ids, disabled });
+      } catch (err: any) {
+        if (!isMissingBatchRoute(err)) throw err;
+        await Promise.all(ids.map(id => axiosInstance.put(`/users/${id}`, { disabled })));
+      }
+      const single = ids.length === 1;
+      addToast(
+        disabled
+          ? (single ? '账号已禁用' : `已禁用 ${ids.length} 个账号`)
+          : (single ? '账号已启用' : `已启用 ${ids.length} 个账号`),
+        'success'
+      );
+      setSelectedUserIds(prev => prev.filter(id => !ids.includes(id)));
       fetchData();
     } catch (err: any) {
       markOfflineIfNetworkError(err);
-      addToast(err.response?.data?.message || '操作失败', 'error');
+      addToast(err.response?.data?.message || (disabled ? '禁用失败' : '启用失败'), 'error');
+    } finally {
+      setDisableSubmitting(false);
+      setDisableConfirm(null);
     }
+  };
+
+  // 批量禁用/启用：先校验作用域，再弹确认框
+  const handleBatchToggleDisabled = (disabled: boolean) => {
+    if (guardOffline()) return;
+    if (!canManageUsers) return;
+    const ids = selectedUserIds.filter(id => id !== currentUser?.id);
+    if (ids.length === 0) {
+      addToast('请先选择要操作的登录用户', 'error');
+      return;
+    }
+    const targets = users.filter(u => ids.includes(u.id));
+    if (disabled && targets.some(u => u.role === 'superadmin')) {
+      addToast('不能批量禁用超级管理员账号', 'error');
+      return;
+    }
+    if (targets.some(u => !canManageTarget(u))) {
+      addToast('只能操作权限低于自己的账号', 'error');
+      return;
+    }
+    setDisableConfirm({ ids, disabled });
   };
 
   const submitResetPassword = async () => {
@@ -1049,7 +1160,12 @@ const Admin = () => {
     : drawerMode === 'designer-edit' ? '编辑设计人员' : '添加设计人员';
   const drawerHint = drawerMode === 'user-add'
     ? '创建后请把初始密码线下告知本人'
-    : drawerMode === 'designer-edit' ? '修改会立即同步到工作台表格' : '添加后可按拖拽顺序显示在工作台';
+    : drawerMode === 'designer-edit' ? '修改会立即同步到工作台表格' : '添加后显示在工作台任务表格中';
+
+  // 禁用/启用确认弹窗的展示数据：目标账号列表（取姓名用于文案）
+  const disableConfirmTargets = disableConfirm
+    ? users.filter(u => disableConfirm.ids.includes(u.id))
+    : [];
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -1642,20 +1758,37 @@ const Admin = () => {
         {activeTab === 'users' && selectedUserIds.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
             <span className="text-xs font-bold text-blue-700">已选 {selectedUserIds.length} 个账号</span>
+            {/* 批量重置密码为超级管理员专属：一般管理员不展示，避免出现点了无响应的按钮 */}
+            {isSuperAdmin && (
+              <button
+                type="button"
+                onClick={handleBatchResetPassword}
+                className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-amber-700 ring-1 ring-inset ring-amber-200 transition hover:bg-amber-50"
+              >
+                <Key size={13} />
+                批量重置密码
+              </button>
+            )}
             <button
               type="button"
-              onClick={handleBatchResetPassword}
-              disabled={!isSuperAdmin}
-              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-amber-700 ring-1 ring-inset ring-amber-200 transition hover:bg-amber-50 disabled:opacity-50"
+              onClick={() => handleBatchToggleDisabled(true)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-amber-700 ring-1 ring-inset ring-amber-200 transition hover:bg-amber-50"
             >
-              <Key size={13} />
-              批量重置密码
+              <ToggleLeft size={13} />
+              批量禁用
+            </button>
+            <button
+              type="button"
+              onClick={() => handleBatchToggleDisabled(false)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-emerald-700 ring-1 ring-inset ring-emerald-200 transition hover:bg-emerald-50"
+            >
+              <ToggleRight size={13} />
+              批量启用
             </button>
             <button
               type="button"
               onClick={handleBatchDeleteUsers}
-              disabled={!isSuperAdmin}
-              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-red-600 ring-1 ring-inset ring-red-200 transition hover:bg-red-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-red-600 ring-1 ring-inset ring-red-200 transition hover:bg-red-50"
             >
               <Trash2 size={13} />
               批量删除
@@ -1713,55 +1846,43 @@ const Admin = () => {
               </div>
             ) : (
               <div className="max-h-[calc(100vh-13.5rem)] overflow-auto">
-                <DndContext
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={handleDragEnd}
-                >
-                  <table className="w-full min-w-[640px] border-collapse text-left text-sm">
-                    <thead className="sticky-thead sticky top-0 z-10 bg-gray-50">
-                      <tr className="border-b border-gray-200 text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                        <th className="w-10 py-2.5 pl-4 pr-0">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
-                            checked={allFilteredDesignersSelected}
-                            onChange={(e) => {
-                              const visibleIds = filteredDesigners.map(d => d.id);
-                              setSelectedDesignerIds(prev => e.target.checked
-                                ? Array.from(new Set([...prev, ...visibleIds]))
-                                : prev.filter(id => !visibleIds.includes(id)));
-                            }}
-                          />
-                        </th>
-                        <th className="px-3 py-2.5">姓名</th>
-                        <th className="px-3 py-2.5">分组</th>
-                        <th className="w-[120px] px-4 py-2.5 text-right">操作</th>
-                      </tr>
-                    </thead>
-                    <SortableContext
-                      items={filteredDesigners.map(d => d.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <tbody className="divide-y divide-gray-100">
-                        {filteredDesigners.map(d => (
-                          <SortableDesignerRow
-                            key={d.id}
-                            designer={d}
-                            selected={selectedDesignerIds.includes(d.id)}
-                            dragDisabled={!canReorderDesigners}
-                            onSelect={(id, selected) => {
-                              setSelectedDesignerIds(prev => selected ? [...prev, id] : prev.filter(item => item !== id));
-                            }}
-                            onEdit={handleEditDesigner}
-                            onToggleHide={handleToggleHideDesigner}
-                            onDelete={handleDeleteDesigner}
-                          />
-                        ))}
-                      </tbody>
-                    </SortableContext>
-                  </table>
-                </DndContext>
+                <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                  <thead className="sticky-thead sticky top-0 z-10 bg-gray-50">
+                    <tr className="border-b border-gray-200 text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                      <th className="w-10 py-2.5 pl-4 pr-0">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                          checked={allFilteredDesignersSelected}
+                          onChange={(e) => {
+                            const visibleIds = filteredDesigners.map(d => d.id);
+                            setSelectedDesignerIds(prev => e.target.checked
+                              ? Array.from(new Set([...prev, ...visibleIds]))
+                              : prev.filter(id => !visibleIds.includes(id)));
+                          }}
+                        />
+                      </th>
+                      <SortHeader label="姓名" sortKey="name" sort={designerSort} onSort={toggleDesignerSort} />
+                      <SortHeader label="分组" sortKey="group" sort={designerSort} onSort={toggleDesignerSort} />
+                      <th className="w-[120px] px-4 py-2.5 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {sortedDesigners.map(d => (
+                      <DesignerRow
+                        key={d.id}
+                        designer={d}
+                        selected={selectedDesignerIds.includes(d.id)}
+                        onSelect={(id, selected) => {
+                          setSelectedDesignerIds(prev => selected ? [...prev, id] : prev.filter(item => item !== id));
+                        }}
+                        onEdit={handleEditDesigner}
+                        onToggleHide={handleToggleHideDesigner}
+                        onDelete={handleDeleteDesigner}
+                      />
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )
           ) : filteredUsers.length === 0 ? (
@@ -1808,7 +1929,7 @@ const Admin = () => {
               <table className="w-full min-w-[760px] border-collapse text-left text-sm">
                 <thead className="sticky-thead sticky top-0 z-10 bg-gray-50">
                   <tr className="border-b border-gray-200 text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                    {isSuperAdmin && (
+                    {canManageUsers && (
                       <th className="w-10 py-2.5 pl-4 pr-0">
                         <input
                           type="checkbox"
@@ -1823,17 +1944,17 @@ const Admin = () => {
                         />
                       </th>
                     )}
-                    <th className="px-3 py-2.5">姓名</th>
+                    <SortHeader label="姓名" sortKey="name" sort={userSort} onSort={toggleUserSort} />
                     <th className="px-3 py-2.5">用户名</th>
-                    <th className="px-3 py-2.5">角色</th>
-                    <th className="px-3 py-2.5">状态</th>
+                    <SortHeader label="角色" sortKey="role" sort={userSort} onSort={toggleUserSort} />
+                    <SortHeader label="状态" sortKey="status" sort={userSort} onSort={toggleUserSort} />
                     <th className="w-[152px] px-4 py-2.5 text-right">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filteredUsers.map(u => (
+                  {sortedUsers.map(u => (
                     <tr key={u.id} className={`group transition-colors hover:bg-blue-50/40 ${u.disabled ? 'bg-gray-50/70' : ''}`}>
-                      {isSuperAdmin && (
+                      {canManageUsers && (
                         <td className="w-10 py-2.5 pl-4 pr-0">
                           <input
                             type="checkbox"
@@ -1842,7 +1963,7 @@ const Admin = () => {
                             onChange={(e) => {
                               setSelectedUserIds(prev => e.target.checked ? [...prev, u.id] : prev.filter(id => id !== u.id));
                             }}
-                            disabled={u.id === currentUser?.id || u.role === 'superadmin'}
+                            disabled={u.id === currentUser?.id || u.role === 'superadmin' || !canManageTarget(u)}
                           />
                         </td>
                       )}
@@ -1878,7 +1999,7 @@ const Admin = () => {
                       </td>
                       <td className="w-[152px] px-4 py-2.5 text-right">
                         <div className="flex items-center justify-end gap-0.5">
-                          {isSuperAdmin && u.id !== currentUser?.id && u.role !== 'superadmin' && (
+                          {canManageUsers && u.id !== currentUser?.id && u.role !== 'superadmin' && canManageTarget(u) && (
                             <button
                               onClick={() => handleToggleUserDisabled(u.id)}
                               className={`rounded-md p-1.5 transition ${
@@ -1888,7 +2009,7 @@ const Admin = () => {
                               }`}
                               title={u.disabled ? '启用账号' : '禁用账号'}
                             >
-                              <ToggleLeft size={16} />
+                              {u.disabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
                             </button>
                           )}
                           {isSuperAdmin && u.role !== 'superadmin' && (
@@ -1910,7 +2031,7 @@ const Admin = () => {
                               <Key size={16} />
                             </button>
                           )}
-                          {isSuperAdmin && u.id !== currentUser?.id && (
+                          {canManageUsers && u.id !== currentUser?.id && u.role !== 'superadmin' && canManageTarget(u) && (
                             <button
                               onClick={() => handleDeleteUser(u.id)}
                               className="rounded-md p-1.5 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
@@ -1918,6 +2039,15 @@ const Admin = () => {
                             >
                               <Trash2 size={16} />
                             </button>
+                          )}
+                          {/* 同级或更高权限账号：一般管理员无可用操作，用一条淡色占位说明原因 */}
+                          {canManageUsers && !isSuperAdmin && u.id !== currentUser?.id && u.role !== 'superadmin' && !canManageTarget(u) && (
+                            <span
+                              className="select-none px-1.5 text-[11px] font-bold text-gray-300"
+                              title="只能操作权限低于自己的账号（普通用户）"
+                            >
+                              —
+                            </span>
                           )}
                         </div>
                       </td>
@@ -2101,6 +2231,66 @@ const Admin = () => {
           </div>
         )}
       </main>
+
+      {/* 禁用/启用确认弹窗（单个与批量通用，应用内居中，替代浏览器原生 confirm） */}
+      {disableConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
+            <div className="flex items-start gap-3 px-6 py-5">
+              <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${disableConfirm.disabled ? 'bg-amber-100' : 'bg-emerald-100'}`}>
+                {disableConfirm.disabled
+                  ? <ToggleLeft size={20} className="text-amber-600" />
+                  : <ToggleRight size={20} className="text-emerald-600" />}
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-bold text-gray-800">
+                  {disableConfirm.ids.length > 1
+                    ? (disableConfirm.disabled ? '确认批量禁用账号' : '确认批量启用账号')
+                    : (disableConfirm.disabled ? '确认禁用账号' : '确认启用账号')}
+                </h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  {disableConfirm.ids.length > 1
+                    ? <>将{disableConfirm.disabled ? '禁用' : '启用'}选中的 <span className="font-bold text-gray-800">{disableConfirm.ids.length}</span> 个账号
+                        {disableConfirmTargets.length > 0 && (
+                          <span className="text-gray-500">
+                            （{disableConfirmTargets.slice(0, 3).map(u => u.name).join('、')}
+                            {disableConfirmTargets.length > 3 ? ` 等 ${disableConfirmTargets.length} 人` : ''}）
+                          </span>
+                        )}
+                        。</>
+                    : <>将{disableConfirm.disabled ? '禁用' : '启用'}账号 <span className="font-bold text-gray-800">{disableConfirmTargets[0]?.name || '该账号'}</span>
+                        {disableConfirmTargets[0]?.username && <span className="font-mono text-xs text-gray-500">（{disableConfirmTargets[0].username}）</span>}。</>}
+                </p>
+                <p className={`mt-2 text-xs font-bold ${disableConfirm.disabled ? 'text-amber-600' : 'text-emerald-600'}`}>
+                  {disableConfirm.disabled
+                    ? '禁用后该账号立即无法登录，已登录会话在下一次请求即被拒绝。'
+                    : '启用后该账号可立即恢复登录，权限保持不变。'}
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => setDisableConfirm(null)}
+                disabled={disableSubmitting}
+                className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => runToggleDisabled(disableConfirm.ids, disableConfirm.disabled)}
+                disabled={disableSubmitting}
+                className={`rounded-lg px-4 py-2 text-sm font-bold text-white transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                  disableConfirm.disabled ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
+              >
+                {disableSubmitting ? '处理中…' : (disableConfirm.disabled ? '确认禁用' : '确认启用')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 删除确认弹窗（登录用户/设计人员共用，单个与批量通用，应用内居中，替代浏览器原生 confirm） */}
       {batchDeleteConfirm && (

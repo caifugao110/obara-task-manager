@@ -16,6 +16,18 @@ export const normalizeTaskColor = (value?: string) => String(value || '').trim()
 export const isWhiteTaskColor = (value?: string) => ['#ffffff', '#fff', 'white'].includes(normalizeTaskColor(value));
 export const hasStoredUserMarkColor = (item: TaskItem | GunItem) => Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark');
 
+// 主任务改色时子枪名颜色联动（与后端 syncGunColorsWithTask 规则一致）：
+// 主任务重新上色代表整条任务回到「未完成」，所有枪名（含原本标白/无色的）统一改成新颜色，
+// 并清掉各自的恢复记录与标记来源。必须真正删除 colorBeforeUserMark / colorMarkedBy 两个 key
+// （hasStoredUserMarkColor 按 key 存在判断）。
+export const syncGunsWithTaskColor = (guns: GunItem[] | undefined, color: string): GunItem[] | undefined => {
+  if (!Array.isArray(guns) || guns.length === 0) return guns;
+  return guns.map(gun => {
+    const { colorBeforeUserMark: _before, colorMarkedBy: _markedBy, ...rest } = gun;
+    return { ...rest, color };
+  });
+};
+
 // Extract spec number (仕样号) from task name
 // Patterns: S57157, M55478, S-53969, or standalone digits like 56363
 export const extractSpecNumber = (taskName: string): string | null => {

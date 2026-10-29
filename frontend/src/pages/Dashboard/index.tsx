@@ -5,7 +5,7 @@ import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
@@ -18,10 +18,11 @@ import {
 import {
   SortableContext,
   verticalListSortingStrategy,
+  arrayMove,
 } from '@dnd-kit/sortable';
 import SortableTask from './components/SortableTask';
-import SortableDesignerTbody from './components/SortableDesignerTbody';
 import DroppableCell from './components/DroppableCell';
+import QuickConfirmModifyModal from './components/QuickConfirmModifyModal';
 import { useEditingSessions } from './hooks/useEditingSessions';
 import LoadingScreen from '../../components/LoadingScreen';
 import { useTaskHistory } from './hooks/useTaskHistory';
@@ -44,6 +45,7 @@ import {
   isMeaningfulTask,
   getTaskHours,
   buildTaskMetadataTitle,
+  syncGunsWithTaskColor,
 } from './utils';
 import type {
   GunItem,
@@ -132,6 +134,8 @@ const Dashboard = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   // 操作说明弹窗（仅管理员可见入口）
   const [helpGuideOpen, setHelpGuideOpen] = useState(false);
+  // 快捷添加「确认图修改」弹窗（连按两次 Shift，仅管理员）
+  const [quickModifyOpen, setQuickModifyOpen] = useState(false);
   const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
   const [batchFindText, setBatchFindText] = useState('');
   const [batchReplaceText, setBatchReplaceText] = useState('');
@@ -505,6 +509,63 @@ const Dashboard = () => {
       window.removeEventListener('mousedown', handleDoubleCtrlMouseDown);
     };
   }, [loading, scrollTodayColumnIntoView, addToast]);
+
+  // 快捷添加「确认图修改」：连按两次 Shift（间隔 400ms 内）呼出枪名搜索弹窗，仅管理员生效
+  // 两次 Shift 之间插入其它按键（Shift+字母、Shift+Tab 等组合键）或鼠标按下都会打断判定；
+  // Shift 是打字常用键，光标在输入框内时不参与判定，避免录入时误弹
+  useEffect(() => {
+    if (!isAdmin) return;
+    const DOUBLE_SHIFT_INTERVAL = 400;
+    let lastShiftAt = 0;
+    let shiftComboUsed = false;
+
+    const resetTap = () => { lastShiftAt = 0; };
+
+    const isTypingTarget = () => {
+      const el = document.activeElement as HTMLElement | null;
+      return !!el && !!el.closest('input, textarea, select, [contenteditable="true"]');
+    };
+
+    const handleDoubleShiftKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') {
+        if (e.repeat || shiftComboUsed) return;
+        if (isTypingTarget()) return;
+        const now = Date.now();
+        if (lastShiftAt && now - lastShiftAt <= DOUBLE_SHIFT_INTERVAL) {
+          resetTap();
+          if (quickModifyOpen || modalOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
+          if (isOfflineMode) {
+            addToast('当前离线，禁止编辑', 'error');
+            return;
+          }
+          e.preventDefault();
+          setQuickModifyOpen(true);
+        } else {
+          lastShiftAt = now;
+        }
+        return;
+      }
+      // 按住 Shift 时按下其它键（Shift+字母 / Shift+Tab 等）打断判定
+      if (e.shiftKey) shiftComboUsed = true;
+      resetTap();
+    };
+
+    const handleDoubleShiftKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') shiftComboUsed = false;
+    };
+
+    // Shift+单击（多选、Shift+点击链接）同样打断判定
+    const handleDoubleShiftMouseDown = () => { resetTap(); };
+
+    window.addEventListener('keydown', handleDoubleShiftKeyDown);
+    window.addEventListener('keyup', handleDoubleShiftKeyUp);
+    window.addEventListener('mousedown', handleDoubleShiftMouseDown);
+    return () => {
+      window.removeEventListener('keydown', handleDoubleShiftKeyDown);
+      window.removeEventListener('keyup', handleDoubleShiftKeyUp);
+      window.removeEventListener('mousedown', handleDoubleShiftMouseDown);
+    };
+  }, [isAdmin, isOfflineMode, quickModifyOpen, modalOpen, helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast]);
 
 
 
@@ -1006,6 +1067,42 @@ const Dashboard = () => {
     }
   };
 
+  // 上移/下移设计员（同组内与相邻人员交换顺序，跨组不移动），保存后一次性写回全部人员顺序
+  const onMoveDesigner = async (designer: Designer, direction: 'up' | 'down') => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
+    const group = designer.group || '未分组';
+    // 以当前页面显示顺序找同组相邻人员（搜索过滤时只和可见的相邻人员交换）
+    const visibleGroupIds = (designersByGroup[group] || []).map(d => d.id);
+    const visIdx = visibleGroupIds.indexOf(designer.id);
+    if (visIdx < 0) return;
+    const targetId = direction === 'up' ? visibleGroupIds[visIdx - 1] : visibleGroupIds[visIdx + 1];
+    if (!targetId) return;
+
+    // 在完整人员列表中交换这两个人在本组内的位置，其他人员位置不变
+    const groupIds = designers.filter(d => (d.group || '未分组') === group).map(d => d.id);
+    const from = groupIds.indexOf(designer.id);
+    const to = groupIds.indexOf(targetId);
+    if (from === -1 || to === -1) return;
+
+    const nextGroupIds = arrayMove(groupIds, from, to);
+    const groupOf = new Map(designers.map(d => [d.id, d.group || '未分组']));
+    let ptr = 0;
+    const nextIds = designers.map(d => d.id).map(id => (groupOf.get(id) === group ? nextGroupIds[ptr++] : id));
+
+    const byId = new Map(designers.map(d => [d.id, d]));
+    setDesigners(nextIds.map(id => byId.get(id)).filter(Boolean) as Designer[]);
+
+    try {
+      await axiosInstance.post('/designers/reorder', { ids: nextIds });
+    } catch (err) {
+      addToast('排序保存失败', 'error');
+      fetchData();
+    }
+  };
+
   const onDeleteTask = (item: TaskItem, designerId: string, date: string) => {
     if (!canEditTasks) {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
@@ -1141,6 +1238,33 @@ const Dashboard = () => {
       year: d.getFullYear()
     });
   }, []);
+
+  // 快捷添加「确认图修改」成功后：本地合并最新工时表，并通知其他客户端刷新
+  // （目标月份与当前视图不同时不能并入本地 sheets，否则同设计员会被另一月份的
+  // 表覆盖导致当前视图串月；此时只广播全量刷新）
+  const handleQuickModifyCreated = useCallback(
+    ({ designerId, date, itemId, sheet }: { designerId: string; date: string; itemId?: string; sheet?: TaskSheet }) => {
+      const [year, month] = String(date).split('-').map(Number);
+      const current = currentDateRef.current;
+      const sameMonth = current.getFullYear() === year && current.getMonth() + 1 === month;
+      if (sheet && sameMonth) upsertSheet(sheet);
+      if (sameMonth) {
+        emitTaskUpdated(designerId);
+      } else {
+        emitTaskUpdated();
+      }
+      // 新增的任务就在当前视图里时，滚动到该任务行（行未渲染则静默跳过）
+      if (!sameMonth || !itemId) return;
+      window.setTimeout(() => {
+        const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
+        const target = document.querySelector(
+          `[data-task-id="${escapeSelector(itemId)}"][data-designer-id="${escapeSelector(designerId)}"][data-date="${escapeSelector(date)}"]`
+        ) as HTMLElement | null;
+        target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      }, 260);
+    },
+    [upsertSheet, emitTaskUpdated]
+  );
 
   const fetchSheets = useCallback(async () => {
     try {
@@ -1685,13 +1809,10 @@ const Dashboard = () => {
     getAllItems,
     getVisibleItems: getItems,
     getSelectedTaskPayloads,
-    designers,
-    setDesigners,
     token,
     addToHistory,
     upsertSheet,
     fetchSheets,
-    fetchData,
     stopEditingCell,
     addToast,
     onMoveGunToTask,
@@ -2085,7 +2206,11 @@ const Dashboard = () => {
         const idx = dayItems.findIndex(i => i.id === itemId);
         if (idx === -1) return sheet;
         const updatedItems = [...dayItems];
-        updatedItems[idx] = { ...updatedItems[idx], [field]: raw };
+        const targetItem = updatedItems[idx];
+        // 主任务改色时子枪名颜色一并跟随（本地先同步，避免等接口返回才变色）
+        updatedItems[idx] = field === 'color' && typeof raw === 'string' && raw && raw !== '__restore__' && !isWhiteTaskColor(raw)
+          ? { ...targetItem, color: raw, guns: syncGunsWithTaskColor(targetItem.guns, raw) }
+          : { ...targetItem, [field]: raw };
         return { ...sheet, days: { ...sheet.days, [date]: updatedItems } };
       });
       return next;
@@ -2611,20 +2736,53 @@ const Dashboard = () => {
                   </tbody>
 
                   {!collapsedGroups[group] && (
-                    <SortableContext items={designersByGroup[group].map(d => `designer-${d.id}`)} strategy={verticalListSortingStrategy}>
-                      {designersByGroup[group].map(d => (
-                        <SortableDesignerTbody key={d.id} designer={d} isAdmin={canEditTasks}>
-                          {({ attributes, listeners }) => (
-                            <>
+                    designersByGroup[group].map((d, groupIndex) => {
+                      const groupMembers = designersByGroup[group];
+                      const canMoveDesigner = canEditTasks && (groupIndex > 0 || groupIndex < groupMembers.length - 1);
+                      const canMoveDesignerUp = canEditTasks && groupIndex > 0;
+                      const canMoveDesignerDown = canEditTasks && groupIndex < groupMembers.length - 1;
+                      return (
+                        <tbody key={d.id}>
                               <tr className="align-top hover:bg-blue-50/20 group/row transition-colors">
                                 <td className="sticky left-0 z-20 bg-white border border-gray-300 px-2 py-3 min-w-[6rem] font-bold text-gray-800 text-center align-middle shadow-[1px_0_0_0_#d1d5db] group-hover/row:bg-blue-50">
-                                  <div className="flex items-center justify-center gap-1.5 h-full">
-                                    {canEditTasks && (
-                                      <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-0.5 hover:bg-blue-100 rounded">
-                                        <GripVertical size={14} className="text-gray-400" />
-                                      </div>
-                                    )}
-                                    <span className="text-base font-bold text-gray-900 whitespace-nowrap align-middle">{d.name}</span>
+                                  {/* 姓名悬停时才显示上移/下移按钮（样式与显示逻辑同主任务行的上下移按钮）：
+                                      按钮绝对定位在姓名正下方（锚点是姓名自身，不是整个姓名格），不占布局，
+                                      姓名始终在格子正中、列宽不变；姓名格给最小高度，当天没有任何任务时行也不会太矮。
+                                      有按钮时底部预留 22px（按钮 18 + 间距 4），让「姓名+按钮」整体在格子里居中 */}
+                                  <div className={`group/designer inline-flex items-center justify-center min-h-[56px] ${canMoveDesigner ? 'pb-[22px]' : ''}`}>
+                                    <div className="relative inline-block text-base font-bold text-gray-900 whitespace-nowrap">
+                                      {d.name}
+                                      {canMoveDesigner && (
+                                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 flex items-center gap-1 whitespace-nowrap opacity-0 group-hover/designer:opacity-100 transition-opacity">
+                                          {canMoveDesignerUp && (
+                                            <button
+                                              type="button"
+                                              className="h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
+                                              title="上移"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onMoveDesigner(d, 'up');
+                                              }}
+                                            >
+                                              <ChevronUp size={14} strokeWidth={3} />
+                                            </button>
+                                          )}
+                                          {canMoveDesignerDown && (
+                                            <button
+                                              type="button"
+                                              className="h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
+                                              title="下移"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onMoveDesigner(d, 'down');
+                                              }}
+                                            >
+                                              <ChevronDown size={14} strokeWidth={3} />
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                 </td>
                                 {days.map(day => {
@@ -2793,11 +2951,9 @@ const Dashboard = () => {
                                 ))}
                                 <td className="sticky right-0 z-20 bg-blue-50 border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db]"></td>
                               </tr>
-                            </>
-                          )}
-                        </SortableDesignerTbody>
-                      ))}
-                    </SortableContext>
+                        </tbody>
+                      );
+                    })
                   )}
                 </React.Fragment>
               ))}
@@ -3088,10 +3244,21 @@ const Dashboard = () => {
         </div>
       </footer>
 
+      {isAdmin && (
+        <QuickConfirmModifyModal
+          open={quickModifyOpen}
+          onClose={() => setQuickModifyOpen(false)}
+          designers={designers}
+          gunLocations={gunLocations}
+          addToast={addToast}
+          onCreated={handleQuickModifyCreated}
+        />
+      )}
+
       {helpGuideOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => setHelpGuideOpen(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-[760px] max-w-[94vw] max-h-[88vh] flex flex-col overflow-hidden border border-gray-200">
+          <div className="relative bg-white rounded-xl shadow-2xl w-[820px] max-w-[94vw] max-h-[92vh] flex flex-col overflow-hidden border border-gray-200">
             <div className="relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25">
@@ -3111,7 +3278,7 @@ const Dashboard = () => {
               </button>
             </div>
 
-            <div className="flex-1 overflow-auto p-5 bg-gray-50/70 space-y-4">
+            <div className="flex-1 overflow-auto px-5 py-6 bg-gray-50/70 space-y-5">
               <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
                 <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 bg-green-50/60">
                   <span className="flex items-center justify-center w-6 h-6 rounded-md bg-[#217346] text-white">
@@ -3172,40 +3339,57 @@ const Dashboard = () => {
                   <span className="font-bold text-sm text-gray-800">快捷键录入</span>
                   <span className="text-[11px] text-gray-400 ml-auto">选中任务后生效</span>
                 </div>
-                <ul className="divide-y divide-gray-100">
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">单击</kbd>
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+单击</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">选中任务 / 多选任务</div>
-                  </li>
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+C</kbd>
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+X</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">复制 / 剪切选中任务</div>
-                  </li>
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+V</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">粘贴到目标单元格</div>
-                  </li>
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Delete</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">删除选中任务</div>
-                  </li>
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">双击任务</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">编辑任务详情</div>
-                  </li>
-                </ul>
+                <div className="grid grid-cols-1 md:grid-cols-2">
+                  <ul className="divide-y divide-gray-100 md:border-r md:border-gray-100">
+                    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">单击</kbd>
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+单击</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">选中 / 多选任务</div>
+                    </li>
+                    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+C</kbd>
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+X</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">复制 / 剪切选中任务</div>
+                    </li>
+                    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+V</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">粘贴到目标单元格</div>
+                    </li>
+                    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Delete</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">删除选中任务</div>
+                    </li>
+                  </ul>
+                  <ul className="divide-y divide-gray-100 border-t border-gray-100 md:border-t-0">
+                    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+Z</kbd>
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl+Y</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">撤销 / 重做（亦可 Ctrl+Shift+Z）</div>
+                    </li>
+                    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">双击任务</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">编辑任务详情</div>
+                    </li>
+                    <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
+                        <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Esc</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">关闭弹出窗口</div>
+                    </li>
+                  </ul>
+                </div>
               </div>
 
               <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
@@ -3218,15 +3402,20 @@ const Dashboard = () => {
                 </div>
                 <ul className="divide-y divide-gray-100">
                   <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl</kbd>
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl</kbd>
+                    <span className="shrink-0 w-[92px]">
+                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl×2</kbd>
                     </span>
-                    <div className="text-[13px] text-gray-700">连按两次 Ctrl 定位到今日任务（等同点击左下角状态）</div>
+                    <div className="text-[13px] text-gray-700">连按两次，定位到今日任务（等同点击左下角状态）</div>
                   </li>
                   <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="flex items-center gap-1 shrink-0 w-[150px]">
-                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">F11</kbd>
+                    <span className="shrink-0 w-[92px]">
+                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Shift×2</kbd>
+                    </span>
+                    <div className="text-[13px] text-gray-700">连按两次，快速添加确认图修改（仅管理员）</div>
+                  </li>
+                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                    <span className="shrink-0 w-[92px]">
+                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">F11</kbd>
                     </span>
                     <div className="text-[13px] text-gray-700">全屏 / 退出全屏</div>
                   </li>

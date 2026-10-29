@@ -23,6 +23,7 @@ const routeActionDisplays = {
   'PUT users/:id': { label: '更新用户', description: '修改指定用户信息' },
   'DELETE users/:id': { label: '删除用户', description: '删除指定用户账号' },
   'POST users/batch-delete': { label: '批量删除用户', description: '批量删除用户账号' },
+  'POST users/batch-disabled': { label: '批量禁用/启用用户', description: '批量禁用或启用用户账号' },
 
   'GET designers': { label: '查看设计员', description: '查看设计员列表' },
   'GET designers/manage': { label: '管理设计员', description: '查看设计员管理列表' },

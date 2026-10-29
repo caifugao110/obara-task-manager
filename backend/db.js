@@ -653,6 +653,18 @@ const readSettings = () => {
   return deepClone(_cache.settings || {});
 };
 
+// 焊枪台账（体积最大的集合）：只在确需读取台账的接口里克隆这一份
+const readGunLedger = () => {
+  if (!_cache) init();
+  return deepClone(_cache.gunLedger || {});
+};
+
+// 设计人员列表：名称映射类场景（如枪名归属回显）只需这一份
+const readDesigners = () => {
+  if (!_cache) init();
+  return deepClone(_cache.designers || []);
+};
+
 // 按 id 取单个用户（克隆）：鉴权热路径只关心一条记录，连整个 users 数组都不必克隆
 const findUserById = (id) => {
   if (!_cache) init();
@@ -732,6 +744,8 @@ module.exports = {
   readDb,
   // 只读场景优先使用窄读接口，避免每个请求多次全库深拷贝
   readSettings,
+  readGunLedger,
+  readDesigners,
   findUserById,
   writeDb,
   initAdmin,

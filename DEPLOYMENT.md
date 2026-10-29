@@ -219,7 +219,7 @@ nssm remove ObaraTaskManager
 3. `backend/data.db` 已存在并已配置超级管理员，或已通过环境变量配置默认管理员账号（首次启动自动创建；未设置 `DEFAULT_ADMIN_PASSWORD` 时随机密码仅在启动控制台显示一次，务必当场记录）。
 4. `backend/data.db` 已完成一次备份（通过 `POST /api/system/maintenance/backup`）。
 5. `npm run build` 能成功完成前端构建。
-6. `npm run lint` 与 `npm test` 均通过（ESLint 与后端单元测试/关系表冒烟测试；冒烟测试自动在数据库快照副本上运行，不影响生产库）。
+6. `npm run lint` 与 `npm test` 均通过（ESLint 与后端单元测试 + 三段关系表测试：存储冒烟、主任务改色联动、枪名搜索；关系表测试自动在数据库快照副本上运行，不影响生产库）。
 7. 后端启动后匿名访问 `http://localhost:5000/api/system/version` 返回 `401` JSON（该接口已要求登录，避免匿名探测版本号）；带登录 Token 请求时返回 `200` 版本信息。
 8. 前端能打开并完成登录、主页面加载、任务保存、导出文件下载等关键流程。
 9. 如果使用仕样 PDF 搜索，运行后端的 Windows 用户能访问 `SPEC_SHARE_PATH` 配置的共享目录。
@@ -827,14 +827,17 @@ cd frontend
 npm run lint
 ```
 
-后端测试（单元测试 + 关系表冒烟测试，入口 `backend/tests/run-all.js`）：
+后端测试（单元测试 + 三段关系表测试，入口 `backend/tests/run-all.js`）：
 
 ```bat
 npm test
 ```
 
-- 冒烟测试会写入数据，入口脚本会先用 `VACUUM INTO` 为 `backend/data.db` 生成**只读快照副本**，在副本上执行，结束后清理 `backend/tests/.tmp/`，不会触碰生产数据库。
-- 需要细分执行时进入 `backend` 目录：`npm run test:unit`（纯函数单元测试，不依赖数据库与外网）、`npm run test:smoke`（冒烟测试，需自备副本：`set SMOKE_DB_PATH=%CD%\data-smoke.db`）。
+- 关系表测试会写入数据，入口脚本会先用 `VACUUM INTO` 为 `backend/data.db` 生成**只读快照副本**，在副本上依次执行三段用例，结束后清理 `backend/tests/.tmp/`，不会触碰生产数据库：
+  - `smoke-relational.js`：`taskStore` 与独立日志表的读写；
+  - `color-sync-relational.js`：主任务改色后子枪名颜色联动、`colorBeforeUserMark` / `colorMarkedBy` 一并清除；
+  - `gun-search-relational.js`：`GET /api/tasks/gun-name-search` 的权限与空关键字边界、归属回传，以及「确认图修改」快捷添加的写入路径。
+- 需要细分执行时进入 `backend` 目录：`npm run test:unit`（纯函数单元测试，不依赖数据库与外网）、`npm run test:smoke`（存储冒烟测试，需自备副本：`set SMOKE_DB_PATH=%CD%\data-smoke.db`）；另外两段用 `node tests\color-sync-relational.js`、`node tests\gun-search-relational.js` 单独运行，同样要求先设置 `SMOKE_DB_PATH`。
 - 任一部分失败均返回非 0 退出码，可接入 CI。
 
 后端语法检查示例：

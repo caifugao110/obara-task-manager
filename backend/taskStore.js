@@ -267,6 +267,94 @@ const entriesJsonSize = () => Number(ensureTables().prepare('SELECT COALESCE(SUM
 // ---------------------------------------------------------------------------
 const escapeLike = (text) => String(text).replace(/[\\%_]/g, ch => `\\${ch}`);
 
+// ---------------------------------------------------------------------------
+// 枪名归属：按枪名反查「当前被放在哪位设计员的哪一天、哪条任务里」
+// 供主页面「确认图修改」快捷键快速添加使用：选中枪名后默认把任务安排给
+// 该枪名所在任务的设计员。
+// LIKE 只做预筛（备注等字段也可能命中），命中后仍逐条校验 guns 数组。
+// ---------------------------------------------------------------------------
+// scope 传入 { year, month } 时只在该月的表里预筛（默认范围），不传则全表
+const gunEntryRows = (pattern, scope) => {
+  const raw = ensureTables();
+  const params = { pattern };
+  const conditions = [`e.data LIKE @pattern ESCAPE '\\'`];
+  const scopeYear = scope ? Number(scope.year) : NaN;
+  const scopeMonth = scope ? Number(scope.month) : NaN;
+  if (Number.isInteger(scopeYear) && Number.isInteger(scopeMonth)) {
+    conditions.push('s.year = @scopeYear AND s.month = @scopeMonth');
+    params.scopeYear = scopeYear;
+    params.scopeMonth = scopeMonth;
+  }
+  return raw.prepare(`
+    SELECT e.id AS itemId, e.data AS data, e.date AS date,
+           s.designer_id AS designerId, s.year AS year, s.month AS month
+    FROM task_entries e
+    JOIN task_sheets s ON s.id = e.sheet_id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY e.date DESC
+  `).all(params);
+};
+
+const toGunHours = (value) => {
+  const hours = typeof value === 'number' ? value : parseFloat(value);
+  return Number.isFinite(hours) ? hours : 0;
+};
+
+const parseGuns = (data) => {
+  try {
+    const item = JSON.parse(data);
+    return { item, guns: Array.isArray(item.guns) ? item.guns : [] };
+  } catch {
+    return null;
+  }
+};
+
+// 按关键字反查枪名的归属（枪名 → 归属列表）
+// 一次 LIKE 预筛即可同时「发现枪名」和「拿到归属」：台账里没有、只在任务里
+// 手工录入过的枪名也能被搜到，不会因为不在台账而丢掉默认设计人员。
+// 「确认图」任务排在最前：确认图修改的默认设计人员取该枪名的确认图负责人。
+// scope={year,month} 时只在该月的任务里反查（前端「全表搜索」关闭时的默认范围）。
+const isConfirmTask = (taskName) => {
+  const name = String(taskName || '');
+  return name.includes('确认图') && !name.includes('确认图修改');
+};
+
+const MAX_QUERY_GUN_NAMES = 200;
+
+const findGunOwnersByQuery = (query, limitPerGun = 3, scope = null) => {
+  const keyword = String(query || '').trim();
+  const ownersByGun = new Map();
+  if (!keyword) return ownersByGun;
+  const lower = keyword.toLowerCase();
+
+  for (const row of gunEntryRows(`%${escapeLike(keyword)}%`, scope)) {
+    const parsed = parseGuns(row.data);
+    if (!parsed) continue;
+    for (const gun of parsed.guns) {
+      const name = String(gun && gun.name || '').trim();
+      if (!name || !name.toLowerCase().includes(lower)) continue;
+      const owners = ownersByGun.get(name) || [];
+      if (owners.length >= limitPerGun) continue;
+      owners.push({
+        itemId: row.itemId,
+        designerId: row.designerId,
+        date: row.date,
+        year: row.year,
+        month: row.month,
+        taskName: String(parsed.item.taskName || ''),
+        gunHours: toGunHours(gun.hours)
+      });
+      ownersByGun.set(name, owners);
+    }
+    if (ownersByGun.size >= MAX_QUERY_GUN_NAMES) break;
+  }
+
+  ownersByGun.forEach(owners => {
+    owners.sort((a, b) => Number(isConfirmTask(b.taskName)) - Number(isConfirmTask(a.taskName)));
+  });
+  return ownersByGun;
+};
+
 const findCandidateSheetIds = (findText, { allTable = false, month, year } = {}) => {
   const raw = ensureTables();
   const pattern = `%${escapeLike(findText)}%`;
@@ -311,5 +399,6 @@ module.exports = {
   countMonths,
   entriesJsonSize,
   findCandidateSheetIds,
-  listUsedGunNames
+  listUsedGunNames,
+  findGunOwnersByQuery
 };

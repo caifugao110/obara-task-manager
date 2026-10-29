@@ -49,6 +49,11 @@ const batchDeleteSchema = Joi.object({
   ids: Joi.array().items(Joi.string().required()).min(1).required()
 });
 
+const batchDisabledSchema = Joi.object({
+  ids: Joi.array().items(Joi.string().required()).min(1).required(),
+  disabled: Joi.boolean().required()
+});
+
 const batchResetPasswordSchema = Joi.object({
   ids: Joi.array().items(Joi.string().required()).min(1).required(),
   mode: Joi.string().valid('manual', 'auto').required(),
@@ -58,6 +63,13 @@ const batchResetPasswordSchema = Joi.object({
     otherwise: Joi.forbidden()
   })
 });
+
+// 账号管理的作用域：只能操作「权限比自己低」的账号。
+// 超级管理员可管理除超级管理员以外的所有账号；一般管理员只能管理普通用户，
+// 即不能禁用/删除同级或其他一般管理员，避免管理员之间互相锁死账号。
+// 超级管理员账号另有单独拦截（不可禁用、不可删除），这里只负责同级之间的边界。
+const canManageTarget = (actorRole, targetRole) =>
+  actorRole === 'superadmin' ? targetRole !== 'superadmin' : targetRole === 'user';
 
 // 对外下发的用户字段白名单。
 // 只投影界面真正需要的字段：password / sessionToken / sessionTokens /
@@ -120,10 +132,23 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
   res.status(201).json(toSafeUser(newUser));
 }));
 
-// Update login user (SuperAdmin can update anyone)
+// Update login user
+// 权限分层：超级管理员可改任何人（用户名/密码/角色/姓名/分组/禁用）；
+// 一般管理员对他人账号只开放「禁用/启用」一项，不能改角色、不能重置密码、不能改用户名；
+// 本人始终可以自助改密码（需校验旧密码）。
 router.put('/:id', [authMiddleware, adminMiddleware, maybeSelfServicePasswordLimit], asyncHandler(async (req, res) => {
-  if (req.user.role !== 'superadmin' && req.user.id !== req.params.id) {
-    return res.status(403).json({ message: '权限不足' });
+  const isSuperAdminReq = req.user.role === 'superadmin';
+  const isAdminReq = req.user.role === 'admin';
+  const isSelf = req.user.id === req.params.id;
+
+  if (!isSuperAdminReq && !isSelf) {
+    // 一般管理员操作他人账号时，请求体必须且只能包含 disabled 一个字段，
+    // 否则视为越权（防止夹带 role/password 提升权限或接管账号）
+    const fields = Object.keys(req.body || {});
+    const onlyDisabledToggle = isAdminReq && fields.length === 1 && fields[0] === 'disabled';
+    if (!onlyDisabledToggle) {
+      return res.status(403).json({ message: '权限不足' });
+    }
   }
 
   const { error } = userUpdateSchema.validate(req.body);
@@ -185,18 +210,32 @@ router.put('/:id', [authMiddleware, adminMiddleware, maybeSelfServicePasswordLim
   if (role && req.user.role === 'superadmin') targetUser.role = role;
   if (name) targetUser.name = name;
   if (group !== undefined) targetUser.group = group;
-  // 禁用/启用账号与角色变更同级，仅超级管理员可操作，防止管理员禁用自己或他人绕过管理
-  if (disabled !== undefined && req.user.role === 'superadmin') targetUser.disabled = disabled;
+  // 禁用/启用账号：超级管理员与一般管理员均可操作（一般管理员的核心管理动作）。
+  // 但不允许操作自己——否则管理员可先禁用自己把权限入口锁死。
+  if (disabled !== undefined) {
+    if (!isSuperAdminReq && !isAdminReq) {
+      return res.status(403).json({ message: '权限不足' });
+    }
+    if (isSelf) {
+      return res.status(400).json({ message: '不能修改当前登录账号的禁用状态' });
+    }
+    // 只能操作权限低于自己的账号：一般管理员不可禁用同级/更高权限账号
+    if (!canManageTarget(req.user.role, targetUser.role)) {
+      return res.status(403).json({ message: '只能操作权限低于自己的账号' });
+    }
+    targetUser.disabled = disabled;
+  }
 
   await db.writeDb(data);
 
   res.json(toSafeUser(targetUser));
 }));
 
-// Batch delete login users (SuperAdmin only)
+// Batch delete login users (SuperAdmin + Admin)
+// 一般管理员同样可以删除账号，但超级管理员账号与自己的账号不可删除（见下方校验）
 router.post('/batch-delete', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
-  if (req.user.role !== 'superadmin') {
-    return res.status(403).json({ message: '只有超级管理员可以删除登录用户' });
+  if (req.user.role !== 'superadmin' && req.user.role !== 'admin') {
+    return res.status(403).json({ message: '权限不足' });
   }
 
   const { error } = batchDeleteSchema.validate(req.body);
@@ -215,12 +254,70 @@ router.post('/batch-delete', [authMiddleware, adminMiddleware], asyncHandler(asy
     return res.status(400).json({ message: '不能批量删除超级管理员账号' });
   }
 
+  // 一般管理员只能删除权限更低的账号（普通用户）
+  if (req.user.role !== 'superadmin' && data.users.some(u => idSet.has(u.id) && u.role !== 'user')) {
+    return res.status(403).json({ message: '只能操作权限低于自己的账号' });
+  }
+
   const beforeCount = data.users.length;
   data.users = data.users.filter(u => !idSet.has(u.id));
   const deletedCount = beforeCount - data.users.length;
 
   await db.writeDb(data);
   res.json({ message: `已删除 ${deletedCount} 个登录用户`, deletedCount });
+}));
+
+// Batch enable/disable login users (SuperAdmin + Admin)
+// 一般管理员不具备改角色与重置密码能力，但可以批量禁用/启用账号
+router.post('/batch-disabled', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+  if (req.user.role !== 'superadmin' && req.user.role !== 'admin') {
+    return res.status(403).json({ message: '权限不足' });
+  }
+
+  const { error } = batchDisabledSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const { ids, disabled } = req.body;
+  const idSet = new Set(ids);
+
+  if (idSet.has(req.user.id)) {
+    // 批量禁用自己会把当前管理入口锁死，与单个禁用保持一致直接拒绝
+    return res.status(400).json({ message: '不能修改当前登录账号的禁用状态' });
+  }
+
+  const data = db.readDb();
+  if (disabled && data.users.find(u => idSet.has(u.id) && u.role === 'superadmin')) {
+    return res.status(400).json({ message: '超级管理员账号不可禁用' });
+  }
+
+  const targets = data.users.filter(u => idSet.has(u.id));
+  if (targets.length === 0) {
+    return res.status(404).json({ message: '未找到要操作的登录用户' });
+  }
+  if (targets.length !== idSet.size) {
+    return res.status(400).json({ message: '存在无效的用户，请刷新列表后重试' });
+  }
+
+  // 一般管理员只能禁用/启用权限更低的账号（普通用户）
+  if (req.user.role !== 'superadmin' && targets.some(u => u.role !== 'user')) {
+    return res.status(403).json({ message: '只能操作权限低于自己的账号' });
+  }
+
+  let changedCount = 0;
+  targets.forEach(u => {
+    if (u.role === 'superadmin' || Boolean(u.disabled) === disabled) return;
+    u.disabled = disabled;
+    changedCount += 1;
+  });
+
+  if (changedCount > 0) await db.writeDb(data);
+
+  res.json({
+    message: disabled ? `已禁用 ${changedCount} 个账号` : `已启用 ${changedCount} 个账号`,
+    updatedCount: changedCount
+  });
 }));
 
 // Batch reset login user passwords (SuperAdmin only)
@@ -278,10 +375,11 @@ router.post('/batch-reset-password', [authMiddleware, adminMiddleware], asyncHan
   });
 }));
 
-// Delete login user (SuperAdmin only)
+// Delete login user (SuperAdmin + Admin)
+// 一般管理员同样可以删除账号，但不能删除超级管理员账号（下方校验）
 router.delete('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
-  if (req.user.role !== 'superadmin') {
-    return res.status(403).json({ message: '只有超级管理员可以删除登录用户' });
+  if (req.user.role !== 'superadmin' && req.user.role !== 'admin') {
+    return res.status(403).json({ message: '权限不足' });
   }
 
   const data = db.readDb();
@@ -298,6 +396,11 @@ router.delete('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req
   // 删掉最后一个超管会让系统失去唯一的权限入口，只能手工改数据库恢复。
   if (data.users[userIndex].role === 'superadmin') {
     return res.status(400).json({ message: '不能删除超级管理员账号' });
+  }
+
+  // 一般管理员只能删除权限更低的账号（普通用户）
+  if (!canManageTarget(req.user.role, data.users[userIndex].role)) {
+    return res.status(403).json({ message: '只能操作权限低于自己的账号' });
   }
 
   data.users.splice(userIndex, 1);

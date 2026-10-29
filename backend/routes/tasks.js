@@ -110,6 +110,21 @@ const syncTaskColorWithGuns = (item) => {
   }
 };
 
+// 主任务直接改色（编辑任务弹窗/管理员改色）时，整条任务回到「未完成」状态：
+// 所有子枪名一并改成新颜色，并清掉各自的 colorBeforeUserMark / colorMarkedBy。
+// 其中原来已标白（完成）的枪名也会被染成新颜色——主任务重新上了颜色就代表任务重新开始，
+// 不能再留下白色枪名，否则会出现「主任务有色、子枪名还是完成状态」的矛盾行。
+const syncGunColorsWithTask = (item, color) => {
+  const guns = Array.isArray(item.guns) ? item.guns : [];
+  if (guns.length === 0) return;
+  guns.forEach(gun => {
+    gun.color = color;
+    delete gun.colorBeforeUserMark;
+    delete gun.colorMarkedBy;
+  });
+  item.guns = guns;
+};
+
 const canUserMarkDesignPlanColor = (data, user, designerId, item) => {
   if (!user) return false;
   if (user.role === 'admin' || user.role === 'superadmin') {
@@ -302,6 +317,105 @@ const findBatchReplaceMatches = (targetSheets, designers, findText) => {
 // 所有主任务条目中使用过的焊枪名（去重）——台账页/主页面据此将已用枪名标为天蓝色
 router.get('/used-gun-names', authMiddleware, asyncHandler(async (req, res) => {
   res.json({ gunNames: taskStore.listUsedGunNames() });
+}));
+
+// 焊枪台账 → 枪名索引：枪名 → { customer, category, tableName }
+// 同名枪名在多个表中出现时，以首次出现的位置为准；客户列取首个非空值
+const buildGunLedgerIndex = (gunLedger) => {
+  const index = new Map();
+  const categories = gunLedger && gunLedger.categories ? gunLedger.categories : {};
+  Object.keys(categories).forEach(category => {
+    const tables = Array.isArray(categories[category]) ? categories[category] : [];
+    tables.forEach(table => {
+      const rows = Array.isArray(table && table.rows) ? table.rows : [];
+      rows.forEach(row => {
+        const gunName = String(row && row.gunName || '').trim();
+        if (!gunName) return;
+        const customer = String(row && row.customer || '').trim();
+        const existing = index.get(gunName);
+        if (!existing) {
+          index.set(gunName, { customer, category, tableName: String(table && table.name || '') });
+        } else if (!existing.customer && customer) {
+          existing.customer = customer;
+        }
+      });
+    });
+  });
+  return index;
+};
+
+// 枪名搜索（含归属）——供主页面「确认图修改」快捷键快速添加使用
+// 返回台账中匹配的枪名 + 该枪名当前所在任务（设计员 / 日期 / 任务名），
+// 前端据此把「确认图修改」默认安排给该枪名所属任务的设计员。
+// 搜索范围：默认只看 year/month 指定月份（未传则用服务器当前月），
+// allMonths=true 时才搜索所有月份（对应弹窗右上角的「全表搜索」开关）。
+router.get('/gun-name-search', authMiddleware, asyncHandler(async (req, res) => {
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+  if (!isAdmin) {
+    return res.status(403).json({ message: '只有管理员可以使用该快捷操作' });
+  }
+
+  const query = String(req.query.q || '').trim();
+  const rawLimit = parseInt(req.query.limit, 10);
+  const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 20, 1), 50);
+
+  const allMonths = String(req.query.allMonths || '') === 'true';
+  const now = new Date();
+  const rawYear = parseInt(req.query.year, 10);
+  const rawMonth = parseInt(req.query.month, 10);
+  const scope = allMonths ? null : {
+    year: Number.isFinite(rawYear) ? rawYear : now.getFullYear(),
+    month: Number.isFinite(rawMonth) ? rawMonth : now.getMonth() + 1,
+  };
+
+  const designers = db.readDesigners();
+  const designerNameMap = new Map(designers.map(d => [d.id, d.name || d.id || '']));
+
+  const decorateOwners = (owners) => owners.map(o => ({
+    ...o,
+    designerName: designerNameMap.get(o.designerId) || o.designerId
+  }));
+
+  // 必须带关键字：不支持空查询（前端空输入时不会发请求）
+  if (!query) {
+    return res.status(400).json({ message: '请输入枪名关键字' });
+  }
+
+  const index = buildGunLedgerIndex(db.readGunLedger());
+  // 任务里实际出现过的枪名（含台账未登记的）：一次预筛同时拿到归属
+  const ownersByGun = taskStore.findGunOwnersByQuery(query, 10, scope);
+
+  const lower = query.toLowerCase();
+  const names = new Set();
+  for (const gunName of ownersByGun.keys()) names.add(gunName);
+  for (const gunName of index.keys()) {
+    if (!gunName.toLowerCase().includes(lower)) continue;
+    // 限定月份时台账里「当月没有任何任务归属」的枪名不算命中，
+    // 否则全量台账会把范围限制架空
+    if (scope && !ownersByGun.has(gunName)) continue;
+    names.add(gunName);
+  }
+
+  const matches = Array.from(names).map(gunName => {
+    const info = index.get(gunName);
+    return {
+      gunName,
+      customer: (info && info.customer) || '',
+      category: (info && info.category) || '',
+      tableName: (info && info.tableName) || '',
+      owners: decorateOwners(ownersByGun.get(gunName) || []),
+      prefix: gunName.toLowerCase().indexOf(lower) === 0 ? 0 : 1
+    };
+  });
+  // 排序：前缀匹配 → 已有归属（该快捷操作的目的就是找到枪名所属设计员）→ 名称更短 → 字典序
+  matches.sort((a, b) => a.prefix - b.prefix
+    || (b.owners.length > 0 ? 1 : 0) - (a.owners.length > 0 ? 1 : 0)
+    || a.gunName.length - b.gunName.length
+    || a.gunName.localeCompare(b.gunName));
+
+  const results = matches.slice(0, limit).map(({ prefix, ...rest }) => rest);
+
+  res.json({ results });
 }));
 
 router.get('/', authMiddleware, asyncHandler(async (req, res) => {
@@ -549,8 +663,12 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     const isRestore = normalizeColorValue(value) === '__restore__';
 
     // Admin can set any color value directly (via task edit modal)
+    // 主任务改色 = 整条任务重新开始：子枪名颜色一起改为新色，原先标白的枪名也一并取消完成状态
     if (isAdmin && !isRestore && !isWhiteColor(value)) {
       item.color = value;
+      delete item.colorBeforeUserMark;
+      delete item.colorMarkedBy;
+      syncGunColorsWithTask(item, value);
       touchItem(item, req.user);
       sheet.days[date] = items;
       taskStore.saveSheet(sheet);

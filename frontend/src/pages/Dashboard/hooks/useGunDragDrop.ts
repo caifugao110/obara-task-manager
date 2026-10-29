@@ -13,11 +13,10 @@ import {
   DragOverEvent,
   DragMoveEvent,
 } from '@dnd-kit/core';
-import { arrayMove } from '@dnd-kit/sortable';
 import { axiosInstance } from '../../../services/api';
 import { gunRowDragState } from '../gunDragState';
 import { isTaskContentIdentical } from '../utils';
-import type { Designer, GunItem, SelectedTask, TaskItem, TaskSheet } from '../types';
+import type { GunItem, SelectedTask, TaskItem, TaskSheet } from '../types';
 
 interface UseGunDragDropParams {
   canEditTasks: boolean;
@@ -25,13 +24,10 @@ interface UseGunDragDropParams {
   getAllItems: (designerId: string, date: string) => TaskItem[];
   getVisibleItems: (designerId: string, date: string) => TaskItem[];
   getSelectedTaskPayloads: (fallback: { item: TaskItem; designerId: string; date: string }) => { item: TaskItem; designerId: string; date: string }[];
-  designers: Designer[];
-  setDesigners: React.Dispatch<React.SetStateAction<Designer[]>>;
   token: string | null;
   addToHistory: (operation: string, data: any) => void;
   upsertSheet: (incoming: TaskSheet) => void;
   fetchSheets: () => Promise<void>;
-  fetchData: () => Promise<void>;
   stopEditingCell: (designerId?: string | null, date?: string | null) => void;
   addToast: (message: string, type: 'success' | 'error') => void;
   onMoveGunToTask: (args: {
@@ -58,14 +54,11 @@ export const useGunDragDrop = ({
   getAllItems,
   getVisibleItems,
   getSelectedTaskPayloads,
-  designers,
-  setDesigners,
   // 保留在接口中但本 hook 不再使用，下划线前缀标记为有意忽略
   token: _token,
   addToHistory,
   upsertSheet,
   fetchSheets,
-  fetchData,
   stopEditingCell,
   addToast,
   onMoveGunToTask,
@@ -579,35 +572,7 @@ export const useGunDragDrop = ({
       }
     }
 
-    if (sourceData?.type === 'designer' && targetData?.type === 'designer') {
-      const group = sourceData.group;
-      if (group !== targetData.group) return;
-
-      const groupIds = designers.filter(d => (d.group || '未分组') === group).map(d => d.id);
-      const oldIndex = groupIds.indexOf(sourceData.designerId);
-      const newIndex = groupIds.indexOf(targetData.designerId);
-      if (oldIndex === -1 || newIndex === -1) return;
-
-      const nextGroupIds = arrayMove(groupIds, oldIndex, newIndex);
-      const groupOf = new Map(designers.map(d => [d.id, d.group || '未分组']));
-      let ptr = 0;
-      const nextIds = designers.map(d => d.id).map(id => (groupOf.get(id) === group ? nextGroupIds[ptr++] : id));
-
-      const byId = new Map(designers.map(d => [d.id, d]));
-      const nextDesigners = nextIds.map(id => byId.get(id)).filter(Boolean) as Designer[];
-      setDesigners(nextDesigners);
-
-      try {
-        await axiosInstance.post('/designers/reorder', { ids: nextIds });
-        addToast('排序已保存', 'success');
-      } catch (err) {
-        addToast('排序保存失败', 'error');
-        fetchData();
-      } finally {
-        setActiveTask(null);
-      }
-      return;
-    }
+    // 设计员排序已改为姓名悬停的上下移动按钮（见 Dashboard 的 onMoveDesigner），拖拽不再参与排序
 
     // 主任务移动（无 Ctrl）：落点以指针命中快照为准——命中某条主任务则移动到其上方，
     // 否则移动到目标单元格最下方；落在源单元格（自己当天的任务框）时不做任何移动

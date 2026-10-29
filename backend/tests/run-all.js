@@ -66,13 +66,25 @@ const cleanup = () => {
 };
 
 const main = () => {
-  console.log('[test] 1/2 单元测试 (tests/unit)');
+  console.log('[test] 1/4 单元测试 (tests/unit)');
   // 用 glob 而非目录：node --test 在本版本下把裸目录参数当作入口脚本去 require
   const unitOk = runNode(['--test', 'tests/unit/*.test.js']);
 
-  console.log('\n[test] 2/2 关系表冒烟测试 (tests/smoke-relational.js, 使用数据库快照)');
+  console.log('\n[test] 2/4 关系表冒烟测试 (tests/smoke-relational.js, 使用数据库快照)');
   const snapshot = createSnapshotDb();
   const smokeOk = runNode([path.join('tests', 'smoke-relational.js')], {
+    SMOKE_DB_PATH: snapshot,
+    SQLITE_DB_PATH: snapshot
+  });
+
+  console.log('\n[test] 3/4 主任务改色子枪名联动 (tests/color-sync-relational.js, 使用数据库快照)');
+  const colorSyncOk = runNode([path.join('tests', 'color-sync-relational.js')], {
+    SMOKE_DB_PATH: snapshot,
+    SQLITE_DB_PATH: snapshot
+  });
+
+  console.log('\n[test] 4/4 枪名搜索与确认图修改快速添加 (tests/gun-search-relational.js, 使用数据库快照)');
+  const gunSearchOk = runNode([path.join('tests', 'gun-search-relational.js')], {
     SMOKE_DB_PATH: snapshot,
     SQLITE_DB_PATH: snapshot
   });
@@ -81,9 +93,11 @@ const main = () => {
   console.log('\n================ 测试结果 ================');
   console.log(`单元测试:   ${unitOk ? '通过' : '失败'}`);
   console.log(`冒烟测试:   ${smokeOk ? '通过' : '失败'}`);
+  console.log(`颜色联动:   ${colorSyncOk ? '通过' : '失败'}`);
+  console.log(`枪名搜索:   ${gunSearchOk ? '通过' : '失败'}`);
   console.log('==========================================');
 
-  process.exit(unitOk && smokeOk ? 0 : 1);
+  process.exit(unitOk && smokeOk && colorSyncOk && gunSearchOk ? 0 : 1);
 };
 
 main();
