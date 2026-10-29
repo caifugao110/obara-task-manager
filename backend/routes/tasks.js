@@ -681,7 +681,11 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     }
 
     if (isRestore) {
-      const canRestore = isAdmin || canUserMarkDesignPlanColor(data, req.user, designerId, item) || item.colorMarkedBy?.id === req.user.id || item.colorMarkedBy?.id === 'auto';
+      // 恢复原色同样是「改色标」，普通用户只能作用于自己的任务行：
+      // canUserMarkDesignPlanColor 已包含「设计员姓名 = 本人姓名 + 开关开启」校验。
+      // 不再放行 colorMarkedBy.id === 'auto'（系统自动标白不区分归属），
+      // 否则任何登录用户都能借该分支恢复（即改动）他人被自动标白的任务行。
+      const canRestore = isAdmin || canUserMarkDesignPlanColor(data, req.user, designerId, item) || item.colorMarkedBy?.id === req.user.id;
       if (isWhiteColor(item.color) && canRestore) {
         const guns = Array.isArray(item.guns) ? item.guns : [];
         if (Object.prototype.hasOwnProperty.call(item, 'colorBeforeUserMark')) {
@@ -760,7 +764,9 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     }
 
     if (isRestore) {
-      const canRestoreGun = isAdmin || canUserMarkGunColor(data, req.user, designerId, item) || targetGun.colorMarkedBy?.id === req.user.id || targetGun.colorMarkedBy?.id === 'auto';
+      // 与主任务改色一致：普通用户只能恢复自己任务行上的枪名色标，
+      // 不再放行 colorMarkedBy.id === 'auto'（详见上方主任务分支说明）。
+      const canRestoreGun = isAdmin || canUserMarkGunColor(data, req.user, designerId, item) || targetGun.colorMarkedBy?.id === req.user.id;
       if (isWhiteColor(targetGun.color) && canRestoreGun) {
         if (Object.prototype.hasOwnProperty.call(targetGun, 'colorBeforeUserMark')) {
           targetGun.color = targetGun.colorBeforeUserMark || '';

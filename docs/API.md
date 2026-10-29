@@ -40,7 +40,7 @@ Authorization: Bearer <token>
 
 - 大多数接口直接返回 JSON 对象或数组，不统一包裹 `success/data`。
 - 错误响应通常包含 `message`，部分接口包含 `code` 或 `details`。
-- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问；唯一例外是 `GET /api/auth/session-policy`（会话有效期政策，无需登录，供登录页展示提示）。
+- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问；唯一无需登录的查询类接口是 `GET /api/auth/session-policy`（会话有效期政策，供登录页展示提示）。另有一个人为设计的例外：`POST /api/system/maintenance/offline-backup` 允许**本机环回地址匿名调用**（供 `stop.bat` 等运维脚本在停止服务前触发备份；非环回请求仍须超级管理员），详见维护章节。
 - 请求体默认使用 `application/json`；文件导入接口使用 `multipart/form-data`。
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
@@ -3999,7 +3999,7 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 | `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流：每个 IP 15 分钟最大请求数，覆盖全部 `/api` 接口；`OPTIONS` 预检与本机环回不计数，超限返回 `429` |
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在后端控制台显示一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时首次启动后应立即修改 |
-| `SPEC_SHARE_PATH` | 空 | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`） |
+| `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`）；未显式配置时代码回退到该内置地址（`backend/config/security.js`） |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
@@ -4047,6 +4047,6 @@ GITEE_REPO_NAME=obara-task-manager
 | `jwt.audience` | JWT 受众，默认 `obara-task-manager-api` |
 | `rateLimit.windowMs` / `rateLimit.max` | 配置块仍保留，但当前三层限流器均未读取这两个值：全局限流阈值取环境变量 `API_RATE_LIMIT_MAX`（默认 3000），窗口固定 15 分钟；登录/改密独立限流阈值在 `backend/routes/auth.js` 内硬编码 |
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
-| `spec.sharePath` | 仕样书 PDF 共享目录路径（`SPEC_SHARE_PATH`，无默认值） |
+| `spec.sharePath` | 仕样书 PDF 共享目录路径（`SPEC_SHARE_PATH`；未配置时代码回退到内置地址 `\\192.168.160.6\仕样书$`） |
 
 最后更新：2026-10-29

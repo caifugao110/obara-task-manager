@@ -41,7 +41,9 @@ const securityConfig = {
   },
   cors: {
     origin: corsOrigins,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    // PATCH 必须显式列出：焊枪台账有 3 个 PATCH 端点（表排序/分类排序/表更新），
+    // 跨域直连部署时浏览器会发起 OPTIONS 预检，白名单缺 PATCH 会被浏览器直接拦截
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: corsAllowCredentials
   },
   rateLimit: {

@@ -87,7 +87,7 @@ cd weknora && bash start.sh
 
 **管理员口令（无内置默认口令）**：`setup.js` 按以下顺序解析——`--password` 参数 / `WEKNORA_ADMIN_PASSWORD` 环境变量 / `weknora/.env` 同名项 → 交互终端手动输入（回车则随机生成）→ 非交互场景随机生成 20 位强口令。随机口令会在初始化输出中**显示一次**并回写到 `weknora/.env` 的 `WEKNORA_ADMIN_PASSWORD`（保证脚本幂等重跑），首次登录后请尽快在控制台修改。
 
-> 若 `backend/.env` 有变更，**必须重启本系统后端**（`node server.js`，非热重载）。
+> 若 `backend/.env` 有变更，**必须重启本系统后端**（`start.bat` 方式经 nodemon 启动，但 nodemon 仅监听 `.js` 文件，`.env` 变更不会自动重载；`node server.js` 直启则完全无热重载）。
 
 ## 4. 手动分步部署（等价于 start.bat 内部步骤）
 
@@ -266,7 +266,7 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 5. **检索结果 `match_type` 是数字枚举**（0=向量检索、1=关键词……），需映射成文字再展示。
 6. **SYSTEM_AES_KEY 一旦设置不可丢失**，否则数据库里已加密的模型 API Key 全部无法解密。
 7. `docker compose pull` 偶发卡顿时，逐镜像 `docker pull <image>` 重试即可；并行拉同一镜像会互相阻塞。
-8. 本系统后端是 `node server.js`（非 nodemon），**改 backend 代码或 backend/.env 后必须重启后端**。
+8. 本系统后端无论经 `start.bat`（nodemon，仅监听 `.js`）还是 `node server.js` 直启，`.env` 变更都不会自动重载，**改 backend 代码或 backend/.env 后必须重启后端**。
 9. **问答不允许跨工作空间**：检索可以跨空间分组扇出再合并排序，但知识库问答的会话是空间级资源，所选知识库必须同属一个工作空间；跨空间勾选时前端禁用发送，后端也会在 SSE 建连前返回 `400 WEKNORA_MULTI_TENANT`。配置答复约束提示词时，若该空间没有 KnowledgeQA 问答模型则返回 `503 WEKNORA_NO_QA_MODEL`。
 
 ## 9. 安全说明与生产建议
@@ -303,4 +303,4 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 
 > 修改 `weknora/.env` 后需 `docker compose up -d` 重建受影响容器；修改 `backend/.env` 的 `WEKNORA_*` 后需**重启本系统后端**（`node server.js`，无热重载）。
 
-最后更新：2026-10-17
+最后更新：2026-10-29

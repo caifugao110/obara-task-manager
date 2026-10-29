@@ -186,7 +186,36 @@ function parseDateQuantityLine(line) {
   return {dateStr: dateStr, qtyStr: qtyStr};
 }
 
+// PDF 解析资源保护：
+// - 共享目录中的 PDF 由人工上传，体积不可控，超大文件解析会占满内存与 CPU；
+// - 解析超时（Promise.race）只是让 HTTP 先返回，解析本身仍在后台继续跑，
+//   并发请求可叠加占用，因此再加一层「同时解析数上限」，超出直接拒绝。
+const MAX_SPEC_PDF_BYTES = 20 * 1024 * 1024;
+const MAX_CONCURRENT_PARSES = 2;
+let activePdfParses = 0;
+
+// 解析前先 stat：不是普通文件或超过体积上限时直接跳过，不读入内存
+const checkSpecPdfReadable = (filePath) => {
+  try {
+    const stat = fs2.statSync(filePath);
+    if (!stat.isFile()) return { ok: false, reason: '目标不是普通文件' };
+    if (stat.size > MAX_SPEC_PDF_BYTES) {
+      return { ok: false, reason: `文件大小 ${(stat.size / 1024 / 1024).toFixed(1)}MB 超过 20MB 上限，已拒绝解析` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: '文件读取失败' };
+  }
+};
+
 async function extractSpecInfoFromPdf(p) {
+  const readable = checkSpecPdfReadable(p);
+  if (!readable.ok) {
+    console.warn('[spec] 跳过解析:', readable.reason, p);
+    return null;
+  }
+  if (activePdfParses >= MAX_CONCURRENT_PARSES) return null;
+  activePdfParses += 1;
   try {
     var buf = fs2.readFileSync(p);
     var ParseClass = await getPdfParse();
@@ -365,6 +394,8 @@ async function extractSpecInfoFromPdf(p) {
   } catch(e) {
     console.error('extractSpecInfoFromPdf error:', e);
     return null;
+  } finally {
+    activePdfParses -= 1;
   }
 }
 
@@ -432,15 +463,27 @@ router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(as
     var pdf = findLatestSpecPdf(n);
     if (!pdf) return res.json({success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'});
 
-    var buf = fs2.readFileSync(pdf);
-    var ParseClass = await getPdfParse();
-    var pdfParser = new ParseClass({data: buf});
-    var textResult = await pdfParser.getText();
-    var t = (textResult && textResult.text) || '';
+    // 与 extractSpecInfoFromPdf 相同的保护：体积上限 + 并发解析上限
+    const readable = checkSpecPdfReadable(pdf);
+    if (!readable.ok) return res.json({success: false, message: readable.reason});
+    if (activePdfParses >= MAX_CONCURRENT_PARSES) {
+      return res.json({success: false, message: '系统正在解析其他仕样书，请稍后重试'});
+    }
 
-    var lines = t.split('\n').map((l, idx) => ({line: idx + 1, text: l.trim()})).filter(l => l.text);
+    activePdfParses += 1;
+    try {
+      var buf = fs2.readFileSync(pdf);
+      var ParseClass = await getPdfParse();
+      var pdfParser = new ParseClass({data: buf});
+      var textResult = await pdfParser.getText();
+      var t = (textResult && textResult.text) || '';
 
-    return res.json({success: true, lines: lines, rawText: t});
+      var lines = t.split('\n').map((l, idx) => ({line: idx + 1, text: l.trim()})).filter(l => l.text);
+
+      return res.json({success: true, lines: lines, rawText: t});
+    } finally {
+      activePdfParses -= 1;
+    }
   } catch(e) {
     console.warn('[spec] 获取原始文本失败:', e.message);
     return res.json({success: false, message: '获取原始文本失败，请确认仕样书存在或联系管理员'});

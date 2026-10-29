@@ -542,7 +542,7 @@ npm run test:backend
 | `npm run start:backend` | 使用 `node server.js` 启动后端 |
 | `npm run start:frontend` | 预览前端构建产物（`vite preview`） |
 | `npm run lint` | 运行前端 ESLint 检查（等同 `lint:frontend`） |
-| `npm run lint:frontend` | 对 `frontend/src` 下的 `ts/tsx` 文件运行 ESLint，配置见 `frontend/.eslintrc.cjs`，未使用变量等告警阈值为 0 |
+| `npm run lint:frontend` | 对 `frontend` 目录下的 `ts/tsx` 文件运行 ESLint（脚本为 `eslint . --ext ts,tsx`，作用范围为 frontend 整个目录而非仅 `src`），配置见 `frontend/.eslintrc.cjs`，未使用变量等告警阈值为 0 |
 | `npm test` | 后端测试总入口（等同 `test:backend`，调用 `backend/tests/run-all.js`） |
 | `npm run test:backend` | 后端测试总入口，依次执行单元测试与三段快照冒烟测试（关系表存储 / 主任务改色联动 / 枪名搜索） |
 
@@ -627,11 +627,11 @@ node --check backend\routes\tasks.js
 | `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流阈值：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
 | `API_RATE_LIMIT_MAX` | `3000` | 全局 API 限流阈值：每个 IP 15 分钟内最大请求数，覆盖所有 `/api` 接口；`OPTIONS` 预检与本机环回请求不计数，超限返回 `429` |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
-| `SPEC_SHARE_PATH` | 空 | 仕样书 PDF 共享目录（如 `\\server\仕样书$`） |
+| `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录（如 `\\server\仕样书$`）；未在 `backend/.env` 中显式配置时，代码回退到该内置地址（`backend/config/security.js`），指向其他共享目录必须显式配置并重启后端 |
 | `CORS_ORIGIN` | 开发环境默认 `*`；**生产环境必填** | 允许的前端地址，多个用逗号分隔；开发环境未配置时允许任意来源且不启用 CORS credentials；**生产环境未配置将导致服务启动失败（`process.exit(1)`），必须设置显式白名单** |
 | `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
-| `GITEE_REPO_OWNER` | `caifugao110` | Gitee 仓库所有者 |
-| `GITEE_REPO_NAME` | `obara-task-manager` | Gitee 仓库名称 |
+| `GITEE_REPO_OWNER` | 空（`.env.example` 提供示例值 `caifugao110`） | Gitee 仓库所有者；未配置时版本检查返回「未知」 |
+| `GITEE_REPO_NAME` | 空（`.env.example` 提供示例值 `obara-task-manager`） | Gitee 仓库名称；未配置时版本检查返回「未知」 |
 | `LOG_LEVEL` | `info` | 日志级别（预留变量：当前版本代码未读取，设置后不生效；日志输出到控制台与 `logs/` 下日志文件） |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
@@ -677,7 +677,7 @@ node --check backend\routes\tasks.js
 
 系统支持从共享目录读取仕样书 PDF 文件，提取纳期和详细信息：
 
-- 搜索路径：通过 `SPEC_SHARE_PATH` 配置（如 `\\server\仕样书$`），无默认值
+- 搜索路径：通过 `SPEC_SHARE_PATH` 配置（如 `\\server\仕样书$`）；未配置时代码回退到内置地址 `\\192.168.160.6\仕样书$`
 - 支持按仕样号搜索（位数由系统设置 `specNumberDigits` 控制，5 或 6 位），自动查找最新版本（如 `12345.PDF`、`12345.01.PDF` 等）
 - 可提取纳期、中间商、最终客户、项目名称、数量、营业担当等信息
 - 纳期获取超时时间为 9 秒，完整信息获取超时时间为 15 秒
@@ -901,6 +901,7 @@ obara-task-manager/
 │   ├── docker-compose.yml
 │   ├── start.bat
 │   └── start.sh
+├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log）
 ├── .gitignore
 ├── .npmrc                       # ignore-scripts=true：跳过 install 脚本，免安装 VS C++ 生成工具
 ├── DEPLOYMENT.md
