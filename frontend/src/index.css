@@ -103,6 +103,11 @@ input[type="number"] {
   z-index: 40;
 }
 
+/* 吸顶表头：border-collapse 下 tr 的下边框会随滚动消失，用内阴影替代分割线 */
+.sticky-thead th {
+  box-shadow: inset 0 -1px 0 #e5e7eb;
+}
+
 .table-header-row-secondary {
   position: sticky;
   top: 64px;

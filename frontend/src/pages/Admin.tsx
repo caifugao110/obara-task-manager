@@ -3,7 +3,7 @@ import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
 import { buildLoginUrl } from '../utils/redirect';
-import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, ChevronRight, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download, Settings } from 'lucide-react';
+import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, GripVertical, Key, Edit2, X, ToggleLeft, Upload, Download, Settings, Search, Plus, MoreHorizontal } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -27,20 +27,28 @@ interface DesignerData {
   hidden?: boolean;
 }
 
-const SortableDesignerRow = ({ 
-  designer, 
+// 抽屉/工具栏共用的样式常量：保证表单与菜单在各模式下的排版完全一致
+const FIELD_LABEL = 'mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-gray-500';
+const FIELD_INPUT = 'w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-semibold text-gray-800 outline-none transition focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100';
+const MENU_ITEM = 'flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40';
+const BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3.5 py-2 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50';
+
+const SortableDesignerRow = ({
+  designer,
   selected,
+  dragDisabled,
   onSelect,
   onEdit,
-  onToggleHide, 
-  onDelete 
-}: { 
-  designer: DesignerData, 
+  onToggleHide,
+  onDelete
+}: {
+  designer: DesignerData,
   selected: boolean,
+  dragDisabled: boolean,
   onSelect: (id: string, selected: boolean) => void,
   onEdit: (id: string) => void,
   onToggleHide: (id: string, hidden: boolean) => void,
-  onDelete: (id: string) => void 
+  onDelete: (id: string) => void
 }) => {
   const {
     attributes,
@@ -49,7 +57,7 @@ const SortableDesignerRow = ({
     transform,
     transition,
     isDragging
-  } = useSortable({ id: designer.id });
+  } = useSortable({ id: designer.id, disabled: dragDisabled });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -59,52 +67,77 @@ const SortableDesignerRow = ({
   };
 
   return (
-    <tr 
-      ref={setNodeRef} 
-      style={style} 
-      className={`hover:bg-blue-50/30 transition group ${designer.hidden ? 'opacity-50' : ''}`}
+    <tr
+      ref={setNodeRef}
+      style={style}
+      className={`group transition-colors hover:bg-blue-50/40 ${isDragging ? 'bg-blue-50 shadow-lg' : ''}`}
     >
-      <td className="px-6 py-4 align-middle">
+      <td className="w-10 py-2.5 pl-4 pr-0 align-middle">
         <input
           type="checkbox"
-          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
           checked={selected}
           onChange={(e) => onSelect(designer.id, e.target.checked)}
         />
       </td>
-      <td className="px-6 py-4 font-bold text-gray-700 align-middle">
-        <div className="flex items-center gap-2">
-          <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 rounded">
-            <GripVertical size={16} className="text-gray-400" />
+      <td className="px-3 py-2.5 align-middle">
+        <div className="flex items-center gap-2.5">
+          <div
+            {...attributes}
+            {...listeners}
+            className={`shrink-0 rounded p-0.5 ${
+              dragDisabled
+                ? 'cursor-not-allowed opacity-30'
+                : 'cursor-grab hover:bg-gray-100 active:cursor-grabbing'
+            }`}
+            title={dragDisabled ? '清除筛选后可调整顺序' : '拖拽调整顺序'}
+          >
+            <GripVertical size={14} className="text-gray-400" />
           </div>
-          <span className="align-middle">{designer.name}</span>
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[11px] font-bold text-blue-700">
+            {designer.name.slice(0, 1)}
+          </span>
+          <span className={`truncate font-semibold ${designer.hidden ? 'text-gray-400 line-through decoration-gray-300' : 'text-gray-800'}`}>
+            {designer.name}
+          </span>
+          {designer.hidden && (
+            <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold text-gray-500">
+              已隐藏
+            </span>
+          )}
         </div>
       </td>
-      <td className="px-6 py-4">
-        <span className="text-gray-600 font-medium">{designer.group || '未分组'}</span>
+      <td className="px-3 py-2.5 align-middle">
+        <span className="inline-flex items-center rounded-md bg-gray-50 px-2 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200/70">
+          {designer.group || '未分组'}
+        </span>
       </td>
-      <td className="px-6 py-4 text-right">
-        <div className="flex items-center justify-end gap-1">
-          <button 
+      <td className="w-[120px] px-4 py-2.5 text-right align-middle">
+        <div className="flex items-center justify-end gap-0.5">
+          <button
             onClick={() => onEdit(designer.id)}
-            className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200"
+            className="rounded-md p-1.5 text-gray-400 transition hover:bg-blue-50 hover:text-blue-600"
             title="编辑人员信息"
           >
-            <Edit2 size={18} />
+            <Edit2 size={16} />
           </button>
-          <button 
+          <button
             onClick={() => onToggleHide(designer.id, !designer.hidden)}
-            className={`p-2 rounded-lg transition-all duration-200 ${designer.hidden ? 'text-blue-500 bg-blue-50' : 'text-gray-300 hover:text-blue-600 hover:bg-blue-50'}`}
+            className={`rounded-md p-1.5 transition ${
+              designer.hidden
+                ? 'bg-blue-50 text-blue-600'
+                : 'text-gray-400 hover:bg-blue-50 hover:text-blue-600'
+            }`}
             title={designer.hidden ? '取消隐藏' : '隐藏人员'}
           >
-            {designer.hidden ? <EyeOff size={18} /> : <Eye size={18} />}
+            {designer.hidden ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
-          <button 
+          <button
             onClick={() => onDelete(designer.id)}
-            className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
+            className="rounded-md p-1.5 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
             title="移除人员"
           >
-            <Trash2 size={18} />
+            <Trash2 size={16} />
           </button>
         </div>
       </td>
@@ -242,7 +275,6 @@ const Admin = () => {
   const [setRoleSubmitting, setSetRoleSubmitting] = useState(false);
   
   // Edit Designer Modal
-  const [editDesignerModalOpen, setEditDesignerModalOpen] = useState(false);
   const [editingDesignerId, setEditingDesignerId] = useState<string | null>(null);
   const [editingDesignerName, setEditingDesignerName] = useState('');
   const [editingDesignerGroup, setEditingDesignerGroup] = useState('');
@@ -257,9 +289,17 @@ const Admin = () => {
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState<{ kind: 'users' | 'designers'; ids: string[] } | null>(null);
   const [initializingUsers, setInitializingUsers] = useState(false);
   const [confirmInitUsers, setConfirmInitUsers] = useState(false);
-  const [designersCollapsed, setDesignersCollapsed] = useState(true);
-  const [usersCollapsed, setUsersCollapsed] = useState(true);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  // —— 布局状态：单页 Tab + 工具栏筛选 + 右侧抽屉表单 ——
+  const [activeTab, setActiveTab] = useState<'designers' | 'users'>('designers');
+  const [designerQuery, setDesignerQuery] = useState('');
+  const [designerGroup, setDesignerGroup] = useState('all');
+  const [userQuery, setUserQuery] = useState('');
+  const [userRoleFilter, setUserRoleFilter] = useState<'all' | 'admin' | 'user' | 'disabled'>('all');
+  // 抽屉模式：新增/编辑设计人员、新增登录用户共用同一侧滑容器
+  const [drawerMode, setDrawerMode] = useState<'designer-add' | 'designer-edit' | 'user-add' | null>(null);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
 
   const isOffline = !isOnline;
 
@@ -342,6 +382,46 @@ const Admin = () => {
     () => users.filter(u => u.id !== currentUser?.id && u.role !== 'superadmin').map(u => u.id),
     [currentUser?.id, users]
   );
+
+  // —— 工具栏筛选：分组/角色下拉与搜索关键词（本地过滤，不发请求）——
+  const designerGroupOptions = useMemo(() => {
+    const set = new Set<string>();
+    designers.forEach(d => { if (d.group) set.add(d.group); });
+    return Array.from(set).sort();
+  }, [designers]);
+
+  const filteredDesigners = useMemo(() => {
+    const q = designerQuery.trim().toLowerCase();
+    return designers.filter(d => {
+      if (designerGroup !== 'all' && (d.group || '') !== designerGroup) return false;
+      if (!q) return true;
+      return d.name.toLowerCase().includes(q) || (d.group || '').toLowerCase().includes(q);
+    });
+  }, [designers, designerQuery, designerGroup]);
+
+  const filteredUsers = useMemo(() => {
+    const q = userQuery.trim().toLowerCase();
+    return users.filter(u => {
+      if (userRoleFilter === 'disabled') {
+        if (!u.disabled) return false;
+      } else if (userRoleFilter !== 'all' && u.role !== userRoleFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return u.name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q);
+    });
+  }, [users, userQuery, userRoleFilter]);
+
+  // 处于筛选态时禁止拖拽排序：只重排可见子集会导致整体顺序错乱
+  const canReorderDesigners = filteredDesigners.length === designers.length;
+  const activeRows = activeTab === 'designers' ? filteredDesigners.length : filteredUsers.length;
+  const activeTotal = activeTab === 'designers' ? designers.length : users.length;
+  const isFiltered = activeRows !== activeTotal;
+  const allFilteredDesignersSelected =
+    filteredDesigners.length > 0 && filteredDesigners.every(d => selectedDesignerIds.includes(d.id));
+  const selectableFilteredUserIds = filteredUsers
+    .filter(u => selectableUserIds.includes(u.id))
+    .map(u => u.id);
 
   const isMissingBatchRoute = (err: any) => err?.response?.status === 404;
 
@@ -536,6 +616,7 @@ const Admin = () => {
       setNewName('');
       setNewRole('admin');
       setShowNewPassword(true);
+      setDrawerMode(null);
       fetchData();
     } catch (err: any) {
       markOfflineIfNetworkError(err);
@@ -559,6 +640,7 @@ const Admin = () => {
       addToast('设计人员添加成功', 'success');
       setNewDesignerName('');
       setNewDesignerGroup('');
+      setDrawerMode(null);
       fetchData();
     } catch (err: any) {
       markOfflineIfNetworkError(err);
@@ -917,7 +999,7 @@ const Admin = () => {
       setEditingDesignerId(id);
       setEditingDesignerName(designer.name);
       setEditingDesignerGroup(designer.group || '');
-      setEditDesignerModalOpen(true);
+      setDrawerMode('designer-edit');
     }
   };
 
@@ -933,7 +1015,7 @@ const Admin = () => {
         hidden: designer.hidden 
       });
       addToast('设计人员信息已更新', 'success');
-      setEditDesignerModalOpen(false);
+      setDrawerMode(null);
       fetchData();
     } catch (err: any) {
       markOfflineIfNetworkError(err);
@@ -942,16 +1024,37 @@ const Admin = () => {
   };
 
   if (!authReady || loading) return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gray-50">
-      <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
-      <div className="text-gray-600 font-medium">正在加载用户数据...</div>
+    <div className="min-h-screen bg-gray-50">
+      <div className="sticky top-0 z-40 flex h-12 items-center justify-between border-b border-gray-200 bg-white px-6">
+        <div className="h-4 w-40 animate-pulse rounded bg-gray-200" />
+        <div className="h-4 w-24 animate-pulse rounded bg-gray-200" />
+      </div>
+      <div className="mx-auto w-full max-w-[1440px] px-6 py-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="h-10 w-60 animate-pulse rounded-xl bg-gray-200" />
+          <div className="h-9 w-36 animate-pulse rounded-lg bg-gray-200" />
+        </div>
+        <div className="mb-3 h-9 w-full max-w-sm animate-pulse rounded-lg bg-gray-200" />
+        <div className="space-y-2 rounded-xl border border-gray-200 bg-white p-4">
+          {Array.from({ length: 9 }).map((_, i) => (
+            <div key={i} className="h-10 animate-pulse rounded-lg bg-gray-100" />
+          ))}
+        </div>
+      </div>
     </div>
   );
+
+  const drawerTitle = drawerMode === 'user-add'
+    ? '新增登录用户'
+    : drawerMode === 'designer-edit' ? '编辑设计人员' : '添加设计人员';
+  const drawerHint = drawerMode === 'user-add'
+    ? '创建后请把初始密码线下告知本人'
+    : drawerMode === 'designer-edit' ? '修改会立即同步到工作台表格' : '添加后可按拖拽顺序显示在工作台';
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* Toast Notifications */}
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+      <div className="fixed bottom-6 right-6 z-[60] flex flex-col gap-2">
         {toasts.map(toast => (
           <div key={toast.id} className={`flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-white transition-all duration-300 ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
             {toast.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle size={18} />}
@@ -1242,63 +1345,6 @@ const Admin = () => {
         </div>
       )}
 
-      {editDesignerModalOpen && editingDesignerId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div 
-            className="absolute inset-0 bg-black/40" 
-            onClick={() => setEditDesignerModalOpen(false)} 
-          />
-          <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
-            <div className="px-5 py-4 bg-[#217346] text-white border-b border-gray-200 flex items-center justify-between">
-              <div className="font-bold text-lg">编辑设计人员</div>
-              <button
-                className="p-1 rounded hover:bg-[#1a5c38] transition"
-                onClick={() => setEditDesignerModalOpen(false)}
-              >
-                <X size={20} />
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">姓名</label>
-                <input
-                  type="text"
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                  value={editingDesignerName}
-                  onChange={(e) => setEditingDesignerName(e.target.value)}
-                  placeholder="输入姓名"
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">所属分组</label>
-                <input
-                  type="text"
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                  value={editingDesignerGroup}
-                  onChange={(e) => setEditingDesignerGroup(e.target.value)}
-                  placeholder="例如：设计一课"
-                />
-              </div>
-            </div>
-            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
-              <button
-                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition"
-                onClick={() => setEditDesignerModalOpen(false)}
-              >
-                取消
-              </button>
-              <button
-                className="px-4 py-2 rounded-lg bg-blue-600 text-white font-bold hover:bg-blue-700 transition"
-                onClick={handleSaveDesigner}
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {bulkImportType && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -1399,10 +1445,10 @@ const Admin = () => {
             用户管理中心
           </h1>
         </div>
-        
+
         <div className="flex items-center space-x-6">
           <span className="text-sm font-bold text-red-600">{currentUser?.name}</span>
-          <button 
+          <button
             onClick={logout}
             className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition"
           >
@@ -1419,98 +1465,291 @@ const Admin = () => {
         </div>
       )}
 
-      <main className={`flex-1 p-6 space-y-8 max-w-7xl mx-auto w-full ${isOffline ? 'offline-locked' : ''}`}>
-        {/* Designers Management (Task Table Members) */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
-            <div className={`sticky ${isOffline ? 'top-[81px]' : 'top-[48px]'} z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center`}>
+      <main className={`mx-auto w-full max-w-[1440px] flex-1 px-4 py-4 sm:px-6 ${isOffline ? 'offline-locked' : ''}`}>
+        {/* 页签 + 主操作：同一时刻只呈现一份列表，替代原「两段式」布局 */}
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setActiveTab('designers')}
+              className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-sm font-bold transition ${
+                activeTab === 'designers' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              设计人员
+              <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${
+                activeTab === 'designers' ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-500'
+              }`}>{designers.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('users')}
+              className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-sm font-bold transition ${
+                activeTab === 'users' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              登录用户
+              <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${
+                activeTab === 'users' ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-500'
+              }`}>{users.length}</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setDrawerMode(activeTab === 'designers' ? 'designer-add' : 'user-add')}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700 active:scale-[0.98]"
+            >
+              <Plus size={16} />
+              {activeTab === 'designers' ? '添加设计人员' : '新增登录用户'}
+            </button>
+            <div className="relative">
               <button
                 type="button"
-                onClick={() => {
-                  setDesignersCollapsed(prev => !prev);
-                  if (designersCollapsed) setUsersCollapsed(true);
-                }}
-                className="inline-flex items-center gap-2 rounded-lg px-2 py-1 -ml-2 text-lg font-bold text-gray-800 hover:bg-gray-100 transition"
-                title={designersCollapsed ? '展开设计人员列表' : '折叠设计人员列表'}
+                onClick={() => setMoreMenuOpen(v => !v)}
+                className={BTN_SECONDARY}
+                aria-haspopup="menu"
+                aria-expanded={moreMenuOpen}
               >
-                {designersCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
-                设计人员列表
+                <MoreHorizontal size={16} />
+                更多
+                <ChevronDown size={14} className={`text-gray-400 transition ${moreMenuOpen ? 'rotate-180' : ''}`} />
               </button>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleInitializeDesigners}
-                  disabled={!canInitializeDesigners || initializingDesigners}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={!isSuperAdmin ? '仅超级管理员可使用' : designers.length > 0 ? '设计人员为空时可初始化' : '初始化设计人员'}
-                >
-                  <UserPlus size={14} />
-                  {initializingDesigners ? '初始化中...' : '初始化设计人员'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleBatchDeleteDesigners}
-                  disabled={selectedDesignerIds.length === 0}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Trash2 size={14} />
-                  批量删除
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBulkImportType('designers');
-                    setBulkImportText('');
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-100 transition"
-                >
-                  <Upload size={14} />
-                  批量添加设计人员
-                </button>
-                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{designers.length} 位设计人员</span>
-              </div>
+              {moreMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setMoreMenuOpen(false)} />
+                  <div className="absolute right-0 z-40 mt-1 w-60 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-xl">
+                    <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">批量导入</p>
+                    <button
+                      type="button"
+                      className={MENU_ITEM}
+                      onClick={() => { setBulkImportType('designers'); setBulkImportText(''); setMoreMenuOpen(false); }}
+                    >
+                      <Upload size={15} className="text-gray-400" />
+                      批量添加设计人员
+                    </button>
+                    <button
+                      type="button"
+                      className={MENU_ITEM}
+                      onClick={() => { setBulkImportType('users'); setBulkImportText(''); setMoreMenuOpen(false); }}
+                    >
+                      <Upload size={15} className="text-gray-400" />
+                      批量添加登录用户
+                    </button>
+                    <div className="my-1 h-px bg-gray-100" />
+                    <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">初始化（一次性）</p>
+                    <button
+                      type="button"
+                      className={MENU_ITEM}
+                      disabled={!canInitializeDesigners}
+                      title={!isSuperAdmin ? '仅超级管理员可使用' : designers.length > 0 ? '设计人员为空时可初始化' : '初始化设计人员'}
+                      onClick={() => { setMoreMenuOpen(false); handleInitializeDesigners(); }}
+                    >
+                      <UserPlus size={15} className="text-gray-400" />
+                      {initializingDesigners ? '初始化中...' : '初始化设计人员'}
+                    </button>
+                    <button
+                      type="button"
+                      className={MENU_ITEM}
+                      disabled={!canInitializeUsers}
+                      title={!isSuperAdmin ? '仅超级管理员可使用' : !canInitializeUsers ? '仅剩超级管理员账号时可初始化' : '初始化登录用户'}
+                      onClick={() => { setMoreMenuOpen(false); handleInitializeUsers(); }}
+                    >
+                      <UserPlus size={15} className="text-gray-400" />
+                      {initializingUsers ? '初始化中...' : '初始化登录用户'}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
-            {!designersCollapsed && (
-            <div className="overflow-x-auto">
-              <DndContext 
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleDragEnd}
+          </div>
+        </div>
+
+        {/* 工具栏：搜索、筛选与结果计数 */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              value={activeTab === 'designers' ? designerQuery : userQuery}
+              onChange={(e) => (activeTab === 'designers' ? setDesignerQuery(e.target.value) : setUserQuery(e.target.value))}
+              placeholder={activeTab === 'designers' ? '搜索姓名 / 分组' : '搜索姓名 / 用户名'}
+              className="h-9 w-60 rounded-lg border border-gray-200 bg-white pl-9 pr-8 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            />
+            {(activeTab === 'designers' ? designerQuery : userQuery) && (
+              <button
+                type="button"
+                onClick={() => (activeTab === 'designers' ? setDesignerQuery('') : setUserQuery(''))}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+                aria-label="清除搜索"
               >
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="bg-white text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
-                      <th className="px-6 py-4 w-12">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          checked={designers.length > 0 && selectedDesignerIds.length === designers.length}
-                          onChange={(e) => setSelectedDesignerIds(e.target.checked ? designers.map(d => d.id) : [])}
-                        />
-                      </th>
-                      <th className="px-6 py-4">姓名</th>
-                      <th className="px-6 py-4">分组</th>
-                      <th className="px-6 py-4 text-right">操作</th>
-                    </tr>
-                  </thead>
-                  <SortableContext
-                    items={designers.map(d => d.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <tbody className="text-sm divide-y divide-gray-50 align-middle">
-                      {designers.length === 0 ? (
-                        <tr>
-                          <td colSpan={4} className="px-6 py-12 text-center">
-                            <p className="font-bold text-gray-500">暂无设计人员</p>
-                            <p className="text-sm text-gray-400 mt-1">请在右侧表单添加第一位设计人员，添加后将显示在工作台表格中</p>
-                          </td>
-                        </tr>
-                      ) : (
-                        designers.map(d => (
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          {activeTab === 'designers' ? (
+            <select
+              value={designerGroup}
+              onChange={(e) => setDesignerGroup(e.target.value)}
+              className="h-9 cursor-pointer rounded-lg border border-gray-200 bg-white px-2.5 text-sm font-medium text-gray-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            >
+              <option value="all">全部分组</option>
+              {designerGroupOptions.map(g => (
+                <option key={g} value={g}>{g}</option>
+              ))}
+            </select>
+          ) : (
+            <select
+              value={userRoleFilter}
+              onChange={(e) => setUserRoleFilter(e.target.value as 'all' | 'admin' | 'user' | 'disabled')}
+              className="h-9 cursor-pointer rounded-lg border border-gray-200 bg-white px-2.5 text-sm font-medium text-gray-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            >
+              <option value="all">全部角色</option>
+              <option value="admin">一般管理员</option>
+              <option value="user">普通用户</option>
+              <option value="disabled">已禁用</option>
+            </select>
+          )}
+
+          <span className="ml-auto text-xs font-medium text-gray-500">
+            {isFiltered ? `筛选出 ${activeRows} / 共 ${activeTotal} 条` : `共 ${activeTotal} 条`}
+          </span>
+        </div>
+
+        {/* 批量操作条：仅在选中后出现，避免常驻按钮挤占头部 */}
+        {activeTab === 'designers' && selectedDesignerIds.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+            <span className="text-xs font-bold text-blue-700">已选 {selectedDesignerIds.length} 位设计人员</span>
+            <button
+              type="button"
+              onClick={handleBatchDeleteDesigners}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-red-600 ring-1 ring-inset ring-red-200 transition hover:bg-red-50"
+            >
+              <Trash2 size={13} />
+              批量移除
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedDesignerIds([])}
+              className="ml-auto text-xs font-bold text-blue-700 transition hover:text-blue-900"
+            >
+              取消选择
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'users' && selectedUserIds.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+            <span className="text-xs font-bold text-blue-700">已选 {selectedUserIds.length} 个账号</span>
+            <button
+              type="button"
+              onClick={handleBatchResetPassword}
+              disabled={!isSuperAdmin}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-amber-700 ring-1 ring-inset ring-amber-200 transition hover:bg-amber-50 disabled:opacity-50"
+            >
+              <Key size={13} />
+              批量重置密码
+            </button>
+            <button
+              type="button"
+              onClick={handleBatchDeleteUsers}
+              disabled={!isSuperAdmin}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1.5 text-xs font-bold text-red-600 ring-1 ring-inset ring-red-200 transition hover:bg-red-50 disabled:opacity-50"
+            >
+              <Trash2 size={13} />
+              批量删除
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedUserIds([])}
+              className="ml-auto text-xs font-bold text-blue-700 transition hover:text-blue-900"
+            >
+              取消选择
+            </button>
+          </div>
+        )}
+
+        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          {activeTab === 'designers' ? (
+            filteredDesigners.length === 0 ? (
+              <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-blue-50">
+                  {designers.length === 0 ? <Users size={22} className="text-blue-600" /> : <Search size={22} className="text-blue-600" />}
+                </div>
+                {designers.length === 0 ? (
+                  <>
+                    <p className="text-sm font-bold text-gray-700">还没有设计人员</p>
+                    <p className="mt-1 text-xs text-gray-500">添加后会按排序显示在工作台任务表格中</p>
+                    <div className="mt-4 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDrawerMode('designer-add')}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+                      >
+                        <Plus size={16} />
+                        添加第一位
+                      </button>
+                      {canInitializeDesigners && (
+                        <button type="button" onClick={handleInitializeDesigners} className={BTN_SECONDARY}>
+                          初始化名单
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-bold text-gray-700">没有匹配的设计人员</p>
+                    <p className="mt-1 text-xs text-gray-500">换个关键词，或清除筛选条件</p>
+                    <button
+                      type="button"
+                      onClick={() => { setDesignerQuery(''); setDesignerGroup('all'); }}
+                      className="mt-4 rounded-lg border border-gray-200 px-4 py-2 text-sm font-bold text-gray-700 transition hover:bg-gray-50"
+                    >
+                      清除筛选
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="max-h-[calc(100vh-13.5rem)] overflow-auto">
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                    <thead className="sticky-thead sticky top-0 z-10 bg-gray-50">
+                      <tr className="border-b border-gray-200 text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                        <th className="w-10 py-2.5 pl-4 pr-0">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                            checked={allFilteredDesignersSelected}
+                            onChange={(e) => {
+                              const visibleIds = filteredDesigners.map(d => d.id);
+                              setSelectedDesignerIds(prev => e.target.checked
+                                ? Array.from(new Set([...prev, ...visibleIds]))
+                                : prev.filter(id => !visibleIds.includes(id)));
+                            }}
+                          />
+                        </th>
+                        <th className="px-3 py-2.5">姓名</th>
+                        <th className="px-3 py-2.5">分组</th>
+                        <th className="w-[120px] px-4 py-2.5 text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <SortableContext
+                      items={filteredDesigners.map(d => d.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <tbody className="divide-y divide-gray-100">
+                        {filteredDesigners.map(d => (
                           <SortableDesignerRow
                             key={d.id}
                             designer={d}
                             selected={selectedDesignerIds.includes(d.id)}
+                            dragDisabled={!canReorderDesigners}
                             onSelect={(id, selected) => {
                               setSelectedDesignerIds(prev => selected ? [...prev, id] : prev.filter(item => item !== id));
                             }}
@@ -1518,146 +1757,87 @@ const Admin = () => {
                             onToggleHide={handleToggleHideDesigner}
                             onDelete={handleDeleteDesigner}
                           />
-                        ))
+                        ))}
+                      </tbody>
+                    </SortableContext>
+                  </table>
+                </DndContext>
+              </div>
+            )
+          ) : filteredUsers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-blue-50">
+                  {users.length === 0 ? <Shield size={22} className="text-blue-600" /> : <Search size={22} className="text-blue-600" />}
+                </div>
+                {users.length === 0 ? (
+                  <>
+                    <p className="text-sm font-bold text-gray-700">还没有登录用户</p>
+                    <p className="mt-1 text-xs text-gray-500">创建账号后，成员才能登录系统</p>
+                    <div className="mt-4 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDrawerMode('user-add')}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+                      >
+                        <Plus size={16} />
+                        新建账号
+                      </button>
+                      {canInitializeUsers && (
+                        <button type="button" onClick={handleInitializeUsers} className={BTN_SECONDARY}>
+                          初始化名单
+                        </button>
                       )}
-                    </tbody>
-                  </SortableContext>
-                </table>
-              </DndContext>
-            </div>
-            )}
-          </div>
-
-          <div className={`bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky ${isOffline ? 'lg:top-[81px]' : 'lg:top-[48px]'} lg:self-start`}>
-            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
-              <h2 className="text-lg font-bold text-gray-800 flex items-center">
-                <UserPlus size={20} className="mr-2 text-blue-600" /> 添加设计人员
-              </h2>
-            </div>
-            <form onSubmit={handleCreateDesigner} className="p-6 space-y-5">
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">人员姓名</label>
-                <input 
-                  type="text" 
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                  value={newDesignerName}
-                  onChange={(e) => setNewDesignerName(e.target.value)}
-                  placeholder="例如: 张三"
-                  required
-                />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-bold text-gray-700">没有匹配的登录用户</p>
+                    <p className="mt-1 text-xs text-gray-500">换个关键词，或清除筛选条件</p>
+                    <button
+                      type="button"
+                      onClick={() => { setUserQuery(''); setUserRoleFilter('all'); }}
+                      className="mt-4 rounded-lg border border-gray-200 px-4 py-2 text-sm font-bold text-gray-700 transition hover:bg-gray-50"
+                    >
+                      清除筛选
+                    </button>
+                  </>
+                )}
               </div>
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">所属分组</label>
-                <input 
-                  type="text" 
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                  value={newDesignerGroup}
-                  onChange={(e) => setNewDesignerGroup(e.target.value)}
-                  placeholder="例如: 设计一课"
-                />
-              </div>
-              <button 
-                type="submit" 
-                className="w-full bg-blue-600 text-white py-3.5 rounded-lg font-bold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all duration-200 active:scale-[0.98]"
-              >
-                添加设计人员
-              </button>
-            </form>
-          </div>
-        </section>
-
-        {/* Login Users Management (Admins) */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-8 border-t border-gray-200">
-          <div className="lg:col-span-2 bg-white rounded-xl shadow-xl border border-gray-200">
-            <div className={`sticky ${isOffline ? 'top-[81px]' : 'top-[48px]'} z-30 px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center`}>
-              <button
-                type="button"
-                onClick={() => {
-                  setUsersCollapsed(prev => !prev);
-                  if (usersCollapsed) setDesignersCollapsed(true);
-                }}
-                className="inline-flex items-center gap-2 rounded-lg px-2 py-1 -ml-2 text-lg font-bold text-gray-800 hover:bg-gray-100 transition"
-                title={usersCollapsed ? '展开登录用户列表' : '折叠登录用户列表'}
-              >
-                {usersCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
-                登录用户列表
-              </button>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleInitializeUsers}
-                  disabled={!canInitializeUsers || initializingUsers}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={!isSuperAdmin ? '仅超级管理员可使用' : !canInitializeUsers ? '仅剩超级管理员账号时可初始化' : '初始化登录用户'}
-                >
-                  <UserPlus size={14} />
-                  {initializingUsers ? '初始化中...' : '初始化登录用户'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleBatchDeleteUsers}
-                  disabled={!isSuperAdmin || selectedUserIds.length === 0}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Trash2 size={14} />
-                  批量删除
-                </button>
-                <button
-                  type="button"
-                  onClick={handleBatchResetPassword}
-                  disabled={!isSuperAdmin || selectedUserIds.length === 0}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-600 hover:bg-amber-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={!isSuperAdmin ? '仅超级管理员可使用' : '批量重置选中用户的密码'}
-                >
-                  <Key size={14} />
-                  批量重置密码
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBulkImportType('users');
-                    setBulkImportText('');
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-purple-50 px-3 py-1.5 text-xs font-bold text-purple-600 hover:bg-purple-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Upload size={14} />
-                  批量添加登录用户
-                </button>
-                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">{users.length} 个用户</span>
-              </div>
-            </div>
-            {!usersCollapsed && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="bg-white text-gray-400 text-[10px] font-black uppercase tracking-widest border-b border-gray-100">
+          ) : (
+            <div className="max-h-[calc(100vh-13.5rem)] overflow-auto">
+              <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+                <thead className="sticky-thead sticky top-0 z-10 bg-gray-50">
+                  <tr className="border-b border-gray-200 text-[11px] font-bold uppercase tracking-wider text-gray-500">
                     {isSuperAdmin && (
-                      <th className="px-6 py-4 w-12">
+                      <th className="w-10 py-2.5 pl-4 pr-0">
                         <input
                           type="checkbox"
-                          className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                          checked={selectableUserIds.length > 0 && selectableUserIds.every(id => selectedUserIds.includes(id))}
+                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0 disabled:cursor-not-allowed"
+                          checked={selectableFilteredUserIds.length > 0 && selectableFilteredUserIds.every(id => selectedUserIds.includes(id))}
                           onChange={(e) => {
-                            setSelectedUserIds(e.target.checked ? selectableUserIds : []);
+                            setSelectedUserIds(prev => e.target.checked
+                              ? Array.from(new Set([...prev, ...selectableFilteredUserIds]))
+                              : prev.filter(id => !selectableFilteredUserIds.includes(id)));
                           }}
-                          disabled={selectableUserIds.length === 0}
+                          disabled={selectableFilteredUserIds.length === 0}
                         />
                       </th>
                     )}
-                    <th className="px-6 py-4">姓名</th>
-                    <th className="px-6 py-4">用户名</th>
-                    <th className="px-6 py-4">权限</th>
-                    <th className="px-6 py-4 text-right">操作</th>
+                    <th className="px-3 py-2.5">姓名</th>
+                    <th className="px-3 py-2.5">用户名</th>
+                    <th className="px-3 py-2.5">角色</th>
+                    <th className="px-3 py-2.5">状态</th>
+                    <th className="w-[152px] px-4 py-2.5 text-right">操作</th>
                   </tr>
                 </thead>
-                <tbody className="text-sm divide-y divide-gray-50">
-                  {users.map(u => (
-                    <tr key={u.id} className="hover:bg-purple-50/30 transition group">
+                <tbody className="divide-y divide-gray-100">
+                  {filteredUsers.map(u => (
+                    <tr key={u.id} className={`group transition-colors hover:bg-blue-50/40 ${u.disabled ? 'bg-gray-50/70' : ''}`}>
                       {isSuperAdmin && (
-                        <td className="px-6 py-4">
+                        <td className="w-10 py-2.5 pl-4 pr-0">
                           <input
                             type="checkbox"
-                            className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500 disabled:opacity-40"
+                            className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-40"
                             checked={selectedUserIds.includes(u.id)}
                             onChange={(e) => {
                               setSelectedUserIds(prev => e.target.checked ? [...prev, u.id] : prev.filter(id => id !== u.id));
@@ -1666,56 +1846,77 @@ const Admin = () => {
                           />
                         </td>
                       )}
-                      <td className="px-6 py-4 font-bold text-gray-700">{u.name}</td>
-                      <td className="px-6 py-4 text-gray-500 font-medium">{u.username}</td>
-                      <td className="px-6 py-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-black flex items-center w-fit ring-1 ${
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
+                            u.disabled ? 'bg-gray-100 text-gray-400' : 'bg-blue-50 text-blue-700'
+                          }`}>{u.name.slice(0, 1)}</span>
+                          <span className={`truncate font-semibold ${u.disabled ? 'text-gray-400' : 'text-gray-800'}`}>{u.name}</span>
+                          {u.id === currentUser?.id && (
+                            <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">当前登录</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-xs text-gray-500">{u.username}</td>
+                      <td className="px-3 py-2.5">
+                        <span className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-bold ring-1 ring-inset ${
                           u.role === 'superadmin'
-                            ? 'bg-red-100 text-red-700 ring-red-200'
+                            ? 'bg-red-50 text-red-700 ring-red-200'
                             : u.role === 'admin'
-                              ? 'bg-purple-100 text-purple-700 ring-purple-200'
-                              : 'bg-gray-100 text-gray-700 ring-gray-200'
+                              ? 'bg-blue-50 text-blue-700 ring-blue-200'
+                              : 'bg-gray-50 text-gray-600 ring-gray-200'
                         }`}>
-                          <Shield size={12} className="mr-1.5" /> {getRoleLabel(u.role)}
+                          <Shield size={11} />
+                          {getRoleLabel(u.role)}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex items-center justify-end gap-1">
+                      <td className="px-3 py-2.5">
+                        <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${u.disabled ? 'text-amber-600' : 'text-emerald-600'}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${u.disabled ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                          {u.disabled ? '已禁用' : '正常'}
+                        </span>
+                      </td>
+                      <td className="w-[152px] px-4 py-2.5 text-right">
+                        <div className="flex items-center justify-end gap-0.5">
                           {isSuperAdmin && u.id !== currentUser?.id && u.role !== 'superadmin' && (
-                            <button 
+                            <button
                               onClick={() => handleToggleUserDisabled(u.id)}
-                              className={`p-2 rounded-lg transition-all duration-200 ${u.disabled ? 'text-gray-400 hover:text-green-600 hover:bg-green-50' : 'text-green-600 hover:text-gray-400 hover:bg-gray-50'}`}
+                              className={`rounded-md p-1.5 transition ${
+                                u.disabled
+                                  ? 'text-emerald-600 hover:bg-emerald-50'
+                                  : 'text-gray-400 hover:bg-amber-50 hover:text-amber-600'
+                              }`}
                               title={u.disabled ? '启用账号' : '禁用账号'}
                             >
-                              <ToggleLeft size={18} className={u.disabled ? 'opacity-50' : ''} />
+                              <ToggleLeft size={16} />
                             </button>
                           )}
                           {isSuperAdmin && u.role !== 'superadmin' && (
                             <button
                               onClick={() => handleSetRole(u.id)}
-                              className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200"
+                              className="rounded-md p-1.5 text-gray-400 transition hover:bg-blue-50 hover:text-blue-600"
                               title="设置权限"
                             >
-                              <Settings size={18} />
+                              <Settings size={16} />
                             </button>
                           )}
                           {/* 重置密码：他人账号限非超管；本人账号始终可重置，作为超管自助改密的唯一入口 */}
                           {isSuperAdmin && (u.role !== 'superadmin' || u.id === currentUser?.id) && (
-                            <button 
+                            <button
                               onClick={() => handleResetPassword(u.id)}
-                              className="p-2 text-gray-300 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all duration-200"
+                              className="rounded-md p-1.5 text-gray-400 transition hover:bg-blue-50 hover:text-blue-600"
                               title={u.id === currentUser?.id ? '修改我的密码' : '重置密码'}
                             >
-                              <Key size={18} />
+                              <Key size={16} />
                             </button>
                           )}
                           {isSuperAdmin && u.id !== currentUser?.id && (
-                            <button 
+                            <button
                               onClick={() => handleDeleteUser(u.id)}
-                              className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
+                              className="rounded-md p-1.5 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
                               title="删除账号"
                             >
-                              <Trash2 size={18} />
+                              <Trash2 size={16} />
                             </button>
                           )}
                         </div>
@@ -1725,99 +1926,180 @@ const Admin = () => {
                 </tbody>
               </table>
             </div>
-            )}
-          </div>
+          )}
+        </div>
 
-          <div className={`bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden h-fit lg:sticky ${isOffline ? 'lg:top-[81px]' : 'lg:top-[48px]'} lg:self-start`}>
-            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
-              <h2 className="text-lg font-bold text-gray-800 flex items-center">
-                <Shield size={20} className="mr-2 text-purple-600" /> 新增登录用户
-              </h2>
-              {!isSuperAdmin && <p className="text-[10px] text-gray-500 mt-1">一般管理员仅可创建普通用户</p>}
-            </div>
-            <form onSubmit={handleCreateUser} className="p-6 space-y-5">
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">显示姓名</label>
-                <input 
-                  type="text" 
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="例如: 管理员A"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">登录用户名</label>
-                <input
-                  type="text"
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                  value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  onBlur={() => {
-                    if (newUsername.trim() && !newPassword) {
-                      setNewPassword(generateRandomPassword());
-                    }
-                  }}
-                  placeholder="登录账号"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">登录密码</label>
-                <div className="relative">
-                  <input
-                    type={showNewPassword ? 'text' : 'password'}
-                    className="w-full p-3 pr-20 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="输入用户名后自动生成"
-                    required
-                  />
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                    <button
-                      type="button"
-                      className="p-1.5 rounded hover:bg-gray-200 text-gray-500"
-                      title={showNewPassword ? '隐藏' : '显示'}
-                      onClick={() => setShowNewPassword(v => !v)}
-                    >
-                      {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                    <button
-                      type="button"
-                      className="p-1.5 rounded hover:bg-gray-200 text-gray-500"
-                      title="重新生成随机密码"
-                      onClick={() => setNewPassword(generateRandomPassword())}
-                    >
-                      <RefreshCw size={16} />
-                    </button>
-                  </div>
+        {/* 右侧抽屉：新增设计人员 / 编辑设计人员 / 新增登录用户共用 */}
+        {drawerMode && (
+          <div className="fixed inset-0 z-[55] flex justify-end">
+            <div
+              className="absolute inset-0 bg-black/40"
+              onClick={() => { if (!bulkImportSubmitting) setDrawerMode(null); }}
+            />
+            <aside className="relative flex h-full w-full max-w-[440px] flex-col bg-white shadow-2xl">
+              <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
+                <div>
+                  <h2 className="flex items-center gap-2 text-base font-bold text-gray-800">
+                    {drawerMode === 'user-add' ? <Shield size={17} className="text-blue-600" /> : <UserPlus size={17} className="text-blue-600" />}
+                    {drawerTitle}
+                  </h2>
+                  <p className="mt-1 text-xs text-gray-500">{drawerHint}</p>
                 </div>
-                {newPassword && (
-                  <p className="mt-2 text-[11px] text-gray-400 ml-1">已生成随机密码，可直接创建或手动修改</p>
+                <button
+                  type="button"
+                  onClick={() => setDrawerMode(null)}
+                  className="rounded-md p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                  aria-label="关闭"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-5 py-5">
+                {drawerMode === 'user-add' ? (
+                  <form id="admin-user-form" onSubmit={handleCreateUser} className="space-y-4">
+                    <div>
+                      <label className={FIELD_LABEL}>显示姓名</label>
+                      <input
+                        type="text"
+                        className={FIELD_INPUT}
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        placeholder="例如：管理员A"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className={FIELD_LABEL}>登录用户名</label>
+                      <input
+                        type="text"
+                        className={FIELD_INPUT}
+                        value={newUsername}
+                        onChange={(e) => setNewUsername(e.target.value)}
+                        onBlur={() => {
+                          if (newUsername.trim() && !newPassword) {
+                            setNewPassword(generateRandomPassword());
+                          }
+                        }}
+                        placeholder="登录账号"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className={FIELD_LABEL}>登录密码</label>
+                      <div className="relative">
+                        <input
+                          type={showNewPassword ? 'text' : 'password'}
+                          className={`${FIELD_INPUT} pr-20`}
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="输入用户名后自动生成"
+                          required
+                        />
+                        <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+                          <button
+                            type="button"
+                            className="rounded p-1.5 text-gray-400 transition hover:bg-gray-200 hover:text-gray-600"
+                            title={showNewPassword ? '隐藏' : '显示'}
+                            onClick={() => setShowNewPassword(v => !v)}
+                          >
+                            {showNewPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded p-1.5 text-gray-400 transition hover:bg-gray-200 hover:text-gray-600"
+                            title="重新生成随机密码"
+                            onClick={() => setNewPassword(generateRandomPassword())}
+                          >
+                            <RefreshCw size={15} />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="mt-1.5 text-[11px] text-gray-400">
+                        {newPassword ? '已生成随机密码，可直接创建或手动修改' : '清空用户名重新输入会自动生成'}
+                      </p>
+                    </div>
+                    <div>
+                      <label className={FIELD_LABEL}>角色权限</label>
+                      <select
+                        className={`${FIELD_INPUT} cursor-pointer`}
+                        value={newRole}
+                        onChange={(e) => setNewRole(e.target.value as 'admin' | 'user')}
+                      >
+                        {isSuperAdmin && <option value="admin">一般管理员</option>}
+                        <option value="user">普通用户</option>
+                      </select>
+                    </div>
+                  </form>
+                ) : (
+                  <form
+                    id="admin-designer-form"
+                    onSubmit={drawerMode === 'designer-edit'
+                      ? (e) => { e.preventDefault(); handleSaveDesigner(); }
+                      : handleCreateDesigner}
+                    className="space-y-4"
+                  >
+                    <div>
+                      <label className={FIELD_LABEL}>人员姓名</label>
+                      <input
+                        type="text"
+                        className={FIELD_INPUT}
+                        value={drawerMode === 'designer-edit' ? editingDesignerName : newDesignerName}
+                        onChange={(e) => (drawerMode === 'designer-edit'
+                          ? setEditingDesignerName(e.target.value)
+                          : setNewDesignerName(e.target.value))}
+                        placeholder="例如：张三"
+                        autoFocus
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className={FIELD_LABEL}>所属分组</label>
+                      <input
+                        type="text"
+                        className={FIELD_INPUT}
+                        value={drawerMode === 'designer-edit' ? editingDesignerGroup : newDesignerGroup}
+                        onChange={(e) => (drawerMode === 'designer-edit'
+                          ? setEditingDesignerGroup(e.target.value)
+                          : setNewDesignerGroup(e.target.value))}
+                        placeholder="例如：设计一课"
+                      />
+                      <p className="mt-1.5 text-[11px] text-gray-400">分组会显示在列表与工作台的成员标签上</p>
+                    </div>
+                    {designerGroupOptions.length > 0 && (
+                      <div>
+                        <label className={FIELD_LABEL}>已有分组</label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {designerGroupOptions.map(g => (
+                            <button
+                              key={g}
+                              type="button"
+                              onClick={() => (drawerMode === 'designer-edit' ? setEditingDesignerGroup(g) : setNewDesignerGroup(g))}
+                              className="rounded-md bg-gray-50 px-2 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200 transition hover:bg-blue-50 hover:text-blue-700 hover:ring-blue-200"
+                            >
+                              {g}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </form>
                 )}
               </div>
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">角色权限</label>
-                <select 
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:bg-white outline-none text-gray-800 font-semibold transition cursor-pointer"
-                  value={newRole}
-                  onChange={(e) => setNewRole(e.target.value as 'admin' | 'user')}
-                >
-                  {isSuperAdmin && <option value="admin">一般管理员</option>}
-                  <option value="user">普通用户</option>
-                </select>
-              </div>
-              <button 
-                type="submit" 
-                className="w-full bg-purple-600 text-white py-3.5 rounded-lg font-bold hover:bg-purple-700 shadow-lg shadow-purple-200 transition-all duration-200 active:scale-[0.98]"
-              >
-                创建登录用户
-              </button>
-            </form>
-          </div>
-        </section>
 
+              <div className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-5 py-3">
+                <button type="button" onClick={() => setDrawerMode(null)} className={BTN_SECONDARY}>取消</button>
+                <button
+                  type="submit"
+                  form={drawerMode === 'user-add' ? 'admin-user-form' : 'admin-designer-form'}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98]"
+                >
+                  {drawerMode === 'designer-edit' ? '保存修改' : drawerMode === 'user-add' ? '创建用户' : '添加人员'}
+                </button>
+              </div>
+            </aside>
+          </div>
+        )}
       </main>
 
       {/* 删除确认弹窗（登录用户/设计人员共用，单个与批量通用，应用内居中，替代浏览器原生 confirm） */}
