@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
+import LoadingScreen from '../components/LoadingScreen';
 import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
 
@@ -989,12 +990,7 @@ const SystemSettings = () => {
   };
 
   if (loading || !settingsLoaded || !accessSettingsLoaded) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-        <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
-        <div className="text-gray-600 font-medium">正在加载系统设置...</div>
-      </div>
-    );
+    return <LoadingScreen text="正在加载系统设置" skeleton="systemsettings" />;
   }
 
   if (!canViewSystemSettings) {

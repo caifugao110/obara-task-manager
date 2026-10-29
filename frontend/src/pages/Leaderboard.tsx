@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
+import LoadingScreen from '../components/LoadingScreen';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
@@ -515,12 +516,7 @@ const Leaderboard = () => {
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
-  if (loading || !settingsLoaded) return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
-      <div className="text-gray-600 font-medium">正在加载数据...</div>
-    </div>
-  );
+  if (loading || !settingsLoaded) return <LoadingScreen skeleton="leaderboard" />;
 
   if (!canViewLeaderboard) {
     const isClosed = !leaderboardSettings.enabled;

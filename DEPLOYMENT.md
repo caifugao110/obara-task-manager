@@ -330,6 +330,8 @@ start.bat
 
 详细步骤、迁移方法、踩坑记录见 **[weknora/README.md](weknora/README.md)**。注意：`backend/.env` 中 `WEKNORA_*` 变更后需重启后端才生效（生产环境后端以 `node server.js` 子进程运行，没有 nodemon 热重载）。
 
+> **已有部署升级到 v0.8.3 请注意**：v0.8.3 的向量/关系库镜像由 `paradedb:v0.22.6-pg17` 升到 `v0.25.11-pg17`，只执行 `docker compose pull` 换镜像会让 PostgreSQL 因扩展版本不匹配崩溃——换镜像后必须补执行 `ALTER EXTENSION pg_search UPDATE;`（`vector` 同步更新到 0.8.4）。完整步骤见 [weknora/README.md](weknora/README.md) 第 6.2 节；数据卷可直接复用，不需要重新导入知识库。
+
 安全默认值（v2026-10-15 起）：WeKnora 不再内置任何默认管理员口令——`setup.js` 未取到 `--password` / `WEKNORA_ADMIN_PASSWORD` 时会交互询问或随机生成 20 位强口令（仅显示一次并回写 `weknora/.env`）；控制台/API 端口默认只绑定 `127.0.0.1`（`BIND_ADDRESS` 可改），开放注册默认关闭（`DISABLE_REGISTRATION=true`）。因此初始化完成前，局域网其他机器无法直连控制台。
 
 ### 知识库按 ID 关联
@@ -973,4 +975,4 @@ backend/
 6. **检查备份目录可写性**：确认服务账号对 `backups/database/`、`backups/task-exports/`、`backups/offline/` 等维护目录有写权限，并关注磁盘剩余空间；备份失败会写入后端日志
 7. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-10-21
+最后更新：2026-10-29

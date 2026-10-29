@@ -7,17 +7,19 @@ import {
   BarChart2,
   Calendar,
   CheckCircle,
+  ChevronDown,
   ChevronLeft,
+  ChevronUp,
   Clock,
   Download,
   LogOut,
-  Medal,
   RefreshCw,
   Shield,
   Users
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
+import LoadingScreen from '../components/LoadingScreen';
 import { getEffectiveIsWeekend, normalizeWorkdayOverrides, WorkdayOverrides } from '../utils/workdayOverrides';
 
 interface DesignerData {
@@ -63,6 +65,26 @@ interface Toast {
 
 const defaultSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
+// 两张榜单各用一套语义色：工时=蓝、请假=玫红。
+// 前三名只在数值大于 0 时才高亮，避免「全员 0 小时却挂金牌」的荒谬观感。
+const ACCENT_STYLES = {
+  blue: {
+    value: 'text-blue-700',
+    first: 'bg-blue-600 text-white',
+    second: 'bg-blue-100 text-blue-700',
+    third: 'bg-blue-50 text-blue-600',
+    switchOn: 'peer-checked:bg-blue-500'
+  },
+  rose: {
+    value: 'text-rose-600',
+    first: 'bg-rose-500 text-white',
+    second: 'bg-rose-100 text-rose-600',
+    third: 'bg-rose-50 text-rose-500',
+    switchOn: 'peer-checked:bg-rose-500'
+  }
+} as const;
+
+
 const WorkHours = () => {
   const { user, token, logout } = useAuth();
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -75,11 +97,40 @@ const WorkHours = () => {
   const workdayOverridesRef = useRef<WorkdayOverrides>({});
   const [showAllHours, setShowAllHours] = useState(false);
   const [showAllLeave, setShowAllLeave] = useState(false);
+  // 名单在卡片内独立滚动：收起时要把滚动位置一并归零，否则会停在列表中途
+  const hoursListRef = useRef<HTMLDivElement>(null);
+  const leaveListRef = useRef<HTMLDivElement>(null);
+  const toggleAllHours = () => {
+    if (showAllHours && hoursListRef.current) hoursListRef.current.scrollTop = 0;
+    setShowAllHours(prev => !prev);
+  };
+  const toggleAllLeave = () => {
+    if (showAllLeave && leaveListRef.current) leaveListRef.current.scrollTop = 0;
+    setShowAllLeave(prev => !prev);
+  };
   const [excludeWeekendOvertime, setExcludeWeekendOvertime] = useState(false);
   const [excludeVacationLeave, setExcludeVacationLeave] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [exporting, setExporting] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  // 悬停明细改为「视口定位浮层」：列表在卡片内独立滚动，浮层若留在列表里会被滚动容器裁掉
+  const [tip, setTip] = useState<{ kind: 'hours' | 'leave'; item: WorkHoursData; top: number; left: number; width: number } | null>(null);
+
+  const openTip = useCallback((kind: 'hours' | 'leave', item: WorkHoursData, el: HTMLElement) => {
+    const rect = el.getBoundingClientRect();
+    // 优先落在列表可视区内：下方放不下就向上翻，避免浮层压到卡片外
+    const box = el.closest('[data-list]')?.getBoundingClientRect();
+    const width = kind === 'hours' ? 320 : 288;
+    const estimate = kind === 'hours' ? 320 : 290;
+    const left = Math.min(Math.max(12, rect.right - width), window.innerWidth - width - 12);
+    const bottomLimit = Math.min((box ? box.bottom : window.innerHeight) - 8, window.innerHeight - 12);
+    let top = rect.bottom + 8;
+    if (top + estimate > bottomLimit) {
+      top = Math.max(12, Math.min(rect.top - estimate - 8, bottomLimit - estimate));
+    }
+    setTip({ kind, item, top, left, width });
+  }, []);
 
   const isOffline = !isOnline;
   const isSuperAdmin = user?.role === 'superadmin';
@@ -397,13 +448,40 @@ const WorkHours = () => {
     [getDisplayedLeaveHours, workHoursData]
   );
 
-  const getRankIcon = (index: number) => {
-    switch (index) {
-      case 0: return <Medal className="text-yellow-500" size={20} />;
-      case 1: return <Medal className="text-gray-400" size={20} />;
-      case 2: return <Medal className="text-amber-600" size={20} />;
-      default: return <span className="text-gray-400 font-bold text-sm">{index + 1}</span>;
-    }
+  // 卡片副标题用的汇总值 / 进度条用的基准值（进度条按榜首归一，视觉上更有可比性）
+  const totalWorkHours = useMemo(
+    () => sortedByHours.reduce((sum, item) => sum + getDisplayedWorkHours(item), 0),
+    [sortedByHours, getDisplayedWorkHours]
+  );
+
+  const maxWorkHours = useMemo(
+    () => Math.max(1, ...sortedByHours.map(getDisplayedWorkHours)),
+    [sortedByHours, getDisplayedWorkHours]
+  );
+
+  const maxLeaveHours = useMemo(
+    () => Math.max(1, ...sortedByLeave.map(getDisplayedLeaveHours)),
+    [sortedByLeave, getDisplayedLeaveHours]
+  );
+
+  // 全员为 0 时不渲染十行「0.0」，直接给空态，避免毫无信息量的名单占满半屏
+  const hasAnyLeave = useMemo(
+    () => sortedByLeave.some(item => getDisplayedLeaveHours(item) > 0),
+    [sortedByLeave, getDisplayedLeaveHours]
+  );
+
+  // 名次徽章：固定方形底座 + 等宽数字，保证左右两列在任意人名长度下都严格对齐
+  const renderRank = (index: number, accent: keyof typeof ACCENT_STYLES, value: number) => {
+    const styles = ACCENT_STYLES[accent];
+    const highlighted = value > 0 && index < 3;
+    const colorClass = highlighted
+      ? (index === 0 ? styles.first : index === 1 ? styles.second : styles.third)
+      : 'bg-slate-100/70 text-slate-400';
+    return (
+      <span className={`relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold tabular-nums ${colorClass}`}>
+        {index + 1}
+      </span>
+    );
   };
 
   const getLeaveTypeClass = (type: LeaveDetail['type']) => {
@@ -413,12 +491,7 @@ const WorkHours = () => {
   };
 
   if (loading || !settingsLoaded) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-        <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
-        <div className="text-gray-600 font-medium">正在加载数据...</div>
-      </div>
-    );
+    return <LoadingScreen skeleton="workhours" />;
   }
 
   if (!canViewWorkHours) {
@@ -491,6 +564,84 @@ const WorkHours = () => {
           </div>
         ))}
       </div>
+
+      {/* 悬停明细浮层：固定定位到视口，脱离卡片内部滚动容器，不会被裁切也不会压住卡头 */}
+      {tip && (
+        <div
+          className="pointer-events-none fixed z-[60] max-h-[80vh] overflow-auto rounded-xl border border-slate-200 bg-white p-3 shadow-xl"
+          style={{ top: tip.top, left: tip.left, width: tip.width }}
+        >
+          {tip.kind === 'hours' ? (
+            <>
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-black text-slate-800">{tip.item.designerName} 工时明细</span>
+                <span className="text-xs font-bold text-slate-400">{getDisplayedWorkHours(tip.item).toFixed(1)}h</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+                  <div className="text-[10px] font-black text-blue-500">设计计划总工时</div>
+                  <div className="mt-1 text-lg font-black text-blue-700">{getDisplayedDesignHours(tip.item).toFixed(1)}h</div>
+                </div>
+                <div className="rounded-lg border border-yellow-100 bg-yellow-50 px-3 py-2">
+                  <div className="text-[10px] font-black text-yellow-600">出差总工时</div>
+                  <div className="mt-1 text-lg font-black text-yellow-800">{getDisplayedTripHours(tip.item).toFixed(1)}h</div>
+                </div>
+              </div>
+              <div className="mt-3">
+                <div className="mb-2 text-xs font-black text-slate-700">出差明细</div>
+                {getDisplayedTripDetails(tip.item).length > 0 ? (
+                  <div className="max-h-56 space-y-2 overflow-auto pr-1">
+                    {[...getDisplayedTripDetails(tip.item)]
+                      .sort((a, b) => a.date.localeCompare(b.date))
+                      .map((detail, detailIndex) => (
+                        <div key={`${tip.item.designerId}-trip-${detail.date}-${detailIndex}`} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5">
+                          <span className="w-24 text-xs font-bold text-slate-600">{detail.date}</span>
+                          <span className="min-w-0 flex-1 truncate text-xs font-bold text-amber-700">{detail.taskName}</span>
+                          <span className="text-xs font-black text-slate-700">{detail.hours.toFixed(1)}h</span>
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs font-bold text-slate-400">
+                    暂无出差明细
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-sm font-black text-slate-800">{tip.item.designerName} 请假明细</span>
+                <span className="text-xs font-bold text-slate-400">{getDisplayedLeaveHours(tip.item).toFixed(1)}h</span>
+              </div>
+              {(excludeVacationLeave
+                ? tip.item.leaveDetails.filter(detail => detail.type !== 'vacation')
+                : tip.item.leaveDetails
+              ).length > 0 ? (
+                <div className="max-h-64 space-y-2 overflow-auto pr-1">
+                  {[...(excludeVacationLeave
+                    ? tip.item.leaveDetails.filter(detail => detail.type !== 'vacation')
+                    : tip.item.leaveDetails)]
+                    .sort((a, b) => a.date.localeCompare(b.date))
+                    .map((detail, detailIndex) => (
+                      <div key={`${tip.item.designerId}-${detail.date}-${detail.type}-${detailIndex}`} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5">
+                        <span className="w-24 text-xs font-bold text-slate-600">{detail.date}</span>
+                        <span className={`rounded border px-2 py-0.5 text-[10px] font-black ${getLeaveTypeClass(detail.type)}`}>
+                          {detail.typeLabel}
+                        </span>
+                        <span className="ml-auto text-xs font-black text-slate-700">{detail.hours.toFixed(1)}h</span>
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <div className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs font-bold text-slate-400">
+                  暂无请假明细
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <header className="sticky top-0 z-40 bg-white shadow-md px-6 py-2 h-12 flex items-center justify-between border-b border-gray-200">
         <div className="flex items-center space-x-4">
@@ -576,237 +727,267 @@ const WorkHours = () => {
         </div>
       )}
 
-      <main className={`flex-1 max-w-7xl mx-auto w-full overflow-y-auto ${isOffline ? 'offline-locked' : ''}`}>
-       <div className="p-8">
-        {dataLoading ? (
-          <div className="flex items-center justify-center py-20">
-            <RefreshCw className="animate-spin text-blue-600 mb-4" size={40} />
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
-              <div className="sticky top-0 z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
-                <div className="flex items-center justify-between gap-4">
-                  <h2 className="text-lg font-bold flex items-center text-gray-800">
-                    <Clock className="mr-2 text-blue-600" size={22} />
-                    月度工时统计
+      <main className={`flex-1 w-full overflow-y-auto ${isOffline ? 'offline-locked' : ''}`}>
+        <div className="mx-auto w-full max-w-7xl px-6 py-6 lg:px-8">
+          {dataLoading ? (
+            <div className="flex items-center justify-center py-20">
+              <RefreshCw className="animate-spin text-blue-600" size={36} />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-6">
+              {/* ==================== 月度工时统计 ==================== */}
+              <section className="flex max-h-[calc(100vh_-_13.5rem)] flex-col rounded-2xl border border-slate-200/70 bg-white shadow-sm shadow-slate-200/40">
+                {/* 卡头固定在卡片顶部（不吸顶覆盖内容）：名单在卡头下方的独立滚动区里滚动，人名永远不会被压住 */}
+                <div className="flex shrink-0 items-center justify-between gap-3 rounded-t-2xl border-b border-slate-100 bg-slate-50 px-5 py-3.5">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600/10 text-blue-600">
+                      <Clock size={17} />
+                    </span>
+                    <div className="min-w-0">
+                      <h2 className="truncate text-[15px] font-bold text-slate-800">月度工时统计</h2>
+                      <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400">
+                        共 {workHoursData.length} 人 · 合计 {totalWorkHours.toFixed(1)}h
+                        {showAllHours && workHoursData.length > 10 ? ' · 已展开' : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2.5">
                     {workHoursData.length > 10 && (
                       <button
-                        className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-blue-200"
+                        type="button"
+                        onClick={toggleAllHours}
                         disabled={isOffline}
-                        onClick={() => setShowAllHours(!showAllHours)}
+                        title={showAllHours ? '收起列表，仅保留前 10 名' : `展开全部 ${workHoursData.length} 人`}
+                        className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white/90 px-1.5 py-1 text-[11px] font-bold text-slate-500 shadow-sm transition hover:border-blue-200 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {showAllHours ? '收起' : '显示全部'}
+                        {showAllHours ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        {showAllHours ? '收起' : '展开'}
                       </button>
                     )}
-                  </h2>
-                  <label className="flex items-center gap-2 text-xs font-bold text-gray-600 cursor-pointer select-none">
-                    <span>不包含周末加班</span>
-                    <span className="relative inline-flex h-5 w-9 items-center">
-                      <input
-                        type="checkbox"
-                        checked={excludeWeekendOvertime}
-                        onChange={(e) => setExcludeWeekendOvertime(e.target.checked)}
-                        disabled={isOffline}
-                        className="peer sr-only"
-                      />
-                      <span className="absolute inset-0 rounded-full bg-gray-300 transition peer-checked:bg-blue-500"></span>
-                      <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4"></span>
-                    </span>
-                  </label>
+                    <label className="flex shrink-0 cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-slate-500">
+                      不含周末加班
+                      <span className="relative inline-flex h-4 w-7 items-center">
+                        <input
+                          type="checkbox"
+                          checked={excludeWeekendOvertime}
+                          onChange={(e) => setExcludeWeekendOvertime(e.target.checked)}
+                          disabled={isOffline}
+                          className="peer sr-only"
+                        />
+                        <span className={`absolute inset-0 rounded-full bg-slate-300 transition ${ACCENT_STYLES.blue.switchOn}`}></span>
+                        <span className="absolute left-0.5 h-3 w-3 rounded-full bg-white shadow transition peer-checked:translate-x-3"></span>
+                      </span>
+                    </label>
+                  </div>
                 </div>
-              </div>
-              <div className="p-4 space-y-3">
-                {(showAllHours ? sortedByHours : sortedByHours.slice(0, 10)).map((item, index) => {
-                  const visibleTripDetails = getDisplayedTripDetails(item);
-                  return (
-                    <div key={item.designerId} className={`relative group/hours flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
-                      index === 0 ? 'bg-blue-50/50 border border-blue-100' :
-                      index === 1 ? 'bg-gray-50/50 border border-gray-100' :
-                      index === 2 ? 'bg-orange-50/50 border border-orange-100' :
-                      'bg-white border border-gray-50 hover:bg-gray-50'
-                    }`}>
-                      <div className="w-10 flex justify-center">{getRankIcon(index)}</div>
-                      <div className="flex-1 ml-3">
-                        <div className="font-bold text-gray-800">{item.designerName}</div>
-                        {getWeekendOvertimeHours(item) > 0 && (
-                          <div className="flex gap-2 mt-1">
-                            <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
-                              周末加班 {getWeekendOvertimeHours(item).toFixed(1)}h
+
+                <div className="min-h-0 flex-1 snap-y snap-mandatory overflow-y-auto px-2.5 py-2" data-list ref={hoursListRef} onScroll={() => setTip(null)}>
+                  {sortedByHours.length === 0 && (
+                    <div className="py-10 text-center text-xs font-medium text-slate-400">本月暂无工时记录</div>
+                  )}
+                  {(showAllHours ? sortedByHours : sortedByHours.slice(0, 10)).map((item, index) => {
+                    const value = getDisplayedWorkHours(item);
+                    const weekendHours = getWeekendOvertimeHours(item);
+                    return (
+                      <div
+                        key={item.designerId}
+                        className="relative flex min-h-[54px] snap-start items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-slate-100/60"
+                        onMouseEnter={(e) => openTip('hours', item, e.currentTarget)}
+                        onMouseLeave={() => setTip(null)}
+                      >
+                        {/* 占比底纹：从左侧铺开的极淡色块，替代独立进度条，避免每行被横线切割 */}
+                        <span
+                          className="pointer-events-none absolute inset-y-1 left-0 rounded-lg bg-blue-500/[0.09]"
+                          style={{ width: `${value > 0 ? Math.max(5, (value / maxWorkHours) * 100) : 0}%` }}
+                        />
+                        {renderRank(index, 'blue', value)}
+
+                        <div className="relative min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <span className="truncate text-[13px] font-bold text-slate-800">{item.designerName}</span>
+                            <span className="flex w-14 shrink-0 items-baseline justify-end tabular-nums">
+                              <span className={`text-[17px] font-black leading-none ${value > 0 ? ACCENT_STYLES.blue.value : 'text-slate-300'}`}>
+                                {value.toFixed(1)}
+                              </span>
+                              <span className="ml-0.5 text-[10px] font-semibold text-slate-400">h</span>
                             </span>
                           </div>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xl font-black text-blue-700">{getDisplayedWorkHours(item).toFixed(1)}</div>
-                        <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
-                      </div>
-                      <div className="pointer-events-none absolute right-3 bottom-full z-40 mb-2 hidden w-80 rounded-xl border border-gray-200 bg-white p-3 shadow-2xl group-hover/hours:block">
-                        <div className="mb-3 flex items-center justify-between">
-                          <span className="text-sm font-black text-gray-800">{item.designerName} 工时明细</span>
-                          <span className="text-xs font-bold text-gray-400">{getDisplayedWorkHours(item).toFixed(1)}h</span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
-                            <div className="text-[10px] font-black text-blue-500">设计计划总工时</div>
-                            <div className="mt-1 text-lg font-black text-blue-700">{getDisplayedDesignHours(item).toFixed(1)}h</div>
-                          </div>
-                          <div className="rounded-lg border border-yellow-100 bg-yellow-50 px-3 py-2">
-                            <div className="text-[10px] font-black text-yellow-600">出差总工时</div>
-                            <div className="mt-1 text-lg font-black text-yellow-800">{getDisplayedTripHours(item).toFixed(1)}h</div>
-                          </div>
-                        </div>
-                        <div className="mt-3">
-                          <div className="mb-2 text-xs font-black text-gray-700">出差明细</div>
-                          {visibleTripDetails.length > 0 ? (
-                            <div className="max-h-56 space-y-2 overflow-auto pr-1">
-                              {[...visibleTripDetails]
-                                .sort((a, b) => a.date.localeCompare(b.date))
-                                .map((detail, detailIndex) => (
-                                  <div key={`${item.designerId}-trip-${detail.date}-${detailIndex}`} className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-2 py-1.5">
-                                    <span className="w-24 text-xs font-bold text-gray-600">{detail.date}</span>
-                                    <span className="min-w-0 flex-1 truncate text-xs font-bold text-yellow-800">{detail.taskName}</span>
-                                    <span className="text-xs font-black text-gray-700">{detail.hours.toFixed(1)}h</span>
-                                  </div>
-                                ))}
-                            </div>
-                          ) : (
-                            <div className="rounded-lg bg-gray-50 px-3 py-2 text-center text-xs font-bold text-gray-400">
-                              暂无出差明细
+
+                          {weekendHours > 0 && (
+                            <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                              <span className="rounded bg-amber-100/70 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-600">
+                                周末加班 {weekendHours.toFixed(1)}h
+                              </span>
                             </div>
                           )}
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+                    );
+                  })}
+                </div>
 
-            <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-visible">
-              <div className="sticky top-0 z-30 px-6 py-5 bg-gray-50 border-b border-gray-100 rounded-t-2xl shadow-sm">
-                <div className="flex items-center justify-between gap-4">
-                  <h2 className="text-lg font-bold flex items-center text-gray-800">
-                    <Calendar className="mr-2 text-red-600" size={22} />
-                    月度请假统计
-                    {workHoursData.length > 10 && (
+                {workHoursData.length > 10 && (
+                  <div className="shrink-0 border-t border-slate-100 px-2.5 py-1.5">
+                    <button
+                      onClick={toggleAllHours}
+                      disabled={isOffline}
+                      className="w-full rounded-lg py-1.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-50 hover:text-blue-600 disabled:cursor-not-allowed"
+                    >
+                      {showAllHours ? '收起列表' : `展开全部 ${workHoursData.length} 人`}
+                    </button>
+                  </div>
+                )}
+              </section>
+
+              {/* ==================== 月度请假统计 ==================== */}
+              <section className="flex max-h-[calc(100vh_-_13.5rem)] flex-col rounded-2xl border border-slate-200/70 bg-white shadow-sm shadow-slate-200/40">
+                <div className="flex shrink-0 items-center justify-between gap-3 rounded-t-2xl border-b border-slate-100 bg-slate-50 px-5 py-3.5">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-rose-500/10 text-rose-500">
+                      <Calendar size={17} />
+                    </span>
+                    <div className="min-w-0">
+                      <h2 className="truncate text-[15px] font-bold text-slate-800">月度请假统计</h2>
+                      <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400">
+                        共 {workHoursData.length} 人 · 有记录 {sortedByLeave.filter(item => getDisplayedLeaveHours(item) > 0).length} 人
+                        {showAllLeave && hasAnyLeave && workHoursData.length > 10 ? ' · 已展开' : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2.5">
+                    {hasAnyLeave && workHoursData.length > 10 && (
                       <button
-                        className="ml-2 text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider hover:bg-red-200"
+                        type="button"
+                        onClick={toggleAllLeave}
                         disabled={isOffline}
-                        onClick={() => setShowAllLeave(!showAllLeave)}
+                        title={showAllLeave ? '收起列表，仅保留前 10 名' : `展开全部 ${workHoursData.length} 人`}
+                        className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white/90 px-1.5 py-1 text-[11px] font-bold text-slate-500 shadow-sm transition hover:border-rose-200 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {showAllLeave ? '收起' : '显示全部'}
+                        {showAllLeave ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        {showAllLeave ? '收起' : '展开'}
                       </button>
                     )}
-                  </h2>
-                  <label className="flex items-center gap-2 text-xs font-bold text-gray-600 cursor-pointer select-none">
-                    <span>不包含休假</span>
-                    <span className="relative inline-flex h-5 w-9 items-center">
-                      <input
-                        type="checkbox"
-                        checked={excludeVacationLeave}
-                        onChange={(e) => setExcludeVacationLeave(e.target.checked)}
-                        disabled={isOffline}
-                        className="peer sr-only"
-                      />
-                      <span className="absolute inset-0 rounded-full bg-gray-300 transition peer-checked:bg-red-500"></span>
-                      <span className="absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4"></span>
-                    </span>
-                  </label>
+                    <label className="flex shrink-0 cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-slate-500">
+                      不含休假
+                      <span className="relative inline-flex h-4 w-7 items-center">
+                        <input
+                          type="checkbox"
+                          checked={excludeVacationLeave}
+                          onChange={(e) => setExcludeVacationLeave(e.target.checked)}
+                          disabled={isOffline}
+                          className="peer sr-only"
+                        />
+                        <span className={`absolute inset-0 rounded-full bg-slate-300 transition ${ACCENT_STYLES.rose.switchOn}`}></span>
+                        <span className="absolute left-0.5 h-3 w-3 rounded-full bg-white shadow transition peer-checked:translate-x-3"></span>
+                      </span>
+                    </label>
+                  </div>
                 </div>
-              </div>
-              <div className="p-4 space-y-3">
-                {(showAllLeave ? sortedByLeave : sortedByLeave.slice(0, 10)).map((item, index) => {
-                  const totalLeave = getDisplayedLeaveHours(item);
-                  const visibleLeaveDetails = excludeVacationLeave
-                    ? item.leaveDetails.filter(detail => detail.type !== 'vacation')
-                    : item.leaveDetails;
-                  return (
-                    <div key={item.designerId} className={`relative group/leave flex items-center p-4 rounded-xl transition-all hover:shadow-md ${
-                      index === 0 ? 'bg-red-50/50 border border-red-100' :
-                      index === 1 ? 'bg-gray-50/50 border border-gray-100' :
-                      index === 2 ? 'bg-orange-50/50 border border-orange-100' :
-                      'bg-white border border-gray-50 hover:bg-gray-50'
-                    }`}>
-                      <div className="w-10 flex justify-center">{getRankIcon(index)}</div>
-                      <div className="flex-1 ml-3">
-                        <div className="font-bold text-gray-800">{item.designerName}</div>
-                        <div className="flex gap-2 mt-1">
-                          {item.sickDays > 0 && <span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded">事假 {item.sickDays.toFixed(1)}h</span>}
-                          {!excludeVacationLeave && item.vacationDays > 0 && <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">休假 {item.vacationDays.toFixed(1)}h</span>}
-                          {item.illnessDays > 0 && <span className="text-[10px] font-bold text-pink-500 bg-pink-50 px-2 py-0.5 rounded">病假 {item.illnessDays.toFixed(1)}h</span>}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xl font-black text-gray-700">{totalLeave.toFixed(1)}</div>
-                        <div className="text-[10px] text-gray-400 font-bold uppercase">Hours</div>
-                      </div>
-                      <div className="pointer-events-none absolute right-3 bottom-full z-40 mb-2 hidden w-72 rounded-xl border border-gray-200 bg-white p-3 shadow-2xl group-hover/leave:block">
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="text-sm font-black text-gray-800">{item.designerName} 请假明细</span>
-                          <span className="text-xs font-bold text-gray-400">{totalLeave.toFixed(1)}h</span>
-                        </div>
-                        {visibleLeaveDetails.length > 0 ? (
-                          <div className="max-h-64 space-y-2 overflow-auto pr-1">
-                            {[...visibleLeaveDetails]
-                              .sort((a, b) => a.date.localeCompare(b.date))
-                              .map((detail, detailIndex) => (
-                                <div key={`${item.designerId}-${detail.date}-${detail.type}-${detailIndex}`} className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-2 py-1.5">
-                                  <span className="w-24 text-xs font-bold text-gray-600">{detail.date}</span>
-                                  <span className={`rounded border px-2 py-0.5 text-[10px] font-black ${getLeaveTypeClass(detail.type)}`}>
-                                    {detail.typeLabel}
-                                  </span>
-                                  <span className="ml-auto text-xs font-black text-gray-700">{detail.hours.toFixed(1)}h</span>
-                                </div>
-                              ))}
-                          </div>
-                        ) : (
-                          <div className="rounded-lg bg-gray-50 px-3 py-2 text-center text-xs font-bold text-gray-400">
-                            暂无请假明细
-                          </div>
-                        )}
+
+                <div className="flex min-h-0 flex-1 snap-y snap-mandatory flex-col overflow-y-auto px-2.5 py-2" data-list ref={leaveListRef} onScroll={() => setTip(null)}>
+                  {sortedByLeave.length === 0 || !hasAnyLeave ? (
+                    <div className="flex flex-1 flex-col items-center justify-center py-12 text-center">
+                      <Calendar size={26} className="mb-2 text-slate-300" />
+                      <div className="text-xs font-semibold text-slate-400">本月暂无请假记录</div>
+                      <div className="mt-1 text-[11px] text-slate-300">
+                        共 {workHoursData.length} 人，均无请假
                       </div>
                     </div>
-                  );
-                })}
+                  ) : (
+                    (showAllLeave ? sortedByLeave : sortedByLeave.slice(0, 10)).map((item, index) => {
+                    const totalLeave = getDisplayedLeaveHours(item);
+                    return (
+                      <div
+                        key={item.designerId}
+                        className="relative flex min-h-[54px] snap-start items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-slate-100/60"
+                        onMouseEnter={(e) => openTip('leave', item, e.currentTarget)}
+                        onMouseLeave={() => setTip(null)}
+                      >
+                        <span
+                          className="pointer-events-none absolute inset-y-1 left-0 rounded-lg bg-rose-400/[0.12]"
+                          style={{ width: `${totalLeave > 0 ? Math.max(5, (totalLeave / maxLeaveHours) * 100) : 0}%` }}
+                        />
+                        {renderRank(index, 'rose', totalLeave)}
+
+                        <div className="relative min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <span className="truncate text-[13px] font-bold text-slate-800">{item.designerName}</span>
+                            <span className="flex w-14 shrink-0 items-baseline justify-end tabular-nums">
+                              <span className={`text-[17px] font-black leading-none ${totalLeave > 0 ? ACCENT_STYLES.rose.value : 'text-slate-300'}`}>
+                                {totalLeave.toFixed(1)}
+                              </span>
+                              <span className="ml-0.5 text-[10px] font-semibold text-slate-400">h</span>
+                            </span>
+                          </div>
+
+                          {(item.sickDays > 0 || item.illnessDays > 0 || (!excludeVacationLeave && item.vacationDays > 0)) && (
+                            <div className="mt-0.5 flex flex-wrap items-center gap-1 leading-none">
+                              {item.sickDays > 0 && (
+                                <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-red-500">事假 {item.sickDays.toFixed(1)}h</span>
+                              )}
+                              {!excludeVacationLeave && item.vacationDays > 0 && (
+                                <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-blue-500">休假 {item.vacationDays.toFixed(1)}h</span>
+                              )}
+                              {item.illnessDays > 0 && (
+                                <span className="rounded bg-pink-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-pink-500">病假 {item.illnessDays.toFixed(1)}h</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                    })
+                  )}
+                </div>
+
+                {hasAnyLeave && workHoursData.length > 10 && (
+                  <div className="shrink-0 border-t border-slate-100 px-2.5 py-1.5">
+                    <button
+                      onClick={toggleAllLeave}
+                      disabled={isOffline}
+                      className="w-full rounded-lg py-1.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-50 hover:text-rose-500 disabled:cursor-not-allowed"
+                    >
+                      {showAllLeave ? '收起列表' : `展开全部 ${workHoursData.length} 人`}
+                    </button>
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
+
+          {isSuperAdmin && (
+            <div className="mt-8 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+              <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
+                <Shield className="mr-2 text-purple-600" size={22} />
+                工时管理查看权限设置
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {[
+                  { label: '启用工时管理', detail: 'Global Toggle', key: 'enabled' as const },
+                  { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
+                  { label: '普通用户', detail: 'User Access', key: 'allowViewers' as const }
+                ].map(item => (
+                  <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
+                    <div>
+                      <div className="font-bold text-gray-700">{item.label}</div>
+                      <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">{item.detail}</div>
+                    </div>
+                    <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                      <input
+                        type="checkbox"
+                        checked={settings[item.key]}
+                        onChange={(e) => updateSettings({ [item.key]: e.target.checked })}
+                        disabled={!settingsLoaded || isOffline}
+                        className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
+                      />
+                      <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          </div>
-        )}
-
-        {isSuperAdmin && (
-          <div className="mt-8 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
-              <Shield className="mr-2 text-purple-600" size={22} />
-              工时管理查看权限设置
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {[
-                { label: '启用工时管理', detail: 'Global Toggle', key: 'enabled' as const },
-                { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-                { label: '普通用户', detail: 'User Access', key: 'allowViewers' as const }
-              ].map(item => (
-                <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                  <div>
-                    <div className="font-bold text-gray-700">{item.label}</div>
-                    <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">{item.detail}</div>
-                  </div>
-                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
-                    <input
-                      type="checkbox"
-                      checked={settings[item.key]}
-                      onChange={(e) => updateSettings({ [item.key]: e.target.checked })}
-                      disabled={!settingsLoaded || isOffline}
-                      className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                    />
-                    <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-       </div>
+          )}
+        </div>
       </main>
 
       <footer className="shrink-0 bg-white border-t border-gray-200 px-6 py-3">

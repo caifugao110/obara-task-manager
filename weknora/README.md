@@ -41,7 +41,7 @@ WeKnora 的地址与 API Key 只保存在 `backend/.env`，**不下发到浏览�
 | 项 | 默认值 | 说明 |
 |----|--------|------|
 | `WEKNORA_VERSION` | `v0.8.3` | `wechatopenai/weknora-{ui,app,docreader}` 三个官方镜像的标签 |
-| 向量/关系库 | `paradedb/paradedb:v0.22.6-pg17` | 在 `docker-compose.yml` 中固定，不受 `WEKNORA_VERSION` 影响 |
+| 向量/关系库 | `paradedb/paradedb:v0.25.11-pg17` | 在 `docker-compose.yml` 中固定，不受 `WEKNORA_VERSION` 影响；v0.8.3 起由 `v0.22.6-pg17` 升级而来（PG 主版本仍为 17，数据卷可直接复用，但**扩展 catalog 必须手工升级**，见 6.2） |
 | 缓存/任务队列 | `redis:7.0-alpine` | 同上 |
 | `APP_PORT` / `FRONTEND_PORT` | `8080` / `80` | 发布到 `BIND_ADDRESS` 指定的地址（默认仅回环） |
 | `BIND_ADDRESS` | `127.0.0.1` | 端口绑定地址，改为 `0.0.0.0` 即暴露到内网（见第 9 节） |
@@ -150,6 +150,8 @@ docker compose down -v         # 停止并删除数据卷（⚠ 知识库数据�
 docker compose pull && docker compose up -d   # 升级到 WEKNORA_VERSION 指定版本
 ```
 
+> 跨 ParadeDB 版本线的升级（如 0.22.6 → 0.25.11）不能只做 `docker compose pull`，必须按 [6.2](#62-从-v082paradedb-0226升级到-v083paradedb-02511) 补扩展升级 SQL，否则 PostgreSQL 会因扩展版本不匹配崩溃。
+
 - **更换模型 API Key**：在控制台「设置 → 模型管理」直接改，或删除对应模型后重跑 `setup.js`。
 - **管理知识库与文档**：在 WeKnora 控制台（http://localhost/platform/knowledge-bases）创建知识库、上传/删除文档。本系统页面不再提供建库与文档上传/删除功能。
 - **关联知识库到本系统**：在 WeKnora 控制台创建好知识库后，复制其知识库 ID，到本系统「设计规范知识库 → 知识库管理」页面（需要一般管理员及以上）点击「关联知识库」并粘贴 ID 即可。取消关联仅移除本系统的关联记录，不会删除 WeKnora 中的知识库。
@@ -202,6 +204,43 @@ docker compose up -d                    # 再启动其余服务
 ```
 
 > 注意：pg_dump 备份与卷级备份都应**妥善保管 `weknora/.env`**——其中的 `SYSTEM_AES_KEY` 用于解密数据库内的模型 API Key，丢失后即使恢复了数据库，模型 Key 也无法解密（见第 8 节踩坑记录第 6 条）。
+
+### 6.2 从 v0.8.2（ParadeDB 0.22.6）升级到 v0.8.3（ParadeDB 0.25.11）
+
+v0.8.3 把向量/关系库镜像从 `paradedb:v0.22.6-pg17` 升到 `paradedb:v0.25.11-pg17`（PG 主版本仍是 17，数据卷可直接复用）。**仅换镜像不会更新数据库里已有的扩展**：`pg_search` 的 catalog 停在旧版本时，部分扩展函数会因签名与新二进制不匹配而让整个 PostgreSQL 段错误崩掉。因此换镜像后必须补一条扩展升级 SQL。
+
+> 全新部署（数据卷为空）不涉及本节——镜像自带的就是 0.25.11，无需任何额外操作。
+
+升级步骤（在 `weknora/` 目录执行）：
+
+```bash
+# 1. 备份（备份文件落在数据库数据卷之外）
+docker compose exec -T postgres sh -c 'pg_dumpall -U "$POSTGRES_USER"' > paradedb-before-upgrade.sql
+
+# 2. 停止写入方（本系统后端也要停，避免迁移期间有写入）
+docker compose stop app
+
+# 3. 只替换数据库容器
+docker compose pull postgres
+docker compose up -d --no-deps --wait postgres
+
+# 4. 升级扩展 catalog（用户名/库名取自 .env 的 DB_USER / DB_NAME）
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
+ALTER EXTENSION pg_search UPDATE;
+ALTER EXTENSION vector UPDATE;
+SELECT extname, extversion FROM pg_extension WHERE extname IN ('pg_search', 'vector');
+SELECT * FROM paradedb.version_info();
+SQL
+
+# 5. 恢复其余服务，然后抽查一次检索与问答
+docker compose up -d
+```
+
+- 预期结果：`pg_search` 与 `paradedb.version_info()` 均为 **0.25.11**，`vector` 为 **0.8.4**。
+- 已有的 BM25/HNSW 索引在新版本下可继续读写，**不需要**重建索引或重新导入文档；如遇到异常再 `REINDEX`。
+- **不要**在新镜像上执行 `ALTER EXTENSION pg_search UPDATE TO '0.22.6'`，同样会造成版本不匹配。
+- 回滚只能把升级前的备份恢复到独立数据卷并配回旧镜像；只改回镜像标签不会撤销扩展变更（pg_search 0.24 起会向 WAL 写入旧镜像无法重放的记录）。
+- 本系统自己的 `data.db` 不受影响，只动 WeKnora 的 Docker 卷。
 
 ## 7. 从旧部署（E:\My Trae\WeKnora）迁移
 
@@ -259,6 +298,7 @@ cd obara-task-manager\weknora && docker compose up -d   # 用新目录启动，�
 | 配置答复约束提示词返回 `503 WEKNORA_NO_QA_MODEL` | 该工作空间没有可用的 KnowledgeQA 问答模型。在控制台「设置 → 模型管理」为该空间创建问答模型，或重跑 `setup.js` |
 | 文档上传后一直处于解析中 | 检查 `docker compose ps` 中 docreader 是否 healthy（`docker compose logs -f docreader`）；确认文档未超过 `MAX_FILE_SIZE_MB`（默认 50MB） |
 | `pg_dump` 报角色/库不存在 | 备份命令中的用户名与库名取自 `weknora/.env` 的 `DB_USER` / `DB_NAME`（默认 `postgres` / `WeKnora`），请按实际值替换 |
+| 换 ParadeDB 镜像后 postgres 反复重启/崩溃 | 扩展 catalog 还停在旧版本（`pg_search` 与镜像版本不一致）。按 [6.2](#62-从-v082paradedb-0226升级到-v083paradedb-02511) 执行 `ALTER EXTENSION pg_search UPDATE;`，再用 `SELECT * FROM paradedb.version_info();` 确认已是 0.25.11 |
 | 本系统检索/问答一直超时 | 确认 app 容器健康、`WEKNORA_BASE_URL` 端口与 `APP_PORT` 一致；云端模型 API（DeepSeek/智谱）Key 失效时问答会失败，可在控制台「设置 → 模型管理」核对并更新 |
 
 > 修改 `weknora/.env` 后需 `docker compose up -d` 重建受影响容器；修改 `backend/.env` 的 `WEKNORA_*` 后需**重启本系统后端**（`node server.js`，无热重载）。

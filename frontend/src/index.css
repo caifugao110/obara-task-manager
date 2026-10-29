@@ -125,3 +125,301 @@ input[type="number"] {
   right: 0;
   z-index: 20;
 }
+
+/* ==================== 加载态（主页面骨架 + 中心动画） ==================== */
+@keyframes ls-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ls-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes ls-spin-rev {
+  to { transform: rotate(-360deg); }
+}
+/* 外圈主弧长度呼吸（周长 163） */
+@keyframes ls-breath-outer {
+  0%, 100% { stroke-dasharray: 44 119; }
+  50% { stroke-dasharray: 104 59; }
+}
+/* 内圈扫描短弧（周长 107） */
+@keyframes ls-breath-inner {
+  0%, 100% { stroke-dasharray: 14 93; }
+  50% { stroke-dasharray: 34 73; }
+}
+@keyframes ls-ripple {
+  0% { transform: scale(0.55); opacity: 0.5; }
+  70% { opacity: 0; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+@keyframes ls-dot {
+  0%, 100% { transform: scale(0.9); opacity: 0.85; }
+  50% { transform: scale(1.16); opacity: 1; }
+}
+@keyframes ls-text-shimmer {
+  from { background-position: 150% 50%; }
+  to { background-position: -50% 50%; }
+}
+@keyframes sk-shimmer {
+  from { background-position: 100% 50%; }
+  to { background-position: -100% 50%; }
+}
+/* 进度光带推进：首尾淡入淡出，靠关键帧间距做加减速 */
+@keyframes ls-progress {
+  0%   { transform: translateX(-76%) scaleX(0.85); opacity: 0.35; }
+  12%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateX(245%) scaleX(0.85); opacity: 0.3; }
+}
+@keyframes ls-progress-glow {
+  0%   { transform: translateX(-120%); opacity: 0; }
+  18%  { opacity: 1; }
+  82%  { opacity: 1; }
+  100% { transform: translateX(760%); opacity: 0; }
+}
+
+.loading-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100vh;
+  overflow: hidden;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 52%, #eef2f7 100%);
+}
+
+.loading-screen--fixed {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+/* 骨架层：绝对定位铺满视口 */
+.loading-skeleton-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 骨架块扫光：浅灰 */
+.sk {
+  background-image: linear-gradient(90deg, #dfe7f2 0%, #ccd8e8 42%, #dfe7f2 84%);
+  background-size: 300% 100%;
+  animation: sk-shimmer 1.6s ease-in-out infinite;
+}
+
+/* 骨架块扫光：绿色顶栏上的半透明白 */
+.sk-green {
+  background-image: linear-gradient(90deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.26) 42%, rgba(255, 255, 255, 0.1) 84%);
+  background-size: 300% 100%;
+  animation: sk-shimmer 1.6s ease-in-out infinite;
+}
+
+/* 骨架块扫光：蓝色/绿色渐变卡头上的半透明白（同 .sk-green，语义更通用） */
+.sk-light {
+  background-image: linear-gradient(90deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.3) 42%, rgba(255, 255, 255, 0.12) 84%);
+  background-size: 300% 100%;
+  animation: sk-shimmer 1.6s ease-in-out infinite;
+}
+
+/* 中心动画层：底部一层柔白，避免骨架线条干扰视线 */
+.loading-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(460px 300px at 50% 50%, rgba(239, 246, 255, 0.95), rgba(248, 250, 252, 0) 72%);
+}
+
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 26px 40px 28px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 20px 44px -20px rgba(37, 99, 235, 0.3),
+    0 2px 10px rgba(15, 23, 42, 0.05);
+  animation: ls-fade-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.loading-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+}
+
+/* 向外扩散的脉冲环 */
+.loading-ripple {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  border-radius: 9999px;
+  border: 1.5px solid rgba(37, 99, 235, 0.38);
+  animation: ls-ripple 2.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  pointer-events: none;
+}
+
+.loading-spinner {
+  position: absolute;
+  inset: 0;
+  width: 72px;
+  height: 72px;
+}
+
+.loading-spinner__track {
+  fill: none;
+  stroke: rgba(37, 99, 235, 0.13);
+  stroke-width: 3.2;
+}
+
+.loading-spinner__outer {
+  fill: none;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 2px rgba(37, 99, 235, 0.35));
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ls-spin 1.7s linear infinite, ls-breath-outer 1.7s ease-in-out infinite;
+}
+
+.loading-spinner__inner {
+  fill: none;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  opacity: 0.9;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ls-spin-rev 1.15s linear infinite, ls-breath-inner 1.15s ease-in-out infinite;
+}
+
+.loading-dot {
+  position: relative;
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  box-shadow: 0 0 12px rgba(37, 99, 235, 0.55);
+  animation: ls-dot 1.4s ease-in-out infinite;
+}
+
+.loading-text {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background-image: linear-gradient(
+    90deg,
+    #475569 0%,
+    #475569 42%,
+    #1d4ed8 50%,
+    #475569 58%,
+    #475569 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ls-text-shimmer 2.6s linear infinite;
+}
+
+.loading-hint {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+/* 进度条：凹槽轨道 + 推进光带 + 反光 */
+.loading-progress {
+  position: relative;
+  width: 184px;
+  height: 6px;
+  margin-top: 2px;
+  border-radius: 9999px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #d7e2ef 0%, #e7eef8 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.16),
+    0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+/* 推进光带：左侧长渐隐当拖尾，右端实色当扫描头，方向感明确 */
+.loading-progress__bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 46%;
+  border-radius: 9999px;
+  transform-origin: left center;
+  background: linear-gradient(
+    90deg,
+    rgba(96, 165, 250, 0) 0%,
+    rgba(96, 165, 250, 0.55) 10%,
+    #60a5fa 30%,
+    #3b82f6 58%,
+    #2563eb 82%,
+    #1d4ed8 100%
+  );
+  box-shadow: 0 0 7px rgba(37, 99, 235, 0.35);
+  animation: ls-progress 2.1s linear infinite;
+}
+
+/* 反光：一道窄白色高光缓慢掠过，制造玻璃质感 */
+.loading-progress__glow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 16%;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.42) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: ls-progress-glow 4.4s linear infinite;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk,
+  .sk-light,
+  .sk-green,
+  .sk-gray,
+  .loading-spinner__outer,
+  .loading-spinner__inner,
+  .loading-ripple,
+  .loading-dot,
+  .loading-progress__bar,
+  .loading-progress__glow,
+  .loading-text {
+    animation-duration: 3.2s;
+  }
+}
+
+@keyframes ls-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.loading-fade {
+  animation: ls-fade 0.35s ease both;
+}
+
+/* 分组行上的骨架块（比行底色深） */
+.sk-gray {
+  background-image: linear-gradient(90deg, #cbd5e1 0%, #b2c0d2 42%, #cbd5e1 84%);
+  background-size: 300% 100%;
+  animation: sk-shimmer 1.6s ease-in-out infinite;
+}

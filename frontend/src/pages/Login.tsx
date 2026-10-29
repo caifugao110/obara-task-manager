@@ -7,12 +7,12 @@ import { sanitizeRedirect } from '../utils/redirect';
 
 // 全部样式类加 login- 前缀，避免污染全局命名空间
 const loginStyles = `
-.login-page { min-height: 100vh; display: flex; flex-direction: column; background: #050b14; color: #e2e8f0; position: relative; overflow: hidden; }
+.login-page { min-height: 100vh; display: flex; flex-direction: column; background: #0d1a2b; color: #e2e8f0; position: relative; overflow: hidden; }
 .login-bg-base { position: fixed; inset: 0; pointer-events: none;
   background:
-    radial-gradient(ellipse 80% 60% at 20% 8%, rgba(33,115,70,0.20), transparent 60%),
-    radial-gradient(ellipse 70% 60% at 82% 92%, rgba(16,80,120,0.24), transparent 62%),
-    #050b14; }
+    radial-gradient(ellipse 80% 60% at 20% 8%, rgba(33,115,70,0.26), transparent 60%),
+    radial-gradient(ellipse 70% 60% at 82% 92%, rgba(16,80,120,0.30), transparent 62%),
+    #0d1a2b; }
 .login-grid-bg { position: fixed; inset: 0; pointer-events: none;
   background-image: linear-gradient(rgba(56,189,248,0.05) 1px, transparent 1px),
                     linear-gradient(90deg, rgba(56,189,248,0.05) 1px, transparent 1px);

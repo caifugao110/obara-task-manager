@@ -23,6 +23,7 @@ import SortableTask from './components/SortableTask';
 import SortableDesignerTbody from './components/SortableDesignerTbody';
 import DroppableCell from './components/DroppableCell';
 import { useEditingSessions } from './hooks/useEditingSessions';
+import LoadingScreen from '../../components/LoadingScreen';
 import { useTaskHistory } from './hooks/useTaskHistory';
 import { useGunDragDrop } from './hooks/useGunDragDrop';
 import { defaultAccessSettings, PRESET_COLORS } from './constants';
@@ -2214,12 +2215,7 @@ const Dashboard = () => {
     setCurrentDate(newDate);
   };
 
-  if (!systemSettingsLoaded || loading) return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gray-50">
-      <RefreshCw className="animate-spin text-blue-600 mb-4" size={48} />
-      <div className="text-gray-600 font-medium">正在加载数据...</div>
-    </div>
-  );
+  if (!systemSettingsLoaded || loading) return <LoadingScreen skeleton />;
 
 
   const handlePaste = async (designerId: string, date: string) => {
