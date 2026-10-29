@@ -3722,7 +3722,8 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 |------|------|------------|
 | `connect` | Socket 连接成功（可用于检测后端是否恢复） | - |
 | `connect_error` | Socket 连接失败（后端端口断开或网络异常） | - |
-| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端。可选参数 `{ designerId, month, year }` 用于增量广播，不传或坐标非法时退化为全量刷新信号 | 需已认证；**每个连接 10 秒最多 5 次**，超限收到 `error`（`操作过于频繁，请稍后再试`） |
+| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端。可选参数 `{ designerId, month, year }` 用于增量广播，不传或坐标非法时退化为全量刷新信号 | 需已认证；**每个连接 10 秒最多 20 次**；超限时**不回发 `error`**，而是记录最后一次变更坐标并在限流窗口结束后补发一次 `task_refreshed`（见「任务刷新与增量广播」的限流与补发） |
+| `request_state` | 主动索取一次指定状态快照，参数 `{ event }`，`event` 必须是白名单之一：`editing_state`、`gun_ledger_editing_state`、`gun_ledger_table_locks_state`、`status_tracking_editing_state`；服务端校验通过后以同名事件把当前快照回给**发起者**。用于页面晚挂载或 Socket 重连后补一次初始状态，避免只能等下一次变更广播 | 需已认证；**每个连接 10 秒最多 20 次**，超限与该事件不在白名单时**静默忽略**（不回发 `error`，也不回快照） |
 | `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、可选 `mode`（`edit` / `colorMark`）、可选 `itemId`（主任务 id，省略即整格会话）、可选 `gunIndex`（枪名下标，`colorMark` 模式下定位到具体枪名行，`null`/省略表示主任务本身） | 需已认证；用户身份一律取服务端会话，客户端传入的 `userId`/`username` 被忽略 |
 | `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放该 socket 在此单元格内的**全部主任务会话**（事件不带 `itemId`）；两者都不传则释放当前 socket 的所有编辑会话 | 需已认证 |
 | `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数只需 `itemId` | **仅 `admin`/`superadmin`**（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；**每个连接 10 秒最多 30 次** |
@@ -3786,6 +3787,17 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 - 增量载荷只合并与当前查看月份一致（`sheet.month` / `sheet.year` 相同）的工时表，其他月份的变更丢弃，不触发拉取。
 - 全量刷新信号对**只读用户**（无编辑权限或离线模式）合并到 3 秒一次；页面处于后台（`visibilityState === 'hidden'`）时直接跳过并置挂起标记，切回前台再补刷一次。
 - 有编辑权限的用户收到全量信号时立即刷新，保证协作实时性。
+
+**3. 限流与补发（trailing refresh）**
+
+`task_updated` 按连接限流：**10 秒窗口内最多 20 次**（计数挂在 `socket.data.rateBuckets` 上，断开即回收）。
+
+- 该事件只是「数据已变更」的信号，丢弃最后一次信号会让其他客户端一直停在旧状态，因此**限流命中时不回发 `error`，也不直接丢弃**：服务端把这次的变更坐标记录在连接上，并在窗口结束后补发一次 `task_refreshed`。
+- 补发期间的后续变更只覆盖记录的坐标，不重复排定定时器（一个窗口最多一次补发，始终补发最新坐标）。
+- 补发内容与正常广播一致：坐标合法则从数据库读取最新工时表走增量广播，否则为空载荷的全量刷新信号。
+- 若在补发前窗口内又成功广播了一次（未被限流），待补发信号立即取消——最新数据已经送达，补发已无意义。
+- 连接断开（`disconnect`）时清理待补发定时器，避免连接销毁后仍持有 `socket` 引用。
+- 因此**前端不应依赖 `task_updated` 的 `error` 事件做退避**；其他事件（如 `status_tracking_start_edit`）超限仍会收到 `error`（`操作过于频繁，请稍后再试`）。
 
 ## 常见错误码
 
@@ -3922,4 +3934,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径（`SPEC_SHARE_PATH`，无默认值） |
 
-最后更新：2026-10-21
+最后更新：2026-10-29

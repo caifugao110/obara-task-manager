@@ -239,6 +239,56 @@ const socketRateLimit = (socket, eventName, limit, windowMs) => {
   return true;
 };
 
+// task_updated 广播频率上限。完成任务状态来回切换会连续触发该事件，
+// 上限过低（原 5 次/10 秒）时正常的连续切换就会被限流。
+const TASK_UPDATED_LIMIT = 20;
+const TASK_UPDATED_WINDOW_MS = 10 * 1000;
+
+// 广播「任务数据已变更」：客户端给出变更坐标（designerId/month/year）时，
+// 由服务端从数据库读取最新工时表再广播，其他客户端可直接本地合并，
+// 无需重新拉取整月数据。广播内容取自数据库而非客户端 payload，
+// 避免转发客户端构造的任意内容。坐标缺失/非法或读取失败时退化为
+// 「空信号」，客户端按原逻辑全量刷新。
+const broadcastTaskRefresh = (socket, payload) => {
+  const designerId = payload && payload.designerId ? String(payload.designerId) : '';
+  const month = Number(payload?.month);
+  const year = Number(payload?.year);
+  let sheet = null;
+  if (designerId && Number.isInteger(month) && Number.isInteger(year)) {
+    try {
+      sheet = taskStore.getSheet(designerId, month, year);
+    } catch (e) {
+      console.error('[socket] task_updated 增量读取失败，退化为全量刷新:', e.message);
+    }
+  }
+  socket.broadcast.emit('task_refreshed', sheet ? { sheets: [sheet] } : undefined);
+};
+
+// 限流命中时记录最后一次变更坐标，并在窗口结束后补发一次，
+// 保证最终状态一定送达其他客户端。补发期间继续到来的变更只更新坐标，
+// 不重复排定定时器。
+const scheduleTrailingTaskRefresh = (socket, payload) => {
+  socket.data.trailingTaskPayload = payload;
+  if (socket.data.trailingTaskTimer) return;
+  socket.data.trailingTaskTimer = setTimeout(() => {
+    socket.data.trailingTaskTimer = null;
+    if (!socket.connected) {
+      socket.data.trailingTaskPayload = null;
+      return;
+    }
+    broadcastTaskRefresh(socket, socket.data.trailingTaskPayload);
+    socket.data.trailingTaskPayload = null;
+  }, TASK_UPDATED_WINDOW_MS);
+};
+
+const cancelTrailingTaskRefresh = (socket) => {
+  if (socket.data.trailingTaskTimer) {
+    clearTimeout(socket.data.trailingTaskTimer);
+    socket.data.trailingTaskTimer = null;
+  }
+  socket.data.trailingTaskPayload = null;
+};
+
 // 错误处理：认证失败
 io.on('connect_error', (error) => {
   console.error('Socket connection error:', error.message);
@@ -262,27 +312,17 @@ io.on('connection', (socket) => {
     try {
       requireSocketAuth(socket);
       // 限制单个连接的广播频率：该事件会触发全体客户端重新拉取数据，
-      // 不加限制时可被任意登录用户高频触发，形成刷新风暴
-      if (!socketRateLimit(socket, 'task_updated', 5, 10 * 1000)) {
-        socket.emit('error', { message: '操作过于频繁，请稍后再试' });
+      // 不加限制时可被任意登录用户高频触发，形成刷新风暴。
+      // 限流命中时不能直接丢弃（见 scheduleTrailingTaskRefresh）：
+      // 该事件只是「数据已变更」信号，丢弃最后一次信号会让其他客户端
+      // 一直停在旧状态，直到本端下一次编辑或手动刷新。
+      if (!socketRateLimit(socket, 'task_updated', TASK_UPDATED_LIMIT, TASK_UPDATED_WINDOW_MS)) {
+        scheduleTrailingTaskRefresh(socket, payload);
         return;
       }
-      // 增量广播：客户端给出变更坐标（designerId/month/year）时，由服务端从数据库
-      // 读取最新工时表再广播，其他客户端可直接本地合并，无需重新拉取整月数据。
-      // 广播内容取自数据库而非客户端 payload，避免转发客户端构造的任意内容。
-      // 坐标缺失/非法或读取失败时退化为「空信号」，客户端按原逻辑全量刷新。
-      const designerId = payload && payload.designerId ? String(payload.designerId) : '';
-      const month = Number(payload?.month);
-      const year = Number(payload?.year);
-      let sheet = null;
-      if (designerId && Number.isInteger(month) && Number.isInteger(year)) {
-        try {
-          sheet = taskStore.getSheet(designerId, month, year);
-        } catch (e) {
-          console.error('[socket] task_updated 增量读取失败，退化为全量刷新:', e.message);
-        }
-      }
-      socket.broadcast.emit('task_refreshed', sheet ? { sheets: [sheet] } : undefined);
+      // 已经成功广播了最新数据，之前被限流的待补发信号已无意义，取消掉
+      cancelTrailingTaskRefresh(socket);
+      broadcastTaskRefresh(socket, payload);
     } catch (err) {
       socket.emit('error', { message: err.message });
     }
@@ -586,6 +626,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    // 释放待补发的 task_refreshed 定时器，避免连接断开后仍持有 socket 引用
+    cancelTrailingTaskRefresh(socket);
     const removedSessions = removeSessions(session => session.socketId === socket.id);
     broadcastStoppedSessions(removedSessions, socket);
     const removedGunSessions = removeGunLedgerSessions(s => s.socketId === socket.id);
