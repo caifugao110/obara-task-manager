@@ -100,6 +100,53 @@ const formatResponseMessage = (method, responseBody) => {
   }
 };
 
+// ---------- 审计范围收敛 ----------
+// 原则：审计日志回答「谁改了什么」，而不是「谁打开了页面」。
+// 浏览器每刷新一次工作台会并发十几个初始化 GET（7 个设置接口 + 列表数据 + 版本信息等），
+// 若照单全记，日志表会被读请求淹没，真正的增删改反而被埋掉。
+// 因此：写操作全记；GET 只记具有审计价值的敏感读取；心跳与日志自查询完全静默。
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+// 完全静默的路径（精确匹配，避免误伤 /export 这类需要留痕的接口）
+const SILENT_PATHS = new Set([
+  '/api/auth/validate',            // 会话心跳：App 每 60 秒一次，与「用户操作」无关
+  '/api/system/audit-logs',        // 日志列表自身
+  '/api/system/audit-logs/filter-options',
+  '/api/system/login-logs',
+  '/api/system/admin-login-logs'
+]);
+
+// 方法为 POST、语义却是只读的接口：查询/预检/问答，高频且不改状态，不记
+const READ_ONLY_POST_PATHS = new Set([
+  '/api/spec/spec-info',
+  '/api/spec/delivery-date',
+  '/api/spec/spec-raw-text',
+  '/api/design-standards/search',
+  '/api/design-standards/chat',
+  '/api/tasks/batch-replace/search',
+  '/api/status-tracking/import/check'
+]);
+
+// GET 中值得留痕的敏感读取：导出（数据外带）、数据库统计（库体量探测）
+// 覆盖 /export、/export-all、/export-xls 三种命名
+const isSensitiveRead = (normalizedPath) =>
+  /\/export(-all|-xls)?$/.test(normalizedPath) || normalizedPath === '/api/system/db-stats';
+
+const normalizePath = (rawPath = '') => {
+  const withoutQuery = String(rawPath).split('?')[0];
+  const trimmed = withoutQuery.replace(/\/+$/, '');
+  return (trimmed || withoutQuery).toLowerCase();
+};
+
+const shouldAudit = (method, rawPath) => {
+  const path = normalizePath(rawPath);
+  if (SILENT_PATHS.has(path)) return false;
+  if (READ_ONLY_POST_PATHS.has(path)) return false;
+  if (WRITE_METHODS.has(String(method || '').toUpperCase())) return true;
+  if (String(method || '').toUpperCase() === 'GET') return isSensitiveRead(path);
+  return false;
+};
+
 const getActionDescription = (method, path, body) => {
   const pathParts = path.split('/');
   const resource = pathParts[2] || '';
@@ -186,6 +233,10 @@ const appendAuditLogDirect = async (entry) => {
 };
 
 const auditLogMiddleware = async (req, res, next) => {
+  // 入口短路：不记录的请求连 send/json 包装和 finish 监听都不挂，
+  // 让高频读接口的开销回到「零」——这是刷新页面不再产生日志的关键
+  if (!shouldAudit(req.method, req.originalUrl || req.path)) return next();
+
   const startTime = Date.now();
   const originalSend = res.send;
   const originalJson = res.json;
@@ -207,9 +258,14 @@ const auditLogMiddleware = async (req, res, next) => {
 
   res.on('finish', async () => {
     try {
-      let user = req.user;
-
       const fullPath = req.originalUrl ? req.originalUrl.split('?')[0] : req.path;
+      const method = req.method;
+
+      // 先做最廉价的判断：读接口、心跳、日志自查询直接返回，
+      // 连 UA 解析和浏览器信息组装都省掉（这两步是每条日志的主要 CPU 开销）
+      if (!shouldAudit(method, fullPath)) return;
+
+      let user = req.user;
 
       if (!user && fullPath === '/api/auth/login' && responseStatus === 200 && responseBody) {
         const body = typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
@@ -221,11 +277,6 @@ const auditLogMiddleware = async (req, res, next) => {
       if (!user) return;
 
       const path = fullPath;
-      const method = req.method;
-
-      if (['OPTIONS', 'HEAD'].includes(method)) return;
-
-      if (path.startsWith('/api/system/login-logs') || path.startsWith('/api/system/audit-logs')) return;
 
       const action = getActionDescription(method, path, req.body);
       const ip = getClientIp(req);
@@ -260,4 +311,4 @@ const auditLogMiddleware = async (req, res, next) => {
   next();
 };
 
-module.exports = { auditLogMiddleware, appendAuditLogDirect };
+module.exports = { auditLogMiddleware, appendAuditLogDirect, shouldAudit };

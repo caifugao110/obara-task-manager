@@ -423,7 +423,7 @@ npm run dev
 
 - 主页面显示最新 10 条管理员（超级管理员和一般管理员）的登录记录，包含账号、姓名、角色、IP、浏览器信息和结果。
 - 点击「详细日志」进入操作日志页面（`/system-logs`），可查看所有用户的所有操作记录，支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
-- 操作日志自动记录所有已登录用户的 API 请求，包含操作描述、方法、路径、IP、浏览器信息、状态码、耗时等，默认最多保留 5000 条（可在「系统设置 → 日志管理」中调整，取值范围 100 ~ 100000，超过上限自动清理最旧记录）。
+- 操作日志记录已登录用户的**数据变更与敏感操作**（写操作全记；读取只记导出与数据库统计；会话心跳与页面初始化读接口不记），包含操作描述、方法、路径、IP、浏览器信息、状态码、耗时等，默认最多保留 5000 条（可在「系统设置 → 日志管理」中调整，取值范围 100 ~ 100000，超过上限自动清理最旧记录）。
 - 登录日志独立保留，最多 2000 条（不可配置）。
 - 操作类型和描述均为中文，例如「添加任务」「更新任务」「移动任务」「重新排序设计员」「批量替换任务」等。
 - 浏览器信息存储浏览器名称和版本号、操作系统和版本号、设备类型，但页面和导出表格中仅显示浏览器名称（如「Chrome」）。
@@ -556,7 +556,7 @@ npm run test:backend
 | `node tests/color-sync-relational.js` | 仅跑主任务改色联动测试，**会写入数据**，需自备副本（`set SMOKE_DB_PATH=%CD%\data-smoke.db`） |
 | `node tests/gun-search-relational.js` | 仅跑枪名搜索/快速添加测试，**会写入数据**，同样需自备副本 |
 
-单元测试（`tests/unit/`，基于 `node:test`）覆盖鉴权中间件的纯函数（会话校验、访问设置归一化、失效原因文案）、文件上传安全（Excel 类型校验、公式注入转义）与工作日工具（周末判断、覆盖规则）。
+单元测试（`tests/unit/`，基于 `node:test`）覆盖鉴权中间件的纯函数（会话校验、访问设置归一化、失效原因文案）、操作日志的记录范围判定（`shouldAudit`：写操作、敏感读取、静默路径、只读 `POST`）、文件上传安全（Excel 类型校验、公式注入转义）与工作日工具（周末判断、覆盖规则）。
 
 关系表冒烟测试（`backend/tests/smoke-relational.js`，验证 `taskStore` 与独立日志表的读写）现在由 `npm test` 自动调度：入口脚本会先用 `VACUUM INTO` 为生产库生成**只读快照副本**（用 `VACUUM INTO` 而非直接复制文件，避免 WAL 模式下丢掉未 checkpoint 的提交或拷到写一半的中间状态），在副本上跑冒烟测试，结束后清理 `backend/tests/.tmp/`，全程不触碰生产 `data.db`。同一份快照随后还会被下面两个用例复用，三者互不干扰的顺序由入口脚本固定。
 
@@ -719,16 +719,24 @@ node --check backend\routes\tasks.js
 
 ## 操作日志
 
-系统自动记录所有已登录用户的 API 请求作为操作日志：
+审计日志回答的是「谁改了什么」，而不是「谁打开了页面」，因此记录范围按「是否改变状态」收敛（`backend/middleware/auditLog.js` 的 `shouldAudit`）：
+
+- **写操作全记**：`POST` / `PUT` / `PATCH` / `DELETE`。
+- **`GET` 只记敏感读取**：各类导出（路径以 `/export`、`/export-all`、`/export-xls` 结尾）与 `GET /api/system/db-stats`。
+- **常规读接口不记**：工作台每次刷新会并发十余个初始化 `GET`（设置、列表数据、版本信息等），这些不再入库，真正的增删改不会被读请求淹掉。
+- **会话心跳不记**：`GET /api/auth/validate` 每 60 秒一次，与用户操作无关。
+- **语义为只读的 `POST` 不记**：`/api/spec/spec-info`、`/api/spec/delivery-date`、`/api/spec/spec-raw-text`、`/api/design-standards/search`、`/api/design-standards/chat`、`/api/tasks/batch-replace/search`、`/api/status-tracking/import/check`。
+
+日志内容与保留策略：
 
 - 日志包含操作描述、HTTP 方法、路径、IP、浏览器信息、状态码、耗时、请求体和响应消息。
 - 操作类型和描述均为中文，例如「用户登录」「添加任务」「更新任务」「删除任务」「移动任务」「重新排序设计员」「批量替换任务」「导出任务数据」「导入任务数据」等。
 - 浏览器信息存储浏览器名称和版本号、操作系统和版本号、设备类型，但页面和导出表格中仅显示浏览器名称（如「Chrome」）。
-- GET 请求不记录响应消息（避免存储大体积任务数据），POST/PUT/DELETE 请求记录请求体（脱敏后最大 2000 字符；DELETE 的请求体用于说明「删了谁/删了哪条」，GET/HEAD/OPTIONS 无请求体故不记录）。
+- GET 请求不记录响应消息（避免存储大体积任务数据），POST/PUT/PATCH/DELETE 请求记录请求体（脱敏后最大 2000 字符；DELETE 的请求体用于说明「删了谁/删了哪条」，GET/HEAD/OPTIONS 无请求体故不记录）。
 - 操作日志默认最多保留 5000 条（可在「系统设置 → 日志管理」中调整），超过自动清理最旧记录。
 - 仅超级管理员可在「操作日志」页面查看，支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
 - 筛选下拉框中的操作类型按拼音排序。
-- 仅登录日志查询（`/api/system/login-logs`、`/api/system/admin-login-logs`）与操作日志查询/导出（`/api/system/audit-logs*`）接口本身不记录操作日志，避免日志自我膨胀；系统设置变更、维护操作等其他接口（如 `PUT /api/system/settings`）均正常记录。
+- 仅登录日志查询（`/api/system/login-logs`、`/api/system/admin-login-logs`）与操作日志查询（`GET /api/system/audit-logs`、`GET /api/system/audit-logs/filter-options`）接口本身不记录，避免日志自我膨胀；`GET /api/system/audit-logs/export` 属于导出操作，正常记录；系统设置变更、维护操作等其他接口（如 `PUT /api/system/settings`）均正常记录。
 - 系统设置「日志管理」页面顶部展示的管理员登录记录取自 `GET /api/system/admin-login-logs`（仅超级管理员/一般管理员的登录记录，默认 10 条）；完整登录日志查询接口为 `GET /api/system/login-logs`。
 
 ## 安全配置
@@ -792,7 +800,7 @@ obara-task-manager/
 │   │   ├── smoke-relational.js   # 关系表存储（taskStore/独立日志表）冒烟测试
 │   │   ├── color-sync-relational.js # 主任务改色子枪名联动测试
 │   │   ├── gun-search-relational.js # 枪名搜索（含归属）与确认图修改快速添加测试
-│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / uploadSecurity / workday
+│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / auditScope / uploadSecurity / workday
 │   ├── utils/
 │   │   ├── auditLogDisplay.js
 │   │   ├── dbMaintenance.js
@@ -924,7 +932,7 @@ obara-task-manager/
 | 类型定义 | `frontend/src/types/index.ts` | TypeScript 类型定义，包含用户、任务、设计人员、报表等核心类型 |
 | 认证中间件 | `backend/middleware/auth.js` | JWT 认证、角色校验 |
 | Socket.IO 认证 | `backend/middleware/socketAuth.js` | WebSocket 连接认证和单设备登录限制 |
-| 操作日志 | `backend/middleware/auditLog.js` | 自动记录所有已登录用户的 API 请求；`POST`/`PUT`/`DELETE` 记录请求体（脱敏后最大 2000 字符） |
+| 操作日志 | `backend/middleware/auditLog.js` | 以 `shouldAudit()` 收敛记录范围：写操作（`POST`/`PUT`/`PATCH`/`DELETE`）全记，`GET` 仅记导出与 `/api/system/db-stats`，心跳、日志自查询与页面初始化读接口直接短路不记；写操作记录请求体（脱敏后最大 2000 字符） |
 | 数据库缓存读接口 | `backend/db.js` | `readDb()` 返回整库克隆；只读场景优先使用窄读接口 `readSettings()`（只读 `settings`）、`readGunLedger()`（只读体积最大的焊枪台账）、`readDesigners()`（只读设计人员列表，名称映射类场景足够）与 `findUserById(id)`（单用户克隆），避免鉴权、Socket 鉴权、会话校验、枪名归属回显等路径反复深拷贝整库；写库仍用 `readDb()` + `writeDb()` |
 | 数据库维护 | `backend/utils/dbMaintenance.js` | 自动备份、任务导出、断网备份、年度清理等维护功能 |
 | 任务关系表存储 | `backend/taskStore.js` | 任务工时表的关系型存储层（`task_sheets`/`task_entries`），按设计人员/年月索引读写单张表，对外保持原 sheet 数据形状；另提供枪名归属反查 `findGunOwnersByQuery()`（LIKE 预筛 + 逐条校验 `guns` 数组，可按 year/month 限定范围，确认图任务优先排序），供「确认图修改」快捷键取默认设计员 |

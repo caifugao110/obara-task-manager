@@ -281,7 +281,7 @@ const SystemLogs = () => {
                 <FileText className="mr-2 text-gray-500" size={20} />
                 所有操作记录
               </h3>
-              <p className="text-xs text-gray-400 mt-1">记录所有用户的操作行为，按操作时间由新到旧排列</p>
+              <p className="text-xs text-gray-400 mt-1">记录数据变更（新增/修改/删除/导入）与敏感操作（登录、导出等），常规页面浏览不记录，按操作时间由新到旧排列</p>
             </div>
             <div className="flex items-center gap-3">
               <button

@@ -30,6 +30,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
+import { PRESET_COLORS as DASHBOARD_PRESET_COLORS } from './Dashboard/constants';
 import LoadingScreen from '../components/LoadingScreen';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsContext';
@@ -131,14 +132,8 @@ const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'R
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 const PLACEHOLDER_COUNT = 10;
 
-// 预设颜色池（与主页面 Dashboard 一致），用于随机标记颜色
-const PRESET_COLORS = [
-  '#fee2e2', '#ffe4e6', '#ffedd5', '#fef3c7', '#fef9c3', '#ecfccb', '#dcfce7', '#d1fae5',
-  '#cffafe', '#e0f2fe', '#dbeafe', '#e0e7ff', '#f3e8ff', '#fce7f3', '#f5e6d3', '#f1f5f9',
-  '#fca5a5', '#f87171', '#fb7185', '#fdba74', '#fb923c', '#fbbf24', '#fde047', '#a3e635',
-  '#86efac', '#34d399', '#67e8f9', '#22d3ee', '#38bdf8', '#93c5fd', '#818cf8', '#d8b4fe',
-  '#f9a8d4', '#f472b6', '#c08457', '#94a3b8', '#e5e7eb', '#6b7280',
-];
+// 随机分配颜色池：直接复用主页面新增/编辑任务时的预设颜色，保证与主页面一致
+const PRESET_COLOR_VALUES = DASHBOARD_PRESET_COLORS.filter(c => c.value).map(c => c.value);
 const newRowId = () => `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 // 焊枪名自动生成规则：分类 → 表名 → { prefix, 起始编号, 编号位数 }
@@ -836,7 +831,7 @@ const GunLedger: React.FC = () => {
       const guns = buildGuns(rows);
       const hours = guns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
       const color = systemSettings.randomAssignmentColor
-        ? PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)]
+        ? PRESET_COLOR_VALUES[Math.floor(Math.random() * PRESET_COLOR_VALUES.length)]
         : '#86efac';
       return {
         taskName: `${customer} 确认图`,

@@ -2813,7 +2813,13 @@ PUT 请求：
 
 - 操作日志最多保留 `auditLogMaxRows` 条（系统设置 → 日志管理，默认 5000），超过时自动清理最旧的记录。
 - 仅记录已登录用户的请求（匿名请求不记）；登录成功的请求会从登录响应中补取用户信息后记录。
-- `GET /api/system/login-logs*` 与 `/api/system/audit-logs*`（含查询、筛选选项、导出）本身不记录，避免日志自我膨胀；系统设置变更、维护等其他接口（如 `PUT /api/system/settings`）均正常记录。
+- **记录范围按「是否改变状态」收敛**（`backend/middleware/auditLog.js` 的 `shouldAudit`）：
+  - 写操作全记：`POST` / `PUT` / `PATCH` / `DELETE`；
+  - `GET` 只记敏感读取：各类导出（`/export`、`/export-all`、`/export-xls`）与 `GET /api/system/db-stats`；
+  - 常规读接口不记：`GET /api/settings/*`、`/api/system/settings`、`/api/system/version`、`/api/designers`、`/api/tasks` 等页面初始化请求均不入库；
+  - 会话心跳 `GET /api/auth/validate` 不记；
+  - 语义为只读的 `POST` 不记：`/api/spec/spec-info`、`/api/spec/delivery-date`、`/api/spec/spec-raw-text`、`/api/design-standards/search`、`/api/design-standards/chat`、`/api/tasks/batch-replace/search`、`/api/status-tracking/import/check`。
+- `GET /api/system/login-logs`、`GET /api/system/audit-logs`、`GET /api/system/audit-logs/filter-options` 本身不记录；`GET /api/system/audit-logs/export` 作为导出操作正常记录。
 - GET 请求不记录响应消息，POST/PUT/DELETE 请求记录请求体（脱敏后最大 2000 字符；DELETE 的请求体用于说明删除了哪条记录，如 `DELETE /api/tasks/item`、`DELETE /api/users/:id`）。
 - 请求体在入库前递归脱敏：嵌套对象与数组中的字段名只要匹配 `password`、`passwd`、`secret`、`token`、`api_key`/`apikey`、`authorization`（不区分大小写），值一律替换为 `[REDACTED]`。
 - IP 取 `req.ip`（`trust proxy='loopback'`），不直接采信客户端发送的 `X-Forwarded-For` / `X-Real-IP`。
@@ -3971,7 +3977,7 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 8. **账号禁用**：支持禁用账号，禁用后无法登录
 9. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
 10. **强制修改密码与会话吊销**：新建用户首次登录需修改密码，一般管理员修改自己密码后下次登录需再次修改；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。超级管理员重置用户密码（单个或批量）后不强制改密，但会吊销旧令牌并记录一次性失效原因，旧会话校验时收到「密码已被管理员重置」提示
-11. **操作审计**：自动记录所有已登录用户的 API 请求，默认最多保留 5000 条（可在系统设置 → 日志管理中调整）；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
+11. **操作审计**：记录已登录用户的**数据变更与敏感操作**（写操作全记；`GET` 仅记导出与数据库统计；心跳与页面初始化读接口不记，避免刷新页面产生大量日志），默认最多保留 5000 条（可在系统设置 → 日志管理中调整）；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
 12. **登录失败全量留痕与防枚举**：登录成功与失败均写登录日志，失败日志含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`）；对客户端统一返回 `用户名或密码错误`，不暴露用户名是否存在
 13. **Excel 依赖本地化**：Excel 解析使用随仓库分发的 `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，`file:` 协议安装），修复旧版 0.18.5 的 CVE-2023-30533 与 CVE-2024-22363
 14. **IP 黑名单**：超级管理员可在系统设置「登录管理」中配置（精确 IP / CIDR 网段 / IPv4 通配符，最多 500 条），命中的来源 IP 访问任意 `/api` 接口返回 `403`（`IP_BANNED`）；`OPTIONS` 预检与本机回环地址永不拦截，黑名单 IP 的登录尝试会写入失败原因为「IP 已被列入黑名单」的登录日志
