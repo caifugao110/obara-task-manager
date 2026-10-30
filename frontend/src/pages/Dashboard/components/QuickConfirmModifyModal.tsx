@@ -16,6 +16,12 @@ import {
 import { axiosInstance } from '../../../services/api';
 import { useSystemSettings } from '../../../context/SystemSettingsContext';
 import { resolveAutoFillHours, GunLocation } from '../../../utils/gunHoursRules';
+import {
+  appendDeadlineSuffix,
+  hasDeadlineSuffix,
+  resolveTextDeadlineSuffix,
+  stripDeadlineSuffix,
+} from '../../../utils/specDeadline';
 import { PRESET_COLORS } from '../constants';
 import type { Designer, TaskItem, TaskSheet } from '../types';
 
@@ -138,6 +144,9 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   // 全表搜索：默认关闭，只在「日期」所在月份里搜；打开后搜所有月份
   const [fullSearch, setFullSearch] = useState(false);
+  // 显示纳期：默认打开，任务名中的仕样号能查到纳期时自动带上 [M/D]
+  const [showDeadline, setShowDeadline] = useState(true);
+  const [deadlineLoading, setDeadlineLoading] = useState(false);
 
   const [selected, setSelected] = useState<GunNameSearchResult | null>(null);
   const [designerId, setDesignerId] = useState('');
@@ -155,6 +164,8 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const resultsListRef = useRef<HTMLUListElement | null>(null);
   const requestSeqRef = useRef(0);
+  // 纳期查询序号：快速切换枪名时丢弃过期的查询结果
+  const deadlineSeqRef = useRef(0);
 
   // 设计人员下拉选项：与 /gun-ledger 分配面板一致——过滤隐藏人员 + 按姓名拼音升序
   const designerOptions = useMemo(
@@ -253,6 +264,9 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
     setSearchError('');
     setActiveIndex(0);
     setFullSearch(false);
+    setShowDeadline(true);
+    setDeadlineLoading(false);
+    deadlineSeqRef.current += 1;
     setSelected(null);
     setDesignerId('');
     setDate(todayStr());
@@ -351,11 +365,44 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
     return () => { cancelled = true; };
   }, [open, selected, designerId, date]);
 
-  // 合并选择随候选变化重置
+  // 合并选择随候选变化重置：**默认勾选**（发现相同仕样号时不再需要手动勾）
+  // 用候选签名判重，避免用户手动取消勾选后被状态刷新重新勾上
+  const mergeSignature = `${designerId}|${date}|${selected?.gunName || ''}|${mergeCandidates.map(c => c.itemId).join(',')}`;
+  const lastMergeSignatureRef = useRef('');
   useEffect(() => {
-    setMergeMode(false);
-    setMergeTargetId('');
-  }, [designerId, date, selected?.gunName]);
+    if (lastMergeSignatureRef.current === mergeSignature) return;
+    lastMergeSignatureRef.current = mergeSignature;
+    if (mergeCandidates.length > 0) {
+      setMergeMode(true);
+      setMergeTargetId(mergeCandidates[0].itemId);
+    } else {
+      setMergeMode(false);
+      setMergeTargetId('');
+    }
+  }, [mergeSignature, mergeCandidates]);
+
+  // 按任务名里的仕样号自动补纳期（显示纳期开关关闭时不做任何事）；
+  // 只有当前输入框内容仍是这条自动名称时才写入，避免覆盖用户的手动修改
+  const applyAutoDeadline = useCallback((baseName: string) => {
+    const seq = ++deadlineSeqRef.current;
+    if (!showDeadline) {
+      setDeadlineLoading(false);
+      return;
+    }
+    setDeadlineLoading(true);
+    void resolveTextDeadlineSuffix(baseName, specNumberDigits)
+      .then(suffix => {
+        if (seq !== deadlineSeqRef.current) return;
+        setDeadlineLoading(false);
+        if (!suffix) return;
+        setTaskNameDraft(prev => (stripDeadlineSuffix(prev) === stripDeadlineSuffix(baseName)
+          ? appendDeadlineSuffix(baseName, suffix)
+          : prev));
+      })
+      .catch(() => {
+        if (seq === deadlineSeqRef.current) setDeadlineLoading(false);
+      });
+  }, [showDeadline, specNumberDigits]);
 
   const handleSelect = useCallback((result: GunNameSearchResult) => {
     setSelected(result);
@@ -369,9 +416,33 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
     const defaultHours = resolveAutoFillHours('confirmModify', result.gunName, location, systemSettings);
     setHours(defaultHours !== null && defaultHours !== undefined ? String(defaultHours) : '');
     // 任务名默认自动带出，仍可在「任务名称」里手动修改
-    setTaskNameDraft(buildAutoTaskName(result));
+    const autoName = buildAutoTaskName(result);
+    setTaskNameDraft(autoName);
     setSearchError('');
-  }, [designerOptions, gunLocations, systemSettings]);
+    // 显示纳期：任务名里能提取到仕样号时，自动补上 [M/D]
+    applyAutoDeadline(autoName);
+  }, [designerOptions, gunLocations, systemSettings, applyAutoDeadline]);
+
+  // 切换「显示纳期」：关闭时移除任务名末尾的纳期，打开时按仕样号重新查询并补上
+  const handleDeadlineToggle = useCallback(async (next: boolean) => {
+    setShowDeadline(next);
+    const seq = ++deadlineSeqRef.current;
+    if (!next) {
+      setDeadlineLoading(false);
+      setTaskNameDraft(prev => stripDeadlineSuffix(prev));
+      return;
+    }
+    const base = stripDeadlineSuffix(taskNameDraft);
+    if (!base) return;
+    setDeadlineLoading(true);
+    try {
+      const suffix = await resolveTextDeadlineSuffix(base, specNumberDigits);
+      if (seq !== deadlineSeqRef.current) return;
+      if (suffix) setTaskNameDraft(appendDeadlineSuffix(base, suffix));
+    } finally {
+      if (seq === deadlineSeqRef.current) setDeadlineLoading(false);
+    }
+  }, [taskNameDraft, specNumberDigits]);
 
   // 选中枪名后把结果列表里对应的那一行滚动到可视区域（列表常驻，可能已滚出视野）
   useEffect(() => {
@@ -427,6 +498,13 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
     }
     setSubmitting(true);
     try {
+      // 显示纳期：提交前再做一次兜底——任务名里有仕样号但还没带纳期时补上
+      // （预览阶段的查询可能因为切换枪名被丢弃，或用户手动改了名称）
+      let submitTaskName = finalTaskName;
+      if (showDeadline && !mergeTarget) {
+        const suffix = await resolveTextDeadlineSuffix(finalTaskName, specNumberDigits);
+        if (suffix) submitTaskName = appendDeadlineSuffix(finalTaskName, suffix);
+      }
       const gunPayload = {
         id: `gun-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         name: selected.gunName.trim(),
@@ -461,7 +539,7 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
           designerId,
           date,
           items: [{
-            taskName: finalTaskName,
+            taskName: submitTaskName,
             hours: hoursNumber,
             color,
             guns: [gunPayload],
@@ -498,6 +576,29 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2.5 shrink-0">
+            {/* 显示纳期开关：打开后任务名自动带上仕样号纳期 [M/D]（默认打开） */}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showDeadline}
+              disabled={submitting}
+              onClick={() => { void handleDeadlineToggle(!showDeadline); }}
+              title={showDeadline
+                ? '已开启：任务名里的仕样号能查到纳期时自动带上 [M/D]'
+                : '已关闭：任务名不带纳期'}
+              className={`flex items-center gap-1.5 px-1.5 py-1 rounded-full transition cursor-pointer disabled:opacity-50 ${showDeadline ? 'bg-white/15' : 'hover:bg-white/10'}`}
+            >
+              <span className="text-[11px] font-semibold text-white/90 whitespace-nowrap">
+                显示纳期{deadlineLoading ? '…' : ''}
+              </span>
+              <span
+                className={`relative inline-block w-8 h-4 rounded-full transition-colors ${showDeadline ? 'bg-white' : 'bg-white/30'}`}
+              >
+                <span
+                  className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${showDeadline ? 'left-[18px] bg-[#217346]' : 'left-0.5 bg-white'}`}
+                />
+              </span>
+            </button>
             {/* 全表搜索开关：关闭时只搜「日期」所在月份 */}
             <button
               type="button"
@@ -754,9 +855,24 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
                   <div className="flex flex-col gap-1 min-w-0">
                     <div className="flex items-center gap-1">
                       <label className="text-[11px] font-bold text-gray-500">任务名称</label>
+                      {showDeadline && (
+                        <span
+                          className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${hasDeadlineSuffix(taskNameDraft)
+                            ? 'text-red-600 bg-red-50 border-red-200'
+                            : deadlineLoading
+                              ? 'text-gray-400 bg-gray-50 border-gray-200'
+                              : 'text-gray-400 bg-gray-50 border-gray-200'}`}
+                          title="按任务名中的仕样号查询仕样书纳期，自动拼到任务名末尾"
+                        >
+                          {deadlineLoading ? '纳期查询中…' : hasDeadlineSuffix(taskNameDraft) ? '已带纳期' : '无纳期'}
+                        </span>
+                      )}
                       {taskNameDraft.trim() !== autoTaskName.trim() && (
                         <button
-                          onClick={() => setTaskNameDraft(autoTaskName)}
+                          onClick={() => {
+                            setTaskNameDraft(autoTaskName);
+                            applyAutoDeadline(autoTaskName);
+                          }}
                           disabled={submitting}
                           className="ml-auto text-[10px] font-semibold text-blue-600 hover:text-blue-700 hover:underline disabled:opacity-50"
                           title="恢复为自动带出的任务名称"

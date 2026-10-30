@@ -56,8 +56,7 @@ const BUILTIN_TABLE_GUN_HOURS = {
     X: { confirm: 2, confirmModify: 0.75, design: 3 }
   },
   GLOBAL: {
-    RBC: { confirm: 2, confirmModify: 0.75, design: 3 },
-    LAW: { confirm: 2, confirmModify: 0.75, design: 3 }
+    RBC: { confirm: 2, confirmModify: 0.75, design: 3 }
   },
   PSW: {
     UC: { confirm: 1.5, confirmModify: 0.5, design: 2 },

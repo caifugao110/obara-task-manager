@@ -757,7 +757,8 @@ const Dashboard = () => {
         : '#86efac'
     );
     setAddModeTaskType('none');
-    setShowDeadline(false);
+    // 新增任务默认勾选「显示纳期」：任务名里能提取到仕样号时自动带上 [M/D]
+    setShowDeadline(true);
     setAddModeDeadlineTag(null);
     setManualDeadline(false);
     setManualDeadlineInput('');
@@ -3449,18 +3450,27 @@ const Dashboard = () => {
                     批量操作
                   </button>
                 )}
-                {!hideTaskTypeOptions && (
-                <label className={`flex items-center gap-1.5 text-sm font-bold select-none ${isAddMode && extractSpecNumber(addModeTaskName)?.length !== specNumberDigits ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
-                  <input
-                    type="checkbox"
-                    checked={showDeadline}
-                    onChange={(e) => { void handleDeadlineToggle(e.target.checked); }}
-                    disabled={isAddMode && extractSpecNumber(addModeTaskName)?.length !== specNumberDigits}
-                    className="w-4 h-4 cursor-pointer accent-white disabled:cursor-not-allowed"
-                  />
-                  显示纳期
-                </label>
-                )}
+                {!hideTaskTypeOptions && (() => {
+                  // 新增模式下「显示纳期」默认勾选：仅当还没填仕样号且当前未勾选时才禁用，
+                  // 已勾选状态下允许直接取消，避免出现「勾着却点不动」的死状态
+                  const specMissing = isAddMode && extractSpecNumber(addModeTaskName)?.length !== specNumberDigits;
+                  const deadlineDisabled = specMissing && !showDeadline;
+                  return (
+                    <label
+                      className={`flex items-center gap-1.5 text-sm font-bold select-none ${deadlineDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                      title={specMissing && showDeadline ? `任务名中需包含${specNumberDigits}位数仕样号才能自动带出纳期` : undefined}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={showDeadline}
+                        onChange={(e) => { void handleDeadlineToggle(e.target.checked); }}
+                        disabled={deadlineDisabled}
+                        className="w-4 h-4 cursor-pointer accent-white disabled:cursor-not-allowed"
+                      />
+                      显示纳期
+                    </label>
+                  );
+                })()}
                 {showDeadline && !hideTaskTypeOptions && (
                   <label className="flex items-center gap-1.5 text-sm font-bold select-none cursor-pointer">
                     <input

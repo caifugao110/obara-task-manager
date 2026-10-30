@@ -32,6 +32,8 @@ import {
 import { axiosInstance } from '../services/api';
 import { PRESET_COLORS as DASHBOARD_PRESET_COLORS } from './Dashboard/constants';
 import LoadingScreen from '../components/LoadingScreen';
+import QuickConfirmAssignModal, { QuickConfirmGunRow } from '../components/QuickConfirmAssignModal';
+import { appendDeadlineSuffix, resolveTextDeadlineSuffix } from '../utils/specDeadline';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsContext';
 import { useDebounce } from '../utils/debounce';
@@ -157,7 +159,6 @@ const GUN_NAME_PATTERNS: Record<string, Record<string, { prefix: string; start: 
   },
   'GLOBAL': {
     'RBC': { prefix: 'RBC', start: 14000, pad: 5 },
-    'LAW': { prefix: 'LAW', start: 24080, pad: 5 },
   },
   'TOYOTA': {
     'C01': { prefix: 'C01-C', start: 500,  pad: 4 },
@@ -391,6 +392,11 @@ const GunLedger: React.FC = () => {
   const [specCheckLoading, setSpecCheckLoading] = useState(false);
   const [mergeIntoExisting, setMergeIntoExisting] = useState(false);
   const [mergeTargetItemId, setMergeTargetItemId] = useState('');
+  // 分配面板「显示纳期」开关：打开后新建的确认图任务名自动带上仕样号纳期 [M/D]（默认打开）
+  const [assignShowDeadline, setAssignShowDeadline] = useState(true);
+
+  // 快速确认图安排（连按两次 Shift 呼出）：汇总当前登录人员今天取的枪名
+  const [quickAssignOpen, setQuickAssignOpen] = useState(false);
 
   // 分类导出弹窗：选中的分类 / 导出请求中
   const [showExportPanel, setShowExportPanel] = useState(false);
@@ -407,7 +413,8 @@ const GunLedger: React.FC = () => {
   const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRowIdsRef = useRef<Set<string>>(new Set());
   const inputRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
-  // 操作列「向下复制」每行的复制数量输入框（非受控，点击加号时读取值，1~20）
+  // 操作列「向下复制」每行的取号数量输入框（非受控，点击加号时读取值，1~10）
+  // 语义：输入值为「本次取号总数」，含当前行自身；1 表示只取当前行（无需向下复制），取号完成后自动归 1
   const countInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const specLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 表级锁相关 refs（供 socket 回调与卸载清理读取最新值）
@@ -781,6 +788,119 @@ const GunLedger: React.FC = () => {
         return extractSpecNumbers(t.taskName).some(s => selectedSpecNumbers.includes(s));
       });
 
+  // 「添加到已有任务」默认勾选：候选变化时自动勾上；
+  // 用候选项签名判重，用户手动取消勾选后不会被状态刷新重新勾上
+  const mergeCandidateSignature = `${assignDesignerId}|${assignDate}|${Array.from(selectedGunRowIds).sort().join(',')}|${matchedExistingSpecTasks.map(t => t.itemId).join(',')}`;
+  const lastMergeSignatureRef = useRef('');
+  useEffect(() => {
+    if (lastMergeSignatureRef.current === mergeCandidateSignature) return;
+    lastMergeSignatureRef.current = mergeCandidateSignature;
+    if (matchedExistingSpecTasks.length > 0) {
+      setMergeIntoExisting(true);
+      setMergeTargetItemId(prev => (prev && matchedExistingSpecTasks.some(t => t.itemId === prev)
+        ? prev
+        : matchedExistingSpecTasks[0].itemId));
+    } else {
+      setMergeIntoExisting(false);
+      setMergeTargetItemId('');
+    }
+  }, [mergeCandidateSignature, matchedExistingSpecTasks]);
+
+  // 快速确认图安排的候选行：当前登录人员「今天取的」枪名
+  // （取号时台账的「时间」列填当天、「担当」列填操作者，见 handleCopyDown）
+  const todayTakenRows = useMemo<QuickConfirmGunRow[]>(() => {
+    if (!ledger || !user) return [];
+    const today = todayStr();
+    const me = String(user.name || user.username || '').trim();
+    if (!me) return [];
+    const collected: QuickConfirmGunRow[] = [];
+    Object.entries(ledger.categories || {}).forEach(([category, categoryTables]) => {
+      (categoryTables || []).forEach(table => {
+        (table.rows || []).forEach(row => {
+          const gunName = String(row.gunName || '').trim();
+          if (!gunName) return;
+          if (String(row.time || '').trim() !== today) return;
+          if (String(row.responsiblePerson || '').trim() !== me) return;
+          collected.push({
+            rowId: row.id,
+            gunName,
+            customer: String(row.customer || '').trim(),
+            category,
+            tableName: table.name,
+            hours: resolveGunHours('confirm', gunName, { category, tableName: table.name }, systemSettings) ?? 0,
+            used: usedGunNames.has(gunName),
+          });
+        });
+      });
+    });
+    // 同一枪名理论上只出现在一张表里，做一次去重兜底
+    const seen = new Set<string>();
+    return collected.filter(row => {
+      if (seen.has(row.gunName)) return false;
+      seen.add(row.gunName);
+      return true;
+    });
+  }, [ledger, user, usedGunNames, systemSettings]);
+
+  // 连按两次 Shift（间隔 400ms 内、光标不在输入框内）打开「快速确认图安排」
+  useEffect(() => {
+    if (!isAdmin || !canAccess) return;
+    const DOUBLE_SHIFT_INTERVAL = 400;
+    let lastShiftAt = 0;
+    let shiftComboUsed = false;
+    const resetTap = () => { lastShiftAt = 0; };
+    const isTypingTarget = () => {
+      const el = document.activeElement as HTMLElement | null;
+      return !!el && !!el.closest('input, textarea, select, [contenteditable="true"]');
+    };
+    const anyModalOpen = quickAssignOpen || showAssignPanel || showPersonPanel || showAccessPanel
+      || showInitPanel || showExportPanel || addCategoryOpen || addTableOpen
+      || Boolean(deleteCategoryTarget) || Boolean(deleteTableTarget) || Boolean(restoreTarget)
+      || Boolean(confirmBatch) || Boolean(confirmClearId);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') {
+        if (e.repeat || shiftComboUsed) return;
+        if (isTypingTarget()) return;
+        const now = Date.now();
+        if (lastShiftAt && now - lastShiftAt <= DOUBLE_SHIFT_INTERVAL) {
+          resetTap();
+          if (anyModalOpen) return;
+          if (!onlineRef.current) {
+            addToast('当前离线，禁止编辑', 'error');
+            return;
+          }
+          e.preventDefault();
+          setQuickAssignOpen(true);
+        } else {
+          lastShiftAt = now;
+        }
+        return;
+      }
+      // 按住 Shift 时按下其它键（Shift+字母 / Shift+Tab 等）打断判定
+      if (e.shiftKey) shiftComboUsed = true;
+      resetTap();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') shiftComboUsed = false;
+    };
+    // Shift+单击（多选、Shift+点击链接）同样打断判定
+    const onMouseDown = () => { resetTap(); };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('mousedown', onMouseDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [
+    isAdmin, canAccess, addToast, quickAssignOpen, showAssignPanel, showPersonPanel, showAccessPanel,
+    showInitPanel, showExportPanel, addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget,
+    restoreTarget, confirmBatch, confirmClearId,
+  ]);
+
   // 任务分配：按客户分组构建确认图任务，批量创建到指定设计人员的指定日期；
   // 勾选「添加到已有任务」时，相同仕样号的枪名追加进已有任务而不新建
   const handleConfirmAssign = useCallback(async () => {
@@ -827,22 +947,28 @@ const GunLedger: React.FC = () => {
       }
     });
     // 构建批量创建 items（仅未命中相同仕样号的组）
-    const items = createGroups.map(([customer, rows]) => {
-      const guns = buildGuns(rows);
-      const hours = guns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
-      const color = systemSettings.randomAssignmentColor
-        ? PRESET_COLOR_VALUES[Math.floor(Math.random() * PRESET_COLOR_VALUES.length)]
-        : '#86efac';
-      return {
-        taskName: `${customer} 确认图`,
-        hours,
-        color,
-        guns,
-        leaveType: null,
-      };
-    });
     setAssigning(true);
     try {
+      const items = await Promise.all(createGroups.map(async ([customer, rows]) => {
+        const guns = buildGuns(rows);
+        const hours = guns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
+        const color = systemSettings.randomAssignmentColor
+          ? PRESET_COLOR_VALUES[Math.floor(Math.random() * PRESET_COLOR_VALUES.length)]
+          : '#86efac';
+        // 显示纳期：客户列里有仕样号且能查到纳期时，任务名带上 [M/D]
+        let taskName = `${customer} 确认图`;
+        if (assignShowDeadline) {
+          const suffix = await resolveTextDeadlineSuffix(customer, specNumberDigits);
+          taskName = appendDeadlineSuffix(taskName, suffix);
+        }
+        return {
+          taskName,
+          hours,
+          color,
+          guns,
+          leaveType: null,
+        };
+      }));
       // 追加枪名到已有任务，并同步任务总工时（有枪名时任务工时 = 枪名工时之和）
       let mergedGunCount = 0;
       for (const [itemId, target] of mergeTargets.entries()) {
@@ -889,7 +1015,7 @@ const GunLedger: React.FC = () => {
     } finally {
       setAssigning(false);
     }
-  }, [activeTable, assignDesignerId, assignDate, selectedGunRowIds, getDefaultConfirmHours, authHeader, fetchUsedGunNames, addToast, designers, systemSettings, warnIfOffline, extractSpecNumbers, mergeIntoExisting, mergeTargetItemId, matchedExistingSpecTasks]);
+  }, [activeTable, assignDesignerId, assignDate, selectedGunRowIds, getDefaultConfirmHours, authHeader, fetchUsedGunNames, addToast, designers, systemSettings, warnIfOffline, extractSpecNumbers, mergeIntoExisting, mergeTargetItemId, matchedExistingSpecTasks, assignShowDeadline, specNumberDigits]);
 
   // 更新本地某张表（跨分类查找）
   const patchTable = useCallback((tableId: string, updater: (t: GunTable) => GunTable) => {
@@ -1116,11 +1242,13 @@ const GunLedger: React.FC = () => {
     debouncedSave(activeTable.id);
   }, [activeTable, isAdmin, online, activeTableReadOnly, patchTableRows, user, debouncedSave]);
 
-  // 向下复制：把当前行的「客户名」复制到该行下方最新的「客户名为空」的行
+  // 向下复制（取号）：把当前行的「客户名」复制到该行下方最新的「客户名为空」的行
   // 时间列填当前日期（与时间列 Clock 按钮同格式），担当列填当前操作者
   // 焊枪名：不再沿用目标行按表默认规则预填的名字，而是继承当前行焊枪名的前缀与后缀，
   // 仅编号替换为目标行规则编号（prefix + 目标行编号 + suffix），即整列焊枪名仅编号不一致
-  // 加号按钮前的数字框决定复制行数（默认 1，范围 1~20）；占位行会被提升为真实行
+  // 数字框语义为「本次取号总数（含当前行）」：输入 3 表示本次共取 3 个号 —— 当前行本身占 1 个，
+  // 因此只需向下复制 2 行；输入 1 表示只取当前行，不会向下复制；取号完成后数字框自动归 1。
+  // 占位行会被提升为真实行
   const handleCopyDown = useCallback((row: GunRow) => {
     if (!activeTable || !isAdmin || !online || activeTableReadOnly) return;
     const srcCustomer = row.customer;
@@ -1133,20 +1261,28 @@ const GunLedger: React.FC = () => {
     const split = rule && rule.enabled ? splitGunNameByRule(rule, row.serialNumber, row.gunName) : null;
     const nowTime = todayStr();
     const currentPerson = user?.name || '';
-    // 读取该行数字框的复制数量（非受控，点击时取值并夹到 1~10）
+    // 读取该行数字框的取号总数（非受控，点击时取值并夹到 1~10）
     const inputEl = countInputRefs.current[row.id];
     let count = 1;
     if (inputEl) {
       const parsed = parseInt(inputEl.value, 10);
       if (!Number.isNaN(parsed)) count = Math.min(10, Math.max(1, parsed));
     }
-    // 在展示行中定位当前行，取其下方「客户名为空」的行（升序）前 count 个
+    // 需要向下复制的行数 = 取号总数 - 当前行自身
+    const needCopy = count - 1;
+    if (needCopy <= 0) {
+      // 数字为 1：本次只有当前行一个号，无需向下复制
+      addToast('取号数量为 1 时无需向下复制（当前行已计入本次取号）', 'error');
+      if (inputEl) inputEl.value = '1';
+      return;
+    }
+    // 在展示行中定位当前行，取其下方「客户名为空」的行（升序）前 needCopy 个
     const startIdx = displayRows.findIndex(r => r.id === row.id);
     if (startIdx < 0) return;
     const targets = displayRows
       .slice(startIdx + 1)
       .filter(r => !r.customer.trim())
-      .slice(0, count);
+      .slice(0, needCopy);
     if (targets.length === 0) {
       addToast('下方无客户名为空的行可复制', 'error');
       return;
@@ -1190,8 +1326,13 @@ const GunLedger: React.FC = () => {
     });
     setSaving(true);
     debouncedSave(activeTable.id);
-    if (targets.length < count) {
-      addToast(`下方仅有 ${targets.length} 行客户名为空，已复制 ${targets.length} 行`, 'success');
+    // 取号完成：数字框自动归 1，下一次取号需重新设置本次取号数量
+    if (inputEl) inputEl.value = '1';
+    const taken = targets.length + 1;
+    if (targets.length < needCopy) {
+      addToast(`下方仅有 ${targets.length} 行空行，本次已取号 ${taken} 个（本行 + 向下复制 ${targets.length} 行）`, 'success');
+    } else {
+      addToast(`本次已取号 ${taken} 个（本行 + 向下复制 ${targets.length} 行）`, 'success');
     }
   }, [activeTable, activeCategory, isAdmin, online, activeTableReadOnly, displayRows, patchTableRows, user, debouncedSave, addToast]);
 
@@ -2894,7 +3035,7 @@ const GunLedger: React.FC = () => {
                               </td>
                             );
                           })}
-                          {/* 操作列：[复制数量][向下复制][清除] —— 加号把当前行客户名复制到下方最新的空行，时间填当前日期、担当填当前操作者；焊枪名继承当前行前缀/后缀，仅编号按目标行规则变化 */}
+                          {/* 操作列：[取号数量][向下复制][清除] —— 数字为本次取号总数（含当前行），填 3 则当前行 + 向下复制 2 行；时间填当前日期、担当填当前操作者；焊枪名继承当前行前缀/后缀，仅编号按目标行规则变化；取号完成后数字自动归 1 */}
                           <td className="border border-gray-300 px-1 py-1">
                             <div className="flex items-center justify-center gap-1">
                               <input
@@ -2905,7 +3046,7 @@ const GunLedger: React.FC = () => {
                                 step={1}
                                 defaultValue={1}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking)}
-                                title="复制行数（1~10）"
+                                title="本次取号数量（含当前行，1~10）：例如填 3 表示本次取 3 个号，即当前行 + 向下复制 2 行；填 1 不向下复制；取号后自动归 1"
                                 onInput={e => {
                                   const v = (e.target as HTMLInputElement).value;
                                   const n = parseInt(v, 10);
@@ -2918,7 +3059,7 @@ const GunLedger: React.FC = () => {
                               <button
                                 onClick={() => handleCopyDown(row)}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()}
-                                title="向下复制：复制本行客户名到下方空行（时间填当前日期、担当填当前操作者）；下方行焊枪名继承本行前缀/后缀，仅编号不同"
+                                title="向下取号：本次取号数量含当前行，填 3 则当前行 + 向下复制 2 行（时间填当前日期、担当填当前操作者，下方行焊枪名继承本行前缀/后缀、仅编号不同）；取号后数字自动归 1"
                                 className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
                               >
                                 <Plus size={14} />
@@ -2962,7 +3103,31 @@ const GunLedger: React.FC = () => {
       {/* 底部实时连接状态（与状态跟踪页底部一致） */}
       <footer className="shrink-0 bg-white border-t border-gray-200 px-6 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center text-sm text-gray-500">
-          <div>{syncFooterIntro}</div>
+          <div className="flex items-center gap-2.5 min-w-0">
+            {/* 左下角快捷入口：连按两次 Shift 或点击此处打开「快速确认图安排」 */}
+            {isAdmin && canAccess && (
+              <button
+                type="button"
+                onClick={() => { if (warnIfOffline()) return; setQuickAssignOpen(true); }}
+                disabled={!online}
+                title={online
+                  ? '连按两次 Shift 也可打开：自动列出今天取号（担当=你）的枪名，一键安排确认图任务'
+                  : '当前离线，禁止编辑'}
+                className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[11px] font-semibold transition shrink-0 ${
+                  online
+                    ? 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-600 hover:text-white hover:border-blue-600'
+                    : 'text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed'
+                }`}
+              >
+                <kbd className="px-1 py-0.5 bg-white/80 border border-current/30 rounded text-[10px] font-mono leading-none">Shift×2</kbd>
+                快速确认图安排
+                {todayTakenRows.length > 0 && (
+                  <span className="px-1 rounded-full bg-blue-600 text-white text-[10px] leading-4">{todayTakenRows.length}</span>
+                )}
+              </button>
+            )}
+            <span className="truncate">{syncFooterIntro}</span>
+          </div>
           <div className="flex items-center gap-2">
             <span className="font-medium">{syncFooterLabel}</span>
             <span className={`flex items-center ${syncFooterTextClass}`}>
@@ -2986,9 +3151,28 @@ const GunLedger: React.FC = () => {
                   <ClipboardList size={20} />
                   分配确认图任务
                 </div>
-                <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowAssignPanel(false)} disabled={assigning}>
-                  <X size={18} />
-                </button>
+                <div className="flex items-center gap-2.5">
+                  {/* 显示纳期开关：打开后新建的确认图任务名自动带 [M/D]（默认打开） */}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={assignShowDeadline}
+                    disabled={assigning}
+                    onClick={() => setAssignShowDeadline(v => !v)}
+                    title={assignShowDeadline
+                      ? '已开启：客户列中的仕样号能查到纳期时，任务名自动带 [M/D]'
+                      : '已关闭：任务名不带纳期'}
+                    className={`flex items-center gap-1.5 px-1.5 py-1 rounded-full transition cursor-pointer disabled:opacity-50 ${assignShowDeadline ? 'bg-white/15' : 'hover:bg-white/10'}`}
+                  >
+                    <span className="text-[11px] font-semibold text-white/90 whitespace-nowrap">显示纳期</span>
+                    <span className={`relative inline-block w-8 h-4 rounded-full transition-colors ${assignShowDeadline ? 'bg-white' : 'bg-white/30'}`}>
+                      <span className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${assignShowDeadline ? 'left-[18px] bg-blue-600' : 'left-0.5 bg-white'}`} />
+                    </span>
+                  </button>
+                  <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => setShowAssignPanel(false)} disabled={assigning}>
+                    <X size={18} />
+                  </button>
+                </div>
               </div>
               <div className="p-5 flex flex-col gap-4">
                 <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm text-blue-700">
@@ -3047,6 +3231,7 @@ const GunLedger: React.FC = () => {
                       <span className="text-xs text-amber-800 leading-snug">
                         发现 <span className="font-bold">{matchedExistingSpecTasks.length}</span> 个相同仕样号的确认图任务，勾选后选中的枪名将
                         <span className="font-bold">添加到已有任务</span>，不再新建
+                        <span className="text-amber-600">（默认勾选，可取消）</span>
                       </span>
                     </label>
                     {mergeIntoExisting && matchedExistingSpecTasks.length > 1 && (
@@ -3092,6 +3277,21 @@ const GunLedger: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* 快速确认图安排（连按两次 Shift 或点击左下角 Shift×2 入口） */}
+      {isAdmin && canAccess && (
+        <QuickConfirmAssignModal
+          open={quickAssignOpen}
+          onClose={() => setQuickAssignOpen(false)}
+          rows={todayTakenRows}
+          designers={designers}
+          addToast={addToast}
+          onCreated={() => {
+            fetchUsedGunNames();
+            socketRef.current?.emit('task_updated');
+          }}
+        />
+      )}
 
       {/* 新增分类弹窗 */}
       {addCategoryOpen && (

@@ -122,7 +122,6 @@ const GUN_NAME_PATTERNS = {
   },
   'GLOBAL': {
     'RBC': { prefix: 'RBC', start: 14000, pad: 5 },
-    'LAW': { prefix: 'LAW', start: 24080, pad: 5 },
   },
   'TOYOTA': {
     'C01': { prefix: 'C01-C', start: 500,  pad: 4 },

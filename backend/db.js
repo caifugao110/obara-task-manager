@@ -351,7 +351,7 @@ const buildDefaultGunLedger = () => {
       'X2C': tables(['SRTC', 'SRTX', 'SRTV', 'SRTC-ALA-DC', 'SRTX-ALA-DC', 'SRTD', 'SRTS'], 0),
       'X2C-V2': tables(['C', 'X'], 100),
       'X2C-V3': tables(['C', 'X'], 200),
-      'GLOBAL': tables(['RBC', 'LAW'], 250),
+      'GLOBAL': tables(['RBC'], 250),
       'PSW': tables(['UC', 'UX', 'UCR', 'UXR', 'NOC', 'NOX'], 400),
       'IT': tables(['PTC', 'PTX', 'PTC-ALC', 'PTX-ALC'], 500),
       'ROBOT': tables(['RTC', 'RTX', 'RC', 'RX'], 600),
