@@ -8,7 +8,7 @@ import { sanitizeRedirect } from '../utils/redirect';
 
 // 全部样式类加 login- 前缀，避免污染全局命名空间
 const loginStyles = `
-.login-page { min-height: 100vh; display: flex; flex-direction: column; color: #ffffff; position: relative; overflow: hidden;
+.login-page { min-height: 100vh; display: flex; flex-direction: column; color: #ffffff; position: relative; overflow-x: hidden;
   background: linear-gradient(135deg, #022c22 0%, #064e3b 14%, #065f46 26%, #047857 40%, #059669 54%, #07c05f 68%, #10b981 82%, #34d399 92%, #6ee7b7 100%); }
 .login-deco { position: fixed; border-radius: 50%; pointer-events: none; filter: blur(70px);
   animation: login-deco-drift 22s ease-in-out infinite alternate; }
@@ -43,7 +43,7 @@ const loginStyles = `
   -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 45%, black 20%, transparent 80%); }
 
 .login-header { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between;
-  padding: 22px 52px; gap: 16px; }
+  padding: 22px 80px; gap: 16px; }
 .login-brand { display: flex; align-items: center; gap: 14px; color: #ffffff; }
 .login-brand-word { position: relative; font-family: 'Century Gothic', 'Futura', 'Bahnschrift', 'Segoe UI', system-ui, sans-serif;
   font-size: 29px; font-weight: 700; letter-spacing: 0.26em; padding-right: 0.26em; line-height: 1;
@@ -65,47 +65,49 @@ const loginStyles = `
 .login-blink-dot { width: 7px; height: 7px; border-radius: 50%; animation: login-blink 1.6s ease-in-out infinite; }
 @keyframes login-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
+/* 左栏贴左内边距、登录卡贴右内边距：两侧留白保持一致 */
 .login-main { position: relative; z-index: 2; flex: 1;
-  display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(420px, 1fr); align-items: center;
-  gap: 32px; width: 100%; margin: 0 auto; padding: 4px 52px 28px; }
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 480px); justify-content: space-between;
+  align-items: center; gap: 40px; width: 100%; margin: 0 auto; padding: 2px 80px 20px; }
 
-.login-hero { width: 100%; max-width: 620px; animation: login-rise-in 0.6s cubic-bezier(0.22,1,0.36,1) both; }
-.login-hero h1 { font-size: clamp(19px, 1.2vw, 24px); line-height: 1.32; font-weight: 600; letter-spacing: 0.01em;
+.login-hero { width: 100%; max-width: 740px; animation: login-rise-in 0.6s cubic-bezier(0.22,1,0.36,1) both; }
+.login-hero h1 { font-size: clamp(22px, 1.42vw, 26px); line-height: 1.3; font-weight: 600; letter-spacing: 0.01em;
   color: #ffffff; text-shadow: 0 2px 24px rgba(2,44,34,0.28); }
-.login-hero-sub { margin-top: 10px; font-size: 13px; line-height: 1.7; color: rgba(255,255,255,0.82); }
-.login-hero-intro { margin-top: 14px; max-width: 600px; font-size: 13px; line-height: 1.9;
-  color: rgba(255,255,255,0.76); letter-spacing: 0.01em; text-align: justify; }
-.login-tags { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
-.login-tag { padding: 6px 15px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: rgba(255,255,255,0.95);
+.login-hero-sub { margin-top: 10px; font-size: 15px; line-height: 1.6; color: rgba(255,255,255,0.86); }
+.login-hero-intro { margin-top: 12px; max-width: 760px; font-size: 14px; line-height: 1.75;
+  color: rgba(255,255,255,0.78); letter-spacing: 0.01em; text-align: justify; }
+.login-tags { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.login-tag { padding: 7px 17px; border-radius: 999px; font-size: 13.5px; font-weight: 500; color: rgba(255,255,255,0.95);
   background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.28);
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 
-.login-visual { margin-top: 28px; padding: 16px; border-radius: 22px;
+.login-visual { margin-top: 20px; padding: 16px; border-radius: 24px;
   background: linear-gradient(160deg, rgba(255,255,255,0.52), rgba(255,255,255,0.26));
   border: 1px solid rgba(255,255,255,0.5);
   box-shadow: 0 26px 60px rgba(2,44,34,0.3); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
-.login-visual-inner { border-radius: 16px; background: rgba(255,255,255,0.97); padding: 24px 24px 26px;
+.login-visual-inner { border-radius: 18px; background: rgba(255,255,255,0.97); padding: 20px 24px 22px;
   box-shadow: 0 14px 34px rgba(6,78,59,0.12); }
-.login-visual-title { font-size: 20px; font-weight: 600; color: #0b3b2b; letter-spacing: 0.01em; }
-.login-visual-sub { margin-top: 7px; font-size: 11.5px; color: #6b8a7d; }
-.login-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 20px; }
-.login-flow-col { border-radius: 12px; padding: 15px 10px 17px; border: 1px solid transparent; }
+.login-visual-title { font-size: 21px; font-weight: 600; color: #0b3b2b; letter-spacing: 0.01em; }
+.login-visual-sub { margin-top: 6px; font-size: 12.5px; color: #6b8a7d; }
+.login-flow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+.login-flow-col { border-radius: 14px; padding: 13px 14px 15px; border: 1px solid transparent; }
 .login-flow-col--plan { background: #fef7e6; border-color: #fbe6b3; }
 .login-flow-col--track { background: #eef4ff; border-color: #cfe0fa; }
 .login-flow-col--ledger { background: #e6f8f4; border-color: #b9e8dc; }
 .login-flow-col--spec { background: #eafaf1; border-color: #c2eed8; }
-.login-flow-col-title { font-size: 12.5px; font-weight: 700; text-align: center; white-space: nowrap; }
+.login-flow-col-title { font-size: 14px; font-weight: 700; text-align: center; white-space: nowrap; }
 .login-flow-col--plan .login-flow-col-title { color: #b06512; }
 .login-flow-col--track .login-flow-col-title { color: #1d5fb0; }
 .login-flow-col--ledger .login-flow-col-title { color: #0d7a63; }
 .login-flow-col--spec .login-flow-col-title { color: #07804a; }
-.login-flow-chips { display: flex; flex-direction: column; gap: 9px; margin-top: 13px; }
-.login-flow-chip { padding: 6px 7px; border-radius: 999px; background: rgba(255,255,255,0.94);
-  border: 1px solid rgba(15,52,40,0.08); font-size: 10.5px; line-height: 1.35; text-align: center; color: #43594f; }
-.login-flow-arrow { margin-top: 16px; text-align: center; font-size: 13px; color: #079b52; letter-spacing: 0.08em; }
-.login-flow-cta { margin-top: 10px; border-radius: 999px; padding: 12px 12px; text-align: center;
+.login-flow-chips { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.login-flow-chip { display: block; box-sizing: border-box; width: 100%; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; padding: 5px 10px; border-radius: 999px; background: rgba(255,255,255,0.94);
+  border: 1px solid rgba(15,52,40,0.08); font-size: 12.5px; line-height: 1.4; text-align: center; color: #43594f; }
+.login-flow-arrow { margin-top: 12px; text-align: center; font-size: 14px; color: #079b52; letter-spacing: 0.08em; }
+.login-flow-cta { margin-top: 10px; border-radius: 999px; padding: 11px; text-align: center;
   background: linear-gradient(90deg, #07c05f, #10b981); color: #ffffff;
-  font-size: 13px; font-weight: 600; letter-spacing: 0.04em; box-shadow: 0 10px 24px rgba(7,192,95,0.32); }
+  font-size: 14px; font-weight: 600; letter-spacing: 0.05em; box-shadow: 0 10px 24px rgba(7,192,95,0.32); }
 
 .login-panel { display: flex; justify-content: center; }
 .login-card { width: 100%; max-width: 480px; padding: 40px; border-radius: 16px;
@@ -163,17 +165,41 @@ const loginStyles = `
 @keyframes login-shake-x { 10%,90% { transform: translateX(-1px); } 20%,80% { transform: translateX(2px); }
   30%,50%,70% { transform: translateX(-3px); } 40%,60% { transform: translateX(3px); } }
 
-.login-footer { position: relative; z-index: 2; padding: 14px 52px 18px; text-align: center;
+.login-footer { position: relative; z-index: 2; padding: 14px 80px 18px; text-align: center;
   border-top: 1px solid rgba(255,255,255,0.16); color: rgba(255,255,255,0.66); }
 .login-footer p { margin: 2px 0; }
 .login-footer-slogan { font-size: 13px; letter-spacing: 0.06em; color: rgba(255,255,255,0.78); }
 .login-footer-copy { font-size: 12px; }
 
-@media (max-width: 1080px) {
-  .login-main { grid-template-columns: minmax(0, 1fr); justify-items: center; padding: 4px 24px 32px; }
+@media (max-width: 1180px) {
+  .login-main { grid-template-columns: minmax(0, 1fr); justify-items: center; padding: 4px 32px 32px; }
   .login-hero { display: none; }
-  .login-header { padding: 20px 24px; }
-  .login-footer { padding: 14px 24px 18px; }
+  .login-header { padding: 20px 32px; }
+  .login-footer { padding: 14px 32px 18px; }
+}
+/* 矮屏（笔记本 768~800 高）压缩左侧版块，避免整页被撑出滚动条 */
+@media (max-height: 820px) and (min-width: 1181px) {
+  .login-hero h1 { font-size: 22px; }
+  .login-hero-sub { margin-top: 8px; font-size: 14px; }
+  .login-hero-intro { margin-top: 10px; font-size: 13px; line-height: 1.65; }
+  .login-tags { margin-top: 12px; }
+  .login-tag { padding: 6px 15px; font-size: 12.5px; }
+  .login-visual { margin-top: 16px; padding: 12px; border-radius: 20px; }
+  .login-visual-inner { padding: 16px 20px 18px; border-radius: 14px; }
+  .login-visual-title { font-size: 18px; }
+  .login-visual-sub { font-size: 11.5px; }
+  .login-flow { margin-top: 12px; gap: 10px; }
+  .login-flow-col { padding: 10px 12px 12px; }
+  .login-flow-col-title { font-size: 13px; }
+  .login-flow-chips { gap: 6px; margin-top: 9px; }
+  .login-flow-chip { padding: 4px 8px; font-size: 12px; }
+  .login-flow-arrow { margin-top: 8px; font-size: 12px; }
+  .login-flow-cta { margin-top: 8px; padding: 9px; font-size: 13px; }
+  .login-card { padding: 30px 34px; }
+}
+@media (max-height: 700px) and (min-width: 1181px) {
+  .login-hero-intro { display: none; }
+  .login-flow-arrow { display: none; }
 }
 @media (max-width: 520px) {
   .login-card { padding: 28px 22px; border-radius: 14px; }
@@ -309,14 +335,14 @@ const Login = () => {
       <main className="login-main">
         <section className="login-hero">
           <h1>Obara 任务管理系统</h1>
-          <p className="login-hero-sub">技术开发二部 · 任务协同与进度管理平台</p>
+          <p className="login-hero-sub">把 Excel 设计计划与枪名编号台账，升级为 Web 实时协作平台</p>
           <p className="login-hero-intro">
-            Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管理工具，集成任务录入、工时统计、状态追踪、焊枪台账、
-            设计规范知识库检索与问答、报表查询、权限控制与数据导入导出等能力，支持多人实时协作、离线浏览与操作审计。
+            面向技术开发二部的任务与工时管理系统，集成任务录入、工时统计、状态追踪、焊枪台账、设计规范知识库检索与问答、
+            报表查询、权限控制与数据导入导出。支持多人实时协作（Socket.IO）、离线浏览与操作审计，全链路权限控制。
           </p>
           <div className="login-tags">
             <span className="login-tag">任务管理</span>
-            <span className="login-tag">进度跟踪</span>
+            <span className="login-tag">状态跟踪</span>
             <span className="login-tag">智能台账</span>
             <span className="login-tag">设计规范知识库</span>
           </div>
@@ -327,27 +353,27 @@ const Login = () => {
               <div className="login-visual-sub">计划、执行、统计一体化，数据实时贯通</div>
               <div className="login-flow">
                 <div className="login-flow-col login-flow-col--plan">
-                  <div className="login-flow-col-title">计划排期</div>
+                  <div className="login-flow-col-title">任务管理</div>
                   <div className="login-flow-chips">
-                    <span className="login-flow-chip">任务创建</span>
-                    <span className="login-flow-chip">责任分工</span>
-                    <span className="login-flow-chip">交付节点</span>
+                    <span className="login-flow-chip">Excel 风格录入</span>
+                    <span className="login-flow-chip">任务仕样/纳期自动获取</span>
+                    <span className="login-flow-chip">任务多端录入实时同步</span>
                   </div>
                 </div>
                 <div className="login-flow-col login-flow-col--track">
-                  <div className="login-flow-col-title">进度跟踪</div>
+                  <div className="login-flow-col-title">状态跟踪</div>
                   <div className="login-flow-chips">
-                    <span className="login-flow-chip">状态跟踪</span>
-                    <span className="login-flow-chip">节点提醒</span>
-                    <span className="login-flow-chip">逾期预警</span>
+                    <span className="login-flow-chip">下图状态跟踪</span>
+                    <span className="login-flow-chip">纳期管理</span>
+                    <span className="login-flow-chip">自动对应工厂、营业担当</span>
                   </div>
                 </div>
                 <div className="login-flow-col login-flow-col--ledger">
                   <div className="login-flow-col-title">智能台账</div>
                   <div className="login-flow-chips">
-                    <span className="login-flow-chip">台账录入</span>
-                    <span className="login-flow-chip">编号规则</span>
-                    <span className="login-flow-chip">台账初始化</span>
+                    <span className="login-flow-chip">台账可视化管理</span>
+                    <span className="login-flow-chip">自动编号与填写客户</span>
+                    <span className="login-flow-chip">台账多人录入实时同步</span>
                   </div>
                 </div>
                 <div className="login-flow-col login-flow-col--spec">
@@ -360,7 +386,7 @@ const Login = () => {
                 </div>
               </div>
               <div className="login-flow-arrow">↓</div>
-              <div className="login-flow-cta">数据看板 · 决策支撑</div>
+              <div className="login-flow-cta">操作留痕 · 权限可控</div>
             </div>
           </div>
         </section>
@@ -460,9 +486,9 @@ const Login = () => {
             <div className="login-features">
               {[
                 '任务表格录入，多人实时协作',
-                '工时统计与任务状态全程可追溯',
-                '焊枪台账编号与台账初始化',
-                '设计规范知识库检索与智能问答',
+                '仕样进度与枪名周期管理',
+                '三级权限体系与安全防护',
+                '离线模式检测与安全增强体系',
               ].map((text) => (
                 <div className="login-feature" key={text}>
                   <span className="login-feature-icon">
