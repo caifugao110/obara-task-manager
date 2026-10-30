@@ -582,9 +582,9 @@ const WorkHours = () => {
                   <div className="text-[10px] font-black text-blue-500">设计计划总工时</div>
                   <div className="mt-1 text-lg font-black text-blue-700">{getDisplayedDesignHours(tip.item).toFixed(1)}h</div>
                 </div>
-                <div className="rounded-lg border border-yellow-100 bg-yellow-50 px-3 py-2">
-                  <div className="text-[10px] font-black text-yellow-600">出差总工时</div>
-                  <div className="mt-1 text-lg font-black text-yellow-800">{getDisplayedTripHours(tip.item).toFixed(1)}h</div>
+                <div className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2">
+                  <div className="text-[10px] font-black text-teal-600">出差总工时</div>
+                  <div className="mt-1 text-lg font-black text-teal-800">{getDisplayedTripHours(tip.item).toFixed(1)}h</div>
                 </div>
               </div>
               <div className="mt-3">
@@ -596,7 +596,7 @@ const WorkHours = () => {
                       .map((detail, detailIndex) => (
                         <div key={`${tip.item.designerId}-trip-${detail.date}-${detailIndex}`} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5">
                           <span className="w-24 text-xs font-bold text-slate-600">{detail.date}</span>
-                          <span className="min-w-0 flex-1 truncate text-xs font-bold text-amber-700">{detail.taskName}</span>
+                          <span className="min-w-0 flex-1 truncate text-xs font-bold text-teal-700">{detail.taskName}</span>
                           <span className="text-xs font-black text-slate-700">{detail.hours.toFixed(1)}h</span>
                         </div>
                       ))}

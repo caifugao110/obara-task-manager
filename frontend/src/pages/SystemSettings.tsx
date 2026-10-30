@@ -26,13 +26,26 @@ import {
   Clock,
   ClipboardList,
   X,
-  CalendarDays
+  CalendarDays,
+  Palette,
+  RotateCcw,
+  Save
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
+import {
+  DEFAULT_TASK_COLOR_CONFIG,
+  TASK_COLOR_FIELDS,
+  TASK_TEXT_COLOR,
+  TASK_URGENT_TEXT_COLOR,
+  isUrgentRestyleType,
+  mergeTaskColorConfig,
+  normalizeHexColor
+} from '../utils/taskColors';
+import type { TaskColorConfig, TaskContentType } from '../utils/taskColors';
 
 interface Toast {
   message: string;
@@ -164,10 +177,105 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
 
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 
+/** 单个颜色输入：色块取色 + 十六进制手输 + 单值恢复默认 */
+const ColorInput: React.FC<{
+  label: string;
+  value: string;
+  fallback: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}> = ({ label, value, fallback, disabled, onChange }) => {
+  const [text, setText] = useState(value);
+  React.useEffect(() => { setText(value); }, [value]);
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] font-medium text-gray-500 w-8 shrink-0">{label}</span>
+      <label
+        className={`relative w-7 h-7 shrink-0 rounded-md border border-gray-300 shadow-inner overflow-hidden ${disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:ring-2 hover:ring-blue-300'}`}
+        style={{ backgroundColor: value }}
+        title="点击选色"
+      >
+        <input
+          type="color"
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+        />
+      </label>
+      <input
+        value={text}
+        disabled={disabled}
+        spellCheck={false}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          const next = normalizeHexColor(text, value);
+          setText(next);
+          onChange(next);
+        }}
+        className="flex-1 min-w-0 h-7 px-1.5 text-[11px] font-mono text-gray-700 bg-gray-50 border border-gray-200 rounded outline-none focus:ring-1 focus:ring-blue-400 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed"
+      />
+      {value.toLowerCase() !== fallback.toLowerCase() && !disabled && (
+        <button
+          type="button"
+          onClick={() => onChange(fallback)}
+          className="shrink-0 text-[10px] font-bold text-gray-400 hover:text-blue-600 transition"
+          title="恢复该颜色默认值"
+        >
+          默认
+        </button>
+      )}
+    </div>
+  );
+};
+
 const SystemSettings = () => {
   const { user, token, logout } = useAuth();
   const { settings, setSettings, refreshSettings } = useSystemSettings();
   const [accessSettings, setAccessSettings] = useState(defaultAccessSettings);
+  // 任务内容配色草稿：编辑后点「保存配色」落库，避免连续取色时反复写设置
+  const [colorDraft, setColorDraft] = useState<TaskColorConfig>(() => mergeTaskColorConfig(settings.taskColorConfig));
+  const [colorSaving, setColorSaving] = useState(false);
+  useEffect(() => {
+    setColorDraft(mergeTaskColorConfig(settings.taskColorConfig));
+  }, [settings.taskColorConfig]);
+  const colorDraftDirty = JSON.stringify(colorDraft) !== JSON.stringify(mergeTaskColorConfig(settings.taskColorConfig));
+
+  // 修改某个配色项（每项仅一个底色，文字色固定不可配置）
+  const setTaskColorField = (key: keyof TaskColorConfig, value: string) => {
+    setColorDraft(prev => ({ ...prev, [key]: value }) as TaskColorConfig);
+  };
+
+  // 配色项 → 该底色在表格中的实际文字色（普通黑色；加急的确认图/设计/确认图修改为红色）
+  const getPreviewTextColor = (key: keyof TaskColorConfig) => {
+    const type = (key.startsWith('urgent')
+      ? key.slice('urgent'.length, 'urgent'.length + 1).toLowerCase() + key.slice('urgent'.length + 1)
+      : key) as TaskContentType;
+    return isUrgentRestyleType(type) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
+  };
+
+  const handleSaveTaskColors = async () => {
+    if (!isSuperAdmin) return;
+    setColorSaving(true);
+    try {
+      await updateSettings({ taskColorConfig: colorDraft });
+    } finally {
+      setColorSaving(false);
+    }
+  };
+
+  // 恢复默认：草稿与系统设置一起改回默认配色（立即生效）
+  const handleResetTaskColors = async () => {
+    if (!isSuperAdmin) return;
+    const defaults = mergeTaskColorConfig(DEFAULT_TASK_COLOR_CONFIG);
+    setColorDraft(defaults);
+    setColorSaving(true);
+    try {
+      await updateSettings({ taskColorConfig: defaults });
+    } finally {
+      setColorSaving(false);
+    }
+  };
   const [accessSettingsLoaded, setAccessSettingsLoaded] = useState(false);
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
   // IP 黑名单：配置数据 / 添加输入框 / 备注 / 提交中
@@ -2356,70 +2464,145 @@ const SystemSettings = () => {
         )}
 
         {activeTab === 'plan' && (
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
-              <CalendarDays className="mr-2 text-blue-600" size={22} />
-              仕样号管理
-            </h3>
-            <div className="space-y-6">
-              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                <div>
-                  <div className="font-bold text-gray-700">仕样号位数</div>
-                  <div className="text-xs text-gray-400 mt-1">设置全局仕样号的位数，影响所有仕样号输入与校验</div>
+          <div className="space-y-6">
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+              <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
+                <CalendarDays className="mr-2 text-blue-600" size={22} />
+                仕样号管理
+              </h3>
+              <div className="space-y-6">
+                <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
+                  <div>
+                    <div className="font-bold text-gray-700">仕样号位数</div>
+                    <div className="text-xs text-gray-400 mt-1">设置全局仕样号的位数，影响所有仕样号输入与校验</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {([5, 6] as const).map(digit => (
+                      <button
+                        key={digit}
+                        onClick={() => updateSettings({ specNumberDigits: digit })}
+                        disabled={!isSuperAdmin}
+                        className={`px-5 py-2.5 rounded-lg font-bold text-sm transition ${
+                          settings.specNumberDigits === digit
+                            ? 'bg-blue-600 text-white shadow'
+                            : 'bg-white text-gray-600 border border-gray-200 hover:border-blue-300'
+                        } ${!isSuperAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        {digit} 位
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {([5, 6] as const).map(digit => (
+                <div className="text-xs text-gray-400">
+                  当前配置：仕样号需输入 <span className="font-bold text-blue-600">{settings.specNumberDigits}</span> 位数字
+                </div>
+              </div>
+            </div>
+
+            {/* 任务内容配色体系：任务表格底色 / 文字色的唯一配置入口 */}
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
+              <div className="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-slate-50 via-white to-blue-50/50">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="text-lg font-bold text-gray-800 flex items-center">
+                      <Palette className="mr-2 text-blue-600" size={22} />
+                      任务内容配色
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-2 leading-relaxed max-w-2xl">
+                      勾选任务内容后，任务表格底色按下方取值；未勾选任务内容时使用「未勾选任务内容」配色（深紫）。
+                      任务文字色固定：普通任务为黑色，勾选「任务加急」后「确认图 / 设计 / 确认图修改」整行文字变红；
+                      「设计变更 / 既制审图」也可加急，默认加急前后底色一致，如需区分可在下方加急分组中调整。
+                      出差与事假/休假/病假使用各自的固定配色（出差=湖水青），不在此处配置。
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
-                      key={digit}
-                      onClick={() => updateSettings({ specNumberDigits: digit })}
-                      disabled={!isSuperAdmin}
-                      className={`px-5 py-2.5 rounded-lg font-bold text-sm transition ${
-                        settings.specNumberDigits === digit
-                          ? 'bg-blue-600 text-white shadow'
-                          : 'bg-white text-gray-600 border border-gray-200 hover:border-blue-300'
-                      } ${!isSuperAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      type="button"
+                      onClick={() => { void handleResetTaskColors(); }}
+                      disabled={!isSuperAdmin || colorSaving}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-gray-600 bg-white border border-gray-200 hover:border-blue-300 hover:text-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {digit} 位
+                      <RotateCcw size={13} />恢复默认
                     </button>
-                  ))}
-                </div>
-              </div>
-              <div className="text-xs text-gray-400">
-                当前配置：仕样号需输入 <span className="font-bold text-blue-600">{settings.specNumberDigits}</span> 位数字
-              </div>
-
-              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                <div>
-                  <div className="font-bold text-gray-700">设计计划标记颜色随机</div>
-                  <div className="text-xs text-gray-400 mt-1">主页面新增任务设计计划时，默认标记颜色不再固定为「深绿」，而是随机选择一个颜色</div>
-                </div>
-                <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
-                  <input
-                    type="checkbox"
-                    checked={settings.randomDesignPlanColor}
-                    onChange={(e) => updateSettings({ randomDesignPlanColor: e.target.checked })}
-                    disabled={!isSuperAdmin}
-                    className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                  />
-                  <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings.randomDesignPlanColor ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                    <button
+                      type="button"
+                      onClick={() => { void handleSaveTaskColors(); }}
+                      disabled={!isSuperAdmin || colorSaving || !colorDraftDirty}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-blue-600 shadow-sm hover:bg-blue-700 transition disabled:bg-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
+                    >
+                      <Save size={13} />{colorSaving ? '保存中...' : colorDraftDirty ? '保存配色' : '已保存'}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                <div>
-                  <div className="font-bold text-gray-700">焊枪台账分配任务标记颜色随机</div>
-                  <div className="text-xs text-gray-400 mt-1">在焊枪编号台账「任务分配模式」中批量分配确认图任务时，标记颜色不再固定为「深绿」，而是随机选择一个颜色</div>
-                </div>
-                <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
-                  <input
-                    type="checkbox"
-                    checked={settings.randomAssignmentColor}
-                    onChange={(e) => updateSettings({ randomAssignmentColor: e.target.checked })}
-                    disabled={!isSuperAdmin}
-                    className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
-                  />
-                  <label className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${settings.randomAssignmentColor ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
-                </div>
+              <div className="p-6 space-y-6">
+                {(['normal', 'urgent'] as const).map(group => (
+                  <div key={group}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${group === 'normal' ? 'bg-slate-100 text-slate-600' : 'bg-red-50 text-red-600 ring-1 ring-red-100'}`}>
+                        {group === 'normal' ? '普通任务' : '加急任务'}
+                      </span>
+                      <span className="text-[11px] text-gray-400">
+                        {group === 'normal' ? '按勾选的任务内容取底色' : '加急任务的底色覆盖值'}
+                      </span>
+                      <span className="flex-1 h-px bg-gray-100" />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {TASK_COLOR_FIELDS.filter(field => field.group === group).map(field => {
+                        const value = colorDraft[field.key];
+                        const fallback = DEFAULT_TASK_COLOR_CONFIG[field.key];
+                        const textColor = getPreviewTextColor(field.key);
+                        const bgValue = normalizeHexColor(value, fallback);
+                        return (
+                          <div
+                            key={field.key}
+                            className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden transition hover:shadow-md hover:border-blue-200"
+                          >
+                            <div
+                              className="px-3 py-2 flex items-center justify-between gap-2"
+                              style={{ backgroundColor: value, color: textColor }}
+                            >
+                              <span className="text-[13px] font-bold truncate">{field.label}</span>
+                              <span
+                                className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded"
+                                style={{ color: textColor, backgroundColor: 'rgba(255,255,255,0.72)' }}
+                              >
+                                任务示例
+                              </span>
+                            </div>
+                            <div className="p-3 space-y-2">
+                              <ColorInput
+                                label="底色"
+                                value={bgValue}
+                                fallback={fallback}
+                                disabled={!isSuperAdmin || colorSaving}
+                                onChange={(next) => setTaskColorField(field.key, next)}
+                              />
+                              <div className="flex items-center justify-between gap-2 pt-0.5">
+                                <p className="text-[10px] text-gray-400 leading-snug">{field.hint}</p>
+                                <span
+                                  className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded bg-gray-50 border border-gray-100"
+                                  style={{ color: textColor }}
+                                >
+                                  文字固定
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="px-6 py-3 bg-gray-50/80 border-t border-gray-100 flex items-center gap-2 text-[11px] text-gray-400">
+                <AlertCircle size={12} />
+                <span>
+                  修改后点击「保存配色」生效；「恢复默认」会立即把全部颜色改回系统默认值。
+                  {!isSuperAdmin && ' 仅超级管理员可修改配色。'}
+                </span>
               </div>
             </div>
           </div>

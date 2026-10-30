@@ -4,15 +4,25 @@ import { CSS } from '@dnd-kit/utilities';
 import { RefreshCw, ChevronUp, ChevronDown, Trash2 } from 'lucide-react';
 import type { EditingSession, GunDropTargetState, SelectedTask, TaskItem } from '../types';
 import { hasStoredUserMarkColor, isWhiteTaskColor, taskSelectionKey } from '../utils';
+import { getLeaveRowColors, getTaskDisplayColors } from '../../../utils/taskColors';
+import { useSystemSettings } from '../../../context/SystemSettingsContext';
 import GunDragHandle from './GunDragHandle';
 
 const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null }) => {
+  const { settings } = useSystemSettings();
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
   const isAutoMarked = item.colorMarkedBy?.id === 'auto';
-  // 白色任务无 colorBeforeUserMark 记录时（如拷贝自已完成的任务），也允许恢复为未完成（后端随机配色）
+  // 白色任务无 colorBeforeUserMark 记录时（如拷贝自已完成的任务），也允许恢复为未完成（后端按任务内容派生底色）
   const canRestoreColor = canMarkColor && isWhiteTaskColor(item.color) && (!hasStoredUserMarkColor(item) || item.colorMarkedBy);
   const showMarkWhite = canMarkColor && !isWhiteTaskColor(item.color);
+
+  // 任务内容配色体系：底色/文字色由「任务内容后缀 + 加急」实时派生（白色=已完成时保留白底）
+  const display = getTaskDisplayColors(settings.taskColorConfig, item);
+  // 请假/出差使用自身固定底色，不参与任务内容配色
+  const leaveColors = getLeaveRowColors(item.leaveType);
+  const rowBackground = leaveColors?.bg || display.bg;
+  const rowTextColor = leaveColors ? leaveColors.text : display.text;
 
   const {
     attributes,
@@ -35,18 +45,11 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
   const style = {
     transform: CSS.Translate.toString(transform),
     transition,
-    backgroundColor: item.color || 'transparent',
+    backgroundColor: rowBackground,
+    color: rowTextColor,
     opacity: isDragging ? 0.3 : 1,
     border: isSelected ? '2px solid #3b82f6' : '1px solid transparent',
     borderRadius: isSelected ? '4px' : '0',
-  };
-
-  const getTypeStyle = () => {
-    if (item.leaveType === 'sick') return { backgroundColor: '#fee2e2' };
-    if (item.leaveType === 'vacation') return { backgroundColor: '#dbeafe' };
-    if (item.leaveType === 'illness') return { backgroundColor: '#fce7f3' };
-    if (item.leaveType === 'trip') return { backgroundColor: '#fef9c3' };
-    return {};
   };
 
   const typeLabel = (() => {
@@ -92,7 +95,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       data-designer-id={designerId}
       data-date={date}
       title={isAdmin ? metadataTitle : undefined}
-      style={{ ...style, ...getTypeStyle() }}
+      style={{ ...style }}
       {...attributes}
       {...listeners}
 
@@ -185,7 +188,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                   <button
                     type="button"
                     className="h-[18px] w-[18px] rounded bg-blue-100 border border-blue-300 shadow-sm flex items-center justify-center text-blue-600 transition-colors hover:bg-blue-600 hover:text-white hover:border-blue-700 flex-shrink-0"
-                    title={isAutoMarked ? '任务未完成（联动恢复主任务及所有枪名）' : hasStoredUserMarkColor(item) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
+                    title={isAutoMarked ? '任务未完成（联动恢复主任务及所有枪名）' : hasStoredUserMarkColor(item) ? '任务未完成' : '任务未完成（无原色记录，恢复为任务内容配色）'}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkColor(item, designerId, date, 'restore');
@@ -200,7 +203,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
               /* 请假/出差徽标：单行内容，按钮已绝对定位不占位，徽标在整行真居中；
                  对称内边距只用来挡住两端的按钮，不改变居中位置 */
               <div className={`flex-1 min-w-0 flex items-center justify-center ${isSingleLineRow ? 'px-12' : ''}`}>
-                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'bg-pink-100 text-pink-700' : 'bg-yellow-100 text-yellow-800'}`}>
+                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'bg-pink-100 text-pink-700' : 'bg-teal-100 text-teal-800 border border-teal-300'}`}>
                   {typeLabel}
                 </span>
               </div>
@@ -247,7 +250,8 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
           </div>
       </div>
       <div 
-        className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold hover:bg-blue-50/50 transition cursor-pointer"
+        className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold hover:bg-blue-50/50 transition cursor-pointer"
+        style={{ color: rowTextColor }}
       >
         {item.guns && item.guns.length > 0 ? '' : item.hours}
       </div>
@@ -266,7 +270,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
           <div
             data-gun-index={index}
             className="gun-row border-r border-gray-200 px-2 py-1.5 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
-            style={{ backgroundColor: gun.color || 'transparent' }}
+            style={{ backgroundColor: gunIsWhite ? '#ffffff' : rowBackground }}
           >
             {/* Gun mark buttons before gun name */}
             {canMarkColor && (
@@ -286,7 +290,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
                   <button
                     type="button"
                     className="h-[18px] w-[18px] rounded bg-blue-100 border border-blue-300 shadow-sm flex items-center justify-center text-blue-600 transition-colors hover:bg-blue-600 hover:text-white hover:border-blue-700 flex-shrink-0"
-                    title={hasStoredUserMarkColor(gun) ? '任务未完成' : '任务未完成（无原色记录，随机分配颜色）'}
+                    title={hasStoredUserMarkColor(gun) ? '任务未完成' : '任务未完成（无原色记录，恢复为任务内容配色）'}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMarkGunColor(item, designerId, date, index, 'restore');
@@ -355,8 +359,8 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             </div>
           <div
             data-gun-index={index}
-            className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
-            style={{ backgroundColor: gun.color || 'transparent' }}
+            className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
+            style={{ backgroundColor: gunIsWhite ? '#ffffff' : rowBackground, color: rowTextColor }}
           >
             {gun.hours}
           </div>

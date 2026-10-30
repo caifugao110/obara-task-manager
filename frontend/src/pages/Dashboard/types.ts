@@ -16,6 +16,8 @@ export interface TaskItem {
   colorMarkedBy?: { id: string; username: string; name: string };
   guns?: GunItem[];
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
+  /** 任务加急：单元格底色改用加急配色、整行文字红色 */
+  urgent?: boolean;
   createdAt?: string;
   createdBy?: { id: string; username: string; name: string };
   updatedAt?: string;
@@ -53,7 +55,7 @@ export interface User {
   role: 'superadmin' | 'admin' | 'user';
 }
 
-export type TaskField = 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType';
+export type TaskField = 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType' | 'urgent';
 
 export type PendingChange = {
   designerId: string;

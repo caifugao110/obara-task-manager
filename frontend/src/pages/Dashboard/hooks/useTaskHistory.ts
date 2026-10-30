@@ -47,7 +47,9 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
               hours: item.hours || 0,
               color: item.color || '',
               guns: item.guns || [],
-              leaveType: item.leaveType || null
+              leaveType: item.leaveType || null,
+              // 撤销删除时保留「任务加急」状态
+              urgent: item.urgent === true
             });
             // 记录恢复后的新 itemId，供重做（再次删除）使用
             op.data.restoredItemId = res.data.item?.id;
@@ -92,7 +94,9 @@ export const useTaskHistory = ({ token, upsertSheet, fetchSheets, canEditTasks, 
                 hours: deleted.item.hours || 0,
                 color: deleted.item.color || '',
                 guns: deleted.item.guns || [],
-                leaveType: deleted.item.leaveType || null
+                leaveType: deleted.item.leaveType || null,
+                // 撤销删除时保留「任务加急」状态
+                urgent: deleted.item.urgent === true
               });
               if (res.data.item?.id) {
                 restoredItems.push({ designerId: deleted.designerId, date: deleted.date, itemId: res.data.item.id });

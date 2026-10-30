@@ -5,12 +5,20 @@ import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
 import { resolveAutoFillHours, GunLocation } from '../../utils/gunHoursRules';
+import {
+  detectTaskContentType,
+  getTaskBaseColor,
+  getTaskDisplayColors,
+  getLeaveRowColors,
+  hasTaskContent,
+  TASK_CONTENT_TYPES,
+} from '../../utils/taskColors';
 import {
     DndContext,
     DragOverlay,
@@ -27,7 +35,7 @@ import { useEditingSessions } from './hooks/useEditingSessions';
 import LoadingScreen from '../../components/LoadingScreen';
 import { useTaskHistory } from './hooks/useTaskHistory';
 import { useGunDragDrop } from './hooks/useGunDragDrop';
-import { defaultAccessSettings, PRESET_COLORS } from './constants';
+import { defaultAccessSettings } from './constants';
 import {
   taskSelectionKey,
   editingSessionKey,
@@ -68,6 +76,11 @@ type DesignTaskType = 'none' | 'confirm' | 'design' | 'confirmModify' | 'designC
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
   const { specNumberDigits, settings: systemSettings } = useSystemSettings();
+  // 任务内容配色体系：按「任务内容后缀 + 加急」派生单元格底色与文字色（白色=已完成时保留白底）
+  const getItemDisplayColors = useCallback(
+    (item: TaskItem) => getTaskDisplayColors(systemSettings.taskColorConfig, item),
+    [systemSettings.taskColorConfig]
+  );
   const location = useLocation();
   const navigate = useNavigate();
   const jumpTarget = useMemo(() => {
@@ -637,7 +650,8 @@ const Dashboard = () => {
   const [autoGunLookupContext, setAutoGunLookupContext] = useState<'add' | 'edit' | null>(null);
   const [autoGunLookupItemId, setAutoGunLookupItemId] = useState<string | null>(null);
   const [autoGunLookupChecked, setAutoGunLookupChecked] = useState<Set<number>>(new Set());
-  const [addModeColor, setAddModeColor] = useState<string>('#86efac');
+  // 任务加急：勾选后整行改用加急配色；确认图 / 设计 / 确认图修改 的文字同时变红
+  const [urgentDraft, setUrgentDraft] = useState(false);
   const [addModeTaskType, setAddModeTaskType] = useState<DesignTaskType>('none');
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: DesignTaskType }>>({});
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -751,11 +765,7 @@ const Dashboard = () => {
     setAddModeTripPlace('');
     setAddModeHours('');
     setAddModeGuns([]);
-    setAddModeColor(
-      systemSettings.randomDesignPlanColor
-        ? (() => { const pool = PRESET_COLORS.filter(c => c.value); return pool[Math.floor(Math.random() * pool.length)].value; })()
-        : '#86efac'
-    );
+    setUrgentDraft(false);
     setAddModeTaskType('none');
     // 新增任务默认勾选「显示纳期」：任务名里能提取到仕样号时自动带上 [M/D]
     setShowDeadline(true);
@@ -784,6 +794,7 @@ const Dashboard = () => {
     setModalDate(date);
     setFocusTarget({ itemId: item.id, type, gunIndex });
     setIsAddMode(false);
+    setUrgentDraft(Boolean(item.urgent));
     // 记住该任务原有的纳期状态：任务名以 [M/D] 结尾则勾选"显示纳期"
     setShowDeadline(/\[\d{1,2}\/\d{1,2}\]\s*$/.test((item.taskName || '').trim()));
     setManualDeadline(false);
@@ -1939,9 +1950,41 @@ const Dashboard = () => {
     
     const updatedItem = { ...item };
     itemChanges.forEach(change => {
-      updatedItem[change.field as keyof TaskItem] = change.value;
+      (updatedItem as any)[change.field] = change.value;
     });
     return updatedItem;
+  };
+
+  // 当前弹窗内可加急的主任务：新增模式看已勾选的任务内容；编辑模式看当前主任务
+  const getUrgentTargetItems = (): TaskItem[] => {
+    if (isAddMode) return [];
+    if (!modalDesignerId || !modalDate) return [];
+    const cellItems = getAllItems(modalDesignerId, modalDate).map(item => getItemWithPendingChanges(item));
+    return focusTarget ? cellItems.filter(item => item.id === focusTarget.itemId) : cellItems;
+  };
+
+  const isUrgentAvailable = () => {
+    if (isAddMode) return hasTaskContent(addModeTaskType);
+    return getUrgentTargetItems().some(item => !item.leaveType && hasTaskContent(detectTaskContentType(item.taskName)));
+  };
+
+  // 任务加急切换：新增模式只改草稿；编辑模式同步写入待保存更改
+  const handleUrgentToggle = (next: boolean) => {
+    setUrgentDraft(next);
+    if (isAddMode || !modalDesignerId || !modalDate) return;
+    const targets = getUrgentTargetItems();
+    if (targets.length === 0) return;
+    const ids = new Set(targets.map(item => item.id));
+    setPendingChanges(prev => [
+      ...prev.filter(change => !(ids.has(change.itemId) && change.field === 'urgent')),
+      ...targets.map(item => ({
+        designerId: modalDesignerId,
+        date: modalDate,
+        itemId: item.id,
+        field: 'urgent' as TaskField,
+        value: next,
+      })),
+    ]);
   };
 
  
@@ -2998,7 +3041,11 @@ const Dashboard = () => {
                 <div className="w-[18rem] border-r border-gray-200 flex flex-col bg-white">
                   <div
                     className="px-1.5 py-1.5 min-h-[28px] flex items-center break-all leading-relaxed text-[11px] font-medium"
-                    style={{ backgroundColor: activeTask.item.color || 'transparent' }}
+                    style={(() => {
+                      const dragColors = getItemDisplayColors(activeTask.item);
+                      const dragLeave = getLeaveRowColors(activeTask.item.leaveType);
+                      return { backgroundColor: dragLeave?.bg || dragColors.bg, color: dragLeave ? dragLeave.text : dragColors.text };
+                    })()}
                   >
                     {(() => {
                       const item = activeTask.item;
@@ -3007,8 +3054,8 @@ const Dashboard = () => {
                       if (item.leaveType === 'illness') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-pink-100 text-pink-700">病假</span>;
                       if (item.leaveType === 'trip') {
                         const name = (item.taskName || '').trim();
-                        if (!name) return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800">出差</span>;
-                        return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800">{name.endsWith('出差') ? name : `${name}出差`}</span>;
+                        if (!name) return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-300">出差</span>;
+                        return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-300">{name.endsWith('出差') ? name : `${name}出差`}</span>;
                       }
                       return item.taskName || <span className="text-gray-300 italic">无</span>;
                     })()}
@@ -3017,7 +3064,7 @@ const Dashboard = () => {
                     <div
                       key={gun.id}
                       className="px-2 py-1 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50"
-                      style={{ backgroundColor: gun.color || 'transparent' }}
+                      style={{ backgroundColor: isWhiteTaskColor(gun.color) ? '#ffffff' : getItemDisplayColors(activeTask.item).bg }}
                     >
                       {gun.name || '未命名'}
                     </div>
@@ -3026,7 +3073,10 @@ const Dashboard = () => {
                 <div className="w-12 flex flex-col bg-white">
                   <div
                     className="px-1 py-1.5 min-h-[28px] flex items-center justify-center font-mono text-blue-700 font-bold"
-                    style={{ backgroundColor: activeTask.item.color || 'transparent' }}
+                    style={{
+                      backgroundColor: getItemDisplayColors(activeTask.item).bg,
+                      color: getItemDisplayColors(activeTask.item).urgent ? getItemDisplayColors(activeTask.item).text : undefined,
+                    }}
                   >
                     {activeTask.item.guns && activeTask.item.guns.length > 0 ? '' : activeTask.item.hours}
                   </div>
@@ -3034,7 +3084,10 @@ const Dashboard = () => {
                     <div
                       key={gun.id}
                       className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono text-blue-700 font-bold border-t border-gray-200/50"
-                      style={{ backgroundColor: gun.color || 'transparent' }}
+                      style={{
+                        backgroundColor: isWhiteTaskColor(gun.color) ? '#ffffff' : getItemDisplayColors(activeTask.item).bg,
+                        color: getItemDisplayColors(activeTask.item).urgent ? getItemDisplayColors(activeTask.item).text : undefined,
+                      }}
                     >
                       {gun.hours}
                     </div>
@@ -3442,6 +3495,30 @@ const Dashboard = () => {
                 <div className="text-xs opacity-80">{modalDate}</div>
               </div>
               <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-3">
+                {!hideTaskTypeOptions && (() => {
+                  // 任务加急：默认不勾选；必须先勾选任意任务内容才能勾选
+                  const urgentEnabled = canEditTasks && isUrgentAvailable();
+                  return (
+                    <label
+                      className={`flex items-center gap-1.5 text-sm font-bold select-none ${urgentEnabled ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'}`}
+                      title={urgentEnabled
+                        ? '勾选后整行改用加急配色；确认图 / 设计 / 确认图修改 的文字同时变红'
+                        : '请先勾选任务内容后再勾选任务加急'}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={urgentDraft}
+                        onChange={(e) => handleUrgentToggle(e.target.checked)}
+                        disabled={!urgentEnabled}
+                        className="w-4 h-4 cursor-pointer accent-red-500 disabled:cursor-not-allowed"
+                      />
+                      <span className="inline-flex items-center gap-1 text-red-200">
+                        <Zap size={13} className="shrink-0" />
+                        任务加急
+                      </span>
+                    </label>
+                  );
+                })()}
                 {canEditTasks && !hideTaskTypeOptions && (
                   <button
                     onClick={() => { void openBatchReplaceDialog(); }}
@@ -3501,7 +3578,7 @@ const Dashboard = () => {
                   
                   return (
                     <div className="flex flex-col gap-4 min-w-0">
-                      <div className={`flex flex-col gap-2 p-4 bg-white rounded-xl border-2 border-gray-200 shadow-sm hover:border-blue-300 transition group/item h-fit min-w-0 ${isLeave ? 'bg-gradient-to-r from-red-50 to-blue-50' : isTrip ? 'bg-gradient-to-r from-yellow-50 to-white' : ''}`}>
+                      <div className={`flex flex-col gap-2 p-4 bg-white rounded-xl border-2 border-gray-200 shadow-sm hover:border-blue-300 transition group/item h-fit min-w-0 ${isLeave ? 'bg-gradient-to-r from-red-50 to-blue-50' : isTrip ? 'bg-gradient-to-r from-teal-50 to-white' : ''}`}>
                         {isLeave ? (
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
@@ -3539,7 +3616,7 @@ const Dashboard = () => {
                         ) : isTrip ? (
                           <div className="flex flex-col gap-3">
                             <div className="flex items-center justify-between">
-                              <span className="text-sm font-bold px-3 py-1.5 rounded-lg bg-yellow-100 text-yellow-800 border border-yellow-300">
+                              <span className="text-sm font-bold px-3 py-1.5 rounded-lg bg-teal-100 text-teal-800 border border-teal-300">
                                 出差
                               </span>
                               <button
@@ -3585,89 +3662,38 @@ const Dashboard = () => {
                           <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={addModeTaskType === 'confirm'}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      const nextType = 'confirm';
-                                      setAddModeTaskType(nextType);
-                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, nextType));
-                                    } else if (addModeTaskType === 'confirm') {
-                                      setAddModeTaskType('none');
-                                    }
-                                  }}
-                                  className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
-                                />
-                                <span className="text-sm font-medium text-green-600">确认图</span>
-                              </label>
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={addModeTaskType === 'design'}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      const nextType = 'design';
-                                      setAddModeTaskType(nextType);
-                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, nextType));
-                                    } else if (addModeTaskType === 'design') {
-                                      setAddModeTaskType('none');
-                                    }
-                                  }}
-                                  className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
-                                />
-                                <span className="text-sm font-medium text-purple-600">设计</span>
-                              </label>
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={addModeTaskType === 'confirmModify'}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      const nextType = 'confirmModify';
-                                      setAddModeTaskType(nextType);
-                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, nextType));
-                                    } else if (addModeTaskType === 'confirmModify') {
-                                      setAddModeTaskType('none');
-                                    }
-                                  }}
-                                  className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
-                                />
-                                <span className="text-sm font-medium text-pink-600">确认图修改</span>
-                              </label>
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={addModeTaskType === 'designChange'}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setAddModeTaskType('designChange');
-                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, 'designChange'));
-                                    } else if (addModeTaskType === 'designChange') {
-                                      setAddModeTaskType('none');
-                                    }
-                                  }}
-                                  className="w-4 h-4 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500"
-                                />
-                                <span className="text-sm font-medium text-yellow-600">设计变更</span>
-                              </label>
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={addModeTaskType === 'drawingReview'}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setAddModeTaskType('drawingReview');
-                                      setAddModeGuns(prev => applyTaskTypeToGuns(prev, 'drawingReview'));
-                                    } else if (addModeTaskType === 'drawingReview') {
-                                      setAddModeTaskType('none');
-                                    }
-                                  }}
-                                  className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
-                                />
-                                <span className="text-sm font-medium text-orange-600">既制审图</span>
-                              </label>
+                              {TASK_CONTENT_TYPES.map(({ key, label }) => {
+                                // 标签做成和表格单元格一样的小色块：底色 = 该任务内容的表格填充色
+                                const swatchColor = getTaskBaseColor(systemSettings.taskColorConfig, key, urgentDraft);
+                                const checked = addModeTaskType === key;
+                                return (
+                                  <label
+                                    key={key}
+                                    className="flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={(e) => {
+                                        if (e.target.checked) {
+                                          setAddModeTaskType(key);
+                                          setAddModeGuns(prev => applyTaskTypeToGuns(prev, key));
+                                        } else if (checked) {
+                                          setAddModeTaskType('none');
+                                          setUrgentDraft(false);
+                                        }
+                                      }}
+                                      className="w-4 h-4 rounded border-gray-300 cursor-pointer accent-blue-600"
+                                    />
+                                    <span
+                                      className="text-sm font-bold px-1.5 py-0.5 rounded border border-black/5"
+                                      style={{ backgroundColor: swatchColor, color: '#000000' }}
+                                    >
+                                      {label}
+                                    </span>
+                                  </label>
+                                );
+                              })}
                             </div>
                             <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
                             <div></div>
@@ -3890,7 +3916,7 @@ const Dashboard = () => {
                               onClick={() => {
                                 setSelectedTaskType('trip');
                               }}
-                              className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'trip' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
+                              className={`px-3 py-1 text-xs font-bold rounded transition ${selectedTaskType === 'trip' ? 'bg-teal-100 text-teal-800 border border-teal-300' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'}`}
                             >
                               出差
                             </button>
@@ -3921,22 +3947,6 @@ const Dashboard = () => {
                           </div>
                         </div>
 
-                        {canEditTasks && !isLeave && !isTrip && (
-                        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-50">
-                          <span className="text-[10px] text-gray-400 font-bold uppercase">标记颜色:</span>
-                          <div className="flex flex-wrap gap-1.5">
-                            {PRESET_COLORS.map(c => (
-                              <button
-                                key={c.value}
-                                onClick={() => setAddModeColor(c.value)}
-                                className={`w-5 h-5 rounded-full border border-gray-200 transition-all hover:scale-110 ${addModeColor === c.value ? 'ring-2 ring-blue-500 ring-offset-1 scale-110 shadow-sm' : 'opacity-60 hover:opacity-100'}`}
-                                style={{ backgroundColor: c.value || '#fff' }}
-                                title={c.label}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                        )}
                       </div>
                     </div>
                   );
@@ -3985,7 +3995,7 @@ const Dashboard = () => {
                           return currentItem.leaveType === 'trip' ? (currentItem.taskName || '出差') : '出差';
                         };
                         return (
-                          <div key={currentItem.id} className={`flex flex-col gap-2 p-4 bg-white rounded-xl border-2 border-gray-200 shadow-sm hover:border-blue-300 transition group/item h-fit min-w-0 ${isLeave ? 'bg-gradient-to-r from-red-50 to-blue-50' : isTrip ? 'bg-gradient-to-r from-yellow-50 to-white' : ''}`}>
+                          <div key={currentItem.id} className={`flex flex-col gap-2 p-4 bg-white rounded-xl border-2 border-gray-200 shadow-sm hover:border-blue-300 transition group/item h-fit min-w-0 ${isLeave ? 'bg-gradient-to-r from-red-50 to-blue-50' : isTrip ? 'bg-gradient-to-r from-teal-50 to-white' : ''}`}>
                             {isLeave ? (
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
@@ -4019,7 +4029,7 @@ const Dashboard = () => {
                             ) : isTrip ? (
                               <div className="flex flex-col gap-3">
                                 <div className="flex items-center justify-between">
-                                  <span className="text-sm font-bold px-3 py-1.5 rounded-lg bg-yellow-100 text-yellow-800 border border-yellow-300">
+                                  <span className="text-sm font-bold px-3 py-1.5 rounded-lg bg-teal-100 text-teal-800 border border-teal-300">
                                     出差
                                   </span>
                                   <button
@@ -4068,136 +4078,58 @@ const Dashboard = () => {
                             <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
                               <div className="flex flex-wrap items-center gap-2">
                                 <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('确认图修改')}
-                                    onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
-                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
-                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                      let newName = baseName + deadline;
-                                      if (e.target.checked) {
-                                        newName = `${baseName} 确认图${deadline}`;
-                                      }
-                                      setTaskTypeDrafts(prev => ({
-                                        ...prev,
-                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'confirm' : 'none' }
-                                      }));
-                                      if (e.target.checked) {
-                                        void applyTaskTypeToItem(currentItem.id, 'confirm', currentItem.guns || [], newName);
-                                      } else {
-                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                      }
-                                    }}
-                                    className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
-                                  />
-                                  <span className="text-sm font-medium text-green-600">确认图</span>
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('设计变更')}
-                                    onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
-                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
-                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                      let newName = baseName + deadline;
-                                      if (e.target.checked) {
-                                        newName = `${baseName} 设计${deadline}`;
-                                      }
-                                      setTaskTypeDrafts(prev => ({
-                                        ...prev,
-                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'design' : 'none' }
-                                      }));
-                                      if (e.target.checked) {
-                                        void applyTaskTypeToItem(currentItem.id, 'design', currentItem.guns || [], newName);
-                                      } else {
-                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                      }
-                                    }}
-                                    className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
-                                  />
-                                  <span className="text-sm font-medium text-purple-600">设计</span>
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={currentItem.taskName.includes('确认图修改')}
-                                    onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
-                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
-                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                      let newName = baseName + deadline;
-                                      if (e.target.checked) {
-                                        newName = `${baseName} 确认图修改${deadline}`;
-                                      }
-                                      setTaskTypeDrafts(prev => ({
-                                        ...prev,
-                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'confirmModify' : 'none' }
-                                      }));
-                                      if (e.target.checked) {
-                                        void applyTaskTypeToItem(currentItem.id, 'confirmModify', currentItem.guns || [], newName);
-                                      } else {
-                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                      }
-                                    }}
-                                    className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
-                                  />
-                                  <span className="text-sm font-medium text-pink-600">确认图修改</span>
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={currentItem.taskName.includes('设计变更')}
-                                    onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
-                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
-                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                      let newName = baseName + deadline;
-                                      if (e.target.checked) {
-                                        newName = `${baseName} 设计变更${deadline}`;
-                                      }
-                                      setTaskTypeDrafts(prev => ({
-                                        ...prev,
-                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'designChange' : 'none' }
-                                      }));
-                                      if (e.target.checked) {
-                                        void applyTaskTypeToItem(currentItem.id, 'designChange', currentItem.guns || [], newName);
-                                      } else {
-                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                      }
-                                    }}
-                                    className="w-4 h-4 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500"
-                                  />
-                                  <span className="text-sm font-medium text-yellow-600">设计变更</span>
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={currentItem.taskName.includes('既制审图')}
-                                    onChange={(e) => {
-                                      const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
-                                      const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
-                                      const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
-                                      let newName = baseName + deadline;
-                                      if (e.target.checked) {
-                                        newName = `${baseName} 既制审图${deadline}`;
-                                      }
-                                      setTaskTypeDrafts(prev => ({
-                                        ...prev,
-                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? 'drawingReview' : 'none' }
-                                      }));
-                                      if (e.target.checked) {
-                                        void applyTaskTypeToItem(currentItem.id, 'drawingReview', currentItem.guns || [], newName);
-                                      } else {
-                                        handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                      }
-                                    }}
-                                    className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
-                                  />
-                                  <span className="text-sm font-medium text-orange-600">既制审图</span>
-                                </label>
+                                {(() => {
+                                  const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
+                                  const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
+                                  const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
+                                  const checkedState: Record<string, boolean> = {
+                                    confirm: currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('确认图修改'),
+                                    design: currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('设计变更'),
+                                    confirmModify: currentItem.taskName.includes('确认图修改'),
+                                    designChange: currentItem.taskName.includes('设计变更'),
+                                    drawingReview: currentItem.taskName.includes('既制审图'),
+                                  };
+                                  return TASK_CONTENT_TYPES.map(({ key, label }) => {
+                                    // 标签做成和表格单元格一样的小色块：底色 = 该任务内容的表格填充色
+                                    const swatchColor = getTaskBaseColor(systemSettings.taskColorConfig, key, urgentDraft);
+                                    const checked = checkedState[key];
+                                    return (
+                                      <label
+                                        key={key}
+                                        className="flex items-center gap-1.5 cursor-pointer"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={(e) => {
+                                            let newName = baseName + deadline;
+                                            if (e.target.checked) {
+                                              newName = `${baseName} ${label}${deadline}`;
+                                            }
+                                            setTaskTypeDrafts(prev => ({
+                                              ...prev,
+                                              [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? key : 'none' }
+                                            }));
+                                            if (e.target.checked) {
+                                              void applyTaskTypeToItem(currentItem.id, key, currentItem.guns || [], newName);
+                                            } else {
+                                              // 取消任务内容后加急失去意义，一并取消
+                                              if (urgentDraft) handleUrgentToggle(false);
+                                              handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                            }
+                                          }}
+                                          className="w-4 h-4 rounded border-gray-300 cursor-pointer accent-blue-600"
+                                        />
+                                        <span
+                                          className="text-sm font-bold px-1.5 py-0.5 rounded border border-black/5"
+                                          style={{ backgroundColor: swatchColor, color: '#000000' }}
+                                        >
+                                          {label}
+                                        </span>
+                                      </label>
+                                    );
+                                  });
+                                })()}
                               </div>
                               <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
                               <div className="flex items-center gap-2"></div>
@@ -4567,7 +4499,7 @@ const Dashboard = () => {
                                             return changes;
                                           });
                                         }}
-                                        className={`px-3 py-1 text-xs font-bold rounded transition ${currentLeaveType === 'trip' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-gray-100 text-gray-600 border border-gray-300 hover:bg-gray-200'}`}
+                                        className={`px-3 py-1 text-xs font-bold rounded transition ${currentLeaveType === 'trip' ? 'bg-teal-100 text-teal-800 border border-teal-300' : 'bg-gray-100 text-gray-600 border border-gray-300 hover:bg-gray-200'}`}
                                       >
                                         出差
                                       </button>
@@ -4631,24 +4563,6 @@ const Dashboard = () => {
                               </div>
                             </div>
                             
-                            {canEditTasks && !isLeave && !isTrip && (
-                            <>
-                              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-50">
-                                <span className="text-[10px] text-gray-400 font-bold uppercase">标记颜色:</span>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {PRESET_COLORS.map(c => (
-                                    <button
-                                      key={c.value}
-                                      onClick={() => handleItemChange(modalDesignerId, modalDate, item.id, 'color', c.value)}
-                                      className={`w-5 h-5 rounded-full border border-gray-200 transition-all hover:scale-110 ${item.color === c.value ? 'ring-2 ring-blue-500 ring-offset-1 scale-110 shadow-sm' : 'opacity-60 hover:opacity-100'}`}
-                                      style={{ backgroundColor: c.value || '#fff' }}
-                                      title={c.label}
-                                    />
-                                  ))}
-                                </div>
-                              </div>
-                            </>
-                            )}
                           </div>
                         );
                       })}
@@ -4742,13 +4656,16 @@ const Dashboard = () => {
                       }
                       
                       try {
+                        // 任务内容配色体系：底色由勾选的任务内容 + 是否加急决定
+                        const savedUrgent = leaveType ? false : urgentDraft;
                         const res = await axiosInstance.post('/tasks/item', { 
                           designerId: modalDesignerId, 
                           date: modalDate, 
                           taskName, 
                           leaveType, 
                           hours,
-                          color: addModeColor,
+                          color: getTaskBaseColor(systemSettings.taskColorConfig, addModeTaskType, savedUrgent),
+                          urgent: savedUrgent,
                           guns
                         });
                         upsertSheet(res.data.sheet);
@@ -4779,7 +4696,7 @@ const Dashboard = () => {
                             const itemChanges = pendingChanges.filter(change => change.itemId === currentFocusTarget.itemId);
                             const updatedItem = { ...dayItems[itemIndex] };
                             itemChanges.forEach(change => {
-                              updatedItem[change.field as keyof TaskItem] = change.value;
+                              (updatedItem as any)[change.field] = change.value;
                             });
                             
                             dayItems[itemIndex] = updatedItem;

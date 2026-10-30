@@ -7,6 +7,11 @@ import {
   ExtraTaskHours,
   DEFAULT_EXTRA_TASK_HOURS,
 } from '../utils/gunHoursRules';
+import {
+  DEFAULT_TASK_COLOR_CONFIG,
+  mergeTaskColorConfig,
+} from '../utils/taskColors';
+import type { TaskColorConfig } from '../utils/taskColors';
 
 export interface GunHoursByType {
   C: number;
@@ -27,8 +32,8 @@ export interface SystemSettingsData {
   specNumberDigits: number;
   // 操作日志保留条数（超限自动清理最旧记录）
   auditLogMaxRows: number;
-  randomDesignPlanColor: boolean;
-  randomAssignmentColor: boolean;
+  // 任务内容 → 单元格配色体系（系统设置可配置，默认见 DEFAULT_TASK_COLOR_CONFIG）
+  taskColorConfig: TaskColorConfig;
   defaultGunHours?: DefaultGunHours;
   // 分类 → 表名 → 专用工时（内置值 + 超管覆盖值的合并结果）
   tableGunHours?: TableGunHoursMap;
@@ -49,8 +54,7 @@ const defaultSettings: SystemSettingsData = {
   allowUserChangePassword: false,
   specNumberDigits: 5,
   auditLogMaxRows: 5000,
-  randomDesignPlanColor: false,
-  randomAssignmentColor: false,
+  taskColorConfig: DEFAULT_TASK_COLOR_CONFIG,
   defaultGunHours,
   tableGunHours: BUILTIN_TABLE_GUN_HOURS,
   extraTaskHours: DEFAULT_EXTRA_TASK_HOURS
@@ -145,7 +149,8 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
           confirmModify: mergeGunType('confirmModify')
         },
         tableGunHours: normalizeTableGunHours(res.data.tableGunHours),
-        extraTaskHours: normalizeExtraTaskHours(res.data.extraTaskHours)
+        extraTaskHours: normalizeExtraTaskHours(res.data.extraTaskHours),
+        taskColorConfig: mergeTaskColorConfig(res.data.taskColorConfig),
       });
     } catch {
       // 静默失败，保留默认值

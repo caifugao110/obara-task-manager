@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
 import { useSystemSettings } from '../context/SystemSettingsContext';
+import { getTaskBaseColor } from '../utils/taskColors';
 import {
   appendDeadlineSuffix,
   extractSpecNumbers,
@@ -94,12 +95,14 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   addToast,
   onCreated,
 }) => {
-  const { specNumberDigits } = useSystemSettings();
+  const { specNumberDigits, settings } = useSystemSettings();
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [designerId, setDesignerId] = useState('');
   const [date, setDate] = useState(todayStr());
   const [showDeadline, setShowDeadline] = useState(true);
+  // 任务加急：勾选后本次创建的确认图任务全部标记为加急（默认关闭）
+  const [urgent, setUrgent] = useState(false);
   const [deadlineMap, setDeadlineMap] = useState<Record<string, string | null>>({});
   const [deadlineLoading, setDeadlineLoading] = useState(false);
 
@@ -126,6 +129,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
     setDesignerId('');
     setDate(todayStr());
     setShowDeadline(true);
+    setUrgent(false);
     setDeadlineMap({});
     setDayTasks([]);
     setChecking(false);
@@ -336,7 +340,15 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
           const suffix = deadlineMap[customer] ?? await resolveTextDeadlineSuffix(customer, specNumberDigits);
           taskName = appendDeadlineSuffix(taskName, suffix);
         }
-        return { taskName, hours, color: '#86efac', guns, leaveType: null };
+        // 配色由任务内容决定（本弹窗固定创建确认图任务），加急时改取加急配色
+        return {
+          taskName,
+          hours,
+          color: getTaskBaseColor(settings.taskColorConfig, 'confirm', urgent),
+          urgent,
+          guns,
+          leaveType: null,
+        };
       }));
 
       let mergedGunCount = 0;
@@ -398,6 +410,22 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2.5 shrink-0">
+            {/* 任务加急：勾选后本次创建的确认图任务全部标记为加急 */}
+            <label
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-full transition select-none ${submitting ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-white/10'} ${urgent ? 'bg-red-500/90' : 'bg-white/10'}`}
+              title="勾选后本次创建的确认图任务全部标记为加急（底色改用加急配色，文字变红）"
+            >
+              <input
+                type="checkbox"
+                checked={urgent}
+                disabled={submitting}
+                onChange={e => setUrgent(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-white/60 cursor-pointer accent-red-500 disabled:cursor-not-allowed"
+              />
+              <span className="text-[11px] font-semibold text-white whitespace-nowrap inline-flex items-center gap-1">
+                <Zap size={11} />任务加急
+              </span>
+            </label>
             {/* 显示纳期开关：打开后任务名自动带上仕样号纳期 [M/D]（默认打开） */}
             <button
               type="button"

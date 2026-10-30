@@ -747,6 +747,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
             { "id": "gun-1", "name": "GUN-A", "hours": 2 }
           ],
           "leaveType": null,
+          "urgent": false,
           "createdAt": "2026-07-01T00:00:00.000Z",
           "createdBy": { "id": "1", "username": "管理员", "name": "管理员" },
           "updatedAt": "2026-07-01T00:00:00.000Z",
@@ -801,6 +802,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
     { "id": "gun-1", "name": "GUN-A", "hours": 2 }
   ],
   "leaveType": null,
+  "urgent": false,
   "fontSize": "",
   "textColor": ""
 }
@@ -809,6 +811,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 规则：
 
 - 枪名存在时，该枪名工时必须大于 0。
+- `urgent` 为任务加急标记（布尔，默认 `false`）。真正的加急生效条件是**任务名含可识别的任务内容后缀**（确认图 / 设计 / 确认图修改 / 设计变更 / 既制审图）：没有任务内容时 `urgent` 会被忽略，底色仍按「未勾选任务内容」派生。
+- **`color` 仅作兼容入参保留**：服务端落库前会用配色体系重新派生（`deriveItemColor`），即底色由「任务名中的任务内容后缀 + `urgent`」决定，客户端传入的 `color` 会被覆盖。两个例外：① 白色（`#ffffff`，表示已完成）原样保留；② `leaveType` 非空（请假/出差）的条目不参与派生，`color` 原样落库（留空时由前端渲染与导出按请假类型取固定底色，见下文）。
 - 后端会写入创建者和最后修改者信息。
 
 响应：
@@ -867,7 +871,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 请求体经 Joi 白名单校验（`stripUnknown`）：`designerId` 必填；`date` 必填且为 ISO 日期；`items` 必填且至少 1 条，未知字段会被丢弃。
-- 每条条目仅接受以下字段：`taskName`（字符串，默认空）、`hours`（数值 ≥ 0，默认 0）、`color`（标记颜色）、`guns`（枪名数组，结构同创建任务接口）、`leaveType`（`sick`/`vacation`/`illness`/`trip` 或 `null`）、`fontSize`、`textColor`；条目 `id` 由服务端重新生成，忽略客户端传入值。
+- 每条条目仅接受以下字段：`taskName`（字符串，默认空）、`hours`（数值 ≥ 0，默认 0）、`color`（标记颜色，同样会被配色体系派生覆盖）、`guns`（枪名数组，结构同创建任务接口）、`leaveType`（`sick`/`vacation`/`illness`/`trip` 或 `null`）、`urgent`（布尔，默认 `false`，任务加急）、`fontSize`、`textColor`；条目 `id` 由服务端重新生成，忽略客户端传入值。
+- 每条条目的最终底色同样由「任务内容后缀 + `urgent`」派生（白色与请假/出差底色例外），与 `POST /api/tasks/item` 完全一致。
 - 校验失败返回 `400`（`message=输入格式不正确`，附 `details`）；枪名存在但工时为 0 时返回 `400`。
 - 普通用户调用返回 `403`（`只有管理员可以编辑表格`）。
 - 焊枪台账「任务分配模式」通过本接口批量创建确认图任务：按客户分组（空客户归入「未命名」），每组生成一条 `taskName` 为 `<客户> 确认图` 的任务，组内每个焊枪名作为任务的枪名行；枪名工时由前端按默认工时规则解析后随请求提交，优先级为「枪名所在台账表的表级专用规则（`tableGunHours`，超管覆盖 → 内置）→ 枪名机型 C/X 的 `defaultGunHours.confirm` → 固定兜底 2h」，任务工时为枪名工时之和。
@@ -907,11 +912,18 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 - `taskName`
 - `hours`
-- `color`（主任务颜色）
+- `color`（主任务颜色，写入值原样生效、不参与配色派生；前端的任务编辑弹窗已不再提供调色板，只剩完成/未完成标记入口）
 - `guns`（整体替换枪名数组）
 - `gunColor`（标记单个枪名颜色，需配合 `gunIndex` 指定枪名下标）
 - `leaveType`（合法值：`sick` 事假、`vacation` 休假、`illness` 病假、`trip` 出差、`null`）
+- `urgent`（布尔，任务加急；切换后按「任务内容后缀 + 加急状态」重新派生整行底色）
 - `fontSize`、`textColor`：**仅通过 Joi 白名单校验，处理器没有对应分支**，传这两个值会落入 `else` 兜底，把 `taskName` 覆盖成 `value`（例如 `{"field":"fontSize","value":"14px"}` 会把任务名改成 `14px`）。这两个字段只在**创建**任务（`POST /api/tasks/item`）时有效，更新任务请勿使用。
+
+底色自动派生规则（`taskName` / `urgent` / `leaveType` 三个字段）：
+
+- 传 `taskName` 时，服务端按任务名中的任务内容后缀重新派生底色——后缀变化（如「确认图」改成「设计变更」）会直接换色。
+- 传 `urgent` 时，加急状态变化即改变整行配色，同时把派生值写回库里的 `color`，保证导出与旧版消费方一致。
+- 传 `leaveType` 且值为 `null`（由请假切回设计计划）时，按当前任务内容重新上色。请假/出差条目本身不参与配色派生，`color` 原样保留（前端留空时按类型渲染固定底色：事假 `#fee2e2`、休假 `#dbeafe`、病假 `#fce7f3`、出差 `#5eead4`，导出使用同一套色值）。
 
 更新 `guns` 时同样校验：枪名存在时工时不能为 0、同一任务内枪名不可重复（校验不通过返回 `400`，`message` 为中文原因说明）。
 
@@ -920,9 +932,10 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 颜色标记规则（`field` 为 `color` 或 `gunColor`）：
 
-- 管理员可通过任务编辑弹窗设置任意颜色；白色标记/恢复操作管理员与授权普通用户均可执行。
+- 前端任务编辑弹窗**不再提供调色板**：表格底色由「任务内容 + 是否加急」派生，文字色固定（普通黑色 `#000000`、加急确认图/设计/确认图修改红色 `#dc2626`），弹窗内只保留「任务完成 / 未完成」的状态标记入口；管理员仍可直接调用本接口写入任意颜色值（页面渲染时白色之外的派生色以任务内容为准，导出同样按派生色）。白色标记/恢复操作管理员与授权普通用户均可执行。
 - 普通用户需满足：系统开启 `allowUserDesignPlanColorMark`（或旧开关 `allowUserEditOwnTaskColor`）、任务非请假条、且本人姓名与该设计人员姓名一致；普通用户只允许白色标记（`#ffffff`/`#fff`/`white`）或恢复（`value` 传 `__restore__`），否则返回 `403`。
 - 标记白色时，系统会保存原始颜色到 `colorBeforeUserMark`，并记录标记人信息到 `colorMarkedBy`；恢复时还原原始颜色并删除这两个字段。
+- **恢复时若没有 `colorBeforeUserMark` 记录**（例如从已完成任务复制而来的白条目），不再随机取色：主任务按「任务内容 + 加急」派生标准底色（`deriveItemColor`），枪名清空颜色、跟随主任务行的派生底色。
 - 联动规则：主任务标记白色时，其下所有枪名联动标记为白色（枪名 `colorMarkedBy` 为 `{ id: 'auto', name: '系统联动' }`）；所有枪名都为白色时，主任务自动标记白色（`colorMarkedBy` 为 `{ id: 'auto', name: '系统自动' }`）；任一枪名恢复非白色时，主任务联动恢复原始颜色。
 - **主任务直接改色会把整条任务重置为「未完成」**：管理员把主任务设为任意非白颜色（`field=color`、`value` 非白色且非 `__restore__`）时，除写入主任务 `color` 外，其下**所有枪名**的 `color` 一并改为同一颜色，并删除各自的 `colorBeforeUserMark` 与 `colorMarkedBy`——原先已标白的枪名同样被染成新色，避免出现「主任务有色、子枪名仍是完成态」的矛盾行（主任务重新上色即代表任务重新开始）。用 `field=gunColor` 单独给某个枪名改色、或白色标记/恢复，都不触发这条级联规则。前端在请求发出前已按同一规则本地同步枪名颜色，接口返回后再以服务端结果为准。
 - **枪名结构变更后同样重算主任务颜色**：除颜色标记外，`field` 为 `guns`（整体替换枪名）、以及 `POST /api/tasks/move-gun` 的移出/移入枪名，都会按同一规则重新同步主任务颜色——枪名全部为白色则主任务自动标白（原色存入 `colorBeforeUserMark`），只要存在非白枪名且主任务为白色则恢复原色，因此「删到只剩白色枪名」后主任务会自动变为完成态。
@@ -1068,7 +1081,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 枪名移走后源主任务没有任何枪名时，该源主任务会被一并删除（响应 `sourceItemDeleted=true`），前端撤销时据此快照重建。
 - 源与目标的主任务 `updatedAt` / `updatedBy` 均会更新；操作成功后由前端发出 `task_updated` 通知其他客户端刷新。
 - 枪名移入/移出后会按枪名状态重算源、目标主任务的颜色标记（规则同 `PUT /api/tasks/item` 的 `guns` 联动：全白枪名 → 主任务自动标白，存在非白枪名 → 主任务恢复原色）。
-- 新建主任务的完成状态（颜色标记）跟随被移动的枪名：枪名为白色（完成）→ 新主任务同样标白（`colorMarkedBy` 为 `{ id: 'auto', name: '系统自动' }`），并优先把源主任务的原色写入 `colorBeforeUserMark` 以便后续「未完成」恢复；枪名带其他颜色 → 新主任务沿用同一颜色；枪名未完成但**没有颜色**（`color` 为空）→ 新主任务取源主任务颜色，源主任务同样是白色/无色时随机取一个非白颜色，并把该枪名一并染成该颜色（白色在系统中表示「已完成」，未完成的枪名不能落到白底上，否则主任务与枪名看起来都像已完成）。
+- 新建主任务的完成状态（颜色标记）跟随被移动的枪名：枪名为白色（完成）→ 新主任务同样标白（`colorMarkedBy` 为 `{ id: 'auto', name: '系统自动' }`），并优先把源主任务的原色写入 `colorBeforeUserMark` 以便后续「未完成」恢复；枪名带其他颜色 → 新主任务沿用同一颜色；枪名未完成但**没有颜色**（`color` 为空）→ 新主任务取源主任务颜色，源主任务同样是白色/无色时按 `createTaskName` 派生底色（`deriveItemColor`，如「XX 确认图」→ 确认图配色），并把该枪名一并染成该颜色（白色在系统中表示「已完成」，未完成的枪名不能落到白底上，否则主任务与枪名看起来都像已完成）。
 
 响应：
 
@@ -2421,8 +2434,19 @@ PUT 请求：
   "allowUserChangePassword": false,
   "specNumberDigits": 5,
   "auditLogMaxRows": 5000,
-  "randomDesignPlanColor": false,
-  "randomAssignmentColor": false,
+  "taskColorConfig": {
+    "default": "#d8b4fe",
+    "confirm": "#bbf7d0",
+    "design": "#fef9c3",
+    "confirmModify": "#fbcfe8",
+    "designChange": "#fdba74",
+    "drawingReview": "#bae6fd",
+    "urgentConfirm": "#34d399",
+    "urgentDesign": "#fde047",
+    "urgentConfirmModify": "#f9a8d4",
+    "urgentDesignChange": "#fdba74",
+    "urgentDrawingReview": "#bae6fd"
+  },
   "defaultGunHours": {
     "confirm": { "C": 1.5, "X": 2 },
     "design": { "C": 2.5, "X": 3 },
@@ -2448,8 +2472,8 @@ PUT 请求：
 - `allowUserChangePassword` 为「允许用户自主改密」开关，缺失时默认 `false`：关闭时 `POST /api/auth/change-password` 返回 `403`（`系统已禁用自主修改密码，请联系管理员`）；该开关不影响超管经 `PUT /api/users/:id` 重置密码。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
 - `auditLogMaxRows` 为操作日志保留条数，取值 `100` ~ `100000` 的整数，缺失或非法时默认为 `5000`；操作日志条数超过该值时自动清理最旧的记录。由「系统设置 → 日志管理」维护。
-- `randomDesignPlanColor` 为设计计划标记颜色随机开关，缺失时默认 `false`；开启后主页面新增任务的默认标记颜色从预设颜色中随机选择（不含「无」）。
-- `randomAssignmentColor` 为焊枪台账分配任务标记颜色随机开关，缺失时默认 `false`；开启后在焊枪台账「任务分配模式」中批量分配确认图任务时，任务标记颜色从预设颜色中随机选择，关闭时固定为浅绿（`#86efac`）。
+- `taskColorConfig` 为「任务内容配色」体系，11 个键各自对应一个**底色 hex**（`#rgb` 或 `#rrggbb`），文字色固定、不可配置。普通任务：`default`（未勾选任务内容，`#d8b4fe`）、`confirm`（确认图，`#bbf7d0`）、`design`（设计，`#fef9c3`）、`confirmModify`（确认图修改，`#fbcfe8`）、`designChange`（设计变更，`#fdba74`）、`drawingReview`（既制审图，`#bae6fd`）；加急任务：`urgentConfirm`（`#34d399`）、`urgentDesign`（`#fde047`）、`urgentConfirmModify`（`#f9a8d4`）、`urgentDesignChange`（`#fdba74`，默认同普通）、`urgentDrawingReview`（`#bae6fd`，默认同普通）。缺失或非法色值逐项回退默认值；历史 `{ bg, text }` 结构在读取时只取 `bg`。该字段取代了已下线的 `randomDesignPlanColor` / `randomAssignmentColor` 两个开关（服务端在归一化时显式删除历史残留，GET 不再返回）。
+- `randomDesignPlanColor` / `randomAssignmentColor` 为**已下线字段**：任务底色不再随机，统一由 `taskColorConfig` + 任务内容 + 加急状态派生，两个开关已从后端 schema 与返回值中移除，传入也会被 `stripUnknown` 过滤。
 - `defaultGunHours` 为按机型的默认工时回退规则：`confirm`（确认工时）、`design`（设计工时）、`confirmModify`（确认修改工时）三类，每类含 C/X 两种机型（数值 0-24）；字段缺失时按内置默认值补齐。
 - `tableGunHours` 为按焊枪编号台账表配置的专用工时，结构为 `{ 分类名: { 表名: { confirm, confirmModify, design } } }`（分类名 1-30 字符、表名 1-50 字符、工时数值 0-24，三类工时必须同时存在）；响应中以内置表规则为底，合并超级管理员的覆盖配置与用户自建表配置。前端解析枪名工时的优先级为「枪名所在表的专用规则（超管覆盖 → 内置）→ 枪名机型（首个「-」前一字符）C/X 的 `defaultGunHours` → 固定兜底（confirm 2 / confirmModify 0.75 / design 3）」。该字段由焊枪台账页面「默认工时规则」面板维护，随本接口保存。
 
@@ -2469,8 +2493,19 @@ PUT 请求：
   "allowUserChangePassword": true,
   "specNumberDigits": 6,
   "auditLogMaxRows": 5000,
-  "randomDesignPlanColor": false,
-  "randomAssignmentColor": false,
+  "taskColorConfig": {
+    "default": "#d8b4fe",
+    "confirm": "#86efac",
+    "design": "#fef9c3",
+    "confirmModify": "#fbcfe8",
+    "designChange": "#fdba74",
+    "drawingReview": "#bae6fd",
+    "urgentConfirm": "#22c55e",
+    "urgentDesign": "#fde047",
+    "urgentConfirmModify": "#f9a8d4",
+    "urgentDesignChange": "#fdba74",
+    "urgentDrawingReview": "#bae6fd"
+  },
   "defaultGunHours": {
     "confirm": { "C": 1.5, "X": 2 },
     "design": { "C": 2.5, "X": 3 },
@@ -2487,12 +2522,14 @@ PUT 请求：
 字段说明：
 
 - 所有字段含义同 `GET /api/system/settings`。
+- **保存语义是整体覆盖**：`data.settings.system = normalizeSystemSettings(请求体)`，请求体里没传的开关/配置一律回退内置默认值，而不是保留原值。
 - `allowMultiDevice` 为**必填**布尔值（Joi `required()`），缺失返回 `400`。
 - `allowUserDesignPlanColorMark` 与 `allowUserEditOwnTaskColor` 为兼容字段：二者只要传其一，服务端取两者的**或值**后同时回写两个字段；两个都不传时默认允许（`true`）。
 - `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
 - `auditLogMaxRows` 取值 `100` ~ `100000` 的整数，可选；传入其他值会被忽略并使用默认值 `5000`。
-- `randomDesignPlanColor` / `randomAssignmentColor` / `allowUserChangePassword` 可选，布尔值（自主改密开关仅在显式传 `true` 时开启）。
-- `defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留原值或使用内置默认值。
+- `taskColorConfig` 可选：11 个键都可省略，每个值为 `#rgb` / `#rrggbb` 颜色串，也兼容历史 `{ bg, text }` 对象（`text` 被忽略）。注意本接口是**整体覆盖而非合并**——没出现在请求体里的键（含未传的配色键）都会回退内置默认值，因此保存配色时前端总是提交完整 11 项；色值格式非法返回 `400`（`message=输入格式不正确`）。
+- `allowUserChangePassword` 可选，布尔值（自主改密开关仅在显式传 `true` 时开启）。
+- `defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时使用内置默认值。
 - `tableGunHours` 可选，结构为 `{ 分类名: { 表名: { confirm, confirmModify, design } } }`（分类名 1-30 字符、表名 1-50 字符、各工时 0-24 且必填）；保存时以内置表规则为底合并：合法单元格采用提交值（即提交完整的内置表项即视为覆盖/重置），非法单元格回退内置值、无内置值则丢弃。
 - 请求体经 Joi 校验（`stripUnknown`），未声明字段自动过滤；校验失败返回 `400`（`message=输入格式不正确`，附 `details`）。
 

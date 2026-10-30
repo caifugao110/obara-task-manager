@@ -62,6 +62,8 @@ export interface TaskItem {
   colorMarkedBy?: UserMeta;
   guns?: GunItem[];
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
+  /** 任务加急：整行底色改用加急配色、文字统一红色 */
+  urgent?: boolean;
   fontSize?: string;
   textColor?: string;
   createdAt?: string;
@@ -110,6 +112,7 @@ export interface CreateTaskParams {
   color?: string;
   guns?: GunItem[];
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
+  urgent?: boolean;
   fontSize?: string;
   textColor?: string;
 }
@@ -121,7 +124,7 @@ export interface UpdateTaskParams {
   designerId: string;
   date: string;
   itemId: string;
-  field: 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType' | 'fontSize' | 'textColor';
+  field: 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType' | 'urgent' | 'fontSize' | 'textColor';
   value: any;
 }
 

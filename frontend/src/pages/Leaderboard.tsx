@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import { useSystemSettings } from '../context/SystemSettingsContext';
+import { getTaskDisplayColors } from '../utils/taskColors';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
 import { format } from 'date-fns';
@@ -54,13 +55,6 @@ const isCompletedColor = (value?: string | null) => {
   return normalized === '#ffffff' || normalized === '#fff' || normalized === 'white';
 };
 
-// 仕样进度分类徽标配色（三色明显区分，避免与进度条绿/橙混淆）
-const PROGRESS_BADGE_STYLES: Record<string, string> = {
-  confirm: 'bg-blue-600',
-  confirmModify: 'bg-violet-600',
-  design: 'bg-rose-600'
-};
-
 // 已完成百分比按进度阶段着色（不区分任务类型）：≥67% 接近完成（绿）、34%~66% 进行中（橙）、≤33% 刚起步（红）
 const completedPctColorClass = (pct: number) => {
   if (pct >= 67) return 'text-emerald-600';
@@ -70,7 +64,7 @@ const completedPctColorClass = (pct: number) => {
 
 const Leaderboard = () => {
   const { user, token, logout } = useAuth();
-  const { specNumberDigits } = useSystemSettings();
+  const { specNumberDigits, settings: systemSettings } = useSystemSettings();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [designers, setDesigners] = useState<DesignerData[]>([]);
   // 只写不读：计算出的工时统计数据目前没有任何渲染处消费（见评审报告），保留 setter 以免影响取数逻辑
@@ -239,7 +233,8 @@ const Leaderboard = () => {
                   hours: gun.hours || 0,
                   color: gun.color || ''
                 })),
-                color: item.color || '',
+                // 底色改由任务内容配色体系派生（已完成白色仍然保留）
+                color: getTaskDisplayColors(systemSettings.taskColorConfig, item).bg,
                 date
               });
             }
@@ -287,7 +282,7 @@ const Leaderboard = () => {
                   guns: item.guns || [],
                   gunName: currentName,
                   gunHours: gun.hours || 0,
-                  color: item.color || '',
+                  color: getTaskDisplayColors(systemSettings.taskColorConfig, item).bg,
                   date
                 });
               }
@@ -764,11 +759,12 @@ const Leaderboard = () => {
                       <div className="flex items-center gap-3">
                         <span className="text-[11px] text-gray-400">每个枪名计为一个小任务</span>
                         <span className="flex items-center gap-1 text-[11px] text-gray-500">
-                          <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block"></span>已完成
+                          <span className="w-2.5 h-2.5 rounded-sm bg-white border border-slate-400 inline-block"></span>已完成（空槽）
                         </span>
                         <span className="flex items-center gap-1 text-[11px] text-gray-500">
-                          <span className="w-2.5 h-2.5 rounded-sm bg-amber-400 inline-block"></span>未完成
+                          <span className="w-2.5 h-2.5 rounded-sm bg-slate-400 inline-block"></span>未完成（实心）
                         </span>
+                        <span className="text-[11px] text-gray-400">· 实心色对应左侧分类</span>
                       </div>
                     </div>
                     <div className="space-y-3">
@@ -776,10 +772,13 @@ const Leaderboard = () => {
                         const completedPct = stat.total > 0 ? Math.round((stat.completed / stat.total) * 100) : 0;
                         const unfinishedPct = stat.total > 0 ? Math.round((stat.unfinished / stat.total) * 100) : 0;
                         const segmented = stat.total > 0 && stat.total <= 50;
+                        // 分类徽标底色跟随「任务内容配色体系」：确认图=淡绿、确认图修改=淡粉、设计=浅黄
+                        const badgeColor = systemSettings.taskColorConfig[stat.key as keyof typeof systemSettings.taskColorConfig] || '#e5e7eb';
                         return (
                           <div key={stat.key} className="flex items-center gap-3">
                             <span
-                              className={`w-20 shrink-0 px-1 py-1 rounded-lg text-xs font-bold text-white text-center ${PROGRESS_BADGE_STYLES[stat.key] ?? 'bg-blue-600'}`}
+                              className="w-20 shrink-0 px-1 py-1 rounded-lg text-xs font-bold text-center border"
+                              style={{ backgroundColor: badgeColor, color: '#000000', borderColor: 'rgba(0,0,0,0.08)' }}
                             >
                               {stat.label}
                             </span>
@@ -793,14 +792,17 @@ const Leaderboard = () => {
                                           key={`unit-${stat.key}-${unitIndex}`}
                                           to={unit.link}
                                           title={`${unit.name}：${unit.done ? '已完成' : '未完成'}，点击定位主任务`}
-                                          className={`flex-1 rounded-sm transition-all hover:opacity-75 hover:ring-2 hover:ring-blue-300 ${unit.done ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                                          className="flex-1 rounded-sm transition-all hover:opacity-75 hover:ring-2 hover:ring-blue-300"
+                                          style={unit.done
+                                            ? { backgroundColor: '#ffffff', boxShadow: 'inset 0 0 0 1px #cbd5e1' }
+                                            : { backgroundColor: badgeColor }}
                                         ></Link>
                                       ))}
                                     </div>
                                   ) : (
-                                    <div className="h-full bg-amber-100 rounded-full overflow-hidden border border-blue-100">
+                                    <div className="h-full rounded-full overflow-hidden border border-slate-300" style={{ backgroundColor: badgeColor }}>
                                       <div
-                                        className="h-full bg-emerald-500 transition-all duration-500"
+                                        className="h-full bg-white transition-all duration-500"
                                         style={{ width: `${completedPct}%` }}
                                       ></div>
                                     </div>

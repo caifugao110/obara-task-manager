@@ -22,7 +22,7 @@ import {
   resolveTextDeadlineSuffix,
   stripDeadlineSuffix,
 } from '../../../utils/specDeadline';
-import { PRESET_COLORS } from '../constants';
+import { getTaskBaseColor } from '../../../utils/taskColors';
 import type { Designer, TaskItem, TaskSheet } from '../types';
 
 // 枪名归属：该枪名当前被放在哪位设计员的哪一天、哪条任务里
@@ -531,10 +531,8 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
         onCreated({ designerId, date, itemId: mergeTarget.itemId, sheet: res.data?.sheet, merged: true });
         addToast(`已将「${selected.gunName}」添加到已有确认图修改任务`, 'success');
       } else {
-        const pool = PRESET_COLORS.filter(c => c.value);
-        const color = systemSettings.randomAssignmentColor
-          ? pool[Math.floor(Math.random() * pool.length)]?.value || '#86efac'
-          : '#86efac';
+        // 配色由任务内容决定（本弹窗固定创建确认图修改任务），不再随机取色
+        const color = getTaskBaseColor(systemSettings.taskColorConfig, 'confirmModify');
         const res = await axiosInstance.post('/tasks/item/batch', {
           designerId,
           date,

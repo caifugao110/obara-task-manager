@@ -5,6 +5,7 @@ const taskStore = require('../taskStore');
 const { authMiddleware } = require('../middleware/auth');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
+const taskColors = require('../utils/taskColors');
 
 const normalizeDate = (dateStr) => {
   if (typeof dateStr !== 'string') return dateStr;
@@ -20,15 +21,15 @@ const isWhiteColor = (value) => {
   return normalized === '#ffffff' || normalized === '#fff' || normalized === 'white';
 };
 
-// 拷贝自已完成任务的白条目没有 colorBeforeUserMark 恢复记录，
-// 标记为未完成时从该色板随机取色（避开白色与淡色系）
-const RANDOM_TASK_COLORS = [
-  '#fca5a5', '#f87171', '#fb7185', '#fdba74', '#fb923c', '#fbbf24', '#fde047',
-  '#a3e635', '#86efac', '#34d399', '#67e8f9', '#22d3ee', '#38bdf8', '#93c5fd',
-  '#818cf8', '#d8b4fe', '#f9a8d4', '#f472b6', '#c08457'
-];
+// 任务内容配色：按「任务内容后缀 + 是否加急」派生底色（白色=已完成直接保留）
+// 写入库里的 color 只作为导出/旧版消费方的展示依据，页面颜色由前端按同一套配置实时派生。
+const getTaskColorConfig = (data) => taskColors.normalizeTaskColorConfig(data?.settings?.system?.taskColorConfig);
 
-const randomTaskColor = () => RANDOM_TASK_COLORS[Math.floor(Math.random() * RANDOM_TASK_COLORS.length)];
+const deriveItemColor = (item, colorConfig) => {
+  if (!item || item.leaveType) return item?.color || '';
+  if (isWhiteColor(item.color)) return item.color;
+  return taskColors.getTaskCellColor(item, colorConfig);
+};
 
 const gunSchema = Joi.object({
   id: Joi.string().required(),
@@ -163,6 +164,8 @@ const createItemSchema = Joi.object({
   color: Joi.string().allow('').default(''),
   guns: Joi.array().items(gunSchema).default([]),
   leaveType: Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null).default(null),
+  // 任务加急：整行改用加急配色并染红文字
+  urgent: Joi.boolean().default(false),
   fontSize: Joi.string().allow('').default(''),
   textColor: Joi.string().allow('').default('')
 });
@@ -171,10 +174,11 @@ const updateItemSchema = Joi.object({
   designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
   itemId: Joi.string().required(),
-  field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'fontSize', 'textColor', 'gunColor').required(),
+  field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'urgent', 'fontSize', 'textColor', 'gunColor').required(),
   value: Joi.alternatives().try(
     Joi.string().allow(''),
     Joi.number().min(0),
+    Joi.boolean(),
     Joi.array().items(gunSchema),
     Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null)
   ).required(),
@@ -189,6 +193,7 @@ const batchCreateItemSchema = Joi.object({
   color: Joi.string().allow('').default(''),
   guns: Joi.array().items(gunSchema).default([]),
   leaveType: Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null).default(null),
+  urgent: Joi.boolean().default(false),
   fontSize: Joi.string().allow('').default(''),
   textColor: Joi.string().allow('').default('')
 });
@@ -468,6 +473,7 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
 
   if (!sheet.days[date]) sheet.days[date] = [];
 
+  const colorConfig = getTaskColorConfig(db.readDb());
   const addedItems = [];
   for (const item of pasteItems) {
     const gunError = validateNamedGunHours(item.guns) || validateDuplicateGunNames(item.guns);
@@ -482,9 +488,12 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
       color: item.color,
       guns: item.guns,
       leaveType: item.leaveType,
+      urgent: Boolean(item.urgent),
       fontSize: item.fontSize,
       textColor: item.textColor
     }, req.user);
+    // 任务内容配色体系：底色由「任务内容后缀 + 加急」决定（请假/出差保留自身底色）
+    newItem.color = deriveItemColor(newItem, colorConfig);
     addedItems.push(newItem);
   }
 
@@ -528,9 +537,12 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
     color,
     guns,
     leaveType: validated.leaveType || null,
+    urgent: Boolean(validated.urgent),
     fontSize: validated.fontSize || '',
     textColor: validated.textColor || ''
   }, req.user);
+  // 任务内容配色体系：底色由「任务内容后缀 + 加急」决定（请假/出差保留自身底色）
+  item.color = deriveItemColor(item, getTaskColorConfig(db.readDb()));
   sheet.days[date].push(item);
 
   taskStore.saveSheet(sheet);
@@ -699,13 +711,12 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
           });
           item.color = item.colorBeforeUserMark || '';
         } else {
-          // 拷贝自已完成任务的白条目没有恢复记录：标记为未完成时分配随机颜色
-          item.color = randomTaskColor();
+          // 拷贝自已完成任务的白条目没有恢复记录：直接回到「按任务内容派生」的标准底色
+          // （枪名行不单独持色，清空后跟随主任务行的派生底色）
+          item.color = deriveItemColor({ ...item, color: '' }, getTaskColorConfig(data));
           guns.forEach(gun => {
             if (isWhiteColor(gun.color)) {
-              gun.color = Object.prototype.hasOwnProperty.call(gun, 'colorBeforeUserMark')
-                ? (gun.colorBeforeUserMark || '')
-                : randomTaskColor();
+              gun.color = gun.colorBeforeUserMark || '';
               delete gun.colorBeforeUserMark;
               delete gun.colorMarkedBy;
             }
@@ -771,8 +782,8 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
         if (Object.prototype.hasOwnProperty.call(targetGun, 'colorBeforeUserMark')) {
           targetGun.color = targetGun.colorBeforeUserMark || '';
         } else {
-          // 拷贝自已完成任务的白枪名没有恢复记录：标记为未完成时分配随机颜色
-          targetGun.color = randomTaskColor();
+          // 拷贝自已完成任务的白枪名没有恢复记录：清空颜色，跟随主任务行的派生底色
+          targetGun.color = '';
         }
         delete targetGun.colorBeforeUserMark;
         delete targetGun.colorMarkedBy;
@@ -806,6 +817,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     }
   }
 
+  const colorConfig = getTaskColorConfig(data);
   if (field === 'hours') {
     item.hours = typeof value === 'number' ? value : (parseFloat(value) || 0);
   } else if (field === 'color') {
@@ -818,6 +830,16 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     syncTaskColorWithGuns(item);
   } else if (field === 'leaveType') {
     item.leaveType = value;
+    // 切回设计计划时按任务内容重新上色（请假/出差保留自身默认底色）
+    if (!value) item.color = deriveItemColor(item, colorConfig);
+  } else if (field === 'urgent') {
+    item.urgent = Boolean(value);
+    // 加急状态变化即改变整行配色，库里的 color 同步派生值（导出/旧版消费方保持一致）
+    item.color = deriveItemColor(item, colorConfig);
+  } else if (field === 'taskName') {
+    item.taskName = value;
+    // 任务内容后缀变化（确认图 → 设计变更 等）时底色随之改变
+    item.color = deriveItemColor(item, colorConfig);
   } else {
     item.taskName = value;
   }
@@ -950,8 +972,9 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
   // 名称由前端传入（取自源主任务）；完成状态（颜色标记）与被移动的枪名保持一致：
   // 枪名为白色（完成）→ 新主任务同样标白，并优先记录源主任务原色用于后续「未完成」恢复；
   // 枪名带其他颜色 → 新主任务沿用同一颜色；
-  // 枪名未完成但没有颜色 → 优先沿用源主任务颜色，源主任务也是白色/无色时随机取色，
-  // 并把该枪名一并染成该色——白色在系统中表示"已完成"，未完成的枪名不能落到白底上
+  // 枪名未完成但没有颜色 → 优先沿用源主任务颜色，源主任务也是白色/无色时按任务名派生底色
+  // （如「XX 确认图」→ 确认图配色），并把该枪名一并染成该色——白色在系统中表示"已完成"，
+  // 未完成的枪名不能落到白底上
   let targetItemCreated = false;
   if (!targetItem && !targetItemId && createTaskName !== undefined) {
     const gunColor = String(gun?.color || '');
@@ -959,7 +982,9 @@ router.post('/move-gun', authMiddleware, asyncHandler(async (req, res) => {
     const sourceColor = String(sourceItem?.color || '');
     let createdColor = gunIsWhite ? '#ffffff' : gunColor;
     if (!gunIsWhite && !gunColor) {
-      createdColor = (sourceColor && !isWhiteColor(sourceColor)) ? sourceColor : randomTaskColor();
+      createdColor = (sourceColor && !isWhiteColor(sourceColor))
+        ? sourceColor
+        : deriveItemColor({ taskName: createTaskName, color: '' }, getTaskColorConfig(db.readDb()));
       if (gun) gun.color = createdColor;
     }
     targetItem = withCreateMeta({

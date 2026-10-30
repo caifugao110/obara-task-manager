@@ -1,6 +1,7 @@
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend } = require('./workday');
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
+const { TRIP_TASK_COLOR } = require('./taskColors');
 
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
@@ -79,7 +80,7 @@ const getItemBackground = (item) => {
   if (item?.leaveType === 'sick') return '#fee2e2';
   if (item?.leaveType === 'vacation') return '#dbeafe';
   if (item?.leaveType === 'illness') return '#fce7f3';
-  if (item?.leaveType === 'trip') return '#fef9c3';
+  if (item?.leaveType === 'trip') return TRIP_TASK_COLOR;
   return item?.color || '';
 };
 

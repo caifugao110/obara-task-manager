@@ -30,7 +30,6 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
-import { PRESET_COLORS as DASHBOARD_PRESET_COLORS } from './Dashboard/constants';
 import LoadingScreen from '../components/LoadingScreen';
 import QuickConfirmAssignModal, { QuickConfirmGunRow } from '../components/QuickConfirmAssignModal';
 import { appendDeadlineSuffix, resolveTextDeadlineSuffix } from '../utils/specDeadline';
@@ -51,6 +50,7 @@ import {
   getEffectiveTableGunHours,
   resolveGunHours,
 } from '../utils/gunHoursRules';
+import { getTaskBaseColor } from '../utils/taskColors';
 
 interface Toast { message: string; type: 'success' | 'error'; id: number; center?: boolean }
 
@@ -134,8 +134,6 @@ const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'R
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 const PLACEHOLDER_COUNT = 10;
 
-// 随机分配颜色池：直接复用主页面新增/编辑任务时的预设颜色，保证与主页面一致
-const PRESET_COLOR_VALUES = DASHBOARD_PRESET_COLORS.filter(c => c.value).map(c => c.value);
 const newRowId = () => `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 // 焊枪名自动生成规则：分类 → 表名 → { prefix, 起始编号, 编号位数 }
@@ -394,6 +392,8 @@ const GunLedger: React.FC = () => {
   const [mergeTargetItemId, setMergeTargetItemId] = useState('');
   // 分配面板「显示纳期」开关：打开后新建的确认图任务名自动带上仕样号纳期 [M/D]（默认打开）
   const [assignShowDeadline, setAssignShowDeadline] = useState(true);
+  // 分配面板「任务加急」开关：勾选后本次创建的确认图任务全部标记为加急（默认关闭）
+  const [assignUrgent, setAssignUrgent] = useState(false);
 
   // 快速确认图安排（连按两次 Shift 呼出）：汇总当前登录人员今天取的枪名
   const [quickAssignOpen, setQuickAssignOpen] = useState(false);
@@ -952,9 +952,8 @@ const GunLedger: React.FC = () => {
       const items = await Promise.all(createGroups.map(async ([customer, rows]) => {
         const guns = buildGuns(rows);
         const hours = guns.reduce((sum, g) => sum + (parseFloat(String(g.hours)) || 0), 0);
-        const color = systemSettings.randomAssignmentColor
-          ? PRESET_COLOR_VALUES[Math.floor(Math.random() * PRESET_COLOR_VALUES.length)]
-          : '#86efac';
+        // 任务分配模式：配色统一由「任务内容」决定（本模式固定创建确认图任务）
+        const color = getTaskBaseColor(systemSettings.taskColorConfig, 'confirm', assignUrgent);
         // 显示纳期：客户列里有仕样号且能查到纳期时，任务名带上 [M/D]
         let taskName = `${customer} 确认图`;
         if (assignShowDeadline) {
@@ -965,6 +964,7 @@ const GunLedger: React.FC = () => {
           taskName,
           hours,
           color,
+          urgent: assignUrgent,
           guns,
           leaveType: null,
         };
@@ -1010,12 +1010,13 @@ const GunLedger: React.FC = () => {
       setSelectedGunRowIds(new Set());
       setShowAssignPanel(false);
       setAssignmentMode(false);
+      setAssignUrgent(false);
     } catch (err: any) {
       addToast(err?.response?.data?.message || '任务分配失败', 'error');
     } finally {
       setAssigning(false);
     }
-  }, [activeTable, assignDesignerId, assignDate, selectedGunRowIds, getDefaultConfirmHours, authHeader, fetchUsedGunNames, addToast, designers, systemSettings, warnIfOffline, extractSpecNumbers, mergeIntoExisting, mergeTargetItemId, matchedExistingSpecTasks, assignShowDeadline, specNumberDigits]);
+  }, [activeTable, assignDesignerId, assignDate, selectedGunRowIds, getDefaultConfirmHours, authHeader, fetchUsedGunNames, addToast, designers, systemSettings, warnIfOffline, extractSpecNumbers, mergeIntoExisting, mergeTargetItemId, matchedExistingSpecTasks, assignShowDeadline, assignUrgent, specNumberDigits]);
 
   // 更新本地某张表（跨分类查找）
   const patchTable = useCallback((tableId: string, updater: (t: GunTable) => GunTable) => {
@@ -2890,7 +2891,7 @@ const GunLedger: React.FC = () => {
                 <div className="flex items-center gap-2">
                   {isAdmin && !activeTableReadOnly && assignmentMode && selectedGunRowIds.size > 0 && (
                     <button
-                      onClick={() => { if (warnIfOffline()) return; setShowAssignPanel(true); }}
+                      onClick={() => { if (warnIfOffline()) return; setAssignUrgent(false); setShowAssignPanel(true); }}
                       className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded border text-blue-700 bg-blue-50 hover:bg-blue-500 hover:text-white border-blue-200 hover:border-blue-500 transition"
                       title="将选中的焊枪名按客户分组，批量创建确认图任务"
                     >
@@ -3152,6 +3153,22 @@ const GunLedger: React.FC = () => {
                   分配确认图任务
                 </div>
                 <div className="flex items-center gap-2.5">
+                  {/* 任务加急：勾选后本次创建的确认图任务全部标记为加急 */}
+                  <label
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded-full transition select-none ${assigning ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-white/10'} ${assignUrgent ? 'bg-red-500/90' : 'bg-white/10'}`}
+                    title="勾选后本次创建的确认图任务全部标记为加急（底色改用加急配色，文字变红）"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={assignUrgent}
+                      disabled={assigning}
+                      onChange={e => setAssignUrgent(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded border-white/60 cursor-pointer accent-red-500 disabled:cursor-not-allowed"
+                    />
+                    <span className="text-[11px] font-semibold text-white whitespace-nowrap inline-flex items-center gap-1">
+                      <Zap size={11} />任务加急
+                    </span>
+                  </label>
                   {/* 显示纳期开关：打开后新建的确认图任务名自动带 [M/D]（默认打开） */}
                   <button
                     type="button"

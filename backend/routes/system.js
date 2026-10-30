@@ -18,6 +18,11 @@ const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDis
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const maintenance = require('../utils/dbMaintenance');
+const {
+  DEFAULT_TASK_COLOR_CONFIG,
+  TRIP_TASK_COLOR,
+  normalizeTaskColorConfig
+} = require('../utils/taskColors');
 const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -99,8 +104,8 @@ const defaultSystemSettings = {
   specNumberDigits: 5,
   // 操作日志保留条数（超限自动清理最旧记录）
   auditLogMaxRows: 5000,
-  randomDesignPlanColor: false,
-  randomAssignmentColor: false,
+  // 任务内容 → 单元格配色体系（与前端 utils/taskColors.ts 默认值保持一致）
+  taskColorConfig: DEFAULT_TASK_COLOR_CONFIG,
   defaultGunHours: {
     confirm: { C: 1.5, X: 2 },
     design: { C: 2.5, X: 3 },
@@ -148,6 +153,30 @@ const extraTaskHoursSchema = Joi.object({
   drawingReview: Joi.number().min(0).max(24).required()
 });
 
+// 任务内容配色：每项一个底色 hex（文字色固定黑色/加急红色，不参与配置）
+const hexColorSchema = Joi.string().pattern(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+// 兼容历史 { bg, text } 结构：仅取 bg，text 被忽略
+const legacyPairSchema = Joi.object({
+  bg: hexColorSchema.required(),
+  text: hexColorSchema.optional()
+});
+const taskColorValueSchema = Joi.alternatives().try(hexColorSchema, legacyPairSchema);
+
+// 各字段均为可选：缺失项由 normalizeTaskColorConfig 回退到默认色
+const taskColorConfigSchema = Joi.object({
+  default: taskColorValueSchema.optional(),
+  confirm: taskColorValueSchema.optional(),
+  design: taskColorValueSchema.optional(),
+  confirmModify: taskColorValueSchema.optional(),
+  designChange: taskColorValueSchema.optional(),
+  drawingReview: taskColorValueSchema.optional(),
+  urgentConfirm: taskColorValueSchema.optional(),
+  urgentDesign: taskColorValueSchema.optional(),
+  urgentConfirmModify: taskColorValueSchema.optional(),
+  urgentDesignChange: taskColorValueSchema.optional(),
+  urgentDrawingReview: taskColorValueSchema.optional()
+});
+
 const systemSettingsSchema = Joi.object({
   allowMultiDevice: Joi.boolean().required(),
   allowUserDesignPlanColorMark: Joi.boolean().optional(),
@@ -155,8 +184,7 @@ const systemSettingsSchema = Joi.object({
   allowUserChangePassword: Joi.boolean().optional(),
   specNumberDigits: Joi.number().integer().valid(5, 6).optional(),
   auditLogMaxRows: Joi.number().integer().min(100).max(100000).optional(),
-  randomDesignPlanColor: Joi.boolean().optional(),
-  randomAssignmentColor: Joi.boolean().optional(),
+  taskColorConfig: taskColorConfigSchema.optional(),
   defaultGunHours: Joi.object({
     confirm: gunHoursTypeSchema.required(),
     design: gunHoursTypeSchema.required(),
@@ -253,6 +281,9 @@ const normalizeTableGunHours = (raw) => {
 
 const normalizeSystemSettings = (settings = {}) => {
   const merged = { ...defaultSystemSettings, ...settings };
+  // 已下线的「设计计划标记颜色随机」「焊枪台账分配任务标记颜色随机」：把历史数据里的残留一并清掉
+  delete merged.randomDesignPlanColor;
+  delete merged.randomAssignmentColor;
   const hasDesignPlanColorMark = Object.prototype.hasOwnProperty.call(settings, 'allowUserDesignPlanColorMark');
   const hasEditOwnTaskColor = Object.prototype.hasOwnProperty.call(settings, 'allowUserEditOwnTaskColor');
   const allowOwnDesignPlanColor = hasDesignPlanColorMark || hasEditOwnTaskColor
@@ -269,8 +300,6 @@ const normalizeSystemSettings = (settings = {}) => {
     allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
     auditLogMaxRows,
     allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
-    randomDesignPlanColor: Boolean(merged.randomDesignPlanColor),
-    randomAssignmentColor: Boolean(merged.randomAssignmentColor),
     allowUserChangePassword: merged.allowUserChangePassword === true,
     defaultGunHours: {
       confirm: normalizeGunHours(rawGunHours.confirm, fallbackGunHours.confirm),
@@ -278,7 +307,8 @@ const normalizeSystemSettings = (settings = {}) => {
       confirmModify: normalizeGunHours(rawGunHours.confirmModify, fallbackGunHours.confirmModify)
     },
     tableGunHours: normalizeTableGunHours(merged.tableGunHours),
-    extraTaskHours: normalizeExtraTaskHours(merged.extraTaskHours)
+    extraTaskHours: normalizeExtraTaskHours(merged.extraTaskHours),
+    taskColorConfig: normalizeTaskColorConfig(merged.taskColorConfig)
   };
 };
 
@@ -368,7 +398,7 @@ const getItemBackground = (item) => {
   if (item?.leaveType === 'sick') return '#fee2e2';
   if (item?.leaveType === 'vacation') return '#dbeafe';
   if (item?.leaveType === 'illness') return '#fce7f3';
-  if (item?.leaveType === 'trip') return '#fef9c3';
+  if (item?.leaveType === 'trip') return TRIP_TASK_COLOR;
   return item?.color || '';
 };
 
