@@ -198,35 +198,80 @@ const saveSheets = (sheets) => {
   tx(sheets);
 };
 
+// ---------------------------------------------------------------------------
+// 删除
+//
+// 统一显式删除 task_entries 再删 task_sheets，不依赖 ON DELETE CASCADE：
+// foreign_keys 是「连接级」pragma，只要在某个环节被重置（或历史数据是在外键
+// 未启用时写入的），级联就会静默失效，留下 sheet 已不存在、entry 还在的孤儿
+// 条目 —— 表现为清理后库里仍残留任务记录。显式删除再加一道兜底，更可靠。
+//
+// 所有删除都返回 { removedSheets, removedTaskItems }，便于上层按「工作表张数 +
+// 任务记录条数」两个口径如实汇报，而不是把张数当成条数展示。
+// ---------------------------------------------------------------------------
+const runStmt = (stmt, params) => (
+  params && Object.keys(params).length > 0 ? stmt.run(params) : stmt.run()
+);
+const getStmt = (stmt, params) => (
+  params && Object.keys(params).length > 0 ? stmt.get(params) : stmt.get()
+);
+
+// whereSql 作用于 task_sheets 表（不含别名）
+const deleteSheetsWhere = (whereSql, params = {}) => {
+  const raw = ensureTables();
+  const countEntries = raw.prepare(
+    `SELECT COUNT(*) AS c FROM task_entries WHERE sheet_id IN (SELECT id FROM task_sheets WHERE ${whereSql})`
+  );
+  const deleteEntries = raw.prepare(
+    `DELETE FROM task_entries WHERE sheet_id IN (SELECT id FROM task_sheets WHERE ${whereSql})`
+  );
+  const deleteSheets = raw.prepare(`DELETE FROM task_sheets WHERE ${whereSql}`);
+  const tx = raw.transaction(() => {
+    const removedTaskItems = Number(getStmt(countEntries, params).c);
+    runStmt(deleteEntries, params);
+    const removedSheets = runStmt(deleteSheets, params).changes;
+    return { removedSheets, removedTaskItems };
+  });
+  return tx();
+};
+
 const deleteSheetsByIds = (ids) => {
   if (!Array.isArray(ids) || ids.length === 0) return 0;
   const raw = ensureTables();
-  const stmt = raw.prepare('DELETE FROM task_sheets WHERE id = ?');
+  const deleteEntries = raw.prepare('DELETE FROM task_entries WHERE sheet_id = ?');
+  const deleteSheet = raw.prepare('DELETE FROM task_sheets WHERE id = ?');
   const tx = raw.transaction((list) => {
     let removed = 0;
-    for (const id of list) removed += stmt.run(id).changes;
+    for (const id of list) {
+      deleteEntries.run(id);
+      removed += deleteSheet.run(id).changes;
+    }
     return removed;
   });
   return tx(ids);
 };
 
-const deleteSheetsByMonth = (year, month) => {
-  const raw = ensureTables();
-  return raw.prepare('DELETE FROM task_sheets WHERE year = ? AND month = ?').run(Number(year), Number(month)).changes;
-};
+const deleteSheetsByMonth = (year, month) => deleteSheetsWhere(
+  'year = @year AND month = @month',
+  { year: Number(year), month: Number(month) }
+);
 
 // 删除早于指定年月的表，返回 { removedSheets, removedTaskItems }
-const deleteSheetsBefore = (year, month) => {
+const deleteSheetsBefore = (year, month) => deleteSheetsWhere(
+  'year < @year OR (year = @year AND month < @month)',
+  { year: Number(year), month: Number(month) }
+);
+
+// 清空全部任务数据（数据管理里的「清空全部任务数据」）
+const deleteAllSheets = () => deleteSheetsWhere('1 = 1');
+
+// 清理孤儿条目：sheet 已被删但条目还在（外键未生效时的历史遗留）。
+// 由「压缩数据库」调用，避免这些残留记录一直占着空间。
+const deleteOrphanEntries = () => {
   const raw = ensureTables();
-  const removedTaskItems = raw.prepare(`
-    SELECT COUNT(*) AS c FROM task_entries e
-    JOIN task_sheets s ON s.id = e.sheet_id
-    WHERE s.year < @year OR (s.year = @year AND s.month < @month)
-  `).get({ year: Number(year), month: Number(month) }).c;
-  const removedSheets = raw.prepare(
-    'DELETE FROM task_sheets WHERE year < @year OR (year = @year AND month < @month)'
-  ).run({ year: Number(year), month: Number(month) }).changes;
-  return { removedSheets, removedTaskItems: Number(removedTaskItems) };
+  return raw.prepare(
+    'DELETE FROM task_entries WHERE sheet_id NOT IN (SELECT id FROM task_sheets)'
+  ).run().changes;
 };
 
 // ---------------------------------------------------------------------------
@@ -394,6 +439,8 @@ module.exports = {
   deleteSheetsByIds,
   deleteSheetsByMonth,
   deleteSheetsBefore,
+  deleteAllSheets,
+  deleteOrphanEntries,
   countSheets,
   countEntries,
   countMonths,

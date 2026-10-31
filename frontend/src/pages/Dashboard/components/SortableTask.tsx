@@ -252,8 +252,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       <div 
         className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold hover:bg-blue-50/50 transition cursor-pointer"
         style={{ color: rowTextColor }}
+        title={display.paused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
       >
-        {item.guns && item.guns.length > 0 ? '' : item.hours}
+        {item.guns && item.guns.length > 0 ? '' : (display.paused ? '' : item.hours)}
       </div>
 
       {/* Gun Rows */}
@@ -362,7 +363,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
             style={{ backgroundColor: gunIsWhite ? '#ffffff' : rowBackground, color: rowTextColor }}
           >
-            {gun.hours}
+            {display.paused ? '' : gun.hours}
           </div>
         </React.Fragment>
         );

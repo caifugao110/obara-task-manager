@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
+import { acquireSocket } from '../utils/socketClient';
 import LoadingScreen from '../components/LoadingScreen';
 import { useSystemSettings } from '../context/SystemSettingsContext';
-import { getTaskDisplayColors } from '../utils/taskColors';
+import { getTaskDisplayColors, isTaskPaused } from '../utils/taskColors';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
 import { format } from 'date-fns';
@@ -31,6 +32,8 @@ interface TaskSearchResult {
   taskName: string;
   color: string;
   date: string;
+  /** 「暂停/取消」任务：工时按 0 计，界面上不显示工时数字 */
+  paused: boolean;
   guns: { name: string; hours: number | string; color?: string }[];
 }
 
@@ -167,11 +170,12 @@ const Leaderboard = () => {
 
   // 仕样进度统计：按「确认图」「确认图修改」「设计」三类汇总，每个枪名计为一个小任务；
   // 主任务标记完成（白色）时其下枪名视为已完成；不受“未标记完成状态任务”开关影响，始终基于全部搜索结果统计
+  // 注意：「设计变更」是独立任务内容，不能计入「设计」进度，因此设计分类要排除它
   const specProgressStats = useMemo(() => {
     const categories = [
       { key: 'confirm', label: '确认图', match: (name: string) => name.includes('确认图') && !name.includes('确认图修改') },
       { key: 'confirmModify', label: '确认图修改', match: (name: string) => name.includes('确认图修改') },
-      { key: 'design', label: '设计', match: (name: string) => name.includes('设计') }
+      { key: 'design', label: '设计', match: (name: string) => name.includes('设计') && !name.includes('设计变更') }
     ];
     return categories.map(({ key, label, match }) => {
       const collected: { name: string; done: boolean; link: string }[] = [];
@@ -233,6 +237,7 @@ const Leaderboard = () => {
                   hours: gun.hours || 0,
                   color: gun.color || ''
                 })),
+                paused: isTaskPaused(item),
                 // 底色改由任务内容配色体系派生（已完成白色仍然保留）
                 color: getTaskDisplayColors(systemSettings.taskColorConfig, item).bg,
                 date
@@ -282,6 +287,7 @@ const Leaderboard = () => {
                   guns: item.guns || [],
                   gunName: currentName,
                   gunHours: gun.hours || 0,
+                  paused: isTaskPaused(item),
                   color: getTaskDisplayColors(systemSettings.taskColorConfig, item).bg,
                   date
                 });
@@ -414,6 +420,8 @@ const Leaderboard = () => {
         if (designerData) {
           (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([, items]) => {
             items.forEach((item: any) => {
+              // 「暂停/取消」任务工时不计入统计
+              if (isTaskPaused(item)) return;
               if (item.leaveType === 'sick') {
                 const hours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
                 designerData.sickDays += hours;
@@ -502,6 +510,17 @@ const Leaderboard = () => {
       fetchLeaderboardData();
     }
   }, [loading, designers, fetchLeaderboardData]);
+
+  // 任务数据被批量清理、导入或年度归档后，服务端广播 task_refreshed。
+  // 排行榜的统计源就是任务表，不重新拉取会一直显示已经被删掉的工时。
+  useEffect(() => {
+    if (!token) return;
+    const handle = acquireSocket(token);
+    handle.on('task_refreshed', () => {
+      fetchLeaderboardData();
+    });
+    return () => handle.release();
+  }, [token, fetchLeaderboardData]);
 
   useEffect(() => {
     if (loading || designers.length === 0) return;
@@ -873,7 +892,9 @@ const Leaderboard = () => {
                               key={`${result.itemId}-${gun.name}-${gunIndex}`}
                               className="text-sm font-black text-blue-700 bg-blue-50 border border-blue-100 px-2 py-1 rounded"
                             >
-                              {gun.name} <span className="text-xs text-gray-500 ml-1">{gun.hours}h</span>
+                              {gun.name}
+                              {/* 「暂停/取消」任务工时按 0 计，不显示工时数字 */}
+                              {!result.paused && <span className="text-xs text-gray-500 ml-1">{gun.hours}h</span>}
                             </div>
                           ))
                         ) : (
@@ -967,7 +988,9 @@ const Leaderboard = () => {
                         <span className="text-xs text-gray-500">{result.date}</span>
                       </div>
                       <div className="text-sm font-black text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded mb-2">
-                        {result.gunName} <span className="text-xs text-gray-500 ml-1">{result.gunHours}h</span>
+                        {result.gunName}
+                        {/* 「暂停/取消」任务工时按 0 计，不显示工时数字 */}
+                        {!result.paused && <span className="text-xs text-gray-500 ml-1">{result.gunHours}h</span>}
                       </div>
                       <div
                         className="text-sm px-2 py-1.5 rounded border border-gray-100 font-medium"

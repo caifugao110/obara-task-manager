@@ -194,6 +194,7 @@ const getActionDescription = (method, path, body) => {
     'system/maintenance/yearly-cleanup': '执行年度清理',
     'system/maintenance/clear-logs': '清空日志',
     'system/maintenance/cleanup-tasks': '清理任务数据',
+    'system/maintenance/compact': '压缩数据库',
     'system/db-stats': '查看数据库统计',
     'system/cleanup/login-logs': '清空登录日志',
     'system/cleanup/audit-logs': '清空操作日志',

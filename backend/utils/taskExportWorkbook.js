@@ -1,7 +1,7 @@
 const XLSX = require('xlsx');
 const { getEffectiveIsWeekend } = require('./workday');
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
-const { TRIP_TASK_COLOR } = require('./taskColors');
+const { TRIP_TASK_COLOR, isTaskPaused } = require('./taskColors');
 
 const FIRST_HEADER_ROW_HEIGHT = 36;
 
@@ -42,6 +42,8 @@ const getDayName = (year, month, day) => {
 };
 
 const getTaskHours = (item) => {
+  // 「暂停/取消」任务工时按 0 计，不计入统计
+  if (isTaskPaused(item)) return 0;
   const mainHours = parseNumber(item?.hours);
   const gunsHours = (Array.isArray(item?.guns) ? item.guns : []).reduce(
     (sum, gun) => sum + parseNumber(gun?.hours),

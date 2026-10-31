@@ -449,7 +449,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
-| `settings.system` | 系统设置：多设备登录（`allowMultiDevice`）、允许登录用户修改本人设计计划完成状态（`allowUserDesignPlanColorMark`，兼容字段 `allowUserEditOwnTaskColor`）、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、操作日志保留条数（`auditLogMaxRows`，100~100000，默认 5000）、任务内容配色（`taskColorConfig`，11 个任务内容/加急状态各自的**底色 hex**，文字色固定为普通黑色 `#000000` / 加急红色 `#dc2626`，不可配置）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，`taskColorConfig` 缺失或含非法色值时逐项回退默认配色（深紫 `#d8b4fe` / 淡绿 `#bbf7d0` / 浅黄 `#fef9c3` / 淡粉 `#fbcfe8` / 橙红 `#fdba74` / 天蓝 `#bae6fd` + 加急翠绿 `#34d399` / 深黄 `#fde047` / 粉色 `#f9a8d4` / 设计变更同普通 / 既制审图同普通，历史 `{ bg, text }` 结构只取 `bg`），默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
+| `settings.system` | 系统设置：多设备登录（`allowMultiDevice`）、允许登录用户修改本人设计计划完成状态（`allowUserDesignPlanColorMark`，兼容字段 `allowUserEditOwnTaskColor`）、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、操作日志保留条数（`auditLogMaxRows`，100~100000，默认 5000）、任务内容配色（`taskColorConfig`，10 个状态各自的**底色 hex**：7 个常规 + 3 个加急，文字色固定为普通黑色 `#000000` / 加急红色 `#dc2626`，不可配置）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，`taskColorConfig` 缺失或含非法色值时逐项回退默认配色（深紫 `#d8b4fe` / 淡绿 `#bbf7d0` / 浅黄 `#fef9c3` / 浅蓝 `#bae6fd` / 橙红 `#fdba74` / 粉 `#fbcfe8` / 暂停取消纯红 `#ff0000` + 加急三项亮黄 `#fde047`；已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被忽略，历史 `{ bg, text }` 结构只取 `bg`），默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
 除上述键值集合外，三类高写入量数据存放在独立的关系表中：
@@ -942,13 +942,14 @@ backend/
 | `/api/system/maintenance/cleanup-backups` | POST | 超级管理员 | 清理过期备份 |
 | `/api/system/maintenance/yearly-cleanup` | POST | 超级管理员 | 手动执行年度清理；请求体传 `{"force": true}` 可跳过时间检查强制执行 |
 | `/api/system/maintenance/clear-logs` | POST | 超级管理员 | 同时清空登录日志和操作日志 |
-| `/api/system/maintenance/cleanup-tasks` | POST | 超级管理员 | 清理指定月份或指定年月之前的任务 |
+| `/api/system/maintenance/cleanup-tasks` | POST | 超级管理员 | 清理任务数据：`{month, year}` 指定月份、`{beforeMonth, beforeYear}` 该月之前、`{all: true}` 清空全部；清理后自动压缩并返回 `removedSheets` / `removedItems` / `freedBytes` |
+| `/api/system/maintenance/compact` | POST | 超级管理员 | 压缩数据库（`VACUUM` + WAL 截断 + 清理孤儿条目），返回 `compaction.freedBytes` |
 | `/api/system/db-stats` | GET | 超级管理员 | 获取数据库统计信息 |
 | `/api/system/cleanup/login-logs` | DELETE | 超级管理员 | 清空登录日志 |
 | `/api/system/cleanup/audit-logs` | DELETE | 超级管理员 | 清空操作日志 |
 | `/api/system/cleanup/old-tasks` | DELETE | 超级管理员 | 清理旧任务数据（按保留月数） |
 | `/api/system/cleanup/status-tracking` | DELETE | 超级管理员 | 清理旧状态追踪数据（按保留月数） |
-| `/api/status-tracking/cleanup` | POST | 超级管理员 | 按时间点清理状态追踪记录，请求体 `{beforeMonth, beforeYear, mode?}`；`mode=delivery` 按纳期月清理，缺省按添加时间月清理 |
+| `/api/status-tracking/cleanup` | POST | 超级管理员 | 按时间点清理状态追踪记录，请求体 `{beforeMonth, beforeYear, mode?}`；`mode=delivery` 按纳期月清理，缺省按添加时间月清理；传 `{all: true}` 清空全部 |
 
 ### 年度清理流程
 
@@ -971,7 +972,7 @@ backend/
 
 ### 维护最佳实践
 
-1. **监控数据库大小**：定期检查 `db-stats`，其中 10MB/50MB 仅为提示性警告而非 SQLite 限制（SQLite 单库上限约 281TB，1GB 以内可稳定运行）；结合任务月份数判断是否需要清理旧数据，必要时执行 `VACUUM` 回收磁盘空间
+1. **监控数据库大小**：定期检查 `db-stats`，其中 10MB/50MB 仅为提示性警告而非 SQLite 限制（SQLite 单库上限约 281TB，1GB 以内可稳定运行）；结合任务月份数判断是否需要清理旧数据。注意 **SQLite 删除数据后文件不会自动变小**（删除只把页标记为空闲页），清理后磁盘占用不下降属正常现象：需要真正腾出空间时调用 `POST /api/system/maintenance/compact`（或系统设置 → 数据库维护 → 压缩数据库），即 `VACUUM` + WAL 截断；`cleanup-tasks` / `old-tasks` / `yearly-cleanup` 三个清理入口已内置自动压缩，返回 `freedBytes` 可直接核对回收量
 2. **调整备份保留天数**：根据存储容量调整 `backupRetentionDays`，建议至少保留 7 天
 3. **设置合理的数据保留年限**：根据业务需求设置 `yearlyTaskRetentionYears`
 4. **定期手动备份**：在执行重大操作（如升级、批量导入）前手动执行备份

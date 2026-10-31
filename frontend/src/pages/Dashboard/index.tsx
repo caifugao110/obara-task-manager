@@ -9,6 +9,7 @@ import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, Che
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
+import { OFFLINE_SHEETS_CACHE_KEY } from '../../utils/offlineSheetsCache';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
 import { resolveAutoFillHours, GunLocation } from '../../utils/gunHoursRules';
 import {
@@ -16,8 +17,11 @@ import {
   getTaskBaseColor,
   getTaskDisplayColors,
   getLeaveRowColors,
-  hasTaskContent,
+  supportsUrgent,
+  PAUSED_TASK_SUFFIX,
   TASK_CONTENT_TYPES,
+  TASK_TEXT_COLOR,
+  TASK_URGENT_TEXT_COLOR,
 } from '../../utils/taskColors';
 import {
     DndContext,
@@ -69,13 +73,19 @@ import type {
   Toast,
 } from './types';
 
-// 主任务「任务内容」复选框对应的类型：
-// 确认图 / 设计 / 确认图修改 按枪名规则取工时；设计变更 / 既制审图 取系统设置中的固定工时
-type DesignTaskType = 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' | 'drawingReview';
+// 主任务「任务内容」复选框对应的类型（6 个并列选项）：
+// 确认图 / 设计 / 确认图修改 按枪名规则取工时，且支持「任务加急」；
+// 设计变更 / 既制审图 取系统设置中的固定工时；
+// 暂停/取消 是独立状态：任务名后缀 + 纯红底，工时按 0 计、不计入统计。
+type DesignTaskType = 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' | 'drawingReview' | 'paused';
 
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
-  const { specNumberDigits, settings: systemSettings } = useSystemSettings();
+  const { specNumberDigits, settings: systemSettings, refreshSettings } = useSystemSettings();
+  // 进入主页时回读一次系统设置：保证在 /system-settings 保存的配色立刻生效（含其他标签页保存的情况）
+  useEffect(() => {
+    void refreshSettings();
+  }, [refreshSettings]);
   // 任务内容配色体系：按「任务内容后缀 + 加急」派生单元格底色与文字色（白色=已完成时保留白底）
   const getItemDisplayColors = useCallback(
     (item: TaskItem) => getTaskDisplayColors(systemSettings.taskColorConfig, item),
@@ -653,6 +663,8 @@ const Dashboard = () => {
   // 任务加急：勾选后整行改用加急配色；确认图 / 设计 / 确认图修改 的文字同时变红
   const [urgentDraft, setUrgentDraft] = useState(false);
   const [addModeTaskType, setAddModeTaskType] = useState<DesignTaskType>('none');
+  // 新增模式是否勾选了「暂停/取消」：勾选后工时按 0 计，且不再显示工时
+  const addModePaused = addModeTaskType === 'paused';
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: DesignTaskType }>>({});
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const addModeSpecLookupSeqRef = useRef(0);
@@ -740,6 +752,7 @@ const Dashboard = () => {
   // 从任务名后缀反推任务内容（编辑模式复选框依赖任务名后缀）
   const getTaskTypeFromName = (taskName?: string): DesignTaskType => {
     const name = String(taskName || '');
+    if (name.includes(PAUSED_TASK_SUFFIX) || name.includes('暂停')) return 'paused';
     if (name.includes('设计变更')) return 'designChange';
     if (name.includes('既制审图')) return 'drawingReview';
     if (name.includes('确认图修改')) return 'confirmModify';
@@ -1359,10 +1372,10 @@ const Dashboard = () => {
   }, [fetchSheets, token, upsertSheet, user, warnIfCellLocked]);
 
   // Offline cache: save current sheets to localStorage
-  const OFFLINE_CACHE_KEY = 'obara_offline_sheets_cache';
+  // key 与清理逻辑共用（数据管理里清理任务后需要作废这份缓存）
   const saveSheetsToLocalStorage = useCallback((data: TaskSheet[]) => {
     try {
-      localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify({
+      localStorage.setItem(OFFLINE_SHEETS_CACHE_KEY, JSON.stringify({
         sheets: data,
         timestamp: Date.now(),
         cachedMonth: currentDate.getMonth() + 1,
@@ -1375,7 +1388,7 @@ const Dashboard = () => {
 
   const loadSheetsFromLocalStorage = useCallback((): TaskSheet[] | null => {
     try {
-      const cached = localStorage.getItem(OFFLINE_CACHE_KEY);
+      const cached = localStorage.getItem(OFFLINE_SHEETS_CACHE_KEY);
       if (!cached) return null;
       const parsed = JSON.parse(cached);
       return parsed?.sheets ?? null;
@@ -1964,8 +1977,10 @@ const Dashboard = () => {
   };
 
   const isUrgentAvailable = () => {
-    if (isAddMode) return hasTaskContent(addModeTaskType);
-    return getUrgentTargetItems().some(item => !item.leaveType && hasTaskContent(detectTaskContentType(item.taskName)));
+    // 只有「确认图 / 设计 / 确认图修改」有加急状态；
+    // 设计变更 / 既制审图 / 暂停取消 没有加急状态
+    if (isAddMode) return supportsUrgent(addModeTaskType);
+    return getUrgentTargetItems().some(item => !item.leaveType && supportsUrgent(detectTaskContentType(item.taskName)));
   };
 
   // 任务加急切换：新增模式只改草稿；编辑模式同步写入待保存更改
@@ -1984,6 +1999,24 @@ const Dashboard = () => {
         field: 'urgent' as TaskField,
         value: next,
       })),
+    ]);
+  };
+
+  // 「暂停/取消」与其它任务内容并列，走同一套勾选逻辑（任务名后缀 + paused 标记）：
+  // 勾选时取消加急、工时按 0 计；取消勾选后回到普通任务内容配色。
+  const applyPausedState = (itemId: string, next: boolean) => {
+    if (isAddMode || !modalDesignerId || !modalDate) return;
+    const changes: PendingChange[] = [
+      { designerId: modalDesignerId, date: modalDate, itemId, field: 'paused', value: next },
+    ];
+    if (next) {
+      changes.push({ designerId: modalDesignerId, date: modalDate, itemId, field: 'urgent', value: false });
+      changes.push({ designerId: modalDesignerId, date: modalDate, itemId, field: 'hours', value: 0 });
+    }
+    setPendingChanges(prev => [
+      ...prev.filter(change => !(change.itemId === itemId && (change.field === 'paused' || change.field === 'urgent')))
+        .filter(change => !(next && change.itemId === itemId && change.field === 'hours')),
+      ...changes,
     ]);
   };
 
@@ -2836,8 +2869,8 @@ const Dashboard = () => {
                                   const legacyCellSession = cellSessions.find(s => s.userId !== user?.id && s.itemId == null) || null;
                                   const isCellLocked = Boolean(getBlockingEditingSession(d.id, day.fullDate));
                                   const isCellSelected = selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate;
-                                  // 本格只有一行内容（一条主任务且没有枪名）：同行其他格子更高时让内容垂直居中，避免吊在顶部
-                                  const singleLineCell = items.length === 1 && !(items[0].guns && items[0].guns.length > 0);
+                                  // 单元格内容一律顶部对齐：本格内容少、同行其他格子更高时，任务行贴着格子上沿排，
+                                  // 不做垂直居中（居中会让无任务内容的主任务悬在格子中间，与相邻格子的行位置错开）
                                   // 主任务拖拽扫过本单元格时的预插入位置：itemId 命中某条主任务 → 其上方显示标记线；
                                   // itemId 为 null → 最下方显示追加标记线；duplicate 时红色（复制内容重复）
                                   const cellTaskDrop = taskDropTarget && taskDropTarget.designerId === d.id && taskDropTarget.date === day.fullDate ? taskDropTarget : null;
@@ -2853,7 +2886,7 @@ const Dashboard = () => {
                                       designerId={d.id}
                                       date={day.fullDate}
                                       colSpan={2}
-                                      className={`border border-gray-300 p-0 ${singleLineCell ? 'align-middle' : 'align-top'} ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] min-w-[21rem] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
+                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] min-w-[21rem] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
                                       onClick={(e: React.MouseEvent) => {
                                         if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
                                           setSelectedTasks([]);
@@ -3503,7 +3536,7 @@ const Dashboard = () => {
                       className={`flex items-center gap-1.5 text-sm font-bold select-none ${urgentEnabled ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'}`}
                       title={urgentEnabled
                         ? '勾选后整行改用加急配色；确认图 / 设计 / 确认图修改 的文字同时变红'
-                        : '请先勾选任务内容后再勾选任务加急'}
+                        : '只有「确认图 / 设计 / 确认图修改」有加急状态；设计变更 / 既制审图 / 暂停取消 没有加急'}
                     >
                       <input
                         type="checkbox"
@@ -3617,7 +3650,7 @@ const Dashboard = () => {
                           <div className="flex flex-col gap-3">
                             <div className="flex items-center justify-between">
                               <span className="text-sm font-bold px-3 py-1.5 rounded-lg bg-teal-100 text-teal-800 border border-teal-300">
-                                出差
+                                ✈️ 出差
                               </span>
                               <button
                                 onClick={() => {
@@ -3659,17 +3692,22 @@ const Dashboard = () => {
                             </div>
                           </div>
                         ) : (
-                          <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
+                          <div className="flex flex-col gap-2">
+                            {/* 任务内容：6 个复选项固定并排一行（窄屏时横向滚动，不换行） */}
+                            <div className="flex items-center gap-2.5 flex-nowrap overflow-x-auto pb-0.5">
+                              <label className="text-sm font-bold text-gray-500 uppercase shrink-0">任务内容</label>
                               {TASK_CONTENT_TYPES.map(({ key, label }) => {
                                 // 标签做成和表格单元格一样的小色块：底色 = 该任务内容的表格填充色
                                 const swatchColor = getTaskBaseColor(systemSettings.taskColorConfig, key, urgentDraft);
                                 const checked = addModeTaskType === key;
+                                // 勾选「任务加急」后，三种可加急的任务内容（确认图/设计/确认图修改）文字统一变红，
+                                // 不只是当前勾选的那一个
+                                const labelTextColor = urgentDraft && supportsUrgent(key) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
                                 return (
                                   <label
                                     key={key}
-                                    className="flex items-center gap-1.5 cursor-pointer"
+                                    className="flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
+                                    title={key === 'paused' ? '工时按 0 计、不计入统计；任务名后缀显示为「暂停/取消」' : undefined}
                                   >
                                     <input
                                       type="checkbox"
@@ -3678,6 +3716,8 @@ const Dashboard = () => {
                                         if (e.target.checked) {
                                           setAddModeTaskType(key);
                                           setAddModeGuns(prev => applyTaskTypeToGuns(prev, key));
+                                          // 设计变更 / 既制审图 / 暂停取消 没有加急状态
+                                          if (!supportsUrgent(key)) setUrgentDraft(false);
                                         } else if (checked) {
                                           setAddModeTaskType('none');
                                           setUrgentDraft(false);
@@ -3687,7 +3727,7 @@ const Dashboard = () => {
                                     />
                                     <span
                                       className="text-sm font-bold px-1.5 py-0.5 rounded border border-black/5"
-                                      style={{ backgroundColor: swatchColor, color: '#000000' }}
+                                      style={{ backgroundColor: swatchColor, color: labelTextColor }}
                                     >
                                       {label}
                                     </span>
@@ -3695,8 +3735,7 @@ const Dashboard = () => {
                                 );
                               })}
                             </div>
-                            <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
-                            <div></div>
+                            {/* 第二行：任务名 + 纳期 + 总工时 + 删除 */}
                             <div className="flex items-center gap-1.5 min-w-0">
                               <input
                                 ref={el => inputRefs.current['task-new'] = el}
@@ -3729,18 +3768,19 @@ const Dashboard = () => {
                                   </span>
                                 ))
                               )}
-                            </div>
-                            <input
-                              ref={el => inputRefs.current['hours-new'] = el}
-                              type="number"
-                              step="0.5"
-                              min="0"
-                              className={`h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                              value={addModeGuns.length > 0 ? getGunHoursTotalInputValue(addModeGuns) : addModeHours}
-                              placeholder=""
-                              onChange={(e) => setAddModeHours(e.target.value)}
-                              disabled={addModeGuns.length > 0}
-                            />
+                              <span className="shrink-0 text-xs font-bold text-gray-500">总工时</span>
+                              <input
+                                ref={el => inputRefs.current['hours-new'] = el}
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                className={`w-20 shrink-0 h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 || addModePaused ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
+                                value={addModePaused ? '' : (addModeGuns.length > 0 ? getGunHoursTotalInputValue(addModeGuns) : addModeHours)}
+                                placeholder=""
+                                onChange={(e) => setAddModeHours(e.target.value)}
+                                disabled={addModeGuns.length > 0 || addModePaused}
+                                title={addModePaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
+                              />
                             <button
                               onClick={() => {
                                 setModalOpen(false);
@@ -3752,6 +3792,7 @@ const Dashboard = () => {
                             >
                               <Trash2 size={20} />
                             </button>
+                            </div>
                           </div>
                         )}
 
@@ -3878,9 +3919,11 @@ const Dashboard = () => {
                                 type="number"
                                 step="0.5"
                                 min="0"
-                                className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                value={gun.hours || ''}
+                                className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:opacity-50"
+                                value={addModePaused ? '' : (gun.hours || '')}
                                 placeholder="工时"
+                                disabled={addModePaused}
+                                title={addModePaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
                                 onChange={(e) => {
                                   setAddModeGuns(prev => {
                                     const next = [...prev];
@@ -3961,6 +4004,8 @@ const Dashboard = () => {
                         // 使用考虑 pendingChanges 后的完整 item 对象
                         const currentItem = getItemWithPendingChanges(item);
                         const hasGuns = currentItem.guns && currentItem.guns.length > 0;
+                        // 「暂停/取消」：任务名后缀或 paused 标记任一命中即视为暂停（工时按 0 计且不显示）
+                        const itemPaused = getTaskTypeFromName(currentItem.taskName) === 'paused' || Boolean(currentItem.paused);
                         const isLeave = currentItem.leaveType === 'sick' || currentItem.leaveType === 'vacation' || currentItem.leaveType === 'illness';
                         const isTrip = currentItem.leaveType === 'trip';
                         const tripPlace = (() => {
@@ -4030,7 +4075,7 @@ const Dashboard = () => {
                               <div className="flex flex-col gap-3">
                                 <div className="flex items-center justify-between">
                                   <span className="text-sm font-bold px-3 py-1.5 rounded-lg bg-teal-100 text-teal-800 border border-teal-300">
-                                    出差
+                                    ✈️ 出差
                                   </span>
                                   <button
                                     onClick={() => deleteItem(modalDesignerId, modalDate, currentItem.id)}
@@ -4075,54 +4120,73 @@ const Dashboard = () => {
                                 </div>
                               </div>
                             ) : (
-                            <div className="grid grid-cols-[1fr_5rem_auto] gap-x-2 gap-y-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <label className="text-sm font-bold text-gray-500 uppercase ml-1 w-20">任务内容</label>
+                            <div className="flex flex-col gap-2">
+                              {/* 任务内容：6 个复选项固定并排一行（窄屏时横向滚动，不换行） */}
+                              <div className="flex items-center gap-2.5 flex-nowrap overflow-x-auto pb-0.5">
+                                <label className="text-sm font-bold text-gray-500 uppercase shrink-0">任务内容</label>
                                 {(() => {
-                                  const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '');
+                                  const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消)?\s*(\[\d+\/\d+\])?$/, '');
                                   const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                   const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
+                                  // 暂停/取消 是独立状态：任务名后缀 + paused 标记（兼容历史只带标记的数据）
                                   const checkedState: Record<string, boolean> = {
                                     confirm: currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('确认图修改'),
                                     design: currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('设计变更'),
                                     confirmModify: currentItem.taskName.includes('确认图修改'),
                                     designChange: currentItem.taskName.includes('设计变更'),
                                     drawingReview: currentItem.taskName.includes('既制审图'),
+                                    paused: itemPaused,
                                   };
                                   return TASK_CONTENT_TYPES.map(({ key, label }) => {
                                     // 标签做成和表格单元格一样的小色块：底色 = 该任务内容的表格填充色
                                     const swatchColor = getTaskBaseColor(systemSettings.taskColorConfig, key, urgentDraft);
                                     const checked = checkedState[key];
+                                    // 勾选「任务加急」后，三种可加急的任务内容（确认图/设计/确认图修改）文字统一变红，
+                                    // 不只是当前勾选的那一个
+                                    const labelTextColor = urgentDraft && supportsUrgent(key) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
                                     return (
                                       <label
                                         key={key}
-                                        className="flex items-center gap-1.5 cursor-pointer"
+                                        className="flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
+                                        title={key === 'paused' ? '工时按 0 计、不计入统计；任务名后缀显示为「暂停/取消」' : undefined}
                                       >
                                         <input
                                           type="checkbox"
                                           checked={checked}
                                           onChange={(e) => {
+                                            const nextType: DesignTaskType = e.target.checked ? key : 'none';
                                             let newName = baseName + deadline;
                                             if (e.target.checked) {
                                               newName = `${baseName} ${label}${deadline}`;
                                             }
                                             setTaskTypeDrafts(prev => ({
                                               ...prev,
-                                              [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: e.target.checked ? key : 'none' }
+                                              [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: nextType }
                                             }));
-                                            if (e.target.checked) {
-                                              void applyTaskTypeToItem(currentItem.id, key, currentItem.guns || [], newName);
-                                            } else {
+                                            if (nextType === 'paused') {
+                                              // 暂停/取消：取消加急、工时归零，只改任务名后缀
+                                              if (urgentDraft) handleUrgentToggle(false);
+                                              applyPausedState(currentItem.id, true);
+                                              handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                              return;
+                                            }
+                                            // 离开暂停状态时清掉 paused 标记
+                                            if (itemPaused) applyPausedState(currentItem.id, false);
+                                            if (nextType === 'none') {
                                               // 取消任务内容后加急失去意义，一并取消
                                               if (urgentDraft) handleUrgentToggle(false);
                                               handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                            } else {
+                                              // 设计变更 / 既制审图 没有加急状态
+                                              if (!supportsUrgent(nextType) && urgentDraft) handleUrgentToggle(false);
+                                              void applyTaskTypeToItem(currentItem.id, nextType, currentItem.guns || [], newName);
                                             }
                                           }}
                                           className="w-4 h-4 rounded border-gray-300 cursor-pointer accent-blue-600"
                                         />
                                         <span
                                           className="text-sm font-bold px-1.5 py-0.5 rounded border border-black/5"
-                                          style={{ backgroundColor: swatchColor, color: '#000000' }}
+                                          style={{ backgroundColor: swatchColor, color: labelTextColor }}
                                         >
                                           {label}
                                         </span>
@@ -4131,15 +4195,14 @@ const Dashboard = () => {
                                   });
                                 })()}
                               </div>
-                              <label className="text-sm font-bold text-gray-500 uppercase text-center">总工时</label>
-                              <div className="flex items-center gap-2"></div>
+                              {/* 第二行：任务名 + 纳期 + 总工时 + 操作 */}
                               <div className="flex items-center gap-1.5 min-w-0">
                                 <input
                                   ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
                                   className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                                  value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图)?\s*(\[\d+\/\d+\])?$/, '')}
+                                  value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消)?\s*(\[\d+\/\d+\])?$/, '')}
                                   onChange={(e) => {
-                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更|既制审图))?\s*(\[\d+\/\d+\])?$/);
+                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消))?\s*(\[\d+\/\d+\])?$/);
                                     const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
                                     const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                     let deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
@@ -4189,89 +4252,20 @@ const Dashboard = () => {
                                     </span>
                                   ) : null;
                                 })()}
-                              </div>
-                              <input
-                                ref={el => inputRefs.current[`hours-${currentItem.id}`] = el}
-                                type="number"
-                                step="0.5"
-                                min="0"
-                                className={`h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${hasGuns ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                                value={hasGuns ? getGunHoursTotalInputValue(currentItem.guns) : getHoursInputValue(currentItem.hours)}
+                                <span className="shrink-0 text-xs font-bold text-gray-500">总工时</span>
+                                <input
+                                  ref={el => inputRefs.current[`hours-${currentItem.id}`] = el}
+                                  type="number"
+                                  step="0.5"
+                                  min="0"
+                                  className={`w-20 shrink-0 h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${hasGuns || itemPaused ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
+                                value={itemPaused ? '' : (hasGuns ? getGunHoursTotalInputValue(currentItem.guns) : getHoursInputValue(currentItem.hours))}
                                 onChange={(e) => !hasGuns && handleItemChange(modalDesignerId, modalDate, currentItem.id, 'hours', e.target.value)}
-                                disabled={hasGuns}
+                                disabled={hasGuns || itemPaused}
+                                title={itemPaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
                                 placeholder=""
                               />
                               <div className="flex items-center gap-2">
-                                <button
-                                  onClick={async () => {
-                                    const specNo = extractSpecNumber(currentItem.taskName);
-                                    if (!specNo) {
-                                      addToast('未能从任务名称中提取仕样号', 'error');
-                                      return;
-                                    }
-
-                                    addToast(`正在同步仕样号 ${specNo} 的客户名和纳期...`, 'success');
-                                    const specInfo = await fetchSpecInfo(specNo);
-                                    if (!specInfo.success) {
-                                      addToast(specInfo.message || '获取仕样信息失败', 'error');
-                                      return;
-                                    }
-
-                                    const clientName = getDesignPlanClientName(specInfo, specNo);
-                                    if (!clientName) {
-                                      addToast(`未找到仕样号 ${specNo} 的客户信息`, 'error');
-                                      return;
-                                    }
-
-                                    let deliverySuffix: string | null = null;
-                                    if (manualDeadline) {
-                                      const m = manualDeadlineInput.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
-                                      if (m) {
-                                        deliverySuffix = `[${m[1]}/${m[2]}]`;
-                                      } else {
-                                        addToast('手动纳期格式不正确，请输入 M/D 格式（如 9/15）', 'error');
-                                        return;
-                                      }
-                                    } else {
-                                      let deliveryDate = specInfo.deliveryDate;
-                                      if (!deliveryDate) {
-                                        const deliveryResult = await fetchSpecDeliveryDate(specNo);
-                                        if (deliveryResult.success && deliveryResult.date) {
-                                          deliveryDate = deliveryResult.date;
-                                        } else {
-                                          addToast(deliveryResult.message || '获取纳期失败', 'error');
-                                          return;
-                                        }
-                                      }
-                                      deliverySuffix = getDeliveryDateSuffix(deliveryDate);
-                                      if (!deliverySuffix) {
-                                        addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
-                                        return;
-                                      }
-                                    }
-
-                                    let updatedCount = 0;
-                                    sheets.forEach(sheet => {
-                                      Object.entries(sheet.days || {}).forEach(([date, items]) => {
-                                        (items || []).forEach(item => {
-                                          const itemSpecNo = extractSpecNumber(item.taskName);
-                                          if (itemSpecNo === specNo) {
-                                            const newName = buildSyncedSpecTaskName(item.taskName || '', specInfo, specNo, deliverySuffix);
-                                            handleItemChange(sheet.designerId, date, item.id, 'taskName', newName);
-                                            updatedCount++;
-                                          }
-                                        });
-                                      });
-                                    });
-
-                                    addToast(`相同仕样号同步完成: ${deliverySuffix}（已更新 ${updatedCount} 个任务）`, 'success');
-                                  }}
-                                  className="px-2 py-1 text-[10px] bg-green-50 text-green-600 rounded hover:bg-green-100 transition font-bold whitespace-nowrap"
-                                  title="相同仕样号同步更新"
-                                  disabled={!currentItem.taskName || !currentItem.taskName.trim()}
-                                >
-                                  相同仕样号同步更新
-                                </button>
                                 <button
                                   onClick={() => deleteItem(modalDesignerId, modalDate, currentItem.id)}
                                   className="p-2 text-gray-300 hover:text-red-600 transition"
@@ -4280,6 +4274,7 @@ const Dashboard = () => {
                                   <Trash2 size={20} />
                                 </button>
                               </div>
+                              </div>
                             </div>
                             )}
 
@@ -4287,7 +4282,77 @@ const Dashboard = () => {
                             <div className="mt-2 pl-4 border-l-2 border-gray-100 flex flex-col gap-2">
                               <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">枪名</span>
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                  <button
+                                    onClick={async () => {
+                                      const specNo = extractSpecNumber(currentItem.taskName);
+                                      if (!specNo) {
+                                        addToast('未能从任务名称中提取仕样号', 'error');
+                                        return;
+                                      }
+
+                                      addToast(`正在同步仕样号 ${specNo} 的客户名和纳期...`, 'success');
+                                      const specInfo = await fetchSpecInfo(specNo);
+                                      if (!specInfo.success) {
+                                        addToast(specInfo.message || '获取仕样信息失败', 'error');
+                                        return;
+                                      }
+
+                                      const clientName = getDesignPlanClientName(specInfo, specNo);
+                                      if (!clientName) {
+                                        addToast(`未找到仕样号 ${specNo} 的客户信息`, 'error');
+                                        return;
+                                      }
+
+                                      let deliverySuffix: string | null = null;
+                                      if (manualDeadline) {
+                                        const m = manualDeadlineInput.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+                                        if (m) {
+                                          deliverySuffix = `[${m[1]}/${m[2]}]`;
+                                        } else {
+                                          addToast('手动纳期格式不正确，请输入 M/D 格式（如 9/15）', 'error');
+                                          return;
+                                        }
+                                      } else {
+                                        let deliveryDate = specInfo.deliveryDate;
+                                        if (!deliveryDate) {
+                                          const deliveryResult = await fetchSpecDeliveryDate(specNo);
+                                          if (deliveryResult.success && deliveryResult.date) {
+                                            deliveryDate = deliveryResult.date;
+                                          } else {
+                                            addToast(deliveryResult.message || '获取纳期失败', 'error');
+                                            return;
+                                          }
+                                        }
+                                        deliverySuffix = getDeliveryDateSuffix(deliveryDate);
+                                        if (!deliverySuffix) {
+                                          addToast(`未找到仕样号 ${specNo} 的纳期信息`, 'error');
+                                          return;
+                                        }
+                                      }
+
+                                      let updatedCount = 0;
+                                      sheets.forEach(sheet => {
+                                        Object.entries(sheet.days || {}).forEach(([date, items]) => {
+                                          (items || []).forEach(item => {
+                                            const itemSpecNo = extractSpecNumber(item.taskName);
+                                            if (itemSpecNo === specNo) {
+                                              const newName = buildSyncedSpecTaskName(item.taskName || '', specInfo, specNo, deliverySuffix);
+                                              handleItemChange(sheet.designerId, date, item.id, 'taskName', newName);
+                                              updatedCount++;
+                                            }
+                                          });
+                                        });
+                                      });
+
+                                      addToast(`相同仕样号同步完成: ${deliverySuffix}（已更新 ${updatedCount} 个任务）`, 'success');
+                                    }}
+                                    className="px-2 py-1 text-[10px] bg-violet-50 text-violet-600 rounded hover:bg-violet-100 transition font-bold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title="按仕样号同步更新所有相同仕样号任务的客户名与纳期"
+                                    disabled={!currentItem.taskName || !currentItem.taskName.trim()}
+                                  >
+                                    相同仕样号同步更新
+                                  </button>
                                   <button
                                     onClick={() => {
                                       const specNo = extractSpecNumber(currentItem.taskName);
@@ -4420,9 +4485,11 @@ const Dashboard = () => {
                                     type="number"
                                     step="0.5"
                                     min="0"
-                                    className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                    value={gun.hours || ''}
+                                    className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:opacity-50"
+                                    value={itemPaused ? '' : (gun.hours || '')}
                                     placeholder="工时"
+                                    disabled={itemPaused}
+                                    title={itemPaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
                                       newGuns[gIdx] = { ...newGuns[gIdx], hours: e.target.value };
@@ -4583,10 +4650,14 @@ const Dashboard = () => {
                     if (warnIfOfflineEdit()) return;
                     if (isAddMode) {
                       const guns = selectedTaskType === 'none' ? addModeGuns : [];
-                      const hours = guns.length > 0
-                        ? guns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0)
-                        : parseFloat(addModeHours) || 0;
                       const leaveType = selectedTaskType === 'none' ? null : selectedTaskType;
+                      // 暂停/取消：工时直接按 0 保存，不计入统计
+                      const savedPaused = leaveType === null && addModeTaskType === 'paused';
+                      const hours = savedPaused
+                        ? 0
+                        : guns.length > 0
+                          ? guns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0)
+                          : parseFloat(addModeHours) || 0;
                       let taskName = '';
                       let fetchedSpecInfo: SpecInfoResponse | null = null;
                       
@@ -4623,6 +4694,8 @@ const Dashboard = () => {
                           taskName += ' 设计变更';
                         } else if (addModeTaskType === 'drawingReview') {
                           taskName += ' 既制审图';
+                        } else if (addModeTaskType === 'paused') {
+                          taskName += ` ${PAUSED_TASK_SUFFIX}`;
                         }
                       }
                       
@@ -4657,15 +4730,20 @@ const Dashboard = () => {
                       
                       try {
                         // 任务内容配色体系：底色由勾选的任务内容 + 是否加急决定
-                        const savedUrgent = leaveType ? false : urgentDraft;
+                        const savedUrgent = leaveType || savedPaused ? false : urgentDraft;
                         const res = await axiosInstance.post('/tasks/item', { 
                           designerId: modalDesignerId, 
                           date: modalDate, 
                           taskName, 
                           leaveType, 
                           hours,
-                          color: getTaskBaseColor(systemSettings.taskColorConfig, addModeTaskType, savedUrgent),
+                          color: getTaskDisplayColors(systemSettings.taskColorConfig, {
+                            taskName,
+                            urgent: savedUrgent,
+                            paused: savedPaused,
+                          }).bg,
                           urgent: savedUrgent,
+                          paused: savedPaused,
                           guns
                         });
                         upsertSheet(res.data.sheet);
@@ -4731,6 +4809,8 @@ const Dashboard = () => {
                         const totalGunHours = addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0);
                         const parsedHours = parseFloat(addModeHours);
                         const hasValidHours = !isNaN(parsedHours) && parsedHours > 0;
+                        // 暂停/取消：工时固定为 0，只要求任务名
+                        if (addModePaused) return !addModeTaskName.trim();
                         return !addModeTaskName.trim() || hasInvalidNamedGunHours(addModeGuns) || hasDuplicateGunNames(addModeGuns) || (addModeGuns.length > 0 ? totalGunHours === 0 : !hasValidHours);
                       }
                       const parsedHours = parseFloat(addModeHours);
@@ -4747,6 +4827,11 @@ const Dashboard = () => {
                         const taskName = item.taskName || '';
                         const hasGuns = item.guns && item.guns.length > 0;
                         
+                        // 暂停/取消：工时固定为 0，只要求任务名
+                        if (item.paused || getTaskTypeFromName(item.taskName) === 'paused') {
+                          return !(taskName || '').trim();
+                        }
+
                         if (hasGuns) {
                           const totalGunsHours = (item.guns || []).reduce((sum, g) => sum + (typeof g.hours === 'number' ? g.hours : (parseFloat(g.hours as string) || 0)), 0);
                           return hasInvalidNamedGunHours(item.guns) || hasDuplicateGunNames(item.guns) || totalGunsHours === 0;

@@ -811,7 +811,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 规则：
 
 - 枪名存在时，该枪名工时必须大于 0。
-- `urgent` 为任务加急标记（布尔，默认 `false`）。真正的加急生效条件是**任务名含可识别的任务内容后缀**（确认图 / 设计 / 确认图修改 / 设计变更 / 既制审图）：没有任务内容时 `urgent` 会被忽略，底色仍按「未勾选任务内容」派生。
+- `urgent` 为任务加急标记（布尔，默认 `false`）。只有**任务名含「确认图 / 设计 / 确认图修改」后缀**时加急才生效（加急后底色取 `urgent*` 配色、整行文字变红）；「设计变更 / 既制审图 / 暂停取消」没有加急状态，传 `true` 也会被忽略；没有任务内容时同样忽略，底色按「未勾选任务内容」派生。
+- `paused` 为「暂停/取消」标记（布尔，默认 `false`，**与五个任务内容并列的独立状态**）：为 `true` 时整行使用 `taskColorConfig.paused`（默认纯红 `#ff0000`）+ 黑字，工时按 0 计（不计入日报/工时管理/排行榜等任何统计与导出），表格中不显示工时，且不参与加急配色。服务端在写入 `taskName` 时会按「任务名是否含 `暂停/取消` 后缀」自动同步该标记，因此任务名后缀是最终依据；历史只带 `paused: true` 的条目仍按暂停处理。
 - **`color` 仅作兼容入参保留**：服务端落库前会用配色体系重新派生（`deriveItemColor`），即底色由「任务名中的任务内容后缀 + `urgent`」决定，客户端传入的 `color` 会被覆盖。两个例外：① 白色（`#ffffff`，表示已完成）原样保留；② `leaveType` 非空（请假/出差）的条目不参与派生，`color` 原样落库（留空时由前端渲染与导出按请假类型取固定底色，见下文）。
 - 后端会写入创建者和最后修改者信息。
 
@@ -871,7 +872,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 请求体经 Joi 白名单校验（`stripUnknown`）：`designerId` 必填；`date` 必填且为 ISO 日期；`items` 必填且至少 1 条，未知字段会被丢弃。
-- 每条条目仅接受以下字段：`taskName`（字符串，默认空）、`hours`（数值 ≥ 0，默认 0）、`color`（标记颜色，同样会被配色体系派生覆盖）、`guns`（枪名数组，结构同创建任务接口）、`leaveType`（`sick`/`vacation`/`illness`/`trip` 或 `null`）、`urgent`（布尔，默认 `false`，任务加急）、`fontSize`、`textColor`；条目 `id` 由服务端重新生成，忽略客户端传入值。
+- 每条条目仅接受以下字段：`taskName`（字符串，默认空）、`hours`（数值 ≥ 0，默认 0）、`color`（标记颜色，同样会被配色体系派生覆盖）、`guns`（枪名数组，结构同创建任务接口）、`leaveType`（`sick`/`vacation`/`illness`/`trip` 或 `null`）、`urgent`（布尔，默认 `false`，任务加急）、`paused`（布尔，默认 `false`，「暂停/取消」，任务名含该后缀时也会自动置为 `true`）、`fontSize`、`textColor`；条目 `id` 由服务端重新生成，忽略客户端传入值。
 - 每条条目的最终底色同样由「任务内容后缀 + `urgent`」派生（白色与请假/出差底色例外），与 `POST /api/tasks/item` 完全一致。
 - 校验失败返回 `400`（`message=输入格式不正确`，附 `details`）；枪名存在但工时为 0 时返回 `400`。
 - 普通用户调用返回 `403`（`只有管理员可以编辑表格`）。
@@ -916,7 +917,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - `guns`（整体替换枪名数组）
 - `gunColor`（标记单个枪名颜色，需配合 `gunIndex` 指定枪名下标）
 - `leaveType`（合法值：`sick` 事假、`vacation` 休假、`illness` 病假、`trip` 出差、`null`）
-- `urgent`（布尔，任务加急；切换后按「任务内容后缀 + 加急状态」重新派生整行底色）
+- `urgent`（布尔，任务加急；仅确认图 / 设计 / 确认图修改生效，切换后按「任务内容后缀 + 加急状态」重新派生整行底色）
+- `paused`（布尔，「暂停/取消」；为 `true` 时整行使用 `paused` 配色（纯红）黑字、工时按 0 计，切换后重新派生底色。传 `taskName` 时该标记会按任务名后缀自动同步）
 - `fontSize`、`textColor`：**仅通过 Joi 白名单校验，处理器没有对应分支**，传这两个值会落入 `else` 兜底，把 `taskName` 覆盖成 `value`（例如 `{"field":"fontSize","value":"14px"}` 会把任务名改成 `14px`）。这两个字段只在**创建**任务（`POST /api/tasks/item`）时有效，更新任务请勿使用。
 
 底色自动派生规则（`taskName` / `urgent` / `leaveType` 三个字段）：
@@ -1765,14 +1767,24 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 }
 ```
 
+清空全部状态跟踪数据：
+
+```json
+{
+  "all": true
+}
+```
+
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `beforeYear` | 是 | 清理截止年份 |
-| `beforeMonth` | 是 | 清理截止月份（1-12） |
+| `beforeYear` | 条件必填 | 清理截止年份；`all` 不为 `true` 时必填 |
+| `beforeMonth` | 条件必填 | 清理截止月份（1-12）；`all` 不为 `true` 时必填 |
 | `mode` | 否 | 清理模式：`delivery` 表示按纳期月份清理；缺省（或其他值）表示按添加时间月清理 |
+| `all` | 否 | 传 `true` 时**清空全部状态跟踪记录**，不分月份、忽略 `mode` 与时间点；优先级最高 |
 
 清理规则：
 
+- `all=true`：直接清空 `statusTrackingItems`，不按月份过滤。
 - `mode=delivery`：删除纳期早于 `beforeYear-beforeMonth` 的记录；无纳期的记录保留。
 - 默认模式：删除最早添加时间月（取 `productionPlanMonths` 排序后的第一个月，缺省退回 `productionPlanMonth`/纳期月份）早于指定时间点的记录；无添加时间月的记录保留。
 
@@ -1781,15 +1793,22 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 ```json
 {
   "message": "状态跟踪数据清理完成",
+  "scope": "2026-07 之前",
   "removedCount": 50,
   "remainingCount": 100
 }
 ```
 
+| 字段 | 说明 |
+|------|------|
+| `scope` | 实际清理范围：`YYYY-MM 之前` 或 `全部` |
+| `removedCount` / `remainingCount` | 删除条数 / 剩余条数 |
+
 说明：
 
-- 缺少 `beforeMonth` 或 `beforeYear` 时返回 `400` 和 `请指定清理时间点`。
-- 清理成功后通过 Socket.IO 广播 `status_tracking_bulk` 事件，包含剩余记录列表。
+- `all` 不为 `true` 且缺少 `beforeMonth` 或 `beforeYear` 时返回 `400`（`请指定清理时间点，或选择清空全部状态跟踪数据`）。
+- `all=true` 时响应 `message` 为 `状态跟踪数据已清空`。
+- 清理成功后通过 Socket.IO 广播 `status_tracking_bulk` 事件，包含剩余记录列表；前端还需一并清除本地 `statusTrackingItems` 缓存，避免离线时把已删除记录渲染出来。
 
 ### Socket.IO 状态追踪事件
 
@@ -2438,14 +2457,13 @@ PUT 请求：
     "default": "#d8b4fe",
     "confirm": "#bbf7d0",
     "design": "#fef9c3",
-    "confirmModify": "#fbcfe8",
+    "confirmModify": "#bae6fd",
     "designChange": "#fdba74",
-    "drawingReview": "#bae6fd",
-    "urgentConfirm": "#34d399",
+    "drawingReview": "#fbcfe8",
+    "paused": "#ff0000",
+    "urgentConfirm": "#fde047",
     "urgentDesign": "#fde047",
-    "urgentConfirmModify": "#f9a8d4",
-    "urgentDesignChange": "#fdba74",
-    "urgentDrawingReview": "#bae6fd"
+    "urgentConfirmModify": "#fde047"
   },
   "defaultGunHours": {
     "confirm": { "C": 1.5, "X": 2 },
@@ -2472,7 +2490,8 @@ PUT 请求：
 - `allowUserChangePassword` 为「允许用户自主改密」开关，缺失时默认 `false`：关闭时 `POST /api/auth/change-password` 返回 `403`（`系统已禁用自主修改密码，请联系管理员`）；该开关不影响超管经 `PUT /api/users/:id` 重置密码。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
 - `auditLogMaxRows` 为操作日志保留条数，取值 `100` ~ `100000` 的整数，缺失或非法时默认为 `5000`；操作日志条数超过该值时自动清理最旧的记录。由「系统设置 → 日志管理」维护。
-- `taskColorConfig` 为「任务内容配色」体系，11 个键各自对应一个**底色 hex**（`#rgb` 或 `#rrggbb`），文字色固定、不可配置。普通任务：`default`（未勾选任务内容，`#d8b4fe`）、`confirm`（确认图，`#bbf7d0`）、`design`（设计，`#fef9c3`）、`confirmModify`（确认图修改，`#fbcfe8`）、`designChange`（设计变更，`#fdba74`）、`drawingReview`（既制审图，`#bae6fd`）；加急任务：`urgentConfirm`（`#34d399`）、`urgentDesign`（`#fde047`）、`urgentConfirmModify`（`#f9a8d4`）、`urgentDesignChange`（`#fdba74`，默认同普通）、`urgentDrawingReview`（`#bae6fd`，默认同普通）。缺失或非法色值逐项回退默认值；历史 `{ bg, text }` 结构在读取时只取 `bg`。该字段取代了已下线的 `randomDesignPlanColor` / `randomAssignmentColor` 两个开关（服务端在归一化时显式删除历史残留，GET 不再返回）。
+- `taskColorConfig` 为「任务内容配色」体系，10 个键各自对应一个**底色 hex**（`#rgb` 或 `#rrggbb`），文字色固定、不可配置。常规底色：`default`（未勾选任务内容，`#d8b4fe`）、`confirm`（确认图，`#bbf7d0`）、`design`（设计，`#fef9c3`）、`confirmModify`（确认图修改，浅蓝 `#bae6fd`）、`designChange`（设计变更，`#fdba74`）、`drawingReview`（既制审图，粉 `#fbcfe8`）、`paused`（暂停/取消，纯红 `#ff0000`）；加急底色只有三个（仅确认图 / 设计 / 确认图修改有加急状态）：`urgentConfirm`（`#fde047`）、`urgentDesign`（`#fde047`）、`urgentConfirmModify`（`#fde047`）。「设计变更 / 既制审图 / 暂停取消」没有加急状态，已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被 `stripUnknown` 过滤。缺失或非法色值逐项回退默认值；历史 `{ bg, text }` 结构在读取时只取 `bg`。该字段取代了已下线的 `randomDesignPlanColor` / `randomAssignmentColor` 两个开关（服务端在归一化时显式删除历史残留，GET 不再返回）。
+- 「任务内容配色」保存后立即生效：`PUT /settings` 会与库中现有设置**合并**（只覆盖请求体里带的字段），不会把未提交的设置项打回默认值；前端在进入主页面、窗口重新获得焦点（含在其他标签页保存后切回）时都会重新拉取设置，因此主页面新增 / 重新编辑任务时即刻使用最新配色。
 - `randomDesignPlanColor` / `randomAssignmentColor` 为**已下线字段**：任务底色不再随机，统一由 `taskColorConfig` + 任务内容 + 加急状态派生，两个开关已从后端 schema 与返回值中移除，传入也会被 `stripUnknown` 过滤。
 - `defaultGunHours` 为按机型的默认工时回退规则：`confirm`（确认工时）、`design`（设计工时）、`confirmModify`（确认修改工时）三类，每类含 C/X 两种机型（数值 0-24）；字段缺失时按内置默认值补齐。
 - `tableGunHours` 为按焊枪编号台账表配置的专用工时，结构为 `{ 分类名: { 表名: { confirm, confirmModify, design } } }`（分类名 1-30 字符、表名 1-50 字符、工时数值 0-24，三类工时必须同时存在）；响应中以内置表规则为底，合并超级管理员的覆盖配置与用户自建表配置。前端解析枪名工时的优先级为「枪名所在表的专用规则（超管覆盖 → 内置）→ 枪名机型（首个「-」前一字符）C/X 的 `defaultGunHours` → 固定兜底（confirm 2 / confirmModify 0.75 / design 3）」。该字段由焊枪台账页面「默认工时规则」面板维护，随本接口保存。
@@ -2497,14 +2516,13 @@ PUT 请求：
     "default": "#d8b4fe",
     "confirm": "#86efac",
     "design": "#fef9c3",
-    "confirmModify": "#fbcfe8",
+    "confirmModify": "#bae6fd",
     "designChange": "#fdba74",
-    "drawingReview": "#bae6fd",
-    "urgentConfirm": "#22c55e",
+    "drawingReview": "#fbcfe8",
+    "paused": "#ff0000",
+    "urgentConfirm": "#fde047",
     "urgentDesign": "#fde047",
-    "urgentConfirmModify": "#f9a8d4",
-    "urgentDesignChange": "#fdba74",
-    "urgentDrawingReview": "#bae6fd"
+    "urgentConfirmModify": "#f9a8d4"
   },
   "defaultGunHours": {
     "confirm": { "C": 1.5, "X": 2 },
@@ -2522,14 +2540,14 @@ PUT 请求：
 字段说明：
 
 - 所有字段含义同 `GET /api/system/settings`。
-- **保存语义是整体覆盖**：`data.settings.system = normalizeSystemSettings(请求体)`，请求体里没传的开关/配置一律回退内置默认值，而不是保留原值。
+- **保存语义是「部分合并」**：`data.settings.system = normalizeSystemSettings({ ...库中现有设置, ...请求体 })`，只覆盖请求体里带的字段；请求体没传的开关/配置**保留库中原值**（不会被打回默认值）。因此前端可以只提交单个配置项（例如只提交 `taskColorConfig`），不影响其它设置；库中尚不存在该字段时按内置默认值补齐。
 - `allowMultiDevice` 为**必填**布尔值（Joi `required()`），缺失返回 `400`。
 - `allowUserDesignPlanColorMark` 与 `allowUserEditOwnTaskColor` 为兼容字段：二者只要传其一，服务端取两者的**或值**后同时回写两个字段；两个都不传时默认允许（`true`）。
 - `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
 - `auditLogMaxRows` 取值 `100` ~ `100000` 的整数，可选；传入其他值会被忽略并使用默认值 `5000`。
-- `taskColorConfig` 可选：11 个键都可省略，每个值为 `#rgb` / `#rrggbb` 颜色串，也兼容历史 `{ bg, text }` 对象（`text` 被忽略）。注意本接口是**整体覆盖而非合并**——没出现在请求体里的键（含未传的配色键）都会回退内置默认值，因此保存配色时前端总是提交完整 11 项；色值格式非法返回 `400`（`message=输入格式不正确`）。
+- `taskColorConfig` 可选：10 个键都可省略，每个值为 `#rgb` / `#rrggbb` 颜色串，也兼容历史 `{ bg, text }` 对象（`text` 被忽略）。传入的配色**整体替换**该字段（未传的配色键回退内置默认值），但不会影响其它设置项；已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被 `stripUnknown` 过滤；色值格式非法返回 `400`（`message=输入格式不正确`）。保存成功后前端会回读归一化结果，主页面下次渲染即用新配色。
 - `allowUserChangePassword` 可选，布尔值（自主改密开关仅在显式传 `true` 时开启）。
-- `defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时使用内置默认值。
+- `defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留库中现有值，库中不存在时使用内置默认值。
 - `tableGunHours` 可选，结构为 `{ 分类名: { 表名: { confirm, confirmModify, design } } }`（分类名 1-30 字符、表名 1-50 字符、各工时 0-24 且必填）；保存时以内置表规则为底合并：合法单元格采用提交值（即提交完整的内置表项即视为覆盖/重置），非法单元格回退内置值、无内置值则丢弃。
 - 请求体经 Joi 校验（`stripUnknown`），未声明字段自动过滤；校验失败返回 `400`（`message=输入格式不正确`，附 `details`）。
 
@@ -3013,6 +3031,8 @@ PUT 请求：
     "walSize": 102400,
     "shmSize": 32768,
     "totalDiskSize": 1078886,
+    "freelistBytes": 262144,
+    "reclaimableBytes": 262144,
     "tasksJsonSize": 524288,
     "tasksCount": 240,
     "taskItemsCount": 5000
@@ -3065,7 +3085,9 @@ PUT 请求：
 | `database.dbFileSize` | `data.db` 主文件大小（字节） |
 | `database.walSize` | `data.db-wal` 文件大小（字节） |
 | `database.shmSize` | `data.db-shm` 文件大小（字节） |
-| `database.totalDiskSize` | 三个物理文件大小之和（字节） |
+| `database.totalDiskSize` | 三个物理文件大小之和（字节，**含尚未回收的空闲页**） |
+| `database.freelistBytes` | 空闲页体积（字节）：已删除但还留在数据文件里、尚未归还给操作系统的空间，执行压缩（`VACUUM`）后才会真正释放 |
+| `database.reclaimableBytes` | 压缩后可回收的体积（字节），当前与 `freelistBytes` 同值，供前端提示「可回收 xx MB」 |
 | `database.tasksJsonSize` | `tasks` 集合 JSON 序列化后的逻辑大小（字节） |
 | `database.tasksCount` | 任务工作表数量 |
 | `database.taskItemsCount` | 任务条目总数 |
@@ -3274,6 +3296,13 @@ PUT 请求：
       "size": 262144,
       "taskSheets": 120,
       "taskItems": 2500
+    },
+    "compaction": {
+      "before": { "dbFileSize": 943718, "walSize": 102400, "totalDiskSize": 1046118 },
+      "after": { "dbFileSize": 786432, "walSize": 0, "totalDiskSize": 786432 },
+      "freedBytes": 259686,
+      "freelistBytesBefore": 262144,
+      "removedOrphans": 0
     }
   }
 }
@@ -3296,6 +3325,7 @@ PUT 请求：
 - 年度清理会在指定月份的前 N 天（`yearlyCleanupCheckDays`）自动执行。
 - 清理前会将旧数据归档到 `yearlyArchiveDir`。
 - 每年只执行一次，记录在 `yearlyCleanupHistory` 中。
+- 清理完成后自动执行一次数据库压缩（`VACUUM` + WAL 截断），结果在 `compaction` 中返回（年度清理常一次删掉数千条记录，不压缩的话磁盘占用不会下降）；压缩失败时为 `null`，不影响清理结果。
 
 ### 手动触发断网备份
 
@@ -3363,13 +3393,13 @@ PUT 请求：
 }
 ```
 
-### 清理指定月份任务
+### 清理任务数据
 
 `POST /api/system/maintenance/cleanup-tasks`
 
 权限：仅 `superadmin`
 
-请求体（两种模式二选一）：
+请求体（三种模式三选一）：
 
 ```json
 {
@@ -3387,25 +3417,90 @@ PUT 请求：
 }
 ```
 
+或（清空全部任务数据）
+
+```json
+{
+  "all": true
+}
+```
+
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `month` + `year` | 二选一 | 删除指定月份的任务工作表 |
-| `beforeMonth` + `beforeYear` | 二选一 | 删除指定年月之前的所有任务工作表 |
+| `month` + `year` | 三选一 | 删除指定月份的任务工作表 |
+| `beforeMonth` + `beforeYear` | 三选一 | 删除指定年月之前的所有任务工作表 |
+| `all` | 三选一 | 传 `true` 时删除**所有月份、所有设计员**的任务数据（工作表与任务条目全部清空），优先级最高，与上面两组字段同时出现时以 `all` 为准 |
 
 响应：
 
 ```json
 {
   "message": "任务数据清理完成",
+  "scope": "2026-07",
+  "removedSheets": 12,
+  "removedItems": 320,
+  "remainingSheets": 120,
+  "remainingItems": 5000,
+  "freedBytes": 262144,
+  "removedOrphans": 3,
   "removedCount": 12,
   "remainingCount": 120
 }
 ```
 
+| 字段 | 说明 |
+|------|------|
+| `scope` | 实际清理范围：`YYYY-MM`（指定月份）、`YYYY-MM 之前`，或 `全部月份` |
+| `removedSheets` / `removedItems` | 删除的**工作表张数**（设计员 × 月份）/ 删除的**任务条目数**；两个口径分开返回，不要互相换算 |
+| `remainingSheets` / `remainingItems` | 清理后剩余的工作表张数 / 任务条目数 |
+| `freedBytes` | 本次清理后压缩数据库实际归还给操作系统的字节数（`0` 表示没有可回收空间或压缩失败） |
+| `removedOrphans` | 压缩时清理掉的孤儿任务条目数（所属工作表已被删除、条目却还残留） |
+| `removedCount` / `remainingCount` | **兼容旧字段**，含义等同 `removedSheets` / `remainingSheets`（历史调用方按「张数」理解），新代码请用带 `Sheets`/`Items` 的字段 |
+
 说明：
 
-- 清理后通过 Socket.IO 广播 `task_refreshed` 通知所有客户端刷新数据。
-- 与 `DELETE /api/system/cleanup/old-tasks?keepMonths=N` 不同，本接口按精确年月清理，而非按"最近 N 个月"。
+- 三种模式都**不区分**在线/离线，删除不可撤销；`all: true` 会一次性清空全部任务数据，前端需二次确认。
+- 删除后**立即执行一次数据库压缩**（`VACUUM` + WAL 截断，见下文「压缩数据库」）：SQLite 的删除只是把页放进空闲页链表，不压缩的话 `totalDiskSize` 不会变化，容易被误判成「没清干净」。压缩失败只记录日志，不影响清理结果（此时 `freedBytes` 为 `0`）。
+- 清理后通过 Socket.IO 广播 `task_refreshed`（携带 `{ scope: 'task-cleanup' }`）通知所有客户端刷新数据；前端还需同步作废本地 `obara_offline_sheets_cache` 离线缓存，否则离线状态下会用缓存把已删除的任务重新渲染出来。
+- 未指定任何可用模式时返回 `400`（`请指定月份、清理时间点或选择清空全部任务数据`）。
+- 与 `DELETE /api/system/cleanup/old-tasks?keepMonths=N` 不同，本接口按精确年月或全量清理，而非按「最近 N 个月」。
+
+### 压缩数据库
+
+`POST /api/system/maintenance/compact`
+
+权限：仅 `superadmin`
+
+请求体：无。
+
+说明：
+
+- 执行 `wal_checkpoint(TRUNCATE)` → `VACUUM` → `wal_checkpoint(TRUNCATE)`，把已删除数据占用的空闲页真正归还给操作系统。
+- 压缩前会先清理**孤儿任务条目**（所属工作表已被删除但条目仍残留），否则 `VACUUM` 会继续把它们保留在文件里。
+- `VACUUM` 不能运行在事务内，且压缩期间数据库被独占重建：通常只需数秒，期间请避免其他人大批量导入或清理。
+- 清理任务数据的三个入口（`cleanup-tasks`、`old-tasks`、`yearly-cleanup`）已经内置了压缩，本接口用于**手动回收**（例如发现 `database.reclaimableBytes` 较大但近期没做清理时）。
+
+响应：
+
+```json
+{
+  "message": "数据库压缩完成",
+  "compaction": {
+    "before": { "dbFileSize": 943718, "walSize": 102400, "totalDiskSize": 1046118 },
+    "after": { "dbFileSize": 786432, "walSize": 0, "totalDiskSize": 786432 },
+    "freedBytes": 259686,
+    "freelistBytesBefore": 262144,
+    "removedOrphans": 3
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `before` / `after` | 压缩前后 `data.db`、`data.db-wal` 与两者之和（字节） |
+| `freedBytes` | 实际回收的字节数（不会为负，压缩后变大时取 `0`） |
+| `freelistBytesBefore` | 压缩前的空闲页体积（`page_size × freelist_count`） |
+| `removedOrphans` | 压缩前清理的孤儿任务条目数 |
 
 ### 清空登录日志
 
@@ -3457,9 +3552,14 @@ PUT 请求：
   "removedSheets": 120,
   "removedTaskItems": 2500,
   "remainingSheets": 120,
+  "freedBytes": 1048576,
   "dbSizeKbAfter": 512.00
 }
 ```
+
+说明：
+
+- 清理后同样会执行一次数据库压缩（`VACUUM` + WAL 截断），`freedBytes` 为实际回收字节数，压缩失败时为 `0`（不影响清理结果）。
 
 ### 清理旧状态追踪数据
 

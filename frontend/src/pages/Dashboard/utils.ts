@@ -1,5 +1,6 @@
 import { format } from 'date-fns';
 import type { GunItem, TaskItem, SelectedTask, SpecInfoResponse } from './types';
+import { isTaskPaused } from '../../utils/taskColors';
 
 export const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__${selection.date}__${selection.itemId}`;
 
@@ -45,7 +46,7 @@ export const splitDesignTaskName = (taskName: string) => {
   const withoutDeadline = deadlineMatch && typeof deadlineMatch.index === 'number'
     ? trimmed.slice(0, deadlineMatch.index).trim()
     : trimmed;
-  const typeMatch = withoutDeadline.match(/\s+(确认图修改|确认图|设计变更|既制审图|设计)$/);
+  const typeMatch = withoutDeadline.match(/\s+(确认图修改|确认图|设计变更|既制审图|暂停\/取消|设计)$/);
   const baseName = typeMatch && typeof typeMatch.index === 'number'
     ? withoutDeadline.slice(0, typeMatch.index).trim()
     : withoutDeadline;
@@ -139,6 +140,8 @@ export const isMeaningfulTask = (item: TaskItem) => {
 };
 
 export const getTaskHours = (item: TaskItem) => {
+  // 「暂停/取消」任务工时按 0 计，不计入任何统计
+  if (isTaskPaused(item)) return 0;
   const mainHours = typeof item.hours === 'number' ? item.hours : (parseFloat(String(item.hours)) || 0);
   const gunsHours = (item.guns || []).reduce((gSum, g) => gSum + (typeof g.hours === 'number' ? g.hours : (parseFloat(String(g.hours)) || 0)), 0);
   return item.guns && item.guns.length > 0 ? gunsHours : mainHours;

@@ -166,6 +166,8 @@ const createItemSchema = Joi.object({
   leaveType: Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null).default(null),
   // 任务加急：整行改用加急配色并染红文字
   urgent: Joi.boolean().default(false),
+  // 暂停/取消（与其它任务内容并列的独立状态）：工时按 0 计、不计入统计，整行纯红底
+  paused: Joi.boolean().default(false),
   fontSize: Joi.string().allow('').default(''),
   textColor: Joi.string().allow('').default('')
 });
@@ -174,7 +176,7 @@ const updateItemSchema = Joi.object({
   designerId: Joi.string().required(),
   date: Joi.string().isoDate().required(),
   itemId: Joi.string().required(),
-  field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'urgent', 'fontSize', 'textColor', 'gunColor').required(),
+  field: Joi.string().valid('taskName', 'hours', 'color', 'guns', 'leaveType', 'urgent', 'paused', 'fontSize', 'textColor', 'gunColor').required(),
   value: Joi.alternatives().try(
     Joi.string().allow(''),
     Joi.number().min(0),
@@ -194,6 +196,7 @@ const batchCreateItemSchema = Joi.object({
   guns: Joi.array().items(gunSchema).default([]),
   leaveType: Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null).default(null),
   urgent: Joi.boolean().default(false),
+  paused: Joi.boolean().default(false),
   fontSize: Joi.string().allow('').default(''),
   textColor: Joi.string().allow('').default('')
 });
@@ -489,6 +492,8 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
       guns: item.guns,
       leaveType: item.leaveType,
       urgent: Boolean(item.urgent),
+      // 任务名带「暂停/取消」后缀时同样视为暂停状态
+      paused: Boolean(item.paused) || taskColors.detectTaskContentType(item.taskName) === 'paused',
       fontSize: item.fontSize,
       textColor: item.textColor
     }, req.user);
@@ -538,6 +543,8 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
     guns,
     leaveType: validated.leaveType || null,
     urgent: Boolean(validated.urgent),
+    // 任务名带「暂停/取消」后缀时同样视为暂停状态
+    paused: Boolean(validated.paused) || taskColors.detectTaskContentType(taskName) === 'paused',
     fontSize: validated.fontSize || '',
     textColor: validated.textColor || ''
   }, req.user);
@@ -836,8 +843,14 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     item.urgent = Boolean(value);
     // 加急状态变化即改变整行配色，库里的 color 同步派生值（导出/旧版消费方保持一致）
     item.color = deriveItemColor(item, colorConfig);
+  } else if (field === 'paused') {
+    item.paused = Boolean(value);
+    // 暂停/取消：纯红底黑字，取消后回到任务内容配色
+    item.color = deriveItemColor(item, colorConfig);
   } else if (field === 'taskName') {
     item.taskName = value;
+    // 暂停状态由任务名后缀派生：切到「暂停/取消」即暂停，切走即恢复
+    item.paused = taskColors.detectTaskContentType(value) === 'paused';
     // 任务内容后缀变化（确认图 → 设计变更 等）时底色随之改变
     item.color = deriveItemColor(item, colorConfig);
   } else {

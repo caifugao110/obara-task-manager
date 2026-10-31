@@ -198,7 +198,8 @@ const initialDesigners = [
   { name: '张艳珍', group: '设计一课第一组' },
   { name: '林慈贤', group: '设计一课张明组' },
   { name: '吴健', group: '设计一课张明组' },
-  { name: '朱栋栋', group: '设计一课张明组' }
+  { name: '朱栋栋', group: '设计一课张明组' },
+  { name: '陈浩东', group: '设计二课' }
 ];
 
 // 初始登录用户名单。初始密码不再硬编码：执行初始化时由浏览器 CSPRNG

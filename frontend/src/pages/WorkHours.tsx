@@ -21,6 +21,7 @@ import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import { getEffectiveIsWeekend, normalizeWorkdayOverrides, WorkdayOverrides } from '../utils/workdayOverrides';
+import { isTaskPaused } from '../utils/taskColors';
 
 interface DesignerData {
   id: string;
@@ -268,6 +269,8 @@ const WorkHours = () => {
 
         (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([date, items]) => {
           items.forEach((item: any) => {
+            // 「暂停/取消」任务工时不计入统计
+            if (isTaskPaused(item)) return;
             const itemHours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
             const isWeekendDate = getEffectiveIsWeekend(date, isWeekend(new Date(`${date}T00:00:00`)), activeWorkdayOverrides);
             if (item.leaveType === 'sick') {

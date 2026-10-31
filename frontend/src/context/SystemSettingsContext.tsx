@@ -163,6 +163,28 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
     refreshSettings();
   }, [refreshSettings]);
 
+  // 系统设置（含任务内容配色）可能在其他标签页/其他窗口被修改：
+  // 页面重新获得焦点或从后台切回时静默重新拉取，保证主页面新增/编辑任务用的是最新配色。
+  // 2 秒内最多拉一次，避免频繁切换窗口造成请求风暴。
+  useEffect(() => {
+    let lastFetchedAt = 0;
+    let disposed = false;
+    const syncIfStale = () => {
+      if (disposed || document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now - lastFetchedAt < 2000) return;
+      lastFetchedAt = now;
+      void refreshSettings();
+    };
+    window.addEventListener('focus', syncIfStale);
+    document.addEventListener('visibilitychange', syncIfStale);
+    return () => {
+      disposed = true;
+      window.removeEventListener('focus', syncIfStale);
+      document.removeEventListener('visibilitychange', syncIfStale);
+    };
+  }, [refreshSettings]);
+
   return (
     <SystemSettingsContext.Provider
       value={{

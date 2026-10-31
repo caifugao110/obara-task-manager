@@ -18,6 +18,8 @@ export interface TaskItem {
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
   /** 任务加急：单元格底色改用加急配色、整行文字红色 */
   urgent?: boolean;
+  /** 暂停/取消：任务名后缀「暂停/取消」，工时按 0 计且不计入统计，整行纯红底、不显示工时 */
+  paused?: boolean;
   createdAt?: string;
   createdBy?: { id: string; username: string; name: string };
   updatedAt?: string;
@@ -55,7 +57,7 @@ export interface User {
   role: 'superadmin' | 'admin' | 'user';
 }
 
-export type TaskField = 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType' | 'urgent';
+export type TaskField = 'taskName' | 'hours' | 'color' | 'guns' | 'leaveType' | 'urgent' | 'paused';
 
 export type PendingChange = {
   designerId: string;

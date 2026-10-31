@@ -4,11 +4,17 @@
  * 用于系统设置默认值/归一化，以及导出（Excel/HTML）时按任务内容派生单元格底色，
  * 保证「页面看到的颜色」与「导出的颜色」一致。
  *
- * 文字色固定：普通任务黑色，加急任务中确认图/设计/确认图修改为红色，不参与配置。
+ * 文字色固定：普通任务黑色；只有确认图 / 设计 / 确认图修改 支持加急，加急后文字变红。
+ * 「设计变更 / 既制审图 / 暂停/取消」没有加急状态。
+ * 「暂停/取消」任务名后缀为「暂停/取消」，纯红底、黑字，工时按 0 计且不计入统计。
  */
 
 const TASK_TEXT_COLOR = '#000000';
 const TASK_URGENT_TEXT_COLOR = '#dc2626';
+// 「暂停/取消」任务名后缀与默认底色（纯红，不参与加急）
+const PAUSED_TASK_SUFFIX = '暂停/取消';
+const PAUSED_TASK_COLOR = '#ff0000';
+const PAUSED_TASK_TEXT_COLOR = TASK_TEXT_COLOR;
 // 出差任务的固定配色（湖水青）：和设计相关配色区分开，避免撞色
 const TRIP_TASK_COLOR = '#5eead4';
 const TRIP_TASK_TEXT_COLOR = '#115e59';
@@ -17,14 +23,13 @@ const DEFAULT_TASK_COLOR_CONFIG = {
   default: '#d8b4fe',
   confirm: '#bbf7d0',
   design: '#fef9c3',
-  confirmModify: '#fbcfe8',
+  confirmModify: '#bae6fd',
   designChange: '#fdba74',
-  drawingReview: '#bae6fd',
-  urgentConfirm: '#34d399',
+  drawingReview: '#fbcfe8',
+  paused: PAUSED_TASK_COLOR,
+  urgentConfirm: '#fde047',
   urgentDesign: '#fde047',
-  urgentConfirmModify: '#f9a8d4',
-  urgentDesignChange: '#fdba74',
-  urgentDrawingReview: '#bae6fd'
+  urgentConfirmModify: '#fde047'
 };
 
 const CONFIG_KEYS = Object.keys(DEFAULT_TASK_COLOR_CONFIG);
@@ -32,9 +37,7 @@ const CONFIG_KEYS = Object.keys(DEFAULT_TASK_COLOR_CONFIG);
 const URGENT_KEY = {
   confirm: 'urgentConfirm',
   design: 'urgentDesign',
-  confirmModify: 'urgentConfirmModify',
-  designChange: 'urgentDesignChange',
-  drawingReview: 'urgentDrawingReview'
+  confirmModify: 'urgentConfirmModify'
 };
 
 const HEX_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -58,9 +61,11 @@ const normalizeTaskColorConfig = (raw) => {
   return result;
 };
 
+/** 从任务名后缀反推任务内容类型（「暂停/取消」优先级最高） */
 const detectTaskContentType = (taskName) => {
   const name = String(taskName == null ? '' : taskName);
   if (!name) return 'none';
+  if (name.includes(PAUSED_TASK_SUFFIX) || name.includes('暂停')) return 'paused';
   if (name.includes('设计变更')) return 'designChange';
   if (name.includes('既制审图')) return 'drawingReview';
   if (name.includes('确认图修改')) return 'confirmModify';
@@ -69,11 +74,14 @@ const detectTaskContentType = (taskName) => {
   return 'none';
 };
 
-/** 是否已勾选任务内容（勾选后才允许勾选「任务加急」） */
+/** 是否已勾选任务内容 */
 const hasTaskContent = (type) => type !== 'none';
 
-/** 加急后整行文字变红的任务内容；设计变更 / 既制审图加急仅换底色 */
-const isUrgentRestyleType = (type) => type === 'confirm' || type === 'design' || type === 'confirmModify';
+/** 是否支持「任务加急」：设计变更 / 既制审图 / 暂停/取消 没有加急状态 */
+const supportsUrgent = (type) => type === 'confirm' || type === 'design' || type === 'confirmModify';
+
+/** 加急后整行文字变红的任务内容（与 supportsUrgent 同一批） */
+const isUrgentRestyleType = (type) => supportsUrgent(type);
 
 const isWhiteColor = (value) => {
   const normalized = String(value == null ? '' : value).trim().toLowerCase();
@@ -85,29 +93,41 @@ const getBaseColor = (config, type) => {
   return config[type] || config.default;
 };
 
+/** 是否为「暂停/取消」任务：任务名后缀优先，兼容历史 paused 标记 */
+const isTaskPaused = (item) => {
+  if (!item) return false;
+  if (item.paused) return true;
+  return detectTaskContentType(item.taskName) === 'paused';
+};
+
 const resolveTaskColors = (config, type, urgent) => {
   const safe = normalizeTaskColorConfig(config);
-  if (!urgent) return { bg: getBaseColor(safe, type), text: TASK_TEXT_COLOR, urgent: false };
-  const bg = type === 'none' ? safe.default : (safe[URGENT_KEY[type]] || getBaseColor(safe, type));
-  const text = isUrgentRestyleType(type) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
-  return { bg, text, urgent: true };
+  const urgentEnabled = Boolean(urgent) && supportsUrgent(type);
+  if (!urgentEnabled) return { bg: getBaseColor(safe, type), text: TASK_TEXT_COLOR, urgent: false };
+  const bg = safe[URGENT_KEY[type]] || getBaseColor(safe, type);
+  return { bg, text: TASK_URGENT_TEXT_COLOR, urgent: true };
 };
 
 /**
  * 任务条目在表格中的最终底色：
- * 白色（已完成）优先；否则按任务内容 + 加急派生，忽略历史随机色。
+ * 暂停（纯红）优先；其次白色（已完成）；否则按任务内容 + 加急派生，忽略历史随机色。
  */
 const getTaskCellColor = (item, config) => {
   if (!item) return '';
+  const safe = normalizeTaskColorConfig(config);
+  if (isTaskPaused(item)) return safe.paused;
   if (isWhiteColor(item.color)) return '#ffffff';
   const type = detectTaskContentType(item.taskName);
-  const urgent = Boolean(item.urgent) && hasTaskContent(type);
-  return resolveTaskColors(config, type, urgent).bg;
+  const urgent = Boolean(item.urgent) && supportsUrgent(type);
+  return resolveTaskColors(safe, type, urgent).bg;
 };
 
 module.exports = {
   TASK_TEXT_COLOR,
   TASK_URGENT_TEXT_COLOR,
+  PAUSED_TASK_SUFFIX,
+  PAUSED_TASK_COLOR,
+  PAUSED_TASK_TEXT_COLOR,
   TRIP_TASK_COLOR,
   TRIP_TASK_TEXT_COLOR,
   DEFAULT_TASK_COLOR_CONFIG,
@@ -116,7 +136,9 @@ module.exports = {
   normalizeHexColor,
   detectTaskContentType,
   hasTaskContent,
+  supportsUrgent,
   isUrgentRestyleType,
+  isTaskPaused,
   resolveTaskColors,
   getTaskCellColor,
   isWhiteColor

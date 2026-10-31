@@ -21,7 +21,8 @@ const maintenance = require('../utils/dbMaintenance');
 const {
   DEFAULT_TASK_COLOR_CONFIG,
   TRIP_TASK_COLOR,
-  normalizeTaskColorConfig
+  normalizeTaskColorConfig,
+  isTaskPaused
 } = require('../utils/taskColors');
 const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
@@ -163,6 +164,7 @@ const legacyPairSchema = Joi.object({
 const taskColorValueSchema = Joi.alternatives().try(hexColorSchema, legacyPairSchema);
 
 // 各字段均为可选：缺失项由 normalizeTaskColorConfig 回退到默认色
+// 设计变更 / 既制审图 / 暂停取消 没有加急状态，因此只保留三个加急键
 const taskColorConfigSchema = Joi.object({
   default: taskColorValueSchema.optional(),
   confirm: taskColorValueSchema.optional(),
@@ -170,11 +172,10 @@ const taskColorConfigSchema = Joi.object({
   confirmModify: taskColorValueSchema.optional(),
   designChange: taskColorValueSchema.optional(),
   drawingReview: taskColorValueSchema.optional(),
+  paused: taskColorValueSchema.optional(),
   urgentConfirm: taskColorValueSchema.optional(),
   urgentDesign: taskColorValueSchema.optional(),
-  urgentConfirmModify: taskColorValueSchema.optional(),
-  urgentDesignChange: taskColorValueSchema.optional(),
-  urgentDrawingReview: taskColorValueSchema.optional()
+  urgentConfirmModify: taskColorValueSchema.optional()
 });
 
 const systemSettingsSchema = Joi.object({
@@ -360,6 +361,8 @@ const getDayName = (year, month, day) => {
 };
 
 const getTaskHours = (item) => {
+  // 「暂停/取消」任务工时按 0 计，不计入统计
+  if (isTaskPaused(item)) return 0;
   const mainHours = parseNumber(item?.hours);
   const gunsHours = (Array.isArray(item?.guns) ? item.guns : []).reduce(
     (sum, gun) => sum + parseNumber(gun?.hours),
@@ -1234,7 +1237,9 @@ router.put('/settings', [authMiddleware, superAdminMiddleware], asyncHandler(asy
 
   const data = db.readDb();
   if (!data.settings) data.settings = {};
-  data.settings.system = normalizeSystemSettings(value);
+  // 与库中现有设置合并后再落库：只传部分字段时不会把其它设置（含任务内容配色）打回默认值
+  const currentSystem = data.settings.system && typeof data.settings.system === 'object' ? data.settings.system : {};
+  data.settings.system = normalizeSystemSettings({ ...currentSystem, ...value });
   await db.writeDb(data);
   res.json(data.settings.system);
 }));
@@ -1337,28 +1342,63 @@ router.post('/maintenance/clear-logs', [authMiddleware, superAdminMiddleware], a
 }));
 
 router.post('/maintenance/cleanup-tasks', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const { month, year, beforeMonth, beforeYear } = req.body;
+  const { month, year, beforeMonth, beforeYear, all } = req.body;
 
-  let removedCount = 0;
+  let result = null;
+  let scopeLabel = '';
 
-  if (month && year) {
+  if (all === true) {
+    result = taskStore.deleteAllSheets();
+    scopeLabel = '全部月份';
+  } else if (month && year) {
     const m = parseInt(month, 10);
     const y = parseInt(year, 10);
-    removedCount = taskStore.deleteSheetsByMonth(y, m);
+    result = taskStore.deleteSheetsByMonth(y, m);
+    scopeLabel = `${y}-${String(m).padStart(2, '0')}`;
   } else if (beforeMonth && beforeYear) {
     const m = parseInt(beforeMonth, 10);
     const y = parseInt(beforeYear, 10);
-    removedCount = taskStore.deleteSheetsBefore(y, m).removedSheets;
+    result = taskStore.deleteSheetsBefore(y, m);
+    scopeLabel = `${y}-${String(m).padStart(2, '0')} 之前`;
   } else {
-    return res.status(400).json({ message: '请指定月份或清理时间点' });
+    return res.status(400).json({ message: '请指定月份、清理时间点或选择清空全部任务数据' });
   }
 
-  const remainingCount = taskStore.countSheets();
+  // 删除只是把页标记为空闲，不压缩的话数据文件大小不会变化，
+  // 页面上的磁盘占用看起来「清了跟没清一样」。这里立刻回收一次。
+  // 压缩失败不能影响清理结果，因此单独兜住异常。
+  let compaction = null;
+  try {
+    compaction = maintenance.compactDatabase();
+  } catch (e) {
+    console.error('[maintenance] 清理后压缩数据库失败:', e.message);
+  }
+
+  const remainingSheets = taskStore.countSheets();
+  const remainingItems = taskStore.countEntries();
 
   const io = req.app.get('io');
-  if (io) io.emit('task_refreshed');
+  if (io) io.emit('task_refreshed', { scope: 'task-cleanup' });
 
-  res.json({ message: '任务数据清理完成', removedCount, remainingCount });
+  res.json({
+    message: '任务数据清理完成',
+    scope: scopeLabel,
+    // 两个口径分开返回：工作表 = 设计员 × 月份，任务记录 = 表内条目
+    removedSheets: result.removedSheets,
+    removedItems: result.removedTaskItems,
+    remainingSheets,
+    remainingItems,
+    freedBytes: compaction ? compaction.freedBytes : 0,
+    removedOrphans: compaction ? compaction.removedOrphans : 0,
+    // 兼容旧字段（历史调用方按「张数」理解 removedCount / remainingCount）
+    removedCount: result.removedSheets,
+    remainingCount: remainingSheets
+  });
+}));
+
+router.post('/maintenance/compact', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const compaction = maintenance.compactDatabase();
+  res.json({ message: '数据库压缩完成', compaction });
 }));
 
 router.get('/login-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
@@ -1923,6 +1963,14 @@ router.delete('/cleanup/old-tasks', [authMiddleware, superAdminMiddleware], asyn
   const { removedSheets, removedTaskItems } = taskStore.deleteSheetsBefore(cutoffYear, cutoffMonth);
   const remainingSheets = taskStore.countSheets();
 
+  // 历史接口同样需要回收磁盘，否则清理后占用不变会被当成没清干净
+  let compaction = null;
+  try {
+    compaction = maintenance.compactDatabase();
+  } catch (e) {
+    console.error('[maintenance] 清理历史任务后压缩数据库失败:', e.message);
+  }
+
   const data = db.readDb();
   const sizeAfter = ((Buffer.byteLength(JSON.stringify(data), 'utf8') + taskStore.entriesJsonSize()) / 1024).toFixed(2);
 
@@ -1931,6 +1979,7 @@ router.delete('/cleanup/old-tasks', [authMiddleware, superAdminMiddleware], asyn
     removedSheets,
     removedTaskItems,
     remainingSheets,
+    freedBytes: compaction ? compaction.freedBytes : 0,
     dbSizeKbAfter: parseFloat(sizeAfter)
   });
 }));

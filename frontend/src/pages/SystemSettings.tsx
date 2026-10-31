@@ -36,6 +36,7 @@ import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
+import { clearOfflineSheetsCache } from '../utils/offlineSheetsCache';
 import {
   DEFAULT_TASK_COLOR_CONFIG,
   TASK_COLOR_FIELDS,
@@ -144,6 +145,9 @@ interface MaintenanceStatus {
     walSize: number;
     shmSize: number;
     totalDiskSize: number;
+    /** 空闲页体积：已删除但尚未归还给操作系统的空间，压缩后才会真正释放 */
+    freelistBytes?: number;
+    reclaimableBytes?: number;
     tasksJsonSize: number;
     tasksCount: number;
     taskItemsCount: number;
@@ -258,23 +262,38 @@ const SystemSettings = () => {
     if (!isSuperAdmin) return;
     setColorSaving(true);
     try {
-      await updateSettings({ taskColorConfig: colorDraft });
+      const ok = await updateSettings({ taskColorConfig: colorDraft });
+      // 保存成功后回读服务端归一化后的配置，确保主页面立即用上新配色
+      if (ok) await refreshSettings();
     } finally {
       setColorSaving(false);
     }
   };
 
-  // 恢复默认：草稿与系统设置一起改回默认配色（立即生效）
-  const handleResetTaskColors = async () => {
+  // 恢复默认：草稿与系统设置一起改回默认配色（二次确认后立即生效）
+  const handleResetTaskColors = () => {
     if (!isSuperAdmin) return;
-    const defaults = mergeTaskColorConfig(DEFAULT_TASK_COLOR_CONFIG);
-    setColorDraft(defaults);
-    setColorSaving(true);
-    try {
-      await updateSettings({ taskColorConfig: defaults });
-    } finally {
-      setColorSaving(false);
-    }
+    setConfirmDialog({
+      title: '恢复默认配色',
+      tone: 'amber',
+      warning: '将把全部任务内容配色改回系统默认值',
+      message: '「未勾选任务内容 / 确认图 / 设计 / 确认图修改 / 设计变更 / 既制审图 / 暂停取消」以及三个加急配色的底色都会恢复为系统默认值，并立即保存生效。是否继续？',
+      confirmText: '确认恢复',
+      onConfirm: async () => {
+        const defaults = mergeTaskColorConfig(DEFAULT_TASK_COLOR_CONFIG);
+        setColorDraft(defaults);
+        setColorSaving(true);
+        try {
+          const ok = await updateSettings({ taskColorConfig: defaults });
+          if (ok) {
+            await refreshSettings();
+            addToast('任务内容配色已恢复默认', 'success');
+          }
+        } finally {
+          setColorSaving(false);
+        }
+      },
+    });
   };
   const [accessSettingsLoaded, setAccessSettingsLoaded] = useState(false);
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
@@ -304,12 +323,12 @@ const SystemSettings = () => {
   const [logRetentionDraft, setLogRetentionDraft] = useState('5000');
   const [logRetentionSaving, setLogRetentionSaving] = useState(false);
   const [showCleanupTasksModal, setShowCleanupTasksModal] = useState(false);
-  const [cleanupTasksMode, setCleanupTasksMode] = useState<'single' | 'batch'>('single');
+  const [cleanupTasksMode, setCleanupTasksMode] = useState<'single' | 'batch' | 'all'>('single');
   const [cleanupTasksMonth, setCleanupTasksMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [cleanupTasksBeforeMonth, setCleanupTasksBeforeMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [cleanupTasksProcessing, setCleanupTasksProcessing] = useState(false);
   const [showCleanupStModal, setShowCleanupStModal] = useState(false);
-  const [cleanupStMode, setCleanupStMode] = useState<'production' | 'delivery'>('production');
+  const [cleanupStMode, setCleanupStMode] = useState<'production' | 'delivery' | 'all'>('production');
   const [cleanupStBeforeMonth, setCleanupStBeforeMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [cleanupStProcessing, setCleanupStProcessing] = useState(false);
   // 清理弹窗内嵌二次确认步骤（替代原生 confirm）
@@ -607,20 +626,22 @@ const SystemSettings = () => {
   }, [isSuperAdmin, activeTab]);
 
   const updateSettings = async (next: Partial<SystemSettingsData>) => {
-    if (guardOffline()) return;
+    if (guardOffline()) return false;
     const updated = { ...settings, ...next };
     if (next.allowUserDesignPlanColorMark !== undefined) {
       updated.allowUserEditOwnTaskColor = next.allowUserDesignPlanColorMark;
     }
     setSettings(updated);
-    if (!isSuperAdmin) return;
+    if (!isSuperAdmin) return false;
 
     try {
       await axios.put('/api/system/settings', updated, authHeader);
       addToast('系统设置已保存', 'success');
+      return true;
     } catch {
       addToast('保存系统设置失败', 'error');
       fetchSettings();
+      return false;
     }
   };
 
@@ -935,6 +956,29 @@ const SystemSettings = () => {
     });
   };
 
+  // 压缩数据库：把删除数据后残留在文件里的空闲页真正归还给操作系统。
+  // 不压缩的话，清理任务数据后「数据库占用」不会下降，容易被误判成没清干净。
+  const handleCompactDatabase = () => {
+    if (guardOffline()) return;
+    const reclaimable = maintenanceStatus?.database?.reclaimableBytes || 0;
+    setConfirmDialog({
+      title: '压缩数据库',
+      tone: 'amber',
+      warning: '压缩期间数据库会被独占重建',
+      message: `将执行 WAL 截断与 VACUUM，把已删除数据占用的空闲空间归还给操作系统${reclaimable > 0 ? `（预计可回收 ${formatFileSize(reclaimable)}）` : ''}。压缩通常只需数秒，期间请避免其他人执行批量导入或清理操作。是否继续？`,
+      confirmText: '开始压缩',
+      onConfirm: async () => {
+        const data = await runMaintenanceAction('/api/system/maintenance/compact');
+        if (!data) return;
+        const { freedBytes = 0, removedOrphans = 0, after } = data.compaction || {};
+        const parts = [`已回收 ${formatFileSize(freedBytes)}`];
+        if (removedOrphans > 0) parts.push(`清理残留条目 ${removedOrphans} 条`);
+        if (after) parts.push(`当前体积 ${formatFileSize(after.totalDiskSize)}`);
+        addToast(`数据库压缩完成：${parts.join('，')}`, 'success');
+      },
+    });
+  };
+
   const yearlySkipReasonText: Record<string, string> = {
     disabled: '年度清理未启用',
     'outside-cleanup-month': '当前不在检测月份',
@@ -1000,7 +1044,9 @@ const SystemSettings = () => {
     if (!token) return;
     let payload: any = {};
 
-    if (cleanupTasksMode === 'single') {
+    if (cleanupTasksMode === 'all') {
+      payload = { all: true };
+    } else if (cleanupTasksMode === 'single') {
       const [year, month] = cleanupTasksMonth.split('-').map(Number);
       payload = { year, month };
     } else {
@@ -1011,9 +1057,25 @@ const SystemSettings = () => {
     setCleanupTasksProcessing(true);
     try {
       const res = await axios.post('/api/system/maintenance/cleanup-tasks', payload, authHeader);
-      addToast(`已清理 ${res.data.removedCount} 条任务数据，剩余 ${res.data.remainingCount} 条`, 'success');
+      const { removedSheets = 0, removedItems = 0, remainingSheets = 0, remainingItems = 0, freedBytes = 0 } = res.data || {};
+
+      // 服务端已删库，本地离线缓存若不同步作废，离线状态下会继续渲染旧任务
+      clearOfflineSheetsCache();
+
+      if (removedSheets === 0) {
+        addToast('所选范围没有任务数据，未做任何删除', 'success');
+      } else {
+        const freedText = freedBytes > 0 ? `，已回收 ${formatFileSize(freedBytes)} 磁盘空间` : '';
+        addToast(
+          `已清理 ${removedSheets} 张工作表、${removedItems} 条任务记录${freedText}；剩余 ${remainingSheets} 张工作表、${remainingItems} 条记录`,
+          'success'
+        );
+      }
+
       setShowCleanupTasksModal(false);
       setCleanupTasksConfirming(false);
+      // 刷新数据库占用（压缩后体积会变化）
+      fetchMaintenanceStatus();
     } catch (err: any) {
       addToast(err.response?.data?.message || '清理任务数据失败', 'error');
     } finally {
@@ -1027,9 +1089,26 @@ const SystemSettings = () => {
     if (!token) return;
     setCleanupStProcessing(true);
     try {
-      const [year, month] = cleanupStBeforeMonth.split('-').map(Number);
-      const res = await axios.post('/api/status-tracking/cleanup', { beforeYear: year, beforeMonth: month, mode: cleanupStMode }, authHeader);
-      addToast(`已清理 ${res.data.removedCount} 条状态跟踪数据，剩余 ${res.data.remainingCount} 条`, 'success');
+      const payload: any = cleanupStMode === 'all'
+        ? { all: true }
+        : (() => {
+            const [year, month] = cleanupStBeforeMonth.split('-').map(Number);
+            return { beforeYear: year, beforeMonth: month, mode: cleanupStMode };
+          })();
+
+      const res = await axios.post('/api/status-tracking/cleanup', payload, authHeader);
+      const { removedCount = 0, remainingCount = 0 } = res.data || {};
+
+      // 状态跟踪页也会把列表写进 localStorage，清空后要一并作废，
+      // 否则离线时那个页面还会用缓存把已删除的记录渲染出来。
+      try { localStorage.removeItem('statusTrackingItems'); } catch { /* ignore */ }
+
+      if (removedCount === 0) {
+        addToast('所选范围没有状态跟踪数据，未做任何删除', 'success');
+      } else {
+        addToast(`已清理 ${removedCount} 条状态跟踪数据，剩余 ${remainingCount} 条`, 'success');
+      }
+
       setShowCleanupStModal(false);
       setCleanupStConfirming(false);
     } catch (err: any) {
@@ -1300,32 +1379,61 @@ const SystemSettings = () => {
                 >
                   批量清理
                 </button>
+                <button
+                  type="button"
+                  onClick={() => { setCleanupTasksMode('all'); setCleanupTasksConfirming(false); }}
+                  className={`px-4 py-2 text-sm font-medium border-l border-gray-300 transition ${
+                    cleanupTasksMode === 'all'
+                      ? 'bg-red-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  清空全部
+                </button>
               </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">
-                  {cleanupTasksMode === 'single' ? '选择要清理的月份' : '选择清理时间点（此月份之前的数据将被清理）'}
-                </label>
-                <input
-                  type="month"
-                  value={cleanupTasksMode === 'single' ? cleanupTasksMonth : cleanupTasksBeforeMonth}
-                  onChange={(e) => {
-                    setCleanupTasksConfirming(false);
-                    if (cleanupTasksMode === 'single') {
-                      setCleanupTasksMonth(e.target.value);
-                    } else {
-                      setCleanupTasksBeforeMonth(e.target.value);
-                    }
-                  }}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-200 focus:border-red-400 outline-none"
-                />
-              </div>
+              {cleanupTasksMode === 'all' ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 leading-relaxed">
+                  将删除<span className="font-bold">所有月份、所有设计员</span>的任务数据（工作表与任务记录全部清空）。
+                  {maintenanceStatus?.database && (
+                    <span className="block mt-1 text-red-700/80">
+                      当前共 {maintenanceStatus.database.tasksCount} 张工作表、{maintenanceStatus.database.taskItemsCount} 条任务记录。
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">
+                    {cleanupTasksMode === 'single' ? '选择要清理的月份' : '选择清理时间点（此月份之前的数据将被清理）'}
+                  </label>
+                  <input
+                    type="month"
+                    value={cleanupTasksMode === 'single' ? cleanupTasksMonth : cleanupTasksBeforeMonth}
+                    onChange={(e) => {
+                      setCleanupTasksConfirming(false);
+                      if (cleanupTasksMode === 'single') {
+                        setCleanupTasksMonth(e.target.value);
+                      } else {
+                        setCleanupTasksBeforeMonth(e.target.value);
+                      }
+                    }}
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-200 focus:border-red-400 outline-none"
+                  />
+                  <p className="mt-2 text-xs text-gray-400 leading-relaxed">
+                    工作表按「任务日期所在月份」归档；若所选月份本身没有录过任务，清理结果为 0 张，属于正常情况。
+                  </p>
+                </div>
+              )}
             </div>
             <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end items-center gap-3">
               {cleanupTasksConfirming ? (
                 <>
                   <span className="mr-auto flex items-center gap-1.5 text-xs font-bold text-red-600">
                     <AlertCircle size={14} />
-                    确认清理{cleanupTasksMode === 'single' ? ` ${cleanupTasksMonth} ` : ` ${cleanupTasksBeforeMonth} 之前的`}所有任务数据？此操作不可恢复！
+                    确认{cleanupTasksMode === 'all'
+                      ? '清空全部月份的'
+                      : cleanupTasksMode === 'single'
+                        ? `清理 ${cleanupTasksMonth} `
+                        : `清理 ${cleanupTasksBeforeMonth} 之前的`}所有任务数据？此操作不可恢复！
                   </span>
                   <button
                     onClick={() => setCleanupTasksConfirming(false)}
@@ -1354,7 +1462,7 @@ const SystemSettings = () => {
                   </button>
                   <button
                     onClick={() => setCleanupTasksConfirming(true)}
-                    disabled={cleanupTasksProcessing || (!cleanupTasksMonth && !cleanupTasksBeforeMonth)}
+                    disabled={cleanupTasksProcessing || (cleanupTasksMode !== 'all' && !cleanupTasksMonth && !cleanupTasksBeforeMonth)}
                     className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     确认清理
@@ -1408,25 +1516,45 @@ const SystemSettings = () => {
                 >
                   按纳期月份
                 </button>
+                <button
+                  type="button"
+                  onClick={() => { setCleanupStMode('all'); setCleanupStConfirming(false); }}
+                  className={`px-4 py-2 text-sm font-medium border-l border-gray-300 transition ${
+                    cleanupStMode === 'all'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  清空全部
+                </button>
               </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">
-                  选择清理时间点（此月份之前的数据将被清理）
-                </label>
-                <input
-                  type="month"
-                  value={cleanupStBeforeMonth}
-                  onChange={(e) => { setCleanupStBeforeMonth(e.target.value); setCleanupStConfirming(false); }}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-200 focus:border-purple-400 outline-none"
-                />
-              </div>
+              {cleanupStMode === 'all' ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 leading-relaxed">
+                  将删除<span className="font-bold">全部状态跟踪记录</span>（不限添加时间、不限纳期，含已关闭的历史记录）。
+                  <span className="block mt-1 text-red-700/80">任务数据不受影响；如需清理任务，请使用上方「清理任务数据」。</span>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">
+                    选择清理时间点（此月份之前的数据将被清理）
+                  </label>
+                  <input
+                    type="month"
+                    value={cleanupStBeforeMonth}
+                    onChange={(e) => { setCleanupStBeforeMonth(e.target.value); setCleanupStConfirming(false); }}
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-200 focus:border-purple-400 outline-none"
+                  />
+                </div>
+              )}
             </div>
             <div className="px-5 py-4 bg-gray-50 border-t border-gray-100 flex justify-end items-center gap-3">
               {cleanupStConfirming ? (
                 <>
                   <span className="mr-auto flex items-center gap-1.5 text-xs font-bold text-purple-700">
                     <AlertCircle size={14} />
-                    确认清理 {cleanupStBeforeMonth} 之前的状态跟踪数据（按{cleanupStMode === 'production' ? '添加时间' : '纳期'}月份）？此操作不可恢复！
+                    {cleanupStMode === 'all'
+                      ? '确认清空全部状态跟踪数据？此操作不可恢复！'
+                      : `确认清理 ${cleanupStBeforeMonth} 之前的状态跟踪数据（按${cleanupStMode === 'production' ? '添加时间' : '纳期'}月份）？此操作不可恢复！`}
                   </span>
                   <button
                     onClick={() => setCleanupStConfirming(false)}
@@ -1455,7 +1583,7 @@ const SystemSettings = () => {
                   </button>
                   <button
                     onClick={() => setCleanupStConfirming(true)}
-                    disabled={cleanupStProcessing || !cleanupStBeforeMonth}
+                    disabled={cleanupStProcessing || (cleanupStMode !== 'all' && !cleanupStBeforeMonth)}
                     className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold transition disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     确认清理
@@ -2119,6 +2247,23 @@ const SystemSettings = () => {
                         <span className="text-gray-400 ml-2">（{maintenanceStatus.database.tasksCount} 个工作表，{maintenanceStatus.database.taskItemsCount} 条任务记录）</span>
                       )}
                     </div>
+                    {(maintenanceStatus?.database?.reclaimableBytes || 0) > 0 && (
+                      <div className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 text-xs text-amber-800 leading-relaxed">
+                        有 <span className="font-bold">{formatFileSize(maintenanceStatus!.database.reclaimableBytes!)}</span> 是已删除数据留下的空闲页，仍占着磁盘。
+                        执行「压缩数据库」后才会真正释放。
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 pt-0.5">
+                      <button
+                        onClick={handleCompactDatabase}
+                        disabled={maintenanceLoading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold transition"
+                      >
+                        <Database size={13} />
+                        压缩数据库
+                      </button>
+                      <span className="text-[11px] text-gray-400 leading-tight">回收空闲页并截断 WAL</span>
+                    </div>
                     <div className="text-xs text-gray-500">数据文件：<span className="break-all text-gray-600">{maintenanceStatus?.paths?.database || '-'}</span></div>
                   </div>
 
@@ -2510,15 +2655,18 @@ const SystemSettings = () => {
                     </h3>
                     <p className="text-xs text-gray-500 mt-2 leading-relaxed max-w-2xl">
                       勾选任务内容后，任务表格底色按下方取值；未勾选任务内容时使用「未勾选任务内容」配色（深紫）。
-                      任务文字色固定：普通任务为黑色，勾选「任务加急」后「确认图 / 设计 / 确认图修改」整行文字变红；
-                      「设计变更 / 既制审图」也可加急，默认加急前后底色一致，如需区分可在下方加急分组中调整。
+                      任务文字色固定为黑色；只有「确认图 / 设计 / 确认图修改」有「任务加急」状态，加急后整行文字变红（弹窗里的任务内容标签同样变红）。
+                      「设计变更 / 既制审图 / 暂停取消」没有加急状态，只能配置常规底色。
+                      「暂停/取消」是与五个任务内容并列的独立选项：任务名后缀显示为「暂停/取消」，默认纯红底（#ff0000），
+                      工时按 0 计且不计入任何统计，表格中不显示工时。
+                      保存后立即生效：主页面新增或重新编辑任务都会使用这里的取值。
                       出差与事假/休假/病假使用各自的固定配色（出差=湖水青），不在此处配置。
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => { void handleResetTaskColors(); }}
+                      onClick={() => { handleResetTaskColors(); }}
                       disabled={!isSuperAdmin || colorSaving}
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-gray-600 bg-white border border-gray-200 hover:border-blue-300 hover:text-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
@@ -2600,7 +2748,7 @@ const SystemSettings = () => {
               <div className="px-6 py-3 bg-gray-50/80 border-t border-gray-100 flex items-center gap-2 text-[11px] text-gray-400">
                 <AlertCircle size={12} />
                 <span>
-                  修改后点击「保存配色」生效；「恢复默认」会立即把全部颜色改回系统默认值。
+                  修改后点击「保存配色」生效；「恢复默认」会先二次确认，确认后立即把全部颜色改回系统默认值。
                   {!isSuperAdmin && ' 仅超级管理员可修改配色。'}
                 </span>
               </div>

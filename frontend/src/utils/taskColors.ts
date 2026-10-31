@@ -5,19 +5,35 @@
  * 1. 任务单元格（含枪名行）底色 = 任务内容对应的颜色；
  * 2. 未勾选任务内容（无类型后缀）= 深紫；
  * 3. 任务文字统一黑色（固定，不参与配置）；
- * 4. 勾选「任务加急」后按加急配色覆盖底色，确认图 / 设计 / 确认图修改整行文字变红；
- *    「设计变更」「既制审图」同样支持加急，但默认加急前后底色一致、文字保持黑色；
- * 5. 任务被标记为「已完成」（白色）时保留白色底，不参与配色派生。
+ * 4. 只有「确认图 / 设计 / 确认图修改」支持「任务加急」：勾选后底色改用加急配色、整行文字变红；
+ *    「设计变更 / 既制审图 / 暂停/取消」没有加急状态；
+ * 5. 任务被标记为「已完成」（白色）时保留白色底，不参与配色派生；
+ * 6. 「暂停/取消」是与上述五个任务内容并列的独立选项（不是既制审图的子状态）：
+ *    任务名后缀为「暂停/取消」，整行使用更深的红色底 + 黑字，工时按 0 计
+ *    （不计入任何统计），表格里不显示工时数字。
  *
  * 超管可在「系统设置 → 计划管理」中修改全部色值，并可一键恢复默认。
  */
 
-export type TaskContentType = 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' | 'drawingReview';
+export type TaskContentType =
+  | 'none'
+  | 'confirm'
+  | 'design'
+  | 'confirmModify'
+  | 'designChange'
+  | 'drawingReview'
+  | 'paused';
 
 /** 普通任务文字色（固定） */
 export const TASK_TEXT_COLOR = '#000000';
 /** 加急任务文字色（固定） */
 export const TASK_URGENT_TEXT_COLOR = '#dc2626';
+
+/** 「暂停/取消」任务名后缀（勾选后拼在任务内容后面） */
+export const PAUSED_TASK_SUFFIX = '暂停/取消';
+/** 「暂停/取消」的默认底色（纯红，辨识度最高） */
+export const PAUSED_TASK_COLOR = '#ff0000';
+export const PAUSED_TASK_TEXT_COLOR = TASK_TEXT_COLOR;
 
 /**
  * 出差任务的固定配色（与任务内容配色体系无关，避免和其它任务内容撞色）
@@ -48,36 +64,37 @@ export interface TaskColorConfig {
   confirm: string;
   /** 设计：浅黄 */
   design: string;
-  /** 确认图修改：淡粉 */
+  /** 确认图修改：浅蓝 */
   confirmModify: string;
   /** 设计变更：橙红 */
   designChange: string;
-  /** 既制审图：天蓝 */
+  /** 既制审图：粉色 */
   drawingReview: string;
-  /** 加急 + 确认图：翠绿 */
+  /** 暂停/取消：纯红（工时不计入统计） */
+  paused: string;
+  /** 加急 + 确认图：深黄 */
   urgentConfirm: string;
   /** 加急 + 设计：深黄 */
   urgentDesign: string;
-  /** 加急 + 确认图修改：粉色 */
+  /** 加急 + 确认图修改：深黄 */
   urgentConfirmModify: string;
-  /** 加急 + 设计变更：默认与普通一致 */
-  urgentDesignChange: string;
-  /** 加急 + 既制审图：默认与普通一致 */
-  urgentDrawingReview: string;
 }
 
 export const DEFAULT_TASK_COLOR_CONFIG: TaskColorConfig = {
   default: '#d8b4fe',
   confirm: '#bbf7d0',
   design: '#fef9c3',
-  confirmModify: '#fbcfe8',
+  // 确认图修改：浅蓝
+  confirmModify: '#bae6fd',
   designChange: '#fdba74',
-  drawingReview: '#bae6fd',
-  urgentConfirm: '#34d399',
+  // 既制审图：粉
+  drawingReview: '#fbcfe8',
+  // 暂停/取消：纯红（比普通红底更深，加强辨识度）
+  paused: PAUSED_TASK_COLOR,
+  // 确认图 / 确认图修改 加急统一用深黄，与加急设计保持一致
+  urgentConfirm: '#fde047',
   urgentDesign: '#fde047',
-  urgentConfirmModify: '#f9a8d4',
-  urgentDesignChange: '#fdba74',
-  urgentDrawingReview: '#bae6fd',
+  urgentConfirmModify: '#fde047',
 };
 
 export interface TaskColorFieldMeta {
@@ -92,38 +109,42 @@ export const TASK_COLOR_FIELDS: TaskColorFieldMeta[] = [
   { key: 'default', label: '未勾选任务内容', hint: '未勾选任何任务内容时的表格底色', group: 'normal' },
   { key: 'confirm', label: '确认图', hint: '勾选「确认图」时的表格底色', group: 'normal' },
   { key: 'design', label: '设计', hint: '勾选「设计」时的表格底色', group: 'normal' },
-  { key: 'confirmModify', label: '确认图修改', hint: '勾选「确认图修改」时的表格底色', group: 'normal' },
-  { key: 'designChange', label: '设计变更', hint: '勾选「设计变更」时的表格底色', group: 'normal' },
-  { key: 'drawingReview', label: '既制审图', hint: '勾选「既制审图」时的表格底色', group: 'normal' },
-  { key: 'urgentConfirm', label: '加急 · 确认图', hint: '加急任务的确认图底色（文字同时变红）', group: 'urgent' },
+  { key: 'confirmModify', label: '确认图修改', hint: '勾选「确认图修改」时的表格底色（默认浅蓝）', group: 'normal' },
+  { key: 'designChange', label: '设计变更', hint: '勾选「设计变更」时的表格底色（无加急状态）', group: 'normal' },
+  { key: 'drawingReview', label: '既制审图', hint: '勾选「既制审图」时的表格底色（无加急状态，默认粉）', group: 'normal' },
+  { key: 'paused', label: '暂停/取消', hint: '勾选「暂停/取消」时的表格底色（默认纯红，工时不计入统计）', group: 'normal' },
+  { key: 'urgentConfirm', label: '加急 · 确认图', hint: '加急任务的确认图底色，默认与加急设计同为深黄（文字同时变红）', group: 'urgent' },
   { key: 'urgentDesign', label: '加急 · 设计', hint: '加急任务的设计底色（文字同时变红）', group: 'urgent' },
-  { key: 'urgentConfirmModify', label: '加急 · 确认图修改', hint: '加急任务的确认图修改底色（文字同时变红）', group: 'urgent' },
-  { key: 'urgentDesignChange', label: '加急 · 设计变更', hint: '加急任务的设计变更底色，默认与普通一致', group: 'urgent' },
-  { key: 'urgentDrawingReview', label: '加急 · 既制审图', hint: '加急任务的既制审图底色，默认与普通一致', group: 'urgent' },
+  { key: 'urgentConfirmModify', label: '加急 · 确认图修改', hint: '加急任务的确认图修改底色，默认与加急设计同为深黄（文字同时变红）', group: 'urgent' },
 ];
 
-/** 任务内容类型（用于勾选框/筛选展示） */
+/** 任务内容类型（用于勾选框/筛选展示，6 个并列选项） */
 export const TASK_CONTENT_TYPES: { key: Exclude<TaskContentType, 'none'>; label: string }[] = [
   { key: 'confirm', label: '确认图' },
   { key: 'design', label: '设计' },
   { key: 'confirmModify', label: '确认图修改' },
   { key: 'designChange', label: '设计变更' },
   { key: 'drawingReview', label: '既制审图' },
+  { key: 'paused', label: PAUSED_TASK_SUFFIX },
 ];
 
-/** 是否已勾选任务内容（勾选后才允许勾选「任务加急」） */
+/** 是否已勾选任务内容 */
 export const hasTaskContent = (type: TaskContentType) => type !== 'none';
 
-/** 加急后整行文字变红的任务内容；设计变更 / 既制审图加急仅换底色 */
-export const isUrgentRestyleType = (type: TaskContentType) =>
+/**
+ * 是否支持「任务加急」：只有确认图 / 设计 / 确认图修改 有加急状态，
+ * 设计变更 / 既制审图 / 暂停/取消 没有加急状态。
+ */
+export const supportsUrgent = (type: TaskContentType) =>
   type === 'confirm' || type === 'design' || type === 'confirmModify';
 
-const URGENT_KEY: Record<Exclude<TaskContentType, 'none'>, keyof TaskColorConfig> = {
+/** 加急后整行文字变红的任务内容（与 supportsUrgent 保持同一批） */
+export const isUrgentRestyleType = (type: TaskContentType) => supportsUrgent(type);
+
+const URGENT_KEY: Partial<Record<TaskContentType, keyof TaskColorConfig>> = {
   confirm: 'urgentConfirm',
   design: 'urgentDesign',
   confirmModify: 'urgentConfirmModify',
-  designChange: 'urgentDesignChange',
-  drawingReview: 'urgentDrawingReview',
 };
 
 const HEX_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -151,10 +172,11 @@ export const mergeTaskColorConfig = (raw: unknown): TaskColorConfig => {
   return result;
 };
 
-/** 从任务名后缀反推任务内容类型 */
+/** 从任务名后缀反推任务内容类型（「暂停/取消」优先级最高） */
 export const detectTaskContentType = (taskName?: string | null): TaskContentType => {
   const name = String(taskName || '');
   if (!name) return 'none';
+  if (name.includes(PAUSED_TASK_SUFFIX) || name.includes('暂停')) return 'paused';
   if (name.includes('设计变更')) return 'designChange';
   if (name.includes('既制审图')) return 'drawingReview';
   if (name.includes('确认图修改')) return 'confirmModify';
@@ -176,19 +198,19 @@ const getBaseColor = (config: TaskColorConfig, type: TaskContentType): string =>
 
 /**
  * 按「任务内容 + 是否加急」解析配色。
- * 底色来自配置；文字色固定——普通黑色，加急且为确认图/设计/确认图修改时为红色。
+ * 底色来自配置；文字色固定——普通黑色，支持加急的类型加急后为红色。
  */
 export const resolveTaskColors = (
   config: TaskColorConfig,
   type: TaskContentType,
   urgent?: boolean
 ): { bg: string; text: string; urgent: boolean } => {
-  if (!urgent) {
+  // 设计变更 / 既制审图 / 暂停/取消 没有加急状态，传入的 urgent 直接忽略
+  if (!urgent || !supportsUrgent(type)) {
     return { bg: getBaseColor(config, type), text: TASK_TEXT_COLOR, urgent: false };
   }
-  const bg = type === 'none' ? config.default : config[URGENT_KEY[type]] || getBaseColor(config, type);
-  const text = isUrgentRestyleType(type) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
-  return { bg, text, urgent: true };
+  const bg = config[URGENT_KEY[type] as keyof TaskColorConfig] || getBaseColor(config, type);
+  return { bg, text: TASK_URGENT_TEXT_COLOR, urgent: true };
 };
 
 export interface TaskDisplayColors {
@@ -200,25 +222,50 @@ export interface TaskDisplayColors {
   completed: boolean;
   /** 是否加急任务 */
   urgent: boolean;
+  /** 是否「暂停/取消」任务（工时按 0 计，且不显示工时） */
+  paused: boolean;
   /** 任务内容类型 */
   type: TaskContentType;
 }
 
-/** 表格渲染用：任务单元格最终显示色（白色=已完成，优先于配色体系） */
+/**
+ * 是否为「暂停/取消」任务：
+ * 任务名带「暂停/取消」后缀（新数据）或持久化了 paused 标记（历史数据）都算。
+ */
+export const isTaskPaused = (item?: { taskName?: string | null; paused?: boolean } | null) => {
+  if (!item) return false;
+  if (item.paused) return true;
+  return detectTaskContentType(item.taskName) === 'paused';
+};
+
+/** 表格渲染用：任务单元格最终显示色（暂停红底 > 已完成白 > 配色体系） */
 export const getTaskDisplayColors = (
   config: TaskColorConfig,
-  item?: { taskName?: string | null; urgent?: boolean; color?: string | null } | null
+  item?: { taskName?: string | null; urgent?: boolean; paused?: boolean; color?: string | null } | null
 ): TaskDisplayColors => {
   const type = detectTaskContentType(item?.taskName);
-  const urgent = Boolean(item?.urgent) && hasTaskContent(type);
+  const paused = isTaskPaused(item);
+  const urgent = Boolean(item?.urgent) && supportsUrgent(type) && !paused;
   const resolved = resolveTaskColors(config, type, urgent);
+  if (paused) {
+    return {
+      bg: normalizeHexColor(config?.paused, PAUSED_TASK_COLOR),
+      text: PAUSED_TASK_TEXT_COLOR,
+      completed: false,
+      urgent: false,
+      paused: true,
+      type,
+    };
+  }
   const completed = isWhiteColor(item?.color);
   if (completed) {
-    return { bg: '#ffffff', text: resolved.text, completed: true, urgent, type };
+    return { bg: '#ffffff', text: resolved.text, completed: true, urgent, paused: false, type };
   }
-  return { bg: resolved.bg, text: resolved.text, completed: false, urgent, type };
+  return { bg: resolved.bg, text: resolved.text, completed: false, urgent, paused: false, type };
 };
 
 /** 新建任务时写入的颜色（与表格显示一致，保证导出等场景同样正确） */
 export const getTaskBaseColor = (config: TaskColorConfig, type: TaskContentType, urgent?: boolean) =>
-  resolveTaskColors(config, type, urgent).bg;
+  type === 'paused'
+    ? normalizeHexColor(config?.paused, PAUSED_TASK_COLOR)
+    : resolveTaskColors(config, type, urgent).bg;

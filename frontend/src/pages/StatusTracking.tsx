@@ -297,6 +297,8 @@ const StatusTracking = () => {
   // startEditing 的实时镜像：socket 重连回调里要重新占用焦点所在行，
   // 而 socket effect 的依赖只有 [token, logout]，闭包捕获会拿到过期实现
   const startEditingRef = useRef<(itemId: string) => void>(() => {});
+  // loadItems 的实时镜像：socket effect 依赖不含 loadItems（避免整条连接重建）
+  const loadItemsRef = useRef<() => void>(() => {});
 
   const openDatePicker = useCallback((itemId: string) => {
     const input = dateInputRefs.current.get(itemId);
@@ -900,6 +902,7 @@ const StatusTracking = () => {
   }, [user, socket, editingSessions, isOffline, isAdmin]);
 
   startEditingRef.current = startEditing;
+  loadItemsRef.current = loadItems;
 
   const stopEditing = useCallback((itemId: string) => {
     if (!socket) return;
@@ -1068,6 +1071,12 @@ const StatusTracking = () => {
     handle.on('status_tracking_bulk', async (dataItems) => {
       setAllItems(dataItems);
       localStorage.setItem('statusTrackingItems', JSON.stringify(dataItems));
+    });
+
+    // 任务数据被批量清理 / 导入 / 年度归档后重新拉取：
+    // 状态跟踪里会引用任务信息，清理完还停留在旧列表容易被误认为没清干净。
+    handle.on('task_refreshed', () => {
+      loadItemsRef.current();
     });
 
     // 连接期快照：后连接的客户端据此看到他人已持有的行锁，

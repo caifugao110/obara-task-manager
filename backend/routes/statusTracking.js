@@ -636,39 +636,47 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
 }));
 
 router.post('/cleanup', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const { beforeMonth, beforeYear, mode } = req.body;
-
-  if (!beforeMonth || !beforeYear) {
-    return res.status(400).json({ message: '请指定清理时间点' });
-  }
-
-  const m = parseInt(beforeMonth, 10);
-  const y = parseInt(beforeYear, 10);
+  const { beforeMonth, beforeYear, mode, all } = req.body;
 
   const data = db.readDb();
   const items = Array.isArray(data.statusTrackingItems) ? data.statusTrackingItems : [];
   const originalCount = items.length;
 
   let filteredItems;
+  let scopeLabel;
 
-  if (mode === 'delivery') {
-    filteredItems = items.filter(item => {
-      if (!item.deliveryDate) return true;
-      const [dy, dm] = item.deliveryDate.split('-').map(Number);
-      if (dy < y) return false;
-      if (dy === y && dm < m) return false;
-      return true;
-    });
+  // 清空全部：不分月份、不分 mode，直接把状态跟踪列表清空
+  if (all === true) {
+    filteredItems = [];
+    scopeLabel = '全部';
   } else {
-    filteredItems = items.filter(item => {
-      const planMonths = getItemPlanMonths(item);
-      if (planMonths.length === 0) return true;
-      const oldestMonth = planMonths[0];
-      const [py, pm] = oldestMonth.split('-').map(Number);
-      if (py < y) return false;
-      if (py === y && pm < m) return false;
-      return true;
-    });
+    if (!beforeMonth || !beforeYear) {
+      return res.status(400).json({ message: '请指定清理时间点，或选择清空全部状态跟踪数据' });
+    }
+
+    const m = parseInt(beforeMonth, 10);
+    const y = parseInt(beforeYear, 10);
+    scopeLabel = `${y}-${String(m).padStart(2, '0')} 之前`;
+
+    if (mode === 'delivery') {
+      filteredItems = items.filter(item => {
+        if (!item.deliveryDate) return true;
+        const [dy, dm] = item.deliveryDate.split('-').map(Number);
+        if (dy < y) return false;
+        if (dy === y && dm < m) return false;
+        return true;
+      });
+    } else {
+      filteredItems = items.filter(item => {
+        const planMonths = getItemPlanMonths(item);
+        if (planMonths.length === 0) return true;
+        const oldestMonth = planMonths[0];
+        const [py, pm] = oldestMonth.split('-').map(Number);
+        if (py < y) return false;
+        if (py === y && pm < m) return false;
+        return true;
+      });
+    }
   }
 
   const removedCount = originalCount - filteredItems.length;
@@ -681,7 +689,12 @@ router.post('/cleanup', [authMiddleware, superAdminMiddleware], asyncHandler(asy
     io.emit('status_tracking_bulk', dynamicItems);
   }
 
-  res.json({ message: '状态跟踪数据清理完成', removedCount, remainingCount: filteredItems.length });
+  res.json({
+    message: all === true ? '状态跟踪数据已清空' : '状态跟踪数据清理完成',
+    scope: scopeLabel,
+    removedCount,
+    remainingCount: filteredItems.length
+  });
 }));
 
 module.exports = router;

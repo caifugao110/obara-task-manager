@@ -7,6 +7,7 @@ const XLSX = require('xlsx');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
+const { isTaskPaused } = require('./taskColors');
 const gunExport = require('./gunLedgerExport');
 
 // 备份最终化：rawDb.backup() 生成的备份文件继承源库的 WAL 模式，
@@ -173,6 +174,8 @@ const countTaskItems = (tasks = []) => tasks.reduce((total, sheet) => {
 const getDaysInMonth = (year, month) => new Date(year, month, 0).getDate();
 
 const getTaskHours = (item = {}) => {
+  // 「暂停/取消」任务工时按 0 计，不计入统计
+  if (isTaskPaused(item)) return 0;
   if (Array.isArray(item.guns) && item.guns.length > 0) {
     return item.guns.reduce((sum, gun) => sum + (parseFloat(gun?.hours) || 0), 0);
   }
@@ -484,7 +487,15 @@ const runYearlyTaskCleanup = async (options = {}) => {
   };
   await db.writeDb(data);
 
-  return { skipped: false, cutoffYear, archivedSheets: archive.taskSheets, removedSheets: archive.taskSheets, removedTaskItems: archive.taskItems, archive };
+  // 年度清理往往一次删掉几千条记录，同样需要压缩才能真正腾出磁盘
+  let compaction = null;
+  try {
+    compaction = compactDatabase();
+  } catch (e) {
+    console.error('[maintenance] 年度清理后压缩数据库失败:', e.message);
+  }
+
+  return { skipped: false, cutoffYear, archivedSheets: archive.taskSheets, removedSheets: archive.taskSheets, removedTaskItems: archive.taskItems, archive, compaction };
 };
 
 // 计算下一次执行时刻：在配置的多个时间点中取最近的一个（不足两个时按实际数量计算）
@@ -573,6 +584,65 @@ const startMaintenanceScheduler = async () => {
   console.log(`[maintenance] scheduler started, next run at ${formatLocalDateTime(nextRun)}`);
 };
 
+// ---------------------------------------------------------------------------
+// 磁盘回收：VACUUM + WAL 截断
+//
+// SQLite 的 DELETE 只是把页放进 freelist（空闲页链表），文件大小不会变小，
+// WAL 也不会自动收缩。所以「清理任务数据」之后，任务记录已经清零，但数据文件
+// 依旧占着原来的体积，数据管理页看到的磁盘占用毫无变化 —— 这是最常被误认为
+// 「清理不干净」的现象。这里把页真正交还操作系统。
+// ---------------------------------------------------------------------------
+const compactDatabase = () => {
+  const dbPath = getDbPath();
+  const walPath = `${dbPath}-wal`;
+  const measure = () => {
+    const dbFileSize = fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0;
+    const walSize = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
+    return { dbFileSize, walSize, totalDiskSize: dbFileSize + walSize };
+  };
+
+  const raw = db.getRawDb();
+
+  let freelistBytesBefore = 0;
+  try {
+    const pageSize = Number(raw.pragma('page_size', { simple: true })) || 0;
+    const freelistCount = Number(raw.pragma('freelist_count', { simple: true })) || 0;
+    freelistBytesBefore = pageSize * freelistCount;
+  } catch {
+    freelistBytesBefore = 0;
+  }
+
+  const before = measure();
+
+  // 孤儿条目（所属工作表已被删）不清理的话，VACUUM 会继续把它们保留下来
+  let removedOrphans = 0;
+  try {
+    removedOrphans = taskStore.deleteOrphanEntries();
+  } catch (e) {
+    console.error('[maintenance] 清理孤儿任务条目失败:', e.message);
+  }
+
+  // VACUUM 不能运行在事务内，此处为单条同步调用，不包事务
+  raw.pragma('wal_checkpoint(TRUNCATE)');
+  raw.exec('VACUUM');
+  raw.pragma('wal_checkpoint(TRUNCATE)');
+
+  const after = measure();
+  const freedBytes = Math.max(0, before.totalDiskSize - after.totalDiskSize);
+
+  if (removedOrphans > 0 || freedBytes > 0) {
+    console.log(`[maintenance] 数据库压缩完成：回收 ${(freedBytes / 1048576).toFixed(2)} MB，清理孤儿条目 ${removedOrphans} 条`);
+  }
+
+  return {
+    before,
+    after,
+    freedBytes,
+    freelistBytesBefore,
+    removedOrphans
+  };
+};
+
 const getMaintenanceStatus = () => {
   const { settings } = getMaintenanceSettings();
 
@@ -589,6 +659,18 @@ const getMaintenanceStatus = () => {
   const tasksJsonSize = taskStore.entriesJsonSize();
   const tasksCount = taskStore.countSheets();
   const taskItemsCount = taskStore.countEntries();
+
+  // 空闲页体积：删除数据后仍留在文件里、需要 VACUUM 才能真正回收的部分。
+  // 前端据此提示「可回收 xx MB」，避免把物理占用不变误读成没清干净。
+  let freelistBytes = 0;
+  try {
+    const raw = db.getRawDb();
+    const pageSize = Number(raw.pragma('page_size', { simple: true })) || 0;
+    const freelistCount = Number(raw.pragma('freelist_count', { simple: true })) || 0;
+    freelistBytes = pageSize * freelistCount;
+  } catch {
+    freelistBytes = 0;
+  }
 
   const nextRunAtIso = lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTimes).toISOString();
 
@@ -607,6 +689,9 @@ const getMaintenanceStatus = () => {
       walSize,
       shmSize,
       totalDiskSize,
+      // 空闲页（已删除但未归还给操作系统的空间）与压缩后可回收的体积
+      freelistBytes,
+      reclaimableBytes: freelistBytes,
       tasksJsonSize,
       tasksCount,
       taskItemsCount
@@ -636,6 +721,7 @@ module.exports = {
   formatLocalDateTime,
   getTimezoneLabel,
   getMaintenanceStatus,
+  compactDatabase,
   createDatabaseBackup,
   createOfflineBackup,
   exportTaskData,
