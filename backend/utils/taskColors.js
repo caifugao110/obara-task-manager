@@ -28,9 +28,9 @@ const DEFAULT_TASK_COLOR_CONFIG = {
   designChange: '#fdba74',
   drawingReview: '#fbcfe8',
   paused: PAUSED_TASK_COLOR,
-  urgentConfirm: '#fde047',
-  urgentDesign: '#fde047',
-  urgentConfirmModify: '#fde047'
+  urgentConfirm: '#ffff00',
+  urgentDesign: '#ffff00',
+  urgentConfirmModify: '#ffff00'
 };
 
 const CONFIG_KEYS = Object.keys(DEFAULT_TASK_COLOR_CONFIG);

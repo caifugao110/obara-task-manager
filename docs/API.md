@@ -2461,9 +2461,9 @@ PUT 请求：
     "designChange": "#fdba74",
     "drawingReview": "#fbcfe8",
     "paused": "#ff0000",
-    "urgentConfirm": "#fde047",
-    "urgentDesign": "#fde047",
-    "urgentConfirmModify": "#fde047"
+    "urgentConfirm": "#ffff00",
+    "urgentDesign": "#ffff00",
+    "urgentConfirmModify": "#ffff00"
   },
   "defaultGunHours": {
     "confirm": { "C": 1.5, "X": 2 },
@@ -2490,7 +2490,7 @@ PUT 请求：
 - `allowUserChangePassword` 为「允许用户自主改密」开关，缺失时默认 `false`：关闭时 `POST /api/auth/change-password` 返回 `403`（`系统已禁用自主修改密码，请联系管理员`）；该开关不影响超管经 `PUT /api/users/:id` 重置密码。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
 - `auditLogMaxRows` 为操作日志保留条数，取值 `100` ~ `100000` 的整数，缺失或非法时默认为 `5000`；操作日志条数超过该值时自动清理最旧的记录。由「系统设置 → 日志管理」维护。
-- `taskColorConfig` 为「任务内容配色」体系，10 个键各自对应一个**底色 hex**（`#rgb` 或 `#rrggbb`），文字色固定、不可配置。常规底色：`default`（未勾选任务内容，`#d8b4fe`）、`confirm`（确认图，`#bbf7d0`）、`design`（设计，`#fef9c3`）、`confirmModify`（确认图修改，浅蓝 `#bae6fd`）、`designChange`（设计变更，`#fdba74`）、`drawingReview`（既制审图，粉 `#fbcfe8`）、`paused`（暂停/取消，纯红 `#ff0000`）；加急底色只有三个（仅确认图 / 设计 / 确认图修改有加急状态）：`urgentConfirm`（`#fde047`）、`urgentDesign`（`#fde047`）、`urgentConfirmModify`（`#fde047`）。「设计变更 / 既制审图 / 暂停取消」没有加急状态，已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被 `stripUnknown` 过滤。缺失或非法色值逐项回退默认值；历史 `{ bg, text }` 结构在读取时只取 `bg`。该字段取代了已下线的 `randomDesignPlanColor` / `randomAssignmentColor` 两个开关（服务端在归一化时显式删除历史残留，GET 不再返回）。
+- `taskColorConfig` 为「任务内容配色」体系，10 个键各自对应一个**底色 hex**（`#rgb` 或 `#rrggbb`），文字色固定、不可配置。常规底色：`default`（未勾选任务内容，`#d8b4fe`）、`confirm`（确认图，`#bbf7d0`）、`design`（设计，`#fef9c3`）、`confirmModify`（确认图修改，浅蓝 `#bae6fd`）、`designChange`（设计变更，`#fdba74`）、`drawingReview`（既制审图，粉 `#fbcfe8`）、`paused`（暂停/取消，纯红 `#ff0000`）；加急底色只有三个（仅确认图 / 设计 / 确认图修改有加急状态）：`urgentConfirm`（`#ffff00`）、`urgentDesign`（`#ffff00`）、`urgentConfirmModify`（`#ffff00`）。「设计变更 / 既制审图 / 暂停取消」没有加急状态，已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被 `stripUnknown` 过滤。缺失或非法色值逐项回退默认值；历史 `{ bg, text }` 结构在读取时只取 `bg`。该字段取代了已下线的 `randomDesignPlanColor` / `randomAssignmentColor` 两个开关（服务端在归一化时显式删除历史残留，GET 不再返回）。
 - 「任务内容配色」保存后立即生效：`PUT /settings` 会与库中现有设置**合并**（只覆盖请求体里带的字段），不会把未提交的设置项打回默认值；前端在进入主页面、窗口重新获得焦点（含在其他标签页保存后切回）时都会重新拉取设置，因此主页面新增 / 重新编辑任务时即刻使用最新配色。
 - `randomDesignPlanColor` / `randomAssignmentColor` 为**已下线字段**：任务底色不再随机，统一由 `taskColorConfig` + 任务内容 + 加急状态派生，两个开关已从后端 schema 与返回值中移除，传入也会被 `stripUnknown` 过滤。
 - `defaultGunHours` 为按机型的默认工时回退规则：`confirm`（确认工时）、`design`（设计工时）、`confirmModify`（确认修改工时）三类，每类含 C/X 两种机型（数值 0-24）；字段缺失时按内置默认值补齐。
@@ -2520,8 +2520,8 @@ PUT 请求：
     "designChange": "#fdba74",
     "drawingReview": "#fbcfe8",
     "paused": "#ff0000",
-    "urgentConfirm": "#fde047",
-    "urgentDesign": "#fde047",
+    "urgentConfirm": "#ffff00",
+    "urgentDesign": "#ffff00",
     "urgentConfirmModify": "#f9a8d4"
   },
   "defaultGunHours": {

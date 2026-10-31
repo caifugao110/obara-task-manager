@@ -72,11 +72,11 @@ export interface TaskColorConfig {
   drawingReview: string;
   /** 暂停/取消：纯红（工时沿用当前值，0 也能保存；不为 0 时计入统计） */
   paused: string;
-  /** 加急 + 确认图：深黄 */
+  /** 加急 + 确认图：亮黄 */
   urgentConfirm: string;
-  /** 加急 + 设计：深黄 */
+  /** 加急 + 设计：亮黄 */
   urgentDesign: string;
-  /** 加急 + 确认图修改：深黄 */
+  /** 加急 + 确认图修改：亮黄 */
   urgentConfirmModify: string;
 }
 
@@ -91,10 +91,10 @@ export const DEFAULT_TASK_COLOR_CONFIG: TaskColorConfig = {
   drawingReview: '#fbcfe8',
   // 暂停/取消：纯红（比普通红底更深，加强辨识度）
   paused: PAUSED_TASK_COLOR,
-  // 确认图 / 确认图修改 加急统一用深黄，与加急设计保持一致
-  urgentConfirm: '#fde047',
-  urgentDesign: '#fde047',
-  urgentConfirmModify: '#fde047',
+  // 确认图 / 确认图修改 加急统一用亮黄，与加急设计保持一致
+  urgentConfirm: '#ffff00',
+  urgentDesign: '#ffff00',
+  urgentConfirmModify: '#ffff00',
 };
 
 export interface TaskColorFieldMeta {
@@ -113,9 +113,9 @@ export const TASK_COLOR_FIELDS: TaskColorFieldMeta[] = [
   { key: 'designChange', label: '设计变更', hint: '勾选「设计变更」时的表格底色（无加急状态）', group: 'normal' },
   { key: 'drawingReview', label: '既制审图', hint: '勾选「既制审图」时的表格底色（无加急状态，默认粉）', group: 'normal' },
   { key: 'paused', label: '暂停/取消', hint: '勾选「暂停/取消」时的表格底色（默认纯红；工时沿用切换前的值，0 也能保存，不为 0 时计入统计）', group: 'normal' },
-  { key: 'urgentConfirm', label: '加急 · 确认图', hint: '加急任务的确认图底色，默认与加急设计同为深黄（文字同时变红）', group: 'urgent' },
-  { key: 'urgentDesign', label: '加急 · 设计', hint: '加急任务的设计底色（文字同时变红）', group: 'urgent' },
-  { key: 'urgentConfirmModify', label: '加急 · 确认图修改', hint: '加急任务的确认图修改底色，默认与加急设计同为深黄（文字同时变红）', group: 'urgent' },
+  { key: 'urgentConfirm', label: '加急 · 确认图', hint: '加急任务的确认图底色，默认与加急设计同为亮黄（文字同时变红）', group: 'urgent' },
+  { key: 'urgentDesign', label: '加急 · 设计', hint: '加急任务的设计底色，默认亮黄（文字同时变红）', group: 'urgent' },
+  { key: 'urgentConfirmModify', label: '加急 · 确认图修改', hint: '加急任务的确认图修改底色，默认与加急设计同为亮黄（文字同时变红）', group: 'urgent' },
 ];
 
 /** 任务内容类型（用于勾选框/筛选展示，6 个并列选项） */
