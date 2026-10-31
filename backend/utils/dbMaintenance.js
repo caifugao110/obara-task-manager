@@ -7,7 +7,6 @@ const XLSX = require('xlsx');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
-const { isTaskPaused } = require('./taskColors');
 const gunExport = require('./gunLedgerExport');
 
 // 备份最终化：rawDb.backup() 生成的备份文件继承源库的 WAL 模式，
@@ -174,8 +173,6 @@ const countTaskItems = (tasks = []) => tasks.reduce((total, sheet) => {
 const getDaysInMonth = (year, month) => new Date(year, month, 0).getDate();
 
 const getTaskHours = (item = {}) => {
-  // 「暂停/取消」任务工时按 0 计，不计入统计
-  if (isTaskPaused(item)) return 0;
   if (Array.isArray(item.guns) && item.guns.length > 0) {
     return item.guns.reduce((sum, gun) => sum + (parseFloat(gun?.hours) || 0), 0);
   }

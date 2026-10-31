@@ -32,7 +32,7 @@ interface TaskSearchResult {
   taskName: string;
   color: string;
   date: string;
-  /** 「暂停/取消」任务：工时按 0 计，界面上不显示工时数字 */
+  /** 「暂停/取消」任务：工时默认 0，可手动赋值；不为 0 时计入统计 */
   paused: boolean;
   guns: { name: string; hours: number | string; color?: string }[];
 }
@@ -420,8 +420,7 @@ const Leaderboard = () => {
         if (designerData) {
           (Object.entries(sheet.days || {}) as [string, any[]][]).forEach(([, items]) => {
             items.forEach((item: any) => {
-              // 「暂停/取消」任务工时不计入统计
-              if (isTaskPaused(item)) return;
+              // 「暂停/取消」任务工时默认 0，手动赋值后与普通任务一样计入统计
               if (item.leaveType === 'sick') {
                 const hours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
                 designerData.sickDays += hours;
@@ -893,8 +892,7 @@ const Leaderboard = () => {
                               className="text-sm font-black text-blue-700 bg-blue-50 border border-blue-100 px-2 py-1 rounded"
                             >
                               {gun.name}
-                              {/* 「暂停/取消」任务工时按 0 计，不显示工时数字 */}
-                              {!result.paused && <span className="text-xs text-gray-500 ml-1">{gun.hours}h</span>}
+                              <span className="text-xs text-gray-500 ml-1">{gun.hours}h</span>
                             </div>
                           ))
                         ) : (
@@ -989,8 +987,7 @@ const Leaderboard = () => {
                       </div>
                       <div className="text-sm font-black text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded mb-2">
                         {result.gunName}
-                        {/* 「暂停/取消」任务工时按 0 计，不显示工时数字 */}
-                        {!result.paused && <span className="text-xs text-gray-500 ml-1">{result.gunHours}h</span>}
+                        <span className="text-xs text-gray-500 ml-1">{result.gunHours}h</span>
                       </div>
                       <div
                         className="text-sm px-2 py-1.5 rounded border border-gray-100 font-medium"

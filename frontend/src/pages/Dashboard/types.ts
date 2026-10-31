@@ -18,7 +18,7 @@ export interface TaskItem {
   leaveType?: 'sick' | 'vacation' | 'illness' | 'trip' | null;
   /** 任务加急：单元格底色改用加急配色、整行文字红色 */
   urgent?: boolean;
-  /** 暂停/取消：任务名后缀「暂停/取消」，工时按 0 计且不计入统计，整行纯红底、不显示工时 */
+  /** 暂停/取消：任务名后缀「暂停/取消」，工时沿用切换前的内容、0 也能保存，不为 0 时计入统计；整行纯红底 */
   paused?: boolean;
   createdAt?: string;
   createdBy?: { id: string; username: string; name: string };

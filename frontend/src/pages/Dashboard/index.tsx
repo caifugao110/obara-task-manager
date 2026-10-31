@@ -17,6 +17,7 @@ import {
   getTaskBaseColor,
   getTaskDisplayColors,
   getLeaveRowColors,
+  isTaskPaused,
   supportsUrgent,
   PAUSED_TASK_SUFFIX,
   TASK_CONTENT_TYPES,
@@ -76,7 +77,8 @@ import type {
 // 主任务「任务内容」复选框对应的类型（6 个并列选项）：
 // 确认图 / 设计 / 确认图修改 按枪名规则取工时，且支持「任务加急」；
 // 设计变更 / 既制审图 取系统设置中的固定工时；
-// 暂停/取消 是独立状态：任务名后缀 + 纯红底，工时按 0 计、不计入统计。
+// 暂停/取消 是独立状态：任务名后缀 + 纯红底；工时沿用切换前的内容（新增时默认 0），
+// 0 也能保存，不为 0 时与普通任务一样计入统计。
 type DesignTaskType = 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' | 'drawingReview' | 'paused';
 
 const Dashboard = () => {
@@ -663,7 +665,7 @@ const Dashboard = () => {
   // 任务加急：勾选后整行改用加急配色；确认图 / 设计 / 确认图修改 的文字同时变红
   const [urgentDraft, setUrgentDraft] = useState(false);
   const [addModeTaskType, setAddModeTaskType] = useState<DesignTaskType>('none');
-  // 新增模式是否勾选了「暂停/取消」：勾选后工时按 0 计，且不再显示工时
+  // 新增模式是否勾选了「暂停/取消」：勾选后沿用当前工时（新建空白任务默认 0）
   const addModePaused = addModeTaskType === 'paused';
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: DesignTaskType }>>({});
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -721,6 +723,9 @@ const Dashboard = () => {
     taskType: DesignTaskType
   ): GunItem[] => {
     if (taskType === 'none') return guns;
+    // 「暂停/取消」没有工时规则：切过去时枪名工时原样保留（例如原「设计」3h 改暂停后仍为 3h），
+    // 需要时用户可再手动改；不为 0 的工时照常计入统计。
+    if (taskType === 'paused') return guns;
     return guns.map(gun => {
       if (!String(gun.name || '').trim()) return gun;
       const hours = getDefaultGunHoursFor(taskType, gun.name);
@@ -2002,22 +2007,29 @@ const Dashboard = () => {
     ]);
   };
 
-  // 「暂停/取消」与其它任务内容并列，走同一套勾选逻辑（任务名后缀 + paused 标记）：
-  // 勾选时取消加急、工时按 0 计；取消勾选后回到普通任务内容配色。
-  const applyPausedState = (itemId: string, next: boolean) => {
+  // 「暂停/取消」与其它任务内容并列，走同一套勾选逻辑（任务名后缀 + paused 标记）。
+  // 工时（含枪名工时）在切换时**原样保留**：从「设计」等类型改过来时，原有的默认/已填工时继续带着；
+  // 工时不为 0 时与普通任务一样计入统计，为 0 时也允许保存。切换只做两件事：
+  // 打/清 paused 标记 + 取消加急（暂停任务不参与加急配色）。
+  const applyPausedState = async (itemId: string, next: boolean) => {
     if (isAddMode || !modalDesignerId || !modalDate) return;
-    const changes: PendingChange[] = [
-      { designerId: modalDesignerId, date: modalDate, itemId, field: 'paused', value: next },
-    ];
-    if (next) {
-      changes.push({ designerId: modalDesignerId, date: modalDate, itemId, field: 'urgent', value: false });
-      changes.push({ designerId: modalDesignerId, date: modalDate, itemId, field: 'hours', value: 0 });
-    }
-    setPendingChanges(prev => [
-      ...prev.filter(change => !(change.itemId === itemId && (change.field === 'paused' || change.field === 'urgent')))
-        .filter(change => !(next && change.itemId === itemId && change.field === 'hours')),
-      ...changes,
-    ]);
+    const designerId = modalDesignerId;
+    const date = modalDate;
+    // 清掉这一行遗留的 paused/urgent 待保存更改，避免重复或旧值在「保存」时回写；
+    // hours/guns 的待保存更改保留——工时是用户/默认规则填出来的，不应因切换类型丢失。
+    setPendingChanges(prev => prev.filter(change => !(
+      change.designerId === designerId
+      && change.date === date
+      && change.itemId === itemId
+      && (change.field === 'paused' || change.field === 'urgent')
+    )));
+    const target = getAllItems(designerId, date)
+      .map(item => getItemWithPendingChanges(item))
+      .find(item => item.id === itemId);
+    await saveItem(designerId, date, itemId, 'paused', next);
+    if (!next) return;
+    // 暂停任务不支持加急：有加急标记时顺手清掉
+    if (target?.urgent) await saveItem(designerId, date, itemId, 'urgent', false);
   };
 
  
@@ -2081,7 +2093,14 @@ const Dashboard = () => {
   // 优先展示本次登录之前的那次登录；首次登录（无历史）时回退为本次登录时间
   const lastLoginText = formatLoginTime(clientInfo?.previousLoginAt || clientInfo?.lastLoginAt);
 
-  const saveItem = async (designerId: string, date: string, itemId: string, field: TaskField, value: any) => {
+  const saveItem = async (
+    designerId: string,
+    date: string,
+    itemId: string,
+    field: TaskField,
+    value: any,
+    options?: { allowZeroGunHours?: boolean }
+  ) => {
     if (warnIfOfflineEdit()) return;
     try {
       let nextValue = field === 'taskName' && typeof value === 'string'
@@ -2089,8 +2108,12 @@ const Dashboard = () => {
         : value;
       // guns 字段：归一化 hours（空串/NaN -> 0），并在存在「有枪名但工时<=0」时静默跳过保存
       // 这样编辑任务时点击"手动添加枪名"或仅填枪名未填工时不会弹出"输入格式不正确"等错误提示，
-      // 与创建主任务时一致——保存按钮已通过 hasInvalidNamedGunHours 校验禁用
+      // 与创建主任务时一致——保存按钮已通过 hasInvalidNamedGunHours 校验禁用。
+      // 例外：「暂停/取消」任务的工时允许为 0（0 也能保存，不为 0 时照常计入统计）
       if (field === 'guns' && Array.isArray(nextValue)) {
+        const allowZeroGunHours = options?.allowZeroGunHours ?? isTaskPaused(
+          getAllItems(designerId, date).find(item => item.id === itemId)
+        );
         const normalizedGuns = nextValue.map((g: any) => ({
           ...g,
           hours: typeof g.hours === 'number' && !isNaN(g.hours)
@@ -2101,7 +2124,7 @@ const Dashboard = () => {
           const name = String(g.name || '').trim();
           if (!name) return false;
           const hours = typeof g.hours === 'number' ? g.hours : (parseFloat(String(g.hours)) || 0);
-          return hours <= 0;
+          return allowZeroGunHours ? hours < 0 : hours <= 0;
         });
         // 枪名重复（后端会 400）时同样静默跳过保存：保留本地输入并标红，
         // 避免「拒绝 -> 重新拉取」把用户输入的名字冲掉变成未命名枪名
@@ -2112,16 +2135,25 @@ const Dashboard = () => {
         }
         nextValue = normalizedGuns;
       }
-      const res = await axiosInstance.put('/tasks/item', { designerId, date, itemId, field, value: nextValue });
+      const res = await axiosInstance.put('/tasks/item', {
+        designerId,
+        date,
+        itemId,
+        field,
+        value: nextValue
+      });
       if (res.data.sheet) {
         upsertSheet(res.data.sheet);
       }
       emitTaskUpdated(designerId);
       setPendingChanges(prev => prev.filter(c => !(c.designerId === designerId && c.date === date && c.itemId === itemId && c.field === field)));
+      // 返回服务端最新结果，调用方可据此拿到落库后的任务
+      return res.data as { item?: TaskItem; sheet?: TaskSheet } | undefined;
     } catch (err: any) {
       console.error('Error saving item:', err);
       addToast(err.response?.data?.message || '保存失败', 'error');
       fetchSheets();
+      return undefined;
     }
   };
 
@@ -2314,7 +2346,7 @@ const Dashboard = () => {
       const filtered = prev.filter(change => !(change.designerId === designerId && change.date === date && change.itemId === itemId && change.field === field));
       return [...filtered, { designerId, date, itemId, field, value }];
     });
-    if (options?.immediate) return saveItem(designerId, date, itemId, field, value);
+    if (options?.immediate) return saveItem(designerId, date, itemId, field, value).then(() => undefined);
     debouncedSave(designerId, date, itemId, field, value);
   };
 
@@ -3087,8 +3119,9 @@ const Dashboard = () => {
                       if (item.leaveType === 'illness') return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-pink-100 text-pink-700">病假</span>;
                       if (item.leaveType === 'trip') {
                         const name = (item.taskName || '').trim();
-                        if (!name) return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-300">出差</span>;
-                        return <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-300">{name.endsWith('出差') ? name : `${name}出差`}</span>;
+                        const label = !name ? '出差' : name.endsWith('出差') ? name : `${name}出差`;
+                        // 出差行整行已是湖水青底色，文字不再套浅色徽标框（与表格里的行保持一致）
+                        return <span className="text-xs font-bold">{label}</span>;
                       }
                       return item.taskName || <span className="text-gray-300 italic">无</span>;
                     })()}
@@ -3707,7 +3740,7 @@ const Dashboard = () => {
                                   <label
                                     key={key}
                                     className="flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
-                                    title={key === 'paused' ? '工时按 0 计、不计入统计；任务名后缀显示为「暂停/取消」' : undefined}
+                                    title={key === 'paused' ? '工时沿用切换前的值（新增默认 0），0 也能保存；不为 0 时计入工时统计。任务名后缀显示为「暂停/取消」' : undefined}
                                   >
                                     <input
                                       type="checkbox"
@@ -3716,6 +3749,8 @@ const Dashboard = () => {
                                         if (e.target.checked) {
                                           setAddModeTaskType(key);
                                           setAddModeGuns(prev => applyTaskTypeToGuns(prev, key));
+                                          // 切换任务内容时工时（含枪名）原样保留，勾选「暂停/取消」不清空，
+                                          // 只需保证新增空白任务默认为 0（输入框本就为空）
                                           // 设计变更 / 既制审图 / 暂停取消 没有加急状态
                                           if (!supportsUrgent(key)) setUrgentDraft(false);
                                         } else if (checked) {
@@ -3774,12 +3809,12 @@ const Dashboard = () => {
                                 type="number"
                                 step="0.5"
                                 min="0"
-                                className={`w-20 shrink-0 h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 || addModePaused ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                                value={addModePaused ? '' : (addModeGuns.length > 0 ? getGunHoursTotalInputValue(addModeGuns) : addModeHours)}
-                                placeholder=""
+                                className={`w-20 shrink-0 h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${addModeGuns.length > 0 ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
+                                value={addModeGuns.length > 0 ? getGunHoursTotalInputValue(addModeGuns) : addModeHours}
+                                placeholder={addModePaused ? '0' : ''}
                                 onChange={(e) => setAddModeHours(e.target.value)}
-                                disabled={addModeGuns.length > 0 || addModePaused}
-                                title={addModePaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
+                                disabled={addModeGuns.length > 0}
+                                title={addModePaused ? '「暂停/取消」任务工时沿用当前值（新建默认 0），0 也能保存；不为 0 时计入工时统计' : undefined}
                               />
                             <button
                               onClick={() => {
@@ -3920,10 +3955,9 @@ const Dashboard = () => {
                                 step="0.5"
                                 min="0"
                                 className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:opacity-50"
-                                value={addModePaused ? '' : (gun.hours || '')}
+                                value={gun.hours || ''}
                                 placeholder="工时"
-                                disabled={addModePaused}
-                                title={addModePaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
+                                title={addModePaused ? '「暂停/取消」任务工时沿用当前值（新建默认 0），0 也能保存；不为 0 时计入工时统计' : undefined}
                                 onChange={(e) => {
                                   setAddModeGuns(prev => {
                                     const next = [...prev];
@@ -4004,7 +4038,7 @@ const Dashboard = () => {
                         // 使用考虑 pendingChanges 后的完整 item 对象
                         const currentItem = getItemWithPendingChanges(item);
                         const hasGuns = currentItem.guns && currentItem.guns.length > 0;
-                        // 「暂停/取消」：任务名后缀或 paused 标记任一命中即视为暂停（工时按 0 计且不显示）
+                        // 「暂停/取消」：任务名后缀或 paused 标记任一命中即视为暂停（工时沿用当前值，0 也能保存）
                         const itemPaused = getTaskTypeFromName(currentItem.taskName) === 'paused' || Boolean(currentItem.paused);
                         const isLeave = currentItem.leaveType === 'sick' || currentItem.leaveType === 'vacation' || currentItem.leaveType === 'illness';
                         const isTrip = currentItem.leaveType === 'trip';
@@ -4148,7 +4182,7 @@ const Dashboard = () => {
                                       <label
                                         key={key}
                                         className="flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
-                                        title={key === 'paused' ? '工时按 0 计、不计入统计；任务名后缀显示为「暂停/取消」' : undefined}
+                                        title={key === 'paused' ? '工时沿用切换前的值（新增默认 0），0 也能保存；不为 0 时计入工时统计。任务名后缀显示为「暂停/取消」' : undefined}
                                       >
                                         <input
                                           type="checkbox"
@@ -4164,14 +4198,16 @@ const Dashboard = () => {
                                               [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: nextType }
                                             }));
                                             if (nextType === 'paused') {
-                                              // 暂停/取消：取消加急、工时归零，只改任务名后缀
+                                              // 暂停/取消：只打标记 + 取消加急，任务名后缀改为「暂停/取消」。
+                                              // 工时（含枪名工时）原样保留——从「设计」等类型改过来时沿用原有工时
+                                              // （如设计枪名 3h，改暂停后仍是 3h），不为 0 时照常计入统计。
                                               if (urgentDraft) handleUrgentToggle(false);
-                                              applyPausedState(currentItem.id, true);
+                                              void applyPausedState(currentItem.id, true);
                                               handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
                                               return;
                                             }
                                             // 离开暂停状态时清掉 paused 标记
-                                            if (itemPaused) applyPausedState(currentItem.id, false);
+                                            if (itemPaused) void applyPausedState(currentItem.id, false);
                                             if (nextType === 'none') {
                                               // 取消任务内容后加急失去意义，一并取消
                                               if (urgentDraft) handleUrgentToggle(false);
@@ -4258,12 +4294,12 @@ const Dashboard = () => {
                                   type="number"
                                   step="0.5"
                                   min="0"
-                                  className={`w-20 shrink-0 h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${hasGuns || itemPaused ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
-                                value={itemPaused ? '' : (hasGuns ? getGunHoursTotalInputValue(currentItem.guns) : getHoursInputValue(currentItem.hours))}
+                                  className={`w-20 shrink-0 h-10 text-center bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 transition font-bold text-blue-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${hasGuns ? 'opacity-50 cursor-not-allowed' : 'focus:bg-white'}`}
+                                value={hasGuns ? getGunHoursTotalInputValue(currentItem.guns) : getHoursInputValue(currentItem.hours)}
                                 onChange={(e) => !hasGuns && handleItemChange(modalDesignerId, modalDate, currentItem.id, 'hours', e.target.value)}
-                                disabled={hasGuns || itemPaused}
-                                title={itemPaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
-                                placeholder=""
+                                disabled={hasGuns}
+                                title={itemPaused ? '「暂停/取消」任务工时沿用当前值，0 也能保存；不为 0 时计入工时统计' : undefined}
+                                placeholder={itemPaused ? '0' : ''}
                               />
                               <div className="flex items-center gap-2">
                                 <button
@@ -4486,10 +4522,9 @@ const Dashboard = () => {
                                     step="0.5"
                                     min="0"
                                     className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:opacity-50"
-                                    value={itemPaused ? '' : (gun.hours || '')}
+                                    value={gun.hours || ''}
                                     placeholder="工时"
-                                    disabled={itemPaused}
-                                    title={itemPaused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
+                                    title={itemPaused ? '「暂停/取消」任务工时沿用当前值，0 也能保存；不为 0 时计入工时统计' : undefined}
                                     onChange={(e) => {
                                       const newGuns = [...(currentItem.guns || [])];
                                       newGuns[gIdx] = { ...newGuns[gIdx], hours: e.target.value };
@@ -4644,20 +4679,18 @@ const Dashboard = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-500">主任务为空、工时为 0，或已填写枪名的工时为 0 时无法保存</span>
+                <span className="text-xs text-gray-500">主任务为空、工时为 0，或已填写枪名的工时为 0 时无法保存（「暂停/取消」任务工时可为 0）</span>
                 <button
                   onClick={async () => {
                     if (warnIfOfflineEdit()) return;
                     if (isAddMode) {
                       const guns = selectedTaskType === 'none' ? addModeGuns : [];
                       const leaveType = selectedTaskType === 'none' ? null : selectedTaskType;
-                      // 暂停/取消：工时直接按 0 保存，不计入统计
+                      // 「暂停/取消」与普通任务一样取工时：未填即为 0，填了非 0 就计入统计
                       const savedPaused = leaveType === null && addModeTaskType === 'paused';
-                      const hours = savedPaused
-                        ? 0
-                        : guns.length > 0
-                          ? guns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0)
-                          : parseFloat(addModeHours) || 0;
+                      const hours = guns.length > 0
+                        ? guns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0)
+                        : parseFloat(addModeHours) || 0;
                       let taskName = '';
                       let fetchedSpecInfo: SpecInfoResponse | null = null;
                       
@@ -4784,8 +4817,17 @@ const Dashboard = () => {
                         });
                         
                         // 然后保存到服务器
+                        // 「暂停/取消」任务允许枪名工时为 0：由本节已应用 pendingChanges 后的任务状态判定
+                        const pausedItemIds = new Set(
+                          getAllItems(modalDesignerId, modalDate)
+                            .map(item => getItemWithPendingChanges(item))
+                            .filter(item => isTaskPaused(item))
+                            .map(item => item.id)
+                        );
                         for (const change of pendingChanges) {
-                          await saveItem(change.designerId, change.date, change.itemId, change.field, change.value);
+                          await saveItem(change.designerId, change.date, change.itemId, change.field, change.value, {
+                            allowZeroGunHours: pausedItemIds.has(change.itemId),
+                          });
                         }
                         
                         // 清空待保存的更改
@@ -4809,7 +4851,7 @@ const Dashboard = () => {
                         const totalGunHours = addModeGuns.reduce((sum, gun) => sum + (parseFloat(String(gun.hours)) || 0), 0);
                         const parsedHours = parseFloat(addModeHours);
                         const hasValidHours = !isNaN(parsedHours) && parsedHours > 0;
-                        // 暂停/取消：工时固定为 0，只要求任务名
+                        // 暂停/取消：工时允许为 0，只要求任务名
                         if (addModePaused) return !addModeTaskName.trim();
                         return !addModeTaskName.trim() || hasInvalidNamedGunHours(addModeGuns) || hasDuplicateGunNames(addModeGuns) || (addModeGuns.length > 0 ? totalGunHours === 0 : !hasValidHours);
                       }
@@ -4827,7 +4869,7 @@ const Dashboard = () => {
                         const taskName = item.taskName || '';
                         const hasGuns = item.guns && item.guns.length > 0;
                         
-                        // 暂停/取消：工时固定为 0，只要求任务名
+                        // 暂停/取消：工时允许为 0（含枪名工时为 0），只要求任务名
                         if (item.paused || getTaskTypeFromName(item.taskName) === 'paused') {
                           return !(taskName || '').trim();
                         }

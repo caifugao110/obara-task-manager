@@ -8,6 +8,13 @@ import { getLeaveRowColors, getTaskDisplayColors } from '../../../utils/taskColo
 import { useSystemSettings } from '../../../context/SystemSettingsContext';
 import GunDragHandle from './GunDragHandle';
 
+// 工时单元格显示：0 或空值不显示数字（避免「暂停/取消」等 0 工时任务满屏 0）
+const formatHoursCell = (value: number | string | null | undefined) => {
+  if (value === null || value === undefined || value === '') return '';
+  const numeric = typeof value === 'number' ? value : parseFloat(String(value));
+  return Number.isFinite(numeric) && numeric > 0 ? value : '';
+};
+
 const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null }) => {
   const { settings } = useSystemSettings();
   const currentSelection = { itemId: item.id, designerId, date };
@@ -200,10 +207,11 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
               </div>
             )}
             {typeLabel ? (
-              /* 请假/出差徽标：单行内容，按钮已绝对定位不占位，徽标在整行真居中；
-                 对称内边距只用来挡住两端的按钮，不改变居中位置 */
+              /* 请假/出差文字：单行内容，按钮已绝对定位不占位，文字在整行真居中；
+                 对称内边距只用来挡住两端的按钮，不改变居中位置。
+                 出差行整行本身就是湖水青底色，文字不再套浅色徽标框，直接按行文字色显示 */
               <div className={`flex-1 min-w-0 flex items-center justify-center ${isSingleLineRow ? 'px-12' : ''}`}>
-                <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${item.leaveType === 'sick' ? 'bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'bg-pink-100 text-pink-700' : 'bg-teal-100 text-teal-800 border border-teal-300'}`}>
+                <span className={`text-xs font-bold ${item.leaveType === 'sick' ? 'px-1.5 py-0.5 rounded bg-red-100 text-red-700' : item.leaveType === 'vacation' ? 'px-1.5 py-0.5 rounded bg-blue-100 text-blue-700' : item.leaveType === 'illness' ? 'px-1.5 py-0.5 rounded bg-pink-100 text-pink-700' : ''}`}>
                   {typeLabel}
                 </span>
               </div>
@@ -252,9 +260,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       <div 
         className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold hover:bg-blue-50/50 transition cursor-pointer"
         style={{ color: rowTextColor }}
-        title={display.paused ? '已勾选「暂停/取消」：工时按 0 计，不计入统计' : undefined}
+        title={display.paused ? '「暂停/取消」任务：工时沿用当前值，0 也能保存；不为 0 时计入工时统计' : undefined}
       >
-        {item.guns && item.guns.length > 0 ? '' : (display.paused ? '' : item.hours)}
+        {item.guns && item.guns.length > 0 ? '' : formatHoursCell(item.hours)}
       </div>
 
       {/* Gun Rows */}
@@ -363,7 +371,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
             style={{ backgroundColor: gunIsWhite ? '#ffffff' : rowBackground, color: rowTextColor }}
           >
-            {display.paused ? '' : gun.hours}
+            {formatHoursCell(gun.hours)}
           </div>
         </React.Fragment>
         );

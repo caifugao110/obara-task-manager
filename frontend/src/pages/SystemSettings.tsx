@@ -42,11 +42,10 @@ import {
   TASK_COLOR_FIELDS,
   TASK_TEXT_COLOR,
   TASK_URGENT_TEXT_COLOR,
-  isUrgentRestyleType,
   mergeTaskColorConfig,
   normalizeHexColor
 } from '../utils/taskColors';
-import type { TaskColorConfig, TaskContentType } from '../utils/taskColors';
+import type { TaskColorConfig } from '../utils/taskColors';
 
 interface Toast {
   message: string;
@@ -250,13 +249,10 @@ const SystemSettings = () => {
     setColorDraft(prev => ({ ...prev, [key]: value }) as TaskColorConfig);
   };
 
-  // 配色项 → 该底色在表格中的实际文字色（普通黑色；加急的确认图/设计/确认图修改为红色）
-  const getPreviewTextColor = (key: keyof TaskColorConfig) => {
-    const type = (key.startsWith('urgent')
-      ? key.slice('urgent'.length, 'urgent'.length + 1).toLowerCase() + key.slice('urgent'.length + 1)
-      : key) as TaskContentType;
-    return isUrgentRestyleType(type) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
-  };
+  // 配色项 → 该底色在表格中的实际文字色：
+  // 普通分组的卡片模拟普通任务（黑字）；只有「加急任务」分组的卡片才是红字
+  const getPreviewTextColor = (group: 'normal' | 'urgent') =>
+    group === 'urgent' ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
 
   const handleSaveTaskColors = async () => {
     if (!isSuperAdmin) return;
@@ -2658,7 +2654,7 @@ const SystemSettings = () => {
                       任务文字色固定为黑色；只有「确认图 / 设计 / 确认图修改」有「任务加急」状态，加急后整行文字变红（弹窗里的任务内容标签同样变红）。
                       「设计变更 / 既制审图 / 暂停取消」没有加急状态，只能配置常规底色。
                       「暂停/取消」是与五个任务内容并列的独立选项：任务名后缀显示为「暂停/取消」，默认纯红底（#ff0000），
-                      工时按 0 计且不计入任何统计，表格中不显示工时。
+                      工时沿用切换前任务内容的工时（新增空白任务默认 0），0 也能保存；工时为 0 时不产生工时，不为 0 时与普通任务一样计入工时统计。
                       保存后立即生效：主页面新增或重新编辑任务都会使用这里的取值。
                       出差与事假/休假/病假使用各自的固定配色（出差=湖水青），不在此处配置。
                     </p>
@@ -2700,7 +2696,7 @@ const SystemSettings = () => {
                       {TASK_COLOR_FIELDS.filter(field => field.group === group).map(field => {
                         const value = colorDraft[field.key];
                         const fallback = DEFAULT_TASK_COLOR_CONFIG[field.key];
-                        const textColor = getPreviewTextColor(field.key);
+                        const textColor = getPreviewTextColor(group);
                         const bgValue = normalizeHexColor(value, fallback);
                         return (
                           <div

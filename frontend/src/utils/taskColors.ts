@@ -9,8 +9,8 @@
  *    「设计变更 / 既制审图 / 暂停/取消」没有加急状态；
  * 5. 任务被标记为「已完成」（白色）时保留白色底，不参与配色派生；
  * 6. 「暂停/取消」是与上述五个任务内容并列的独立选项（不是既制审图的子状态）：
- *    任务名后缀为「暂停/取消」，整行使用更深的红色底 + 黑字，工时按 0 计
- *    （不计入任何统计），表格里不显示工时数字。
+ *    任务名后缀为「暂停/取消」，整行使用更深的红色底 + 黑字。工时沿用切换前的内容
+ *    （新增时默认 0），0 也能保存，不为 0 时与普通任务一样计入工时统计。
  *
  * 超管可在「系统设置 → 计划管理」中修改全部色值，并可一键恢复默认。
  */
@@ -70,7 +70,7 @@ export interface TaskColorConfig {
   designChange: string;
   /** 既制审图：粉色 */
   drawingReview: string;
-  /** 暂停/取消：纯红（工时不计入统计） */
+  /** 暂停/取消：纯红（工时沿用当前值，0 也能保存；不为 0 时计入统计） */
   paused: string;
   /** 加急 + 确认图：深黄 */
   urgentConfirm: string;
@@ -112,7 +112,7 @@ export const TASK_COLOR_FIELDS: TaskColorFieldMeta[] = [
   { key: 'confirmModify', label: '确认图修改', hint: '勾选「确认图修改」时的表格底色（默认浅蓝）', group: 'normal' },
   { key: 'designChange', label: '设计变更', hint: '勾选「设计变更」时的表格底色（无加急状态）', group: 'normal' },
   { key: 'drawingReview', label: '既制审图', hint: '勾选「既制审图」时的表格底色（无加急状态，默认粉）', group: 'normal' },
-  { key: 'paused', label: '暂停/取消', hint: '勾选「暂停/取消」时的表格底色（默认纯红，工时不计入统计）', group: 'normal' },
+  { key: 'paused', label: '暂停/取消', hint: '勾选「暂停/取消」时的表格底色（默认纯红；工时沿用切换前的值，0 也能保存，不为 0 时计入统计）', group: 'normal' },
   { key: 'urgentConfirm', label: '加急 · 确认图', hint: '加急任务的确认图底色，默认与加急设计同为深黄（文字同时变红）', group: 'urgent' },
   { key: 'urgentDesign', label: '加急 · 设计', hint: '加急任务的设计底色（文字同时变红）', group: 'urgent' },
   { key: 'urgentConfirmModify', label: '加急 · 确认图修改', hint: '加急任务的确认图修改底色，默认与加急设计同为深黄（文字同时变红）', group: 'urgent' },
@@ -222,7 +222,7 @@ export interface TaskDisplayColors {
   completed: boolean;
   /** 是否加急任务 */
   urgent: boolean;
-  /** 是否「暂停/取消」任务（工时按 0 计，且不显示工时） */
+  /** 是否「暂停/取消」任务（工时沿用当前值、0 也能保存；不为 0 时计入统计） */
   paused: boolean;
   /** 任务内容类型 */
   type: TaskContentType;

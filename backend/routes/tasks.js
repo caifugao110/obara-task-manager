@@ -44,15 +44,19 @@ const gunSchema = Joi.object({
   }).optional()
 });
 
-const validateNamedGunHours = (guns) => {
+// 枪名工时校验：默认每个已命名枪名的工时必须大于 0；
+// 「暂停/取消」任务特殊——工时为 0 也可保存（allowZero），填了非 0 才计入统计
+const validateNamedGunHours = (guns, allowZero = false) => {
   if (!Array.isArray(guns)) return null;
   const invalidGun = guns.find(gun => {
     const name = String(gun?.name || '').trim();
     if (!name) return false;
     const hours = typeof gun.hours === 'number' ? gun.hours : (parseFloat(gun.hours) || 0);
-    return hours <= 0;
+    return allowZero ? hours < 0 : hours <= 0;
   });
-  return invalidGun ? '枪名存在时，每个枪名的工时都必须大于 0' : null;
+  return invalidGun
+    ? (allowZero ? '枪名工时不能为负数' : '枪名存在时，每个枪名的工时都必须大于 0')
+    : null;
 };
 
 // 同一主任务内不允许出现重复的非空枪名
@@ -166,7 +170,8 @@ const createItemSchema = Joi.object({
   leaveType: Joi.string().valid('sick', 'vacation', 'illness', 'trip', null).allow(null).default(null),
   // 任务加急：整行改用加急配色并染红文字
   urgent: Joi.boolean().default(false),
-  // 暂停/取消（与其它任务内容并列的独立状态）：工时按 0 计、不计入统计，整行纯红底
+  // 暂停/取消（与其它任务内容并列的独立状态）：工时沿用切换前的内容、可为 0 保存，
+  // 不为 0 时与普通任务一样计入统计，整行纯红底
   paused: Joi.boolean().default(false),
   fontSize: Joi.string().allow('').default(''),
   textColor: Joi.string().allow('').default('')
@@ -479,7 +484,8 @@ router.post('/item/batch', authMiddleware, asyncHandler(async (req, res) => {
   const colorConfig = getTaskColorConfig(db.readDb());
   const addedItems = [];
   for (const item of pasteItems) {
-    const gunError = validateNamedGunHours(item.guns) || validateDuplicateGunNames(item.guns);
+    const itemPaused = Boolean(item.paused) || taskColors.detectTaskContentType(item.taskName) === 'paused';
+    const gunError = validateNamedGunHours(item.guns, itemPaused) || validateDuplicateGunNames(item.guns);
     if (gunError) {
       return res.status(400).json({ message: gunError });
     }
@@ -521,7 +527,9 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
 
   const { designerId, date: rawDate, taskName, hours, color, guns } = validated;
   const date = normalizeDate(rawDate);
-  const gunError = validateNamedGunHours(guns) || validateDuplicateGunNames(guns);
+  // 任务名带「暂停/取消」后缀或显式传入 paused 标记都视为暂停任务（枪名工时允许为 0）
+  const isPausedItem = Boolean(validated.paused) || taskColors.detectTaskContentType(taskName) === 'paused';
+  const gunError = validateNamedGunHours(guns, isPausedItem) || validateDuplicateGunNames(guns);
   if (gunError) {
     return res.status(400).json({ message: gunError });
   }
@@ -818,7 +826,8 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   if (field === 'guns') {
-    const gunError = validateNamedGunHours(value) || validateDuplicateGunNames(value);
+    // 「暂停/取消」任务允许枪名工时为 0
+    const gunError = validateNamedGunHours(value, taskColors.isTaskPaused(item)) || validateDuplicateGunNames(value);
     if (gunError) {
       return res.status(400).json({ message: gunError });
     }
@@ -844,6 +853,7 @@ router.put('/item', authMiddleware, asyncHandler(async (req, res) => {
     // 加急状态变化即改变整行配色，库里的 color 同步派生值（导出/旧版消费方保持一致）
     item.color = deriveItemColor(item, colorConfig);
   } else if (field === 'paused') {
+    // 只切换「暂停/取消」标记：工时（含枪名工时）原样保留，从其它任务内容切过来时沿用原有工时
     item.paused = Boolean(value);
     // 暂停/取消：纯红底黑字，取消后回到任务内容配色
     item.color = deriveItemColor(item, colorConfig);

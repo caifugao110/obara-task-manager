@@ -21,8 +21,7 @@ const maintenance = require('../utils/dbMaintenance');
 const {
   DEFAULT_TASK_COLOR_CONFIG,
   TRIP_TASK_COLOR,
-  normalizeTaskColorConfig,
-  isTaskPaused
+  normalizeTaskColorConfig
 } = require('../utils/taskColors');
 const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
@@ -361,8 +360,6 @@ const getDayName = (year, month, day) => {
 };
 
 const getTaskHours = (item) => {
-  // 「暂停/取消」任务工时按 0 计，不计入统计
-  if (isTaskPaused(item)) return 0;
   const mainHours = parseNumber(item?.hours);
   const gunsHours = (Array.isArray(item?.guns) ? item.guns : []).reduce(
     (sum, gun) => sum + parseNumber(gun?.hours),

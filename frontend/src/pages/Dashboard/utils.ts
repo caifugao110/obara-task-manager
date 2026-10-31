@@ -1,6 +1,5 @@
 import { format } from 'date-fns';
 import type { GunItem, TaskItem, SelectedTask, SpecInfoResponse } from './types';
-import { isTaskPaused } from '../../utils/taskColors';
 
 export const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__${selection.date}__${selection.itemId}`;
 
@@ -140,8 +139,7 @@ export const isMeaningfulTask = (item: TaskItem) => {
 };
 
 export const getTaskHours = (item: TaskItem) => {
-  // 「暂停/取消」任务工时按 0 计，不计入任何统计
-  if (isTaskPaused(item)) return 0;
+  // 「暂停/取消」任务工时沿用当前值（0 也能保存），不为 0 时与普通任务一样计入统计
   const mainHours = typeof item.hours === 'number' ? item.hours : (parseFloat(String(item.hours)) || 0);
   const gunsHours = (item.guns || []).reduce((gSum, g) => gSum + (typeof g.hours === 'number' ? g.hours : (parseFloat(String(g.hours)) || 0)), 0);
   return item.guns && item.guns.length > 0 ? gunsHours : mainHours;

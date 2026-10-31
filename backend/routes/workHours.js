@@ -6,7 +6,6 @@ const { authMiddleware, superAdminMiddleware, accessSettingsMiddleware } = requi
 const asyncHandler = require('express-async-handler');
 const XLSX = require('xlsx');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
-const { isTaskPaused } = require('../utils/taskColors');
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 
@@ -54,8 +53,7 @@ router.get('/export', [authMiddleware, accessSettingsMiddleware('workHours')], a
 
     Object.entries(sheet.days || {}).forEach(([date, items]) => {
       items.forEach(item => {
-        // 「暂停/取消」任务工时不计入统计
-        if (isTaskPaused(item)) return;
+        // 「暂停/取消」任务工时沿用当前值，不为 0 时与普通任务一样计入统计
         const itemHours = typeof item.hours === 'number' ? item.hours : (parseFloat(item.hours) || 0);
         const isWeekendDate = getEffectiveIsWeekend(date, workdayOverrides);
         const gunsHours = (item.guns || []).reduce((sum, gun) => {
