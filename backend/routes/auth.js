@@ -38,6 +38,14 @@ const loginLimiter = rateLimit({
 // 让「用户不存在」分支与真实密码校验执行同样的哈希工作量，抹平响应时序差
 const DUMMY_HASH = bcrypt.hashSync('timing-equalization-placeholder', 10);
 
+// 账号所在分组：登录账号本身带 group 时以它为准；账号上没填（历史数据都是空）时
+// 回落到同名设计人员的分组——工时管理页默认按「本人分组」统计依赖这个值。
+// 派生而不回写数据库：设计人员调整分组后，账号的默认范围自动跟着变。
+const resolveUserGroup = (user) => {
+  const explicit = (user?.group || '').trim();
+  return explicit || db.findDesignerGroupByName(user?.name);
+};
+
 // 改密码限流按「用户 ID」计数（需先通过认证），避免共用出口 IP 时互相影响
 const changePasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -225,8 +233,8 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
       role: user.role,
       name: user.name,
       // 分组随会话下发给前端（工时管理页按本人分组做默认统计范围），
-      // 与 /users 的 toSafeUser 白名单保持一致，不额外暴露任何敏感字段
-      group: user.group || ''
+      // 账号未单独设置分组时回落到同名设计人员的分组
+      group: resolveUserGroup(user)
     },
     forcePasswordChange: user.forcePasswordChange || false
   });
@@ -270,7 +278,7 @@ router.get('/validate', asyncHandler(async (req, res) => {
       return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message });
     }
 
-    res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name, group: user.group || '' }, forcePasswordChange: user.forcePasswordChange || false });
+    res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name, group: resolveUserGroup(user) }, forcePasswordChange: user.forcePasswordChange || false });
   } catch {
     // jwt.verify 失败（主要是 Token 过期）：给出 TOKEN_EXPIRED 错误码，
     // 前端据此提示「登录状态已失效」而不是静默踢回登录页

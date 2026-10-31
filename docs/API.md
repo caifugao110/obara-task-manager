@@ -123,13 +123,16 @@ Authorization: Bearer <token>
     "id": "1",
     "username": "superadmin",
     "role": "superadmin",
-    "name": "超级管理员"
+    "name": "超级管理员",
+    "group": "设计一课第一组"
   },
   "forcePasswordChange": false
 }
 ```
 
 说明：
+
+- `user.group` 是账号所在分组（工时管理页默认按本人分组统计）。账号上未单独设置分组时，服务端会回落到**同名设计人员**的分组（派生值，不回写数据库）；仍取不到时为 `""`。
 
 - 登录成功和失败都会记录登录日志，日志包含 IP、原始 `User-Agent` 和解析后的浏览器信息；失败记录含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`），即使用户名不存在也会记录该次尝试。
 - 用户不存在与密码错误均返回相同的 `401` 响应 `用户名或密码错误`，避免通过响应差异枚举有效用户名。
@@ -154,11 +157,14 @@ Authorization: Bearer <token>
     "id": "1",
     "username": "superadmin",
     "role": "superadmin",
-    "name": "超级管理员"
+    "name": "超级管理员",
+    "group": "设计一课第一组"
   },
   "forcePasswordChange": false
 }
 ```
+
+> `user.group` 口径同登录接口：账号未设置分组时回落到同名设计人员的分组。
 
 会话失效时返回 `401`（`code=SESSION_INVALIDATED`），`message` 按失效原因区分：
 

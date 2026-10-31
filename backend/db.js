@@ -672,6 +672,16 @@ const findUserById = (id) => {
   return user ? deepClone(user) : undefined;
 };
 
+// 按姓名取设计人员所在分组：/auth/validate 这类高频接口只需要一个字符串，
+// 不能为它克隆整份设计人员列表（返回原始字符串，不会被调用方改到 _cache）
+const findDesignerGroupByName = (name) => {
+  if (!_cache) init();
+  const target = (name || '').trim();
+  if (!target) return '';
+  const designer = (_cache.designers || []).find(d => (d.name || '').trim() === target);
+  return designer ? (designer.group || '').trim() : '';
+};
+
 const processQueue = () => {
   if (isWriting || writeQueue.length === 0) return;
   isWriting = true;
@@ -746,6 +756,7 @@ module.exports = {
   readSettings,
   readGunLedger,
   readDesigners,
+  findDesignerGroupByName,
   findUserById,
   writeDb,
   initAdmin,

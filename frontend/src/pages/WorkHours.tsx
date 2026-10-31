@@ -796,7 +796,7 @@ const WorkHours = () => {
             <span className="ml-auto shrink-0 text-[11px] font-medium text-slate-400">
               {userGroup
                 ? (activeGroup === 'all' ? `本组：${userGroup}（已切换为全部人员）` : `本组：${userGroup}`)
-                : '账号未设置分组，默认显示全部人员'}
+                : '未找到本账号所属分组，默认显示全部人员'}
             </span>
           </div>
 

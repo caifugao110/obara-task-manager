@@ -413,8 +413,8 @@ const GunLedger: React.FC = () => {
   const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRowIdsRef = useRef<Set<string>>(new Set());
   const inputRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
-  // 操作列「向下复制」每行的取号数量输入框（非受控，点击加号时读取值，1~10）
-  // 语义：输入值为「本次取号总数」，含当前行自身；1 表示只取当前行（无需向下复制），取号完成后自动归 1
+  // 操作列「向下复制」每行的复制数量输入框（非受控，点击加号时读取值，1~10）
+  // 语义：输入值为向下复制的行数；复制完成后自动归 1，下次复制需重新设置
   const countInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   // 表格滚动容器：用于「进入表格自动定位未取号行」与「跳到未取号行」按钮
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1264,13 +1264,12 @@ const GunLedger: React.FC = () => {
     debouncedSave(activeTable.id);
   }, [activeTable, isAdmin, online, activeTableReadOnly, patchTableRows, user, debouncedSave]);
 
-  // 向下复制（取号）：把当前行的「客户名」复制到该行下方最新的「客户名为空」的行
+  // 向下复制：把当前行的「客户名」复制到该行下方最新的「客户名为空」的行
   // 时间列填当前日期（与时间列 Clock 按钮同格式），担当列填当前操作者
   // 焊枪名：不再沿用目标行按表默认规则预填的名字，而是继承当前行焊枪名的前缀与后缀，
   // 仅编号替换为目标行规则编号（prefix + 目标行编号 + suffix），即整列焊枪名仅编号不一致
-  // 数字框语义为「本次取号总数（含当前行）」：输入 3 表示本次共取 3 个号 —— 当前行本身占 1 个，
-  // 因此只需向下复制 2 行；输入 1 表示只取当前行，不会向下复制；取号完成后数字框自动归 1。
-  // 占位行会被提升为真实行
+  // 加号按钮前的数字框决定向下复制的行数（默认 1，范围 1~10）；占位行会被提升为真实行
+  // 复制完成后数字框自动归 1，下次复制需重新设置数量
   const handleCopyDown = useCallback((row: GunRow) => {
     if (!activeTable || !isAdmin || !online || activeTableReadOnly) return;
     const srcCustomer = row.customer;
@@ -1283,28 +1282,20 @@ const GunLedger: React.FC = () => {
     const split = rule && rule.enabled ? splitGunNameByRule(rule, row.serialNumber, row.gunName) : null;
     const nowTime = todayStr();
     const currentPerson = user?.name || '';
-    // 读取该行数字框的取号总数（非受控，点击时取值并夹到 1~10）
+    // 读取该行数字框的复制行数（非受控，点击时取值并夹到 1~10）
     const inputEl = countInputRefs.current[row.id];
     let count = 1;
     if (inputEl) {
       const parsed = parseInt(inputEl.value, 10);
       if (!Number.isNaN(parsed)) count = Math.min(10, Math.max(1, parsed));
     }
-    // 需要向下复制的行数 = 取号总数 - 当前行自身
-    const needCopy = count - 1;
-    if (needCopy <= 0) {
-      // 数字为 1：本次只有当前行一个号，无需向下复制
-      addToast('取号数量为 1 时无需向下复制（当前行已计入本次取号）', 'error');
-      if (inputEl) inputEl.value = '1';
-      return;
-    }
-    // 在展示行中定位当前行，取其下方「客户名为空」的行（升序）前 needCopy 个
+    // 在展示行中定位当前行，取其下方「客户名为空」的行（升序）前 count 个
     const startIdx = displayRows.findIndex(r => r.id === row.id);
     if (startIdx < 0) return;
     const targets = displayRows
       .slice(startIdx + 1)
       .filter(r => !r.customer.trim())
-      .slice(0, needCopy);
+      .slice(0, count);
     if (targets.length === 0) {
       addToast('下方无客户名为空的行可复制', 'error');
       return;
@@ -1348,13 +1339,12 @@ const GunLedger: React.FC = () => {
     });
     setSaving(true);
     debouncedSave(activeTable.id);
-    // 取号完成：数字框自动归 1，下一次取号需重新设置本次取号数量
+    // 复制完成：数字框自动归 1，下次复制需重新设置数量
     if (inputEl) inputEl.value = '1';
-    const taken = targets.length + 1;
-    if (targets.length < needCopy) {
-      addToast(`下方仅有 ${targets.length} 行空行，本次已取号 ${taken} 个（本行 + 向下复制 ${targets.length} 行）`, 'success');
+    if (targets.length < count) {
+      addToast(`下方仅有 ${targets.length} 行客户名为空，已复制 ${targets.length} 行（数字框已重置为 1）`, 'success');
     } else {
-      addToast(`本次已取号 ${taken} 个（本行 + 向下复制 ${targets.length} 行）`, 'success');
+      addToast(`已向下复制 ${targets.length} 行（数字框已重置为 1）`, 'success');
     }
   }, [activeTable, activeCategory, isAdmin, online, activeTableReadOnly, displayRows, patchTableRows, user, debouncedSave, addToast]);
 
@@ -3065,7 +3055,7 @@ const GunLedger: React.FC = () => {
                               </td>
                             );
                           })}
-                          {/* 操作列：[取号数量][向下复制][清除] —— 数字为本次取号总数（含当前行），填 3 则当前行 + 向下复制 2 行；时间填当前日期、担当填当前操作者；焊枪名继承当前行前缀/后缀，仅编号按目标行规则变化；取号完成后数字自动归 1 */}
+                          {/* 操作列：[复制数量][向下复制][清除] —— 数字为向下复制的行数，填 3 则本行下方 3 行；时间填当前日期、担当填当前操作者；焊枪名继承当前行前缀/后缀，仅编号按目标行规则变化；复制完成后数字自动归 1 */}
                           <td className="border border-gray-300 px-1 py-1">
                             <div className="flex items-center justify-center gap-1">
                               <input
@@ -3076,7 +3066,7 @@ const GunLedger: React.FC = () => {
                                 step={1}
                                 defaultValue={1}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking)}
-                                title="本次取号数量（含当前行，1~10）：例如填 3 表示本次取 3 个号，即当前行 + 向下复制 2 行；填 1 不向下复制；取号后自动归 1"
+                                title="向下复制行数（1~10）：例如填 3 表示把本行客户名向下复制到 3 行空行；复制后数字自动归 1"
                                 onInput={e => {
                                   const v = (e.target as HTMLInputElement).value;
                                   const n = parseInt(v, 10);
@@ -3089,7 +3079,7 @@ const GunLedger: React.FC = () => {
                               <button
                                 onClick={() => handleCopyDown(row)}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()}
-                                title="向下取号：本次取号数量含当前行，填 3 则当前行 + 向下复制 2 行（时间填当前日期、担当填当前操作者，下方行焊枪名继承本行前缀/后缀、仅编号不同）；取号后数字自动归 1"
+                                title="向下复制：数字为复制行数，填 3 则把本行客户名复制到下方 3 行空行（时间填当前日期、担当填当前操作者，下方行焊枪名继承本行前缀/后缀、仅编号不同）；复制后数字自动归 1"
                                 className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
                               >
                                 <Plus size={14} />
