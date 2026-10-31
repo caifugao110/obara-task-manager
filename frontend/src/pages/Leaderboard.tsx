@@ -90,8 +90,8 @@ const Leaderboard = () => {
   const [specFullSearch, setSpecFullSearch] = useState(false);
   // 新增：仅显示未完成任务开关（开启后去除已完成的主任务/枪名）
   const [specHideCompleted, setSpecHideCompleted] = useState(false);
-  // 新增：匹配任务的日期筛选（空字符串 = 全部日期），仅影响下方任务卡片列表
-  const [specDateFilter, setSpecDateFilter] = useState('');
+  // 新增：匹配任务的日期筛选（空数组 = 全部日期，支持多选），仅影响下方任务卡片列表
+  const [specDateFilters, setSpecDateFilters] = useState<string[]>([]);
   // 日期筛选下拉日历的展开状态与当前展示的月份（'YYYY-MM'）
   const [specDateOpen, setSpecDateOpen] = useState(false);
   const [specCalendarMonth, setSpecCalendarMonth] = useState('');
@@ -226,12 +226,34 @@ const Leaderboard = () => {
 
   const specCalendarMonthIndex = specResultMonths.indexOf(specActiveMonth);
 
-  // 打开日历：默认定位到已选日期或最早有任务的月份
+  // 日期多选：已选日期集合（用于日历单元格与标签的命中判断）
+  const specSelectedDateSet = useMemo(() => new Set(specDateFilters), [specDateFilters]);
+  const hasSpecDateFilter = specDateFilters.length > 0;
+
+  // 切换某个日期的选中状态（多选，保持升序）
+  const toggleSpecDateFilter = useCallback((date: string) => {
+    setSpecDateFilters(prev => (
+      prev.includes(date) ? prev.filter(item => item !== date) : [...prev, date].sort()
+    ));
+  }, []);
+
+  // 结果集变化后（切换仕样号或“仅显示未完成任务”开关）剔除已无匹配任务的已选日期
   useEffect(() => {
-    if (!specDateOpen) return;
-    const target = (specDateFilter || specResultDates[0] || '').slice(0, 7);
-    setSpecCalendarMonth(target || specResultMonths[0] || '');
-  }, [specDateOpen, specDateFilter, specResultDates, specResultMonths]);
+    setSpecDateFilters(prev => {
+      const next = prev.filter(date => specResultDates.includes(date));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [specResultDates]);
+
+  // 仅在「日历刚展开」时定位月份：多选过程中继续翻月不会被拉回已选日期所在月份
+  const specDateWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (specDateOpen && !specDateWasOpenRef.current) {
+      const target = (specDateFilters[0] || specResultDates[0] || '').slice(0, 7);
+      setSpecCalendarMonth(target || specResultMonths[0] || '');
+    }
+    specDateWasOpenRef.current = specDateOpen;
+  }, [specDateOpen, specDateFilters, specResultDates, specResultMonths]);
 
   // 点击空白处 / 按 Esc 收起日历
   useEffect(() => {
@@ -254,11 +276,18 @@ const Leaderboard = () => {
     };
   }, [specDateOpen]);
 
-  // 日期筛选：按指定日期只显示当天匹配到的任务；未选择日期时展示全部
+  // 日期筛选：按所选日期（可多选）只显示命中日期的任务；未选择日期时展示全部
   const specTasksByDate = useMemo(() => {
-    if (!specDateFilter) return specResultsFiltered;
-    return specResultsFiltered.filter(result => result.date === specDateFilter);
-  }, [specResultsFiltered, specDateFilter]);
+    if (specDateFilters.length === 0) return specResultsFiltered;
+    return specResultsFiltered.filter(result => specSelectedDateSet.has(result.date));
+  }, [specResultsFiltered, specDateFilters, specSelectedDateSet]);
+
+  // 筛选器上展示的文案：未选 → 按日期筛选；单选 → 日期 + 星期；多选 → 已选 N 天
+  const specDateFilterLabel = specDateFilters.length === 0
+    ? '按日期筛选'
+    : specDateFilters.length === 1
+      ? `${specDateFilters[0]} ${weekDayLabel(specDateFilters[0])}`
+      : `已选 ${specDateFilters.length} 天`;
 
   // 仕样进度统计：按「确认图」「确认图修改」「设计」三类汇总，每个枪名计为一个小任务；
   // 主任务标记完成（白色）时其下枪名视为已完成；不受“未标记完成状态任务”开关影响，始终基于全部搜索结果统计
@@ -844,7 +873,7 @@ const Leaderboard = () => {
                     onChange={(e) => {
                       const val = e.target.value.replace(/\D/g, '').slice(0, specNumberDigits);
                       if (val !== specNumber) {
-                        setSpecDateFilter('');
+                        setSpecDateFilters([]);
                         setSpecDateOpen(false);
                       }
                       setSpecNumber(val);
@@ -961,9 +990,9 @@ const Leaderboard = () => {
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <span className="text-sm font-bold text-gray-600">
                     找到 <span className="text-blue-600">{specTasksByDate.length}</span> 个匹配任务
-                    {specDateFilter && (
+                    {hasSpecDateFilter && (
                       <span className="ml-2 text-xs font-normal text-gray-400">
-                        · 全部日期共 {specResultsFiltered.length} 个
+                        · 已选 {specDateFilters.length} 天 / 全部日期共 {specResultsFiltered.length} 个
                       </span>
                     )}
                   </span>
@@ -979,17 +1008,17 @@ const Leaderboard = () => {
                         }
                       }}
                       className={`flex items-center gap-2 h-9 pl-2.5 pr-2 rounded-xl border-2 shadow-sm transition-all select-none cursor-pointer outline-none ${
-                        specDateFilter
+                        hasSpecDateFilter
                           ? 'border-blue-400 bg-blue-50 hover:border-blue-500'
                           : 'border-gray-200 bg-white hover:border-blue-300'
                       } ${specDateOpen ? 'ring-2 ring-blue-200 border-blue-400' : ''}`}
-                      title="按日期筛选匹配任务（点击任意位置展开日历）"
+                      title="按日期筛选匹配任务，支持多选（点击任意位置展开日历）"
                     >
-                      <CalendarDays size={15} className={`shrink-0 transition ${specDateFilter || specDateOpen ? 'text-blue-600' : 'text-blue-500'}`} />
-                      <span className={`text-xs font-bold whitespace-nowrap transition ${specDateFilter || specDateOpen ? 'text-blue-700' : 'text-gray-500'}`}>
-                        {specDateFilter ? `${specDateFilter} ${weekDayLabel(specDateFilter)}` : '按日期筛选'}
+                      <CalendarDays size={15} className={`shrink-0 transition ${hasSpecDateFilter || specDateOpen ? 'text-blue-600' : 'text-blue-500'}`} />
+                      <span className={`text-xs font-bold whitespace-nowrap transition ${hasSpecDateFilter || specDateOpen ? 'text-blue-700' : 'text-gray-500'}`}>
+                        {specDateFilterLabel}
                       </span>
-                      {specDateFilter && (
+                      {hasSpecDateFilter && (
                         <>
                           <span className="px-1.5 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-bold leading-none">
                             {specTasksByDate.length}
@@ -998,11 +1027,10 @@ const Leaderboard = () => {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setSpecDateFilter('');
-                              setSpecDateOpen(false);
+                              setSpecDateFilters([]);
                             }}
                             className="w-6 h-6 flex items-center justify-center rounded-full text-blue-500 hover:bg-blue-200/70 hover:text-blue-700 transition"
-                            title="清除日期筛选，显示全部匹配任务"
+                            title="清除全部已选日期，显示全部匹配任务"
                           >
                             <X size={13} />
                           </button>
@@ -1015,7 +1043,7 @@ const Leaderboard = () => {
                     </div>
 
                     {specDateOpen && (
-                      <div className="absolute right-0 top-full mt-2 z-50 w-[264px] rounded-xl border border-gray-200 bg-white shadow-2xl p-2.5">
+                      <div className="absolute right-0 top-full mt-2 z-50 w-[268px] rounded-xl border border-gray-200 bg-white shadow-2xl p-2.5">
                         <div className="flex items-center justify-between mb-1.5">
                           <button
                             type="button"
@@ -1041,6 +1069,29 @@ const Leaderboard = () => {
                             <ChevronRight size={15} />
                           </button>
                         </div>
+
+                        {/* 已选日期：可逐个移除（日期可能跨月，故在此统一展示） */}
+                        {hasSpecDateFilter && (
+                          <div className="mb-1.5 flex flex-wrap gap-1 max-h-[68px] overflow-y-auto">
+                            {specDateFilters.map(date => (
+                              <span
+                                key={`picked-${date}`}
+                                className="inline-flex items-center gap-0.5 pl-1.5 pr-0.5 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-bold leading-none"
+                              >
+                                {date.slice(5)} {weekDayLabel(date)}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSpecDateFilter(date)}
+                                  className="w-4 h-4 flex items-center justify-center rounded-full hover:bg-white/25 transition"
+                                  title={`移除 ${date}`}
+                                >
+                                  <X size={10} />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="grid grid-cols-7 gap-0.5 mb-0.5">
                           {['日', '一', '二', '三', '四', '五', '六'].map(week => (
                             <span key={week} className="h-6 flex items-center justify-center text-[10px] font-bold text-gray-400">
@@ -1051,18 +1102,19 @@ const Leaderboard = () => {
                         <div className="grid grid-cols-7 gap-0.5">
                           {specCalendarCells.map((cell, cellIndex) => {
                             if (!cell) return <span key={`blank-${cellIndex}`} />;
-                            const selected = cell.date === specDateFilter;
+                            const selected = specSelectedDateSet.has(cell.date);
                             const available = cell.count > 0;
                             return (
                               <button
                                 key={cell.date}
                                 type="button"
                                 disabled={!available}
-                                onClick={() => {
-                                  setSpecDateFilter(cell.date);
-                                  setSpecDateOpen(false);
-                                }}
-                                title={available ? `${cell.date} ${weekDayLabel(cell.date)}：${cell.count} 个任务` : `${cell.date} 无匹配任务`}
+                                onClick={() => toggleSpecDateFilter(cell.date)}
+                                title={
+                                  available
+                                    ? `${cell.date} ${weekDayLabel(cell.date)}：${cell.count} 个任务（点击${selected ? '取消选择' : '加入选择'}）`
+                                    : `${cell.date} 无匹配任务`
+                                }
                                 className={`relative h-8 rounded-lg text-xs transition ${
                                   selected
                                     ? 'bg-blue-600 text-white font-bold'
@@ -1079,18 +1131,27 @@ const Leaderboard = () => {
                             );
                           })}
                         </div>
-                        <button
-                          type="button"
-                          disabled={!specDateFilter}
-                          onClick={() => {
-                            setSpecDateFilter('');
-                            setSpecDateOpen(false);
-                          }}
-                          className="mt-2 w-full h-8 rounded-lg text-xs font-bold text-gray-600 bg-gray-50 hover:bg-blue-50 hover:text-blue-600 transition disabled:opacity-40 disabled:hover:bg-gray-50 disabled:hover:text-gray-600 disabled:cursor-not-allowed"
-                        >
-                          全部日期
-                          <span className="ml-1 font-normal text-gray-400">共 {specResultsFiltered.length} 个</span>
-                        </button>
+
+                        <p className="mt-1.5 text-[10px] text-gray-400 leading-tight">可点击多个日期，再次点击取消</p>
+
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={!hasSpecDateFilter}
+                            onClick={() => setSpecDateFilters([])}
+                            className="flex-1 h-8 rounded-lg text-xs font-bold text-gray-600 bg-gray-50 hover:bg-blue-50 hover:text-blue-600 transition disabled:opacity-40 disabled:hover:bg-gray-50 disabled:hover:text-gray-600 disabled:cursor-not-allowed"
+                          >
+                            全部日期
+                            <span className="ml-1 font-normal text-gray-400">共 {specResultsFiltered.length} 个</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSpecDateOpen(false)}
+                            className="h-8 px-3 rounded-lg text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 transition"
+                          >
+                            完成
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1133,13 +1194,17 @@ const Leaderboard = () => {
                     </Link>
                   ))}
                 </div>
-                {specTasksByDate.length === 0 && specDateFilter && (
+                {specTasksByDate.length === 0 && hasSpecDateFilter && (
                   <div className="text-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-xl">
                     <CalendarDays size={32} className="mx-auto mb-2 opacity-50" />
-                    <p className="text-sm">所选日期 {specDateFilter} 没有匹配任务</p>
+                    <p className="text-sm">
+                      所选 {specDateFilters.length} 天
+                      <span className="text-gray-500">（{specDateFilters.join('、')}）</span>
+                      没有匹配任务
+                    </p>
                     <button
                       type="button"
-                      onClick={() => setSpecDateFilter('')}
+                      onClick={() => setSpecDateFilters([])}
                       className="mt-3 px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
                     >
                       查看全部日期

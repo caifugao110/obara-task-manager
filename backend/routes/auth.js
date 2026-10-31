@@ -223,7 +223,10 @@ router.post('/login', loginIpLimiter, loginLimiter, asyncHandler(async (req, res
       id: user.id,
       username: user.username,
       role: user.role,
-      name: user.name
+      name: user.name,
+      // 分组随会话下发给前端（工时管理页按本人分组做默认统计范围），
+      // 与 /users 的 toSafeUser 白名单保持一致，不额外暴露任何敏感字段
+      group: user.group || ''
     },
     forcePasswordChange: user.forcePasswordChange || false
   });
@@ -267,7 +270,7 @@ router.get('/validate', asyncHandler(async (req, res) => {
       return res.status(401).json({ valid: false, code: 'SESSION_INVALIDATED', message });
     }
 
-    res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name }, forcePasswordChange: user.forcePasswordChange || false });
+    res.json({ valid: true, user: { id: user.id, username: user.username, role: user.role, name: user.name, group: user.group || '' }, forcePasswordChange: user.forcePasswordChange || false });
   } catch {
     // jwt.verify 失败（主要是 Token 过期）：给出 TOKEN_EXPIRED 错误码，
     // 前端据此提示「登录状态已失效」而不是静默踢回登录页

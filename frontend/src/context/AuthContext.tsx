@@ -10,6 +10,8 @@ interface User {
   username: string;
   role: 'superadmin' | 'admin' | 'user';
   name: string;
+  /** 所属分组（工时管理页据此决定默认统计范围）；未分组时为空字符串 */
+  group?: string;
 }
 
 interface AuthContextType {
@@ -143,7 +145,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               prev.id === remoteUser.id &&
               prev.username === remoteUser.username &&
               prev.role === remoteUser.role &&
-              prev.name === remoteUser.name
+              prev.name === remoteUser.name &&
+              (prev.group || '') === (remoteUser.group || '')
             ) {
               return prev;
             }

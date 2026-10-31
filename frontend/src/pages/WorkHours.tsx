@@ -25,11 +25,13 @@ import { getEffectiveIsWeekend, normalizeWorkdayOverrides, WorkdayOverrides } fr
 interface DesignerData {
   id: string;
   name: string;
+  group?: string;
 }
 
 interface WorkHoursData {
   designerId: string;
   designerName: string;
+  group: string;
   hours: number;
   workdayHours: number;
   designHours: number;
@@ -136,6 +138,24 @@ const WorkHours = () => {
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const authHeader = useMemo(() => token ? { headers: { Authorization: `Bearer ${token}` } } : {}, [token]);
+
+  // 分组筛选：null = 用户尚未手动切换，跟随登录人所在分组；
+  // 'all' = 全部人员。两个统计卡片共用同一范围，避免左右两栏口径不一致。
+  const [groupFilter, setGroupFilter] = useState<string | null>(null);
+  const userGroup = (user?.group || '').trim();
+  // 登录人没有分组时默认展示所有人员；有分组则默认只看本组
+  const activeGroup = groupFilter ?? (userGroup ? userGroup : 'all');
+
+  // 可选分组：设计人员现有分组 + 登录人自身分组（本组暂时没有设计人员时也要能选中）
+  const groupOptions = useMemo(() => {
+    const names = new Set<string>();
+    designers.forEach(designer => {
+      const name = (designer.group || '').trim();
+      if (name) names.add(name);
+    });
+    if (userGroup) names.add(userGroup);
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  }, [designers, userGroup]);
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
@@ -248,6 +268,7 @@ const WorkHours = () => {
         dataMap.set(designer.id, {
           designerId: designer.id,
           designerName: designer.name,
+          group: (designer.group || '').trim(),
           hours: 0,
           workdayHours: 0,
           designHours: 0,
@@ -378,25 +399,30 @@ const WorkHours = () => {
     if (!loading && canViewWorkHours) fetchWorkHoursData();
   }, [loading, canViewWorkHours, fetchWorkHoursData]);
 
-  // 导出当前月份工时管理表（与系统设置页一致，月份由当前页面决定）
+  // 导出当前月份工时管理表（与系统设置页一致，月份由当前页面决定；
+  // 统计范围 / 两个显示开关都跟随页面当前状态，做到「导出显示结果」名副其实）
+  const exportScope = `${activeGroup === 'all' ? '全部人员' : activeGroup}${excludeWeekendOvertime ? ' · 不含周末加班' : ''}${excludeVacationLeave ? ' · 不含休假' : ''}`;
   const handleWorkHoursExport = async () => {
     if (!token) return;
     const month = format(currentDate, 'yyyy-MM');
+    const groupQuery = activeGroup === 'all' ? '' : `&group=${encodeURIComponent(activeGroup)}`;
+    const flagQuery = `${excludeWeekendOvertime ? '&excludeWeekendOvertime=1' : ''}${excludeVacationLeave ? '&excludeVacationLeave=1' : ''}`;
     setExporting(true);
     try {
-      const res = await axios.get(`/api/work-hours/export?month=${month}`, {
+      const res = await axios.get(`/api/work-hours/export?month=${month}${groupQuery}${flagQuery}`, {
         ...authHeader,
         responseType: 'blob'
       });
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `work-hours-${month}-${format(new Date(), 'yyyyMMddHHmmss')}.xls`;
+      const scopeSuffix = activeGroup === 'all' ? '' : `-${activeGroup}`;
+      link.download = `work-hours-${month}${scopeSuffix}-${format(new Date(), 'yyyyMMddHHmmss')}.xls`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      addToast('导出成功', 'success');
+      addToast(`导出成功（${exportScope}）`, 'success');
     } catch (err: any) {
       markOfflineIfNetworkError(err);
       if (err.response?.status === 404) {
@@ -439,14 +465,22 @@ const WorkHours = () => {
     []
   );
 
+  // 当前分组范围内的人员（两张卡片的所有排名、合计、进度基准都以此为准）
+  const scopedWorkHoursData = useMemo(
+    () => activeGroup === 'all'
+      ? workHoursData
+      : workHoursData.filter(item => item.group === activeGroup),
+    [activeGroup, workHoursData]
+  );
+
   const sortedByHours = useMemo(
-    () => [...workHoursData].sort((a, b) => getDisplayedWorkHours(b) - getDisplayedWorkHours(a)),
-    [getDisplayedWorkHours, workHoursData]
+    () => [...scopedWorkHoursData].sort((a, b) => getDisplayedWorkHours(b) - getDisplayedWorkHours(a)),
+    [getDisplayedWorkHours, scopedWorkHoursData]
   );
 
   const sortedByLeave = useMemo(
-    () => [...workHoursData].sort((a, b) => getDisplayedLeaveHours(b) - getDisplayedLeaveHours(a)),
-    [getDisplayedLeaveHours, workHoursData]
+    () => [...scopedWorkHoursData].sort((a, b) => getDisplayedLeaveHours(b) - getDisplayedLeaveHours(a)),
+    [getDisplayedLeaveHours, scopedWorkHoursData]
   );
 
   // 卡片副标题用的汇总值 / 进度条用的基准值（进度条按榜首归一，视觉上更有可比性）
@@ -660,7 +694,7 @@ const WorkHours = () => {
               onClick={handleWorkHoursExport}
               disabled={exporting || isOffline}
               className="flex items-center gap-2 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition"
-              title={`导出 ${format(currentDate, 'yyyy年MM月')} 工时管理表`}
+              title={`导出 ${format(currentDate, 'yyyy年MM月')} 工时管理表（${exportScope}）`}
             >
               {exporting ? <RefreshCw size={16} className="animate-spin" /> : <Download size={16} />}
               导出显示结果
@@ -730,6 +764,42 @@ const WorkHours = () => {
 
       <main className={`flex-1 w-full overflow-y-auto ${isOffline ? 'offline-locked' : ''}`}>
         <div className="mx-auto w-full max-w-7xl px-6 py-6 lg:px-8">
+          {/* 分组范围：默认落在登录人所在分组，账号未分组时默认显示全部人员；两张统计卡共用该范围 */}
+          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-slate-200/70 bg-white px-4 py-2.5 shadow-sm shadow-slate-200/40">
+            <span className="flex shrink-0 items-center gap-1.5 text-xs font-bold text-slate-500">
+              <Users size={14} className="text-blue-500" />
+              统计分组
+            </span>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {[{ value: 'all', label: '全部人员' }, ...groupOptions.map(name => ({ value: name, label: name }))].map(option => {
+                const active = activeGroup === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => {
+                      setGroupFilter(option.value);
+                      // 切换范围后旧的悬停明细已不属于当前名单，直接收起浮层
+                      setTip(null);
+                    }}
+                    className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                      active
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70 hover:text-slate-700'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="ml-auto shrink-0 text-[11px] font-medium text-slate-400">
+              {userGroup
+                ? (activeGroup === 'all' ? `本组：${userGroup}（已切换为全部人员）` : `本组：${userGroup}`)
+                : '账号未设置分组，默认显示全部人员'}
+            </span>
+          </div>
+
           {dataLoading ? (
             <div className="flex items-center justify-center py-20">
               <RefreshCw className="animate-spin text-blue-600" size={36} />
@@ -737,7 +807,7 @@ const WorkHours = () => {
           ) : (
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-6">
               {/* ==================== 月度工时统计 ==================== */}
-              <section className="flex max-h-[calc(100vh_-_13.5rem)] flex-col rounded-2xl border border-slate-200/70 bg-white shadow-sm shadow-slate-200/40">
+              <section className="flex max-h-[calc(100vh_-_17.25rem)] flex-col rounded-2xl border border-slate-200/70 bg-white shadow-sm shadow-slate-200/40">
                 {/* 卡头固定在卡片顶部（不吸顶覆盖内容）：名单在卡头下方的独立滚动区里滚动，人名永远不会被压住 */}
                 <div className="flex shrink-0 items-center justify-between gap-3 rounded-t-2xl border-b border-slate-100 bg-slate-50 px-5 py-3.5">
                   <div className="flex min-w-0 items-center gap-2.5">
@@ -747,18 +817,18 @@ const WorkHours = () => {
                     <div className="min-w-0">
                       <h2 className="truncate text-[15px] font-bold text-slate-800">月度工时统计</h2>
                       <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400">
-                        共 {workHoursData.length} 人 · 合计 {totalWorkHours.toFixed(1)}h
-                        {showAllHours && workHoursData.length > 10 ? ' · 已展开' : ''}
+                        {activeGroup === 'all' ? '全部人员' : activeGroup} · 共 {scopedWorkHoursData.length} 人 · 合计 {totalWorkHours.toFixed(1)}h
+                        {showAllHours && scopedWorkHoursData.length > 10 ? ' · 已展开' : ''}
                       </p>
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2.5">
-                    {workHoursData.length > 10 && (
+                    {scopedWorkHoursData.length > 10 && (
                       <button
                         type="button"
                         onClick={toggleAllHours}
                         disabled={isOffline}
-                        title={showAllHours ? '收起列表，仅保留前 10 名' : `展开全部 ${workHoursData.length} 人`}
+                        title={showAllHours ? '收起列表，仅保留前 10 名' : `展开全部 ${scopedWorkHoursData.length} 人`}
                         className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white/90 px-1.5 py-1 text-[11px] font-bold text-slate-500 shadow-sm transition hover:border-blue-200 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {showAllHours ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -784,7 +854,9 @@ const WorkHours = () => {
 
                 <div className="min-h-0 flex-1 snap-y snap-mandatory overflow-y-auto px-2.5 py-2" data-list ref={hoursListRef} onScroll={() => setTip(null)}>
                   {sortedByHours.length === 0 && (
-                    <div className="py-10 text-center text-xs font-medium text-slate-400">本月暂无工时记录</div>
+                    <div className="py-10 text-center text-xs font-medium text-slate-400">
+                      {activeGroup === 'all' ? '本月暂无工时记录' : `${activeGroup} 本月暂无工时记录`}
+                    </div>
                   )}
                   {(showAllHours ? sortedByHours : sortedByHours.slice(0, 10)).map((item, index) => {
                     const value = getDisplayedWorkHours(item);
@@ -814,7 +886,7 @@ const WorkHours = () => {
                             </span>
                           </div>
 
-                          {weekendHours > 0 && (
+                          {!excludeWeekendOvertime && weekendHours > 0 && (
                             <div className="mt-0.5 flex flex-wrap items-center gap-1">
                               <span className="rounded bg-amber-100/70 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-600">
                                 周末加班 {weekendHours.toFixed(1)}h
@@ -827,21 +899,21 @@ const WorkHours = () => {
                   })}
                 </div>
 
-                {workHoursData.length > 10 && (
+                {scopedWorkHoursData.length > 10 && (
                   <div className="shrink-0 border-t border-slate-100 px-2.5 py-1.5">
                     <button
                       onClick={toggleAllHours}
                       disabled={isOffline}
                       className="w-full rounded-lg py-1.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-50 hover:text-blue-600 disabled:cursor-not-allowed"
                     >
-                      {showAllHours ? '收起列表' : `展开全部 ${workHoursData.length} 人`}
+                      {showAllHours ? '收起列表' : `展开全部 ${scopedWorkHoursData.length} 人`}
                     </button>
                   </div>
                 )}
               </section>
 
               {/* ==================== 月度请假统计 ==================== */}
-              <section className="flex max-h-[calc(100vh_-_13.5rem)] flex-col rounded-2xl border border-slate-200/70 bg-white shadow-sm shadow-slate-200/40">
+              <section className="flex max-h-[calc(100vh_-_17.25rem)] flex-col rounded-2xl border border-slate-200/70 bg-white shadow-sm shadow-slate-200/40">
                 <div className="flex shrink-0 items-center justify-between gap-3 rounded-t-2xl border-b border-slate-100 bg-slate-50 px-5 py-3.5">
                   <div className="flex min-w-0 items-center gap-2.5">
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-rose-500/10 text-rose-500">
@@ -850,18 +922,18 @@ const WorkHours = () => {
                     <div className="min-w-0">
                       <h2 className="truncate text-[15px] font-bold text-slate-800">月度请假统计</h2>
                       <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400">
-                        共 {workHoursData.length} 人 · 有记录 {sortedByLeave.filter(item => getDisplayedLeaveHours(item) > 0).length} 人
-                        {showAllLeave && hasAnyLeave && workHoursData.length > 10 ? ' · 已展开' : ''}
+                        {activeGroup === 'all' ? '全部人员' : activeGroup} · 共 {scopedWorkHoursData.length} 人 · 有记录 {sortedByLeave.filter(item => getDisplayedLeaveHours(item) > 0).length} 人
+                        {showAllLeave && hasAnyLeave && scopedWorkHoursData.length > 10 ? ' · 已展开' : ''}
                       </p>
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2.5">
-                    {hasAnyLeave && workHoursData.length > 10 && (
+                    {hasAnyLeave && scopedWorkHoursData.length > 10 && (
                       <button
                         type="button"
                         onClick={toggleAllLeave}
                         disabled={isOffline}
-                        title={showAllLeave ? '收起列表，仅保留前 10 名' : `展开全部 ${workHoursData.length} 人`}
+                        title={showAllLeave ? '收起列表，仅保留前 10 名' : `展开全部 ${scopedWorkHoursData.length} 人`}
                         className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white/90 px-1.5 py-1 text-[11px] font-bold text-slate-500 shadow-sm transition hover:border-rose-200 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {showAllLeave ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -889,9 +961,11 @@ const WorkHours = () => {
                   {sortedByLeave.length === 0 || !hasAnyLeave ? (
                     <div className="flex flex-1 flex-col items-center justify-center py-12 text-center">
                       <Calendar size={26} className="mb-2 text-slate-300" />
-                      <div className="text-xs font-semibold text-slate-400">本月暂无请假记录</div>
+                      <div className="text-xs font-semibold text-slate-400">
+                        {activeGroup === 'all' ? '本月暂无请假记录' : `${activeGroup} 本月暂无请假记录`}
+                      </div>
                       <div className="mt-1 text-[11px] text-slate-300">
-                        共 {workHoursData.length} 人，均无请假
+                        共 {scopedWorkHoursData.length} 人，均无请假
                       </div>
                     </div>
                   ) : (
@@ -941,14 +1015,14 @@ const WorkHours = () => {
                   )}
                 </div>
 
-                {hasAnyLeave && workHoursData.length > 10 && (
+                {hasAnyLeave && scopedWorkHoursData.length > 10 && (
                   <div className="shrink-0 border-t border-slate-100 px-2.5 py-1.5">
                     <button
                       onClick={toggleAllLeave}
                       disabled={isOffline}
                       className="w-full rounded-lg py-1.5 text-[11px] font-bold text-slate-500 transition hover:bg-slate-50 hover:text-rose-500 disabled:cursor-not-allowed"
                     >
-                      {showAllLeave ? '收起列表' : `展开全部 ${workHoursData.length} 人`}
+                      {showAllLeave ? '收起列表' : `展开全部 ${scopedWorkHoursData.length} 人`}
                     </button>
                   </div>
                 )}
