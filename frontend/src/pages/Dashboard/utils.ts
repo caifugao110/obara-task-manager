@@ -1,4 +1,5 @@
 import { format } from 'date-fns';
+import { PAUSED_TASK_SUFFIX } from '../../utils/taskColors';
 import type { GunItem, TaskItem, SelectedTask, SpecInfoResponse } from './types';
 
 export const taskSelectionKey = (selection: SelectedTask) => `${selection.designerId}__${selection.date}__${selection.itemId}`;
@@ -51,6 +52,21 @@ export const splitDesignTaskName = (taskName: string) => {
     : withoutDeadline;
   const typeSuffix = typeMatch ? ` ${typeMatch[1]}` : '';
   return { baseName, typeSuffix };
+};
+
+// 任务名输入框末尾直接敲「暂停」时，等同勾选「暂停/取消」复选框：
+// 返回去掉这段文字后的内容和是否命中。复选框是互斥的（同一任务只能有一个任务内容），
+// 所以这里只认末尾的「暂停」——后面接的「暂停/取消」后缀由复选框统一维护，
+// 避免出现「既制审图 + 暂停/取消」两个勾同时成立。
+export const splitTypedPausedSuffix = (value?: string | null) => {
+  const text = String(value ?? '');
+  if (!text.endsWith('暂停') || text.endsWith(PAUSED_TASK_SUFFIX)) {
+    return { text, pausedTyped: false };
+  }
+  const stripped = text.slice(0, -'暂停'.length).replace(/\s+$/, '');
+  // 「取消暂停」这类说明性内容不当作勾选暂停处理
+  if (stripped.endsWith('取消')) return { text, pausedTyped: false };
+  return { text: stripped, pausedTyped: true };
 };
 
 export const getDeliveryDateSuffix = (deliveryDate?: string | null) => {

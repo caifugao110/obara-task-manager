@@ -59,6 +59,7 @@ import {
   getTaskHours,
   buildTaskMetadataTitle,
   syncGunsWithTaskColor,
+  splitTypedPausedSuffix,
 } from './utils';
 import type {
   GunItem,
@@ -3777,8 +3778,14 @@ const Dashboard = () => {
                                 className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                                 value={addModeTaskName}
                                 onChange={(e) => {
-                                  const nextValue = e.target.value;
+                                  // 末尾直接输入「暂停」：自动勾选「暂停/取消」（复选框互斥），并把这段文字去掉
+                                  const { text: nextValue, pausedTyped } = splitTypedPausedSuffix(e.target.value);
                                   setAddModeTaskName(nextValue);
+                                  if (pausedTyped) {
+                                    setAddModeTaskType('paused');
+                                    // 暂停任务不支持加急
+                                    setUrgentDraft(false);
+                                  }
                                   scheduleAddModeSpecAutoFill(nextValue);
                                 }}
                                 placeholder={`输入完整任务名称或者${specNumberDigits}位数仕样号自动对应`}
@@ -4163,14 +4170,18 @@ const Dashboard = () => {
                                   const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                   const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                   // 暂停/取消 是独立状态：任务名后缀 + paused 标记（兼容历史只带标记的数据）
-                                  const checkedState: Record<string, boolean> = {
-                                    confirm: currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('确认图修改'),
-                                    design: currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('设计变更'),
-                                    confirmModify: currentItem.taskName.includes('确认图修改'),
-                                    designChange: currentItem.taskName.includes('设计变更'),
-                                    drawingReview: currentItem.taskName.includes('既制审图'),
-                                    paused: itemPaused,
-                                  };
+                                  // 复选框互斥：命中暂停时其余任务内容一律不勾选
+                                  // （任务名里可能同时残留「暂停」和别的后缀，例如「…项目暂停 既制审图」）
+                                  const checkedState: Record<string, boolean> = itemPaused
+                                    ? { confirm: false, design: false, confirmModify: false, designChange: false, drawingReview: false, paused: true }
+                                    : {
+                                      confirm: currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('确认图修改'),
+                                      design: currentItem.taskName.includes('设计') && !currentItem.taskName.includes('确认图') && !currentItem.taskName.includes('设计变更'),
+                                      confirmModify: currentItem.taskName.includes('确认图修改'),
+                                      designChange: currentItem.taskName.includes('设计变更'),
+                                      drawingReview: currentItem.taskName.includes('既制审图'),
+                                      paused: false,
+                                    };
                                   return TASK_CONTENT_TYPES.map(({ key, label }) => {
                                     // 标签做成和表格单元格一样的小色块：底色 = 该任务内容的表格填充色
                                     const swatchColor = getTaskBaseColor(systemSettings.taskColorConfig, key, urgentDraft);
@@ -4189,13 +4200,16 @@ const Dashboard = () => {
                                           checked={checked}
                                           onChange={(e) => {
                                             const nextType: DesignTaskType = e.target.checked ? key : 'none';
-                                            let newName = baseName + deadline;
+                                            // 任务名里残留的「暂停」文字先清掉（用户可能在末尾直接敲过「暂停」），
+                                            // 否则会拼出「…项目暂停 暂停/取消」这种重复内容
+                                            const cleanBaseName = baseName.replace(/\s*暂停$/, '');
+                                            let newName = cleanBaseName + deadline;
                                             if (e.target.checked) {
-                                              newName = `${baseName} ${label}${deadline}`;
+                                              newName = `${cleanBaseName} ${label}${deadline}`;
                                             }
                                             setTaskTypeDrafts(prev => ({
                                               ...prev,
-                                              [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: baseName, designGuns: currentItem.guns || [], taskType: nextType }
+                                              [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: cleanBaseName, designGuns: currentItem.guns || [], taskType: nextType }
                                             }));
                                             if (nextType === 'paused') {
                                               // 暂停/取消：只打标记 + 取消加急，任务名后缀改为「暂停/取消」。
@@ -4238,19 +4252,34 @@ const Dashboard = () => {
                                   className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                                   value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消)?\s*(\[\d+\/\d+\])?$/, '')}
                                   onChange={(e) => {
-                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消))?\s*(\[\d+\/\d+\])?$/);
-                                    const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
+                                    // 末尾直接输入「暂停」：自动勾选「暂停/取消」（复选框互斥，不再叠加其它任务内容），
+                                    // 并把这两字从任务名里去掉——后缀统一由复选框写成「暂停/取消」
+                                    const { text: typedName, pausedTyped } = splitTypedPausedSuffix(e.target.value);
                                     const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                     let deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                     // 如果已勾选显示纳期，但新的任务名中无法提取指定位数仕样号，自动取消勾选并移除纳期后缀
-                                    if (showDeadline && extractSpecNumber(e.target.value)?.length !== specNumberDigits) {
+                                    if (showDeadline && extractSpecNumber(typedName)?.length !== specNumberDigits) {
                                       setShowDeadline(false);
                                       deadline = '';
                                     }
-                                    const newName = e.target.value + typeSuffix + deadline;
+                                    if (pausedTyped) {
+                                      const pausedName = `${typedName}${typedName ? ' ' : ''}${PAUSED_TASK_SUFFIX}${deadline}`;
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: typedName, designGuns: currentItem.guns || [], taskType: 'paused' }
+                                      }));
+                                      // 暂停任务不支持加急：有加急标记时顺手清掉
+                                      if (urgentDraft) handleUrgentToggle(false);
+                                      void applyPausedState(currentItem.id, true);
+                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', pausedName);
+                                      return;
+                                    }
+                                    const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消))?\s*(\[\d+\/\d+\])?$/);
+                                    const typeSuffix = typeMatch ? (typeMatch[1] || '') : '';
+                                    const newName = typedName + typeSuffix + deadline;
                                     setTaskTypeDrafts(prev => ({
                                       ...prev,
-                                      [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: e.target.value, designGuns: currentItem.guns || [] }
+                                      [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: typedName, designGuns: currentItem.guns || [] }
                                     }));
                                     handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
                                   }}

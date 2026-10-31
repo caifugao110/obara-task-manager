@@ -416,6 +416,8 @@ const GunLedger: React.FC = () => {
   // 操作列「向下复制」每行的取号数量输入框（非受控，点击加号时读取值，1~10）
   // 语义：输入值为「本次取号总数」，含当前行自身；1 表示只取当前行（无需向下复制），取号完成后自动归 1
   const countInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  // 表格滚动容器：用于「进入表格自动定位未取号行」与「跳到未取号行」按钮
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const specLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 表级锁相关 refs（供 socket 回调与卸载清理读取最新值）
   const activeTableIdRef = useRef<string | null>(null);
@@ -645,6 +647,25 @@ const GunLedger: React.FC = () => {
     }) as GunRow[];
     return [...real, ...placeholders];
   }, [activeTable, activeCategory]);
+
+  // 滚动到未取号行（表格底部）：进入表格时自动定位，枪名再多也不用自己往下翻找
+  const scrollToUnnumbered = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const scrollEl = tableScrollRef.current;
+    if (!scrollEl) return;
+    if (typeof scrollEl.scrollTo === 'function') {
+      scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior });
+    } else {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    }
+  }, []);
+
+  // 进入/切换表格后自动滚到底部，让 10 个未取号行直接出现在可视区
+  useEffect(() => {
+    if (!activeTable) return;
+    // 等表格完成布局（行渲染、字体生效）后再定位，否则 scrollHeight 还是旧值
+    const frame = requestAnimationFrame(() => scrollToUnnumbered('auto'));
+    return () => cancelAnimationFrame(frame);
+  }, [activeTable?.id, scrollToUnnumbered]);
 
   // 担当下拉项：默认人员 + 当前用户
   const responsibleOptions = useMemo(() => {
@@ -2855,7 +2876,7 @@ const GunLedger: React.FC = () => {
                       <AlertCircle size={11} />离线 · 只读禁止编辑
                     </span>
                   )}
-                  <span className="text-xs font-normal text-gray-400 ml-2">序号自动递增 · 预留 {PLACEHOLDER_COUNT} 个未取号行</span>
+                  <span className="text-xs font-normal text-gray-400 ml-2">序号自动递增 · 末尾预留 {PLACEHOLDER_COUNT} 个未取号行</span>
                 </h3>
                 {isAdmin && !activeTableReadOnly && (
                   <label
@@ -2889,6 +2910,14 @@ const GunLedger: React.FC = () => {
                   </label>
                 )}
                 <div className="flex items-center gap-2">
+                  {/* 枪名很多时一键跳到表格底部的 10 个未取号行（进入表格时也会自动定位） */}
+                  <button
+                    onClick={() => scrollToUnnumbered()}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded border text-emerald-700 bg-emerald-50 hover:bg-emerald-600 hover:text-white border-emerald-200 hover:border-emerald-600 transition"
+                    title={`跳到表格底部的 ${PLACEHOLDER_COUNT} 个未取号行`}
+                  >
+                    <ArrowDown size={13} />未取号行
+                  </button>
                   {isAdmin && !activeTableReadOnly && assignmentMode && selectedGunRowIds.size > 0 && (
                     <button
                       onClick={() => { if (warnIfOffline()) return; setAssignUrgent(false); setShowAssignPanel(true); }}
@@ -2925,7 +2954,7 @@ const GunLedger: React.FC = () => {
               </div>
 
               {/* 网格 */}
-              <div className="flex-1 min-h-0 overflow-auto">
+              <div ref={tableScrollRef} className="flex-1 min-h-0 overflow-auto">
                 <table className="border-collapse text-[13px] w-full">
                   <thead className="text-xs sticky top-0 z-20">
                     <tr className="bg-[#217346] text-white">
