@@ -36,6 +36,7 @@ import {
 import SortableTask from './components/SortableTask';
 import DroppableCell from './components/DroppableCell';
 import QuickConfirmModifyModal from './components/QuickConfirmModifyModal';
+import QuickGunTakeModal from '../../components/QuickGunTakeModal';
 import { useEditingSessions } from './hooks/useEditingSessions';
 import LoadingScreen from '../../components/LoadingScreen';
 import { useTaskHistory } from './hooks/useTaskHistory';
@@ -162,6 +163,8 @@ const Dashboard = () => {
   const [helpGuideOpen, setHelpGuideOpen] = useState(false);
   // 快捷添加「确认图修改」弹窗（连按两次 Shift，仅管理员）
   const [quickModifyOpen, setQuickModifyOpen] = useState(false);
+  // 快速取号弹窗（连按两次空格，仅管理员且有焊枪台账访问权限）
+  const [quickGunTakeOpen, setQuickGunTakeOpen] = useState(false);
   const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
   const [batchFindText, setBatchFindText] = useState('');
   const [batchReplaceText, setBatchReplaceText] = useState('');
@@ -186,6 +189,9 @@ const Dashboard = () => {
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  // 快速取号要写焊枪台账：仅管理员，且需要具备台账访问权限（超管恒可）
+  const canTakeGunNumber = isAdmin
+    && (user?.role === 'superadmin' || (gunLedgerAccess.enabled && gunLedgerAccess.allowAdmins));
   const isOfflineMode = !isOnline || offlineCacheUsed;
   const canEditTasks = isAdmin && !isOfflineMode;
   // 经 ref 暴露给 socket 监听使用：该监听所在 effect 不能把 canEditTasks 放进依赖
@@ -592,6 +598,64 @@ const Dashboard = () => {
       window.removeEventListener('mousedown', handleDoubleShiftMouseDown);
     };
   }, [isAdmin, isOfflineMode, quickModifyOpen, modalOpen, helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast]);
+
+  // 快速取号：连按两次空格（间隔 400ms 内）呼出「分类 → 表格 → 取号」弹窗，仅管理员且有台账权限时生效
+  // 空格是文本录入的高频键，光标在输入框/可编辑区域内一律不参与判定；
+  // 判定期间拦掉空格默认行为：主页面根容器为 h-screen overflow-hidden，本就不靠空格滚页，
+  // 否则双击必然先滚一屏再弹窗。
+  useEffect(() => {
+    if (!canTakeGunNumber) return;
+    const DOUBLE_SPACE_INTERVAL = 400;
+    let lastSpaceAt = 0;
+
+    const resetTap = () => { lastSpaceAt = 0; };
+
+    // 只认「录入中」的场景：按钮/链接获得焦点时仍可呼出，否则点过页头按钮后快捷键会静默失效
+    const isTypingTarget = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      return !!el.closest('input, textarea, select, [contenteditable="true"]');
+    };
+
+    const handleDoubleSpaceKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') {
+        resetTap();
+        return;
+      }
+      // 组合键（Ctrl/Alt/Shift + 空格）与长按重复不参与判定
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || isTypingTarget()) {
+        resetTap();
+        return;
+      }
+      // 拦掉空格默认行为：既避免双击前先滚一屏，也避免空格「点」到当前聚焦的按钮
+      e.preventDefault();
+      const now = Date.now();
+      if (lastSpaceAt && now - lastSpaceAt <= DOUBLE_SPACE_INTERVAL) {
+        resetTap();
+        if (quickGunTakeOpen || modalOpen || quickModifyOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
+        if (isOfflineMode) {
+          addToast('当前离线，禁止编辑', 'error');
+          return;
+        }
+        setQuickGunTakeOpen(true);
+      } else {
+        lastSpaceAt = now;
+      }
+    };
+
+    // 鼠标点击（选任务、点单元格）打断判定，避免「点一下再敲空格」被误判为连按
+    const handleDoubleSpaceMouseDown = () => { resetTap(); };
+
+    window.addEventListener('keydown', handleDoubleSpaceKeyDown);
+    window.addEventListener('mousedown', handleDoubleSpaceMouseDown);
+    return () => {
+      window.removeEventListener('keydown', handleDoubleSpaceKeyDown);
+      window.removeEventListener('mousedown', handleDoubleSpaceMouseDown);
+    };
+  }, [
+    canTakeGunNumber, isOfflineMode, quickGunTakeOpen, modalOpen, quickModifyOpen,
+    helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast,
+  ]);
 
 
 
@@ -3376,6 +3440,18 @@ const Dashboard = () => {
         />
       )}
 
+      {canTakeGunNumber && (
+        <QuickGunTakeModal
+          open={quickGunTakeOpen}
+          onClose={() => setQuickGunTakeOpen(false)}
+          addToast={addToast}
+          token={token}
+          currentUserId={user?.id}
+          offline={isOfflineMode}
+          designers={designers}
+        />
+      )}
+
       {helpGuideOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => setHelpGuideOpen(false)} />
@@ -3536,9 +3612,9 @@ const Dashboard = () => {
                   </li>
                   <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
                     <span className="shrink-0 w-[92px]">
-                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">F11</kbd>
+                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Space×2</kbd>
                     </span>
-                    <div className="text-[13px] text-gray-700">全屏 / 退出全屏</div>
+                    <div className="text-[13px] text-gray-700">连按两次，快速取号（挑台账里的分类与表，从最新未取行号起连续取 1–10 个焊枪名；页头「安排确认图」可直接安排今天取的号）</div>
                   </li>
                 </ul>
               </div>

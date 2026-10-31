@@ -58,6 +58,10 @@ interface QuickConfirmAssignModalProps {
   addToast: (message: string, type: 'success' | 'error') => void;
   // 创建/合并成功后通知调用方刷新「已用枪名」等派生数据
   onCreated: () => void;
+  // 浮层层级：从其他弹窗（如主页面快速取号）内部唤起时需要压在其上方
+  zIndexClass?: string;
+  // 底部左侧提示：从台账页（Shift×2）和从快速取号打开时的入口不同
+  hintText?: string;
 }
 
 const todayStr = () => {
@@ -94,6 +98,8 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   designers,
   addToast,
   onCreated,
+  zIndexClass = 'z-50',
+  hintText = 'Shift × 2 呼出 · Esc 关闭',
 }) => {
   const { specNumberDigits, settings } = useSystemSettings();
 
@@ -395,7 +401,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+    <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center`} role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => !submitting && onClose()} />
       <div className="relative bg-white rounded-xl shadow-2xl w-[620px] max-w-[94vw] max-h-[90vh] flex flex-col overflow-hidden border border-gray-200">
         {/* 头部 */}
@@ -671,7 +677,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
         <div className="shrink-0 px-5 py-3 border-t border-gray-100 bg-white flex items-center justify-between gap-3">
           <div className="flex items-center gap-1 text-[11px] text-gray-400 min-w-0">
             <Users size={11} className="shrink-0" />
-            <span className="truncate">Shift × 2 呼出 · Esc 关闭</span>
+            <span className="truncate">{hintText}</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button

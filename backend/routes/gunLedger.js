@@ -254,6 +254,213 @@ router.get('/gun-name-locations', [authMiddleware, accessSettingsMiddleware('gun
   res.json({ locations });
 }));
 
+// 台账「时间」列的日期格式：YYYY.MM.DD（与 GunLedger.tsx 的 todayStr 一致）
+const ledgerToday = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())}`;
+};
+
+// 快速取号单次最多连续取多少号（防止误填过大数字一次占掉整段编号）
+const QUICK_TAKE_MAX_COUNT = 10;
+
+// GET /api/gun-ledger/quick-take/options —— 主页面「快速取号」面板的数据源
+// 只返回分类 → 表的轻量信息：已取行数、下一个未取行号、按规则预置的枪名、表锁持有者。
+// 表被他人打开（持有表级独占锁）时由前端置灰：既不允许取号，也不提供只读查看。
+router.get('/quick-take/options', [authMiddleware, adminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const gunLedger = data.gunLedger || {};
+  const categories = gunLedger.categories || {};
+  const currentUserId = req.user ? req.user.id : null;
+
+  const categoryList = Object.keys(categories).map(category => {
+    const tables = (Array.isArray(categories[category]) ? categories[category] : [])
+      .filter(table => table && table.id)
+      .map(table => {
+        const rows = Array.isArray(table.rows) ? table.rows : [];
+        const rule = getEffectiveGunNameRule(category, table);
+        // 序号由服务端归一化为 1..N，因此下一个未取行号 = 已有行数 + 1
+        const nextSerial = rows.length + 1;
+        const lastRow = rows.reduce((acc, row) => (
+          !acc || Number(row.serialNumber) > Number(acc.serialNumber) ? row : acc
+        ), null);
+        const holder = gunTableLocks.get(table.id);
+        return {
+          id: table.id,
+          name: String(table.name || ''),
+          takenCount: rows.length,
+          nextSerial,
+          nextGunName: rule ? `${rule.prefix || ''}${buildGunNumber(rule, nextSerial)}` : '',
+          // 规则随表下发：前端据此预览「连续取 N 个」时每个序号对应的枪名，
+          // 避免为每次数量变化都回一次接口
+          rule: rule
+            ? {
+                prefix: String(rule.prefix || ''),
+                start: Number(rule.start) || 0,
+                pad: Number(rule.pad) || 4
+              }
+            : null,
+          hasRule: Boolean(rule),
+          lastGunName: lastRow ? String(lastRow.gunName || '') : '',
+          lastTakenAt: lastRow ? String(lastRow.updatedAt || lastRow.createdAt || '') : '',
+          lockedBy: holder
+            ? {
+                name: holder.name || holder.username,
+                username: holder.username,
+                self: Boolean(currentUserId) && holder.userId === currentUserId
+              }
+            : null
+        };
+      });
+    return { name: category, tables };
+  });
+
+  const persons = Array.isArray(gunLedger.defaultResponsiblePersons) && gunLedger.defaultResponsiblePersons.length
+    ? gunLedger.defaultResponsiblePersons
+    : DEFAULT_RESPONSIBLE_PERSONS;
+
+  const today = ledgerToday();
+  // 「我今天取的号」：时间列 = 今天、且由当前登录人创建的枪名。
+  // 优先按 createdBy.id 判定（把担当改成别人的号也算我取的），
+  // 历史行没有 createdBy 时回退到「担当 = 当前登录人」。
+  // 供主页面取号成功后的「安排确认图」使用，与台账页快速确认图安排的候选口径一致。
+  const meName = String(req.user?.name || '').trim();
+  const myId = req.user?.id;
+  const todayTaken = [];
+  if (myId || meName) {
+    Object.keys(categories).forEach(category => {
+      (Array.isArray(categories[category]) ? categories[category] : []).forEach(table => {
+        if (!table || !table.id) return;
+        (Array.isArray(table.rows) ? table.rows : []).forEach(row => {
+          const gunName = String(row?.gunName || '').trim();
+          if (!gunName) return;
+          if (String(row?.time || '').trim() !== today) return;
+          const creatorId = row?.createdBy && typeof row.createdBy === 'object' ? row.createdBy.id : '';
+          const mine = (myId && creatorId)
+            ? creatorId === myId
+            : Boolean(meName) && String(row?.responsiblePerson || '').trim() === meName;
+          if (!mine) return;
+          todayTaken.push({
+            rowId: String(row.id || ''),
+            gunName,
+            customer: String(row.customer || '').trim(),
+            category,
+            tableName: String(table.name || ''),
+            serialNumber: Number(row.serialNumber) || 0,
+            createdAt: String(row.createdAt || '')
+          });
+        });
+      });
+    });
+    // 刚取的号排在前面：确认图安排默认全选，列表顺序与「最近取的」感知一致
+    todayTaken.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  }
+
+  res.json({
+    categories: categoryList,
+    defaultResponsiblePersons: persons,
+    today,
+    todayTaken
+  });
+}));
+
+// 快速取号入参：客户/仕样号必填（取号的意义是占住这个枪名编号，客户信息随之落库）；
+// count 为本次连续取号的数量，从「最新未取行号」起连续占用 count 个序号
+const quickTakeSchema = Joi.object({
+  customer: Joi.string().trim().min(1).max(500).required(),
+  remarks: Joi.string().allow('').max(500),
+  responsiblePerson: Joi.string().allow('').max(50),
+  time: Joi.string().allow('').max(30),
+  count: Joi.number().integer().min(1).max(QUICK_TAKE_MAX_COUNT).default(1)
+});
+
+// POST /api/gun-ledger/tables/:tableId/quick-take —— 在主页面直接给「最新未取行」取号
+// 与台账页内取号等价：枪名由表规则 + 序号生成，时间/担当缺省用当天与当前操作者。
+// 表被他人持锁时拒绝（与 PUT /rows 的锁保护一致）。
+router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
+  const { error, value } = quickTakeSchema.validate(req.body, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '取号信息格式不正确', details: error.details.map(d => d.message) });
+  }
+
+  const data = db.readDb();
+  if (!data.gunLedger) return res.status(404).json({ message: '表未找到' });
+  const found = findTable(data.gunLedger, req.params.tableId);
+  if (!found) return res.status(404).json({ message: '表未找到' });
+
+  // 表级独占锁保护：被他人打开时不允许取号
+  const holder = gunTableLocks.get(req.params.tableId);
+  if (holder && (!req.user || holder.userId !== req.user.id)) {
+    return res.status(409).json({
+      message: `表「${found.table.name}」正由「${holder.name || holder.username}」编辑，暂时不能取号`,
+      lockedBy: { name: holder.name || holder.username, username: holder.username }
+    });
+  }
+
+  const rows = Array.isArray(found.table.rows) ? found.table.rows : [];
+  const rule = getEffectiveGunNameRule(found.category, found.table);
+  if (!rule) {
+    return res.status(400).json({ message: `表「${found.table.name}」未配置焊枪名规则，无法自动取号，请先在台账「台账初始化」中配置` });
+  }
+
+  const serialNumber = rows.length + 1;
+  const count = Number(value.count) || 1;
+  const meta = userMeta(req);
+  const now = new Date().toISOString();
+  const customer = String(value.customer || '').trim();
+  const time = String(value.time || '').trim() || ledgerToday();
+  const responsiblePerson = String(value.responsiblePerson || '').trim() || (req.user?.name || '');
+  const remarks = String(value.remarks || '').trim();
+
+  // 连续占用 count 个序号：逐个按规则生成枪名，任何一个与存量重名都整体拒绝，
+  // 避免出现「前几个成功、后面的失败」这种半截状态
+  const takenNames = new Set(rows.map(r => String(r.gunName || '').trim()));
+  const createdRows = [];
+  for (let i = 0; i < count; i += 1) {
+    const serial = serialNumber + i;
+    const gunName = `${rule.prefix || ''}${buildGunNumber(rule, serial)}`;
+    // 规则编号理论上不会重复；命中说明存量数据被手工改过，直接拒绝避免出现同名枪名
+    if (takenNames.has(gunName)) {
+      return res.status(409).json({ message: `焊枪名「${gunName}」已存在，取号冲突，请刷新后重试` });
+    }
+    takenNames.add(gunName);
+    createdRows.push({
+      id: newId('gun-row'),
+      serialNumber: serial,
+      gunName,
+      customer,
+      time,
+      responsiblePerson,
+      remarks,
+      createdAt: now,
+      createdBy: meta,
+      updatedAt: now,
+      updatedBy: meta
+    });
+  }
+
+  found.table.rows = [...rows, ...createdRows];
+  await db.writeDb(data);
+
+  const io = req.app.get('io');
+  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: found.table.rows });
+
+  res.json({
+    success: true,
+    count,
+    rows: createdRows,
+    row: createdRows[0],
+    gunName: createdRows[0].gunName,
+    gunNames: createdRows.map(r => r.gunName),
+    serialNumber,
+    lastSerialNumber: serialNumber + count - 1,
+    lastGunName: createdRows[createdRows.length - 1].gunName,
+    category: found.category,
+    tableName: found.table.name,
+    nextSerial: serialNumber + count
+  });
+}));
+
 // 下载文件名时间戳：YYYYMMDD-HHmmss
 const fileTimestamp = () => {
   const d = new Date();

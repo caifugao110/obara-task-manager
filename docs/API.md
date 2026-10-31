@@ -82,6 +82,7 @@ Authorization: Bearer <token>
 | 重置工厂规则为默认 | 否 | 否 | 是 |
 | 查看焊枪台账 | 取决于 `gunLedger.allowViewers`（只读） | 取决于 `gunLedger.allowAdmins` | 是 |
 | 编辑焊枪台账（分类/表/行） | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
+| 主页面快速取号（`GET /api/gun-ledger/quick-take/options`、`POST /api/gun-ledger/tables/:tableId/quick-take`） | 否 | 取决于 `gunLedger.allowAdmins` | 是 |
 | 删除焊枪台账分类/表 | 否 | 否（按钮可见但拦截） | 是 |
 | 配置焊枪名规则/台账初始化（焊枪名初始化/批量初始化）/管理默认担当/配置默认工时规则（`tableGunHours`） | 否 | 否 | 是 |
 | 导入焊枪台账 | 否 | 否 | 是 |
@@ -2122,6 +2123,118 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 权限：仅 `superadmin`。
 
 说明：删除时释放该表的编辑锁。
+
+### 获取快速取号选项
+
+`GET /api/gun-ledger/quick-take/options`
+
+权限：`admin`、`superadmin`，并取决于 `settings.gunLedger` 权限配置。
+
+主页面「快速取号」弹窗（连按两次空格呼出）的数据源：只返回分类 → 表的轻量信息，不含行明细。
+
+响应：
+
+```json
+{
+  "categories": [
+    {
+      "name": "X2C",
+      "tables": [
+        {
+          "id": "gun-tbl-xxx",
+          "name": "SRTC",
+          "takenCount": 23,
+          "nextSerial": 24,
+          "nextGunName": "SRTC-2C15023",
+          "rule": { "prefix": "SRTC-2C", "start": 15000, "pad": 5 },
+          "hasRule": true,
+          "lastGunName": "SRTC-5C15022",
+          "lastTakenAt": "2026-10-30T06:16:46.933Z",
+          "lockedBy": null
+        }
+      ]
+    }
+  ],
+  "defaultResponsiblePersons": ["张啸", "张明"],
+  "today": "2026.10.31",
+  "todayTaken": [
+    {
+      "rowId": "gun-row-xxx",
+      "gunName": "SRTC-2C15024",
+      "customer": "57908>O/客户名",
+      "category": "X2C",
+      "tableName": "SRTC",
+      "serialNumber": 25,
+      "createdAt": "2026-10-31T02:12:33.120Z"
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `takenCount` | 表内已有真实行数 |
+| `nextSerial` | 最新未取行号（`takenCount + 1`） |
+| `nextGunName` | 按该表生效焊枪名规则 + `nextSerial` 预置的枪名；无规则时为空串 |
+| `rule` | 生效规则的可预览参数 `{ prefix, start, pad }`，前端据此在本地算出「连续取 N 个」时每个序号对应的枪名；无规则为 `null` |
+| `hasRule` | 是否存在生效的焊枪名规则（无规则的表不能取号） |
+| `todayTaken` | **今天由当前登录人取的号**（`time` 列 = 今天，且 `createdBy.id` = 当前用户；历史行无 `createdBy` 时回退按 `担当 = 当前用户姓名` 判定），按 `createdAt` 倒序（刚取的排最前）。供取号页头的「安排确认图」二级浮层使用 |
+| `lastGunName` / `lastTakenAt` | 最后一行（序号最大者）的枪名与更新时间 |
+| `lockedBy` | 表级独占锁持有者 `{ name, username, self }`；无锁为 `null`。`self=true` 表示锁由当前登录人自己持有（如另一个标签页开着台账）。被他人持有时前端将该表置灰：不可取号，也不提供只读查看 |
+
+### 快速取号（最新未取行）
+
+`POST /api/gun-ledger/tables/:tableId/quick-take`
+
+权限：`admin`、`superadmin`，并取决于 `settings.gunLedger` 权限配置。
+
+请求：
+
+```json
+{
+  "customer": "57908>O/客户名",
+  "count": 3
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `customer` | 是 | 客户名或仕样号（前端会先用 `/api/spec/spec-info` 把纯仕样号解析为客户名） |
+| `count` | 否 | 本次连续取号数量，`1`–`10`，缺省 `1`；从最新未取行号起连续占用 `count` 个序号 |
+| `remarks` | 否 | 焊枪规格或备注（主页面弹窗已不再采集，保留字段供其它调用方使用） |
+| `responsiblePerson` | 否 | 担当，缺省用当前登录人姓名（主页面弹窗不再采集） |
+| `time` | 否 | 台账「时间」列，缺省用服务器当天 `YYYY.MM.DD`（主页面弹窗不再采集） |
+
+说明：
+
+- 枪名由该表生效规则 + 序号（`已有行数 + 1` 起）生成，与台账页内取号完全同源，不接受客户端指定枪名。
+- 连续取多个号时整批一次性写入：任何一个生成出的枪名与存量重名都整体拒绝（`409`），不会出现「前几个成功、后面失败」的半截状态。
+- **表级编辑锁保护**：表正被他人打开时返回 `409`，响应体附 `lockedBy`；锁由本人持有时放行。
+- 表未配置焊枪名规则时返回 `400`；`count` 超出 `1`–`10` 时返回 `400`。
+- 写入后通过 Socket.IO 广播一次 `gun_ledger_updated`（`action: 'update_rows'`，带全部行），台账页与其它弹窗会自动同步下一行号。
+
+响应：
+
+```json
+{
+  "success": true,
+  "count": 3,
+  "rows": [
+    { "id": "gun-row-a", "serialNumber": 24, "gunName": "SRTC-2C15023", "customer": "…", "time": "2026.10.31", "responsiblePerson": "张啸", "remarks": "" },
+    { "id": "gun-row-b", "serialNumber": 25, "gunName": "SRTC-2C15024", "…": "…" },
+    { "id": "gun-row-c", "serialNumber": 26, "gunName": "SRTC-2C15025", "…": "…" }
+  ],
+  "row": { "id": "gun-row-a", "serialNumber": 24, "gunName": "SRTC-2C15023", "…": "…" },
+  "gunName": "SRTC-2C15023",
+  "gunNames": ["SRTC-2C15023", "SRTC-2C15024", "SRTC-2C15025"],
+  "lastGunName": "SRTC-2C15025",
+  "category": "X2C",
+  "tableName": "SRTC",
+  "serialNumber": 24,
+  "lastSerialNumber": 26,
+  "nextSerial": 27
+}
+```
 
 ### 保存表的全部行
 
