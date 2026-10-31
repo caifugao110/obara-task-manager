@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
@@ -7,7 +7,7 @@ import LoadingScreen from '../components/LoadingScreen';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { getTaskDisplayColors, isTaskPaused } from '../utils/taskColors';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, LogOut, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, LogOut, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users, CalendarDays, X } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface DesignerData {
@@ -65,6 +65,13 @@ const completedPctColorClass = (pct: number) => {
   return 'text-red-600';
 };
 
+// 日期短标签：2026-10-27 → 周二（任务卡片/筛选器展示用）
+const weekDayLabel = (dateStr: string) => {
+  const [y, m, d] = String(dateStr || '').split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(y, m - 1, d).getDay()] || '';
+};
+
 const Leaderboard = () => {
   const { user, token, logout } = useAuth();
   const { specNumberDigits, settings: systemSettings } = useSystemSettings();
@@ -81,8 +88,14 @@ const Leaderboard = () => {
   const [specNumber, setSpecNumber] = useState('');
   const [specResults, setSpecResults] = useState<TaskSearchResult[]>([]);
   const [specFullSearch, setSpecFullSearch] = useState(false);
-  // 新增：未标记完成状态任务开关（开启后去除已完成的主任务/枪名）
+  // 新增：仅显示未完成任务开关（开启后去除已完成的主任务/枪名）
   const [specHideCompleted, setSpecHideCompleted] = useState(false);
+  // 新增：匹配任务的日期筛选（空字符串 = 全部日期），仅影响下方任务卡片列表
+  const [specDateFilter, setSpecDateFilter] = useState('');
+  // 日期筛选下拉日历的展开状态与当前展示的月份（'YYYY-MM'）
+  const [specDateOpen, setSpecDateOpen] = useState(false);
+  const [specCalendarMonth, setSpecCalendarMonth] = useState('');
+  const specDateRef = useRef<HTMLDivElement | null>(null);
 
 
   const [gunName, setGunName] = useState('');
@@ -154,7 +167,7 @@ const Leaderboard = () => {
     return match ? match[0] : null;
   };
 
-  // 按“未标记完成状态任务”开关过滤：去除已完成（白色标记）的主任务与枪名
+  // 按“仅显示未完成任务”开关过滤：去除已完成（白色标记）的主任务与枪名
   const specResultsFiltered = useMemo(() => {
     if (!specHideCompleted) return specResults;
     return specResults
@@ -165,8 +178,87 @@ const Leaderboard = () => {
       }));
   }, [specResults, specHideCompleted]);
 
-  // 枪名列表为默认功能：输入仕样号自动出现，不受“未标记完成状态任务”开关影响
+  // 枪名列表为默认功能：输入仕样号自动出现，不受“仅显示未完成任务”开关影响
   const specGunListFiltered = useMemo(() => extractGunNames(specResults), [specResults]);
+
+  // 匹配结果中实际存在的日期集合（升序）：与卡片列表同口径（跟随“仅显示未完成任务”开关），
+  // 保证日历里可选日期一定能在下方看到任务
+  const specResultDates = useMemo(
+    () => Array.from(new Set(specResultsFiltered.map(result => result.date).filter(Boolean))).sort(),
+    [specResultsFiltered]
+  );
+
+  // 每天的任务数量（与卡片列表口径一致，跟随“仅显示未完成任务”开关）
+  const specDateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    specResultsFiltered.forEach(result => {
+      if (!result.date) return;
+      counts.set(result.date, (counts.get(result.date) || 0) + 1);
+    });
+    return counts;
+  }, [specResultsFiltered]);
+
+  // 结果覆盖的月份（升序），用于限制日历翻月范围
+  const specResultMonths = useMemo(
+    () => Array.from(new Set(specResultDates.map(date => date.slice(0, 7)))).sort(),
+    [specResultDates]
+  );
+
+  // 当前展示月份：优先用户翻到的月份，失效时回落到最早有任务的月份
+  const specActiveMonth = specResultMonths.includes(specCalendarMonth)
+    ? specCalendarMonth
+    : (specResultMonths[0] || '');
+
+  // 日历网格：周日开头，仅“有任务的日期”可点
+  const specCalendarCells = useMemo(() => {
+    const month = specActiveMonth;
+    if (!month) return [] as ({ date: string; day: number; count: number } | null)[];
+    const [year, monthIndex] = month.split('-').map(Number);
+    const startPad = new Date(year, monthIndex - 1, 1).getDay();
+    const daysInMonth = new Date(year, monthIndex, 0).getDate();
+    const cells: ({ date: string; day: number; count: number } | null)[] = Array.from({ length: startPad }, () => null);
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const date = `${year}-${String(monthIndex).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      cells.push({ date, day, count: specDateCounts.get(date) || 0 });
+    }
+    return cells;
+  }, [specActiveMonth, specDateCounts]);
+
+  const specCalendarMonthIndex = specResultMonths.indexOf(specActiveMonth);
+
+  // 打开日历：默认定位到已选日期或最早有任务的月份
+  useEffect(() => {
+    if (!specDateOpen) return;
+    const target = (specDateFilter || specResultDates[0] || '').slice(0, 7);
+    setSpecCalendarMonth(target || specResultMonths[0] || '');
+  }, [specDateOpen, specDateFilter, specResultDates, specResultMonths]);
+
+  // 点击空白处 / 按 Esc 收起日历
+  useEffect(() => {
+    if (!specDateOpen) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (specDateRef.current && !specDateRef.current.contains(event.target as Node)) {
+        setSpecDateOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSpecDateOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [specDateOpen]);
+
+  // 日期筛选：按指定日期只显示当天匹配到的任务；未选择日期时展示全部
+  const specTasksByDate = useMemo(() => {
+    if (!specDateFilter) return specResultsFiltered;
+    return specResultsFiltered.filter(result => result.date === specDateFilter);
+  }, [specResultsFiltered, specDateFilter]);
 
   // 仕样进度统计：按「确认图」「确认图修改」「设计」三类汇总，每个枪名计为一个小任务；
   // 主任务标记完成（白色）时其下枪名视为已完成；不受“未标记完成状态任务”开关影响，始终基于全部搜索结果统计
@@ -703,7 +795,7 @@ const Leaderboard = () => {
               </h2>
               <div className={`flex items-center gap-6 ${isOffline ? 'offline-locked' : ''}`}>
                 <label className="flex items-center gap-2 text-xs font-bold text-blue-50 cursor-pointer select-none">
-                  <span>未标记完成状态任务</span>
+                  <span>仅显示未完成任务</span>
                   <span className="relative inline-flex h-5 w-9 items-center">
                     <input
                       type="checkbox"
@@ -751,6 +843,10 @@ const Leaderboard = () => {
                     disabled={isOffline}
                     onChange={(e) => {
                       const val = e.target.value.replace(/\D/g, '').slice(0, specNumberDigits);
+                      if (val !== specNumber) {
+                        setSpecDateFilter('');
+                        setSpecDateOpen(false);
+                      }
                       setSpecNumber(val);
                       if (val.length === specNumberDigits) {
                         searchBySpecNumber(val);
@@ -862,13 +958,145 @@ const Leaderboard = () => {
                     </div>
                   </div>
                 ) : null}
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
                   <span className="text-sm font-bold text-gray-600">
-                    找到 <span className="text-blue-600">{specResultsFiltered.length}</span> 个匹配任务
+                    找到 <span className="text-blue-600">{specTasksByDate.length}</span> 个匹配任务
+                    {specDateFilter && (
+                      <span className="ml-2 text-xs font-normal text-gray-400">
+                        · 全部日期共 {specResultsFiltered.length} 个
+                      </span>
+                    )}
                   </span>
+                  <div ref={specDateRef} className="relative">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSpecDateOpen(open => !open)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSpecDateOpen(open => !open);
+                        }
+                      }}
+                      className={`flex items-center gap-2 h-9 pl-2.5 pr-2 rounded-xl border-2 shadow-sm transition-all select-none cursor-pointer outline-none ${
+                        specDateFilter
+                          ? 'border-blue-400 bg-blue-50 hover:border-blue-500'
+                          : 'border-gray-200 bg-white hover:border-blue-300'
+                      } ${specDateOpen ? 'ring-2 ring-blue-200 border-blue-400' : ''}`}
+                      title="按日期筛选匹配任务（点击任意位置展开日历）"
+                    >
+                      <CalendarDays size={15} className={`shrink-0 transition ${specDateFilter || specDateOpen ? 'text-blue-600' : 'text-blue-500'}`} />
+                      <span className={`text-xs font-bold whitespace-nowrap transition ${specDateFilter || specDateOpen ? 'text-blue-700' : 'text-gray-500'}`}>
+                        {specDateFilter ? `${specDateFilter} ${weekDayLabel(specDateFilter)}` : '按日期筛选'}
+                      </span>
+                      {specDateFilter && (
+                        <>
+                          <span className="px-1.5 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-bold leading-none">
+                            {specTasksByDate.length}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSpecDateFilter('');
+                              setSpecDateOpen(false);
+                            }}
+                            className="w-6 h-6 flex items-center justify-center rounded-full text-blue-500 hover:bg-blue-200/70 hover:text-blue-700 transition"
+                            title="清除日期筛选，显示全部匹配任务"
+                          >
+                            <X size={13} />
+                          </button>
+                        </>
+                      )}
+                      <ChevronDown
+                        size={13}
+                        className={`shrink-0 text-gray-400 transition-transform ${specDateOpen ? 'rotate-180' : ''}`}
+                      />
+                    </div>
+
+                    {specDateOpen && (
+                      <div className="absolute right-0 top-full mt-2 z-50 w-[264px] rounded-xl border border-gray-200 bg-white shadow-2xl p-2.5">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <button
+                            type="button"
+                            disabled={specCalendarMonthIndex <= 0}
+                            onClick={() => setSpecCalendarMonth(specResultMonths[specCalendarMonthIndex - 1])}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-blue-600 transition disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                            title="上个月"
+                          >
+                            <ChevronLeft size={15} />
+                          </button>
+                          <span className="text-xs font-bold text-gray-700">
+                            {specActiveMonth
+                              ? `${specActiveMonth.slice(0, 4)} 年 ${Number(specActiveMonth.slice(5, 7))} 月`
+                              : ''}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={specCalendarMonthIndex < 0 || specCalendarMonthIndex >= specResultMonths.length - 1}
+                            onClick={() => setSpecCalendarMonth(specResultMonths[specCalendarMonthIndex + 1])}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-blue-600 transition disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                            title="下个月"
+                          >
+                            <ChevronRight size={15} />
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-7 gap-0.5 mb-0.5">
+                          {['日', '一', '二', '三', '四', '五', '六'].map(week => (
+                            <span key={week} className="h-6 flex items-center justify-center text-[10px] font-bold text-gray-400">
+                              {week}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-7 gap-0.5">
+                          {specCalendarCells.map((cell, cellIndex) => {
+                            if (!cell) return <span key={`blank-${cellIndex}`} />;
+                            const selected = cell.date === specDateFilter;
+                            const available = cell.count > 0;
+                            return (
+                              <button
+                                key={cell.date}
+                                type="button"
+                                disabled={!available}
+                                onClick={() => {
+                                  setSpecDateFilter(cell.date);
+                                  setSpecDateOpen(false);
+                                }}
+                                title={available ? `${cell.date} ${weekDayLabel(cell.date)}：${cell.count} 个任务` : `${cell.date} 无匹配任务`}
+                                className={`relative h-8 rounded-lg text-xs transition ${
+                                  selected
+                                    ? 'bg-blue-600 text-white font-bold'
+                                    : available
+                                      ? 'text-blue-700 font-bold hover:bg-blue-100'
+                                      : 'text-gray-300 cursor-not-allowed'
+                                }`}
+                              >
+                                {cell.day}
+                                {available && !selected && (
+                                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-blue-400"></span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!specDateFilter}
+                          onClick={() => {
+                            setSpecDateFilter('');
+                            setSpecDateOpen(false);
+                          }}
+                          className="mt-2 w-full h-8 rounded-lg text-xs font-bold text-gray-600 bg-gray-50 hover:bg-blue-50 hover:text-blue-600 transition disabled:opacity-40 disabled:hover:bg-gray-50 disabled:hover:text-gray-600 disabled:cursor-not-allowed"
+                        >
+                          全部日期
+                          <span className="ml-1 font-normal text-gray-400">共 {specResultsFiltered.length} 个</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {specResultsFiltered.map((result, index) => (
+                  {specTasksByDate.map((result, index) => (
                     <Link
                       key={`${result.designerId}-${result.date}-${index}`}
                       to={buildTaskLink(result)}
@@ -905,6 +1133,19 @@ const Leaderboard = () => {
                     </Link>
                   ))}
                 </div>
+                {specTasksByDate.length === 0 && specDateFilter && (
+                  <div className="text-center py-8 text-gray-400 border-2 border-dashed border-gray-200 rounded-xl">
+                    <CalendarDays size={32} className="mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">所选日期 {specDateFilter} 没有匹配任务</p>
+                    <button
+                      type="button"
+                      onClick={() => setSpecDateFilter('')}
+                      className="mt-3 px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
+                    >
+                      查看全部日期
+                    </button>
+                  </div>
+                )}
               </div>
             ) : specNumber.length === specNumberDigits ? (
               <div className="text-center py-8 text-gray-400">
