@@ -1,8 +1,9 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SystemSettingsProvider } from './context/SystemSettingsContext';
 import { sanitizeRedirect } from './utils/redirect';
+import { getDocumentTitle } from './utils/documentTitle';
 import Login from './pages/Login';
 // 主页面是首页（/），保持静态导入随主 chunk 同步加载；
 // 若改为懒加载，首屏会多一次 chunk 往返并先显示加载占位，反而更慢。
@@ -92,6 +93,21 @@ const LoginRoute = () => {
   }
 
   return <Navigate to={sanitizeRedirect(searchParams.get('redirect'))} replace />;
+};
+
+/**
+ * 同步浏览器标签页标题：
+ * 主页面显示系统全称，其余页面显示 `OTM-<页面功能>`。
+ * 放在 Router 内部，跟随路由变化（含 basename 处理）。
+ */
+const DocumentTitle = () => {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    document.title = getDocumentTitle(pathname);
+  }, [pathname]);
+
+  return null;
 };
 
 const AppRoutes = () => {
@@ -192,6 +208,7 @@ function App() {
     <AuthProvider>
       <SystemSettingsProvider>
         <Router basename={basename}>
+          <DocumentTitle />
           <AppRoutes />
         </Router>
       </SystemSettingsProvider>
