@@ -83,6 +83,14 @@ import type {
 // 0 也能保存，不为 0 时与普通任务一样计入统计。
 type DesignTaskType = 'none' | 'confirm' | 'design' | 'confirmModify' | 'designChange' | 'drawingReview' | 'paused';
 
+// 自动获取枪名结果中的状态标签（「已安排」= 该枪名已被其他任务占用，可重复安排；
+// 「已存在」= 当前任务里已有该枪名，不可再加）。配色与取号弹窗的「已安排」标签一致。
+const GunLookupTag = ({ text }: { text: string }) => (
+  <span className="shrink-0 text-[10px] font-semibold text-sky-600 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5">
+    {text}
+  </span>
+);
+
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
   const { specNumberDigits, settings: systemSettings, refreshSettings } = useSystemSettings();
@@ -954,12 +962,15 @@ const Dashboard = () => {
     if (!autoGunLookupResults || autoGunLookupChecked.size === 0) return;
     const picked = autoGunGunLookupPicked();
     if (autoGunLookupContext === 'add') {
-      const newGuns = picked.map(name => ({ id: `gun-new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' }));
+      // 任务里已存在的枪名不重复添加（「已安排」的可以重复安排）
+      const existingNames = new Set(addModeGuns.map(g => String(g?.name || '').trim()).filter(Boolean));
+      const toAdd = picked.filter(name => !existingNames.has(name));
+      const newGuns = toAdd.map(name => ({ id: `gun-new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name, hours: '' }));
       setAddModeGuns(prev => [
         ...prev,
         ...applyTaskTypeToGuns(newGuns, addModeTaskType)
       ]);
-      addToast(`已添加 ${picked.length} 个枪名`, 'success');
+      addToast(`已添加 ${toAdd.length} 个枪名`, 'success');
     } else if (autoGunLookupContext === 'edit' && autoGunLookupItemId) {
       const itemId = autoGunLookupItemId;
       const designerId = modalDesignerId;
@@ -969,11 +980,14 @@ const Dashboard = () => {
       const currentItem = item ? getItemWithPendingChanges(item) : null;
       if (!currentItem) return;
       const baseGuns = currentItem.guns || [];
+      // 任务里已存在的枪名不重复追加（「已安排」的可以重复安排）
+      const existingNames = new Set(baseGuns.map(g => (g.name || '').trim()).filter(Boolean));
+      const toAdd = picked.filter(name => !existingNames.has(name));
       // 新追加的枪名按当前任务内容自动补工时，已有枪名的工时保持不变
       const lookupTaskType = getTaskTypeFromName(currentItem.taskName);
       const newGuns: GunItem[] = [
         ...baseGuns,
-        ...picked.map(name => fillHoursForGunName(
+        ...toAdd.map(name => fillHoursForGunName(
           { id: `gun-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: '', hours: '' },
           name,
           lookupTaskType
@@ -984,7 +998,7 @@ const Dashboard = () => {
         [itemId]: { ...(prev[itemId] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
       }));
       handleItemChange(designerId, date, itemId, 'guns', newGuns);
-      addToast(`已追加 ${picked.length} 个枪名`, 'success');
+      addToast(`已追加 ${toAdd.length} 个枪名`, 'success');
     }
     // 关闭面板
     setAutoGunLookupResults(null);
@@ -1372,6 +1386,23 @@ const Dashboard = () => {
       addToast('无法获取任务数据', 'error');
     }
   }, [currentDate, token]);
+
+  // 快速取号弹窗里的「安排确认图」写入成功后：把目标表合并进当前视图。
+  // 跨客户端的广播由确认图弹窗自己发出（带 designerId + 目标月份坐标，别人增量合并），
+  // 这里只负责本端回显，不能再 emit 一次，否则其他客户端会收到两条信号重复刷新。
+  const handleQuickAssignCreated = useCallback(
+    (info?: { designerId: string; date: string; sheet?: TaskSheet }) => {
+      if (!info?.designerId) return;
+      const [year, month] = String(info.date).split('-').map(Number);
+      const current = currentDateRef.current;
+      const sameMonth = current.getFullYear() === year && current.getMonth() + 1 === month;
+      // 安排到其他月份时当前视图不受影响，不做任何刷新
+      if (!sameMonth) return;
+      if (info.sheet) upsertSheet(info.sheet);
+      else void fetchSheets();
+    },
+    [upsertSheet, fetchSheets]
+  );
 
   const handleUserDesignPlanColorMark = useCallback(async (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => {
     if (!user || !token) return;
@@ -3057,9 +3088,11 @@ const Dashboard = () => {
                                               指针停在已有任务行上时不显示。data-cell-plus 供枪名拖拽命中判定：
                                               拖到加号上松手 → 按源主任务名称在本格最下面新建主任务 */}
                                           {canEditTasks && (
+                                            // 单击 → 选中该格等待 Ctrl+V 粘贴（加号常亮）；双击 → 直接新增任务。
+                                            // 加号的 title 固定不变：随选中状态改动 title 会让浏览器反复重建悬浮提示，看起来像加号在闪。
                                             <div
                                               data-cell-plus="1"
-                                              className={`task-cell-plus min-h-[24px] flex items-start justify-center pt-[3px] rounded transition-colors ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer'}${isGunCreatePlus ? ' ring-2 ring-inset ring-emerald-500 !opacity-100 bg-emerald-50' : ''}`}
+                                              className={`task-cell-plus min-h-[24px] flex items-start justify-center pt-[3px] rounded transition-colors ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer'}${isCellSelected ? ' task-cell-plus--selected' : ''}${isGunCreatePlus ? ' ring-2 ring-inset ring-emerald-500 !opacity-100 bg-emerald-50' : ''}`}
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 // 新增主任务不受他人主任务级编辑影响，仅旧版整格会话会拦截
@@ -3072,6 +3105,10 @@ const Dashboard = () => {
                                                 if (warnIfCellLocked(d.id, day.fullDate)) return;
                                                 openModal(d.id, day.fullDate, true);
                                               }}
+                                              // 焦点离开加号就取消「已选中」高亮：此时 Ctrl+V 已不再粘到本格，常亮只会误导
+                                              onBlur={() => {
+                                                if (isCellSelected) setSelectedCell(null);
+                                              }}
                                               onKeyDown={(e) => {
                                                 if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
                                                   e.preventDefault();
@@ -3083,14 +3120,16 @@ const Dashboard = () => {
                                                 }
                                               }}
                                               tabIndex={0}
-                                              title={isCellSelected ? "双击此处添加任务" : ""}
+                                              title="单击选中此单元格（可 Ctrl+V 粘贴），双击新增任务"
                                             >
                                               <span
                                                 className={`inline-flex items-center justify-center h-[18px] w-[18px] rounded-full ring-1 shadow-sm transition-colors ${isCellLocked
                                                   ? 'bg-gray-100 text-gray-400 ring-gray-300'
                                                   : isGunCreatePlus
                                                     ? 'bg-emerald-600 text-white ring-emerald-700 shadow-md'
-                                                    : 'bg-blue-100 text-blue-600 ring-blue-400 hover:bg-blue-600 hover:text-white hover:ring-blue-700 hover:shadow-md'
+                                                    : isCellSelected
+                                                      ? 'bg-blue-600 text-white ring-blue-700 shadow-md'
+                                                      : 'bg-blue-100 text-blue-600 ring-blue-400 hover:bg-blue-600 hover:text-white hover:ring-blue-700 hover:shadow-md'
                                                   }`}
                                               >
                                                 <Plus size={12} strokeWidth={3.5} />
@@ -3449,6 +3488,7 @@ const Dashboard = () => {
           currentUserId={user?.id}
           offline={isOfflineMode}
           designers={designers}
+          onTasksCreated={handleQuickAssignCreated}
         />
       )}
 
@@ -3614,7 +3654,7 @@ const Dashboard = () => {
                     <span className="shrink-0 w-[92px]">
                       <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Space×2</kbd>
                     </span>
-                    <div className="text-[13px] text-gray-700">连按两次，快速取号（挑台账里的分类与表，从最新未取行号起连续取 1–10 个焊枪名；页头「安排确认图」可直接安排今天取的号）</div>
+                    <div className="text-[13px] text-gray-700">连按两次，快速取号（选台账分类与表，连续取 1–10 个焊枪名）</div>
                   </li>
                 </ul>
               </div>
@@ -3955,7 +3995,15 @@ const Dashboard = () => {
                                 {autoGunLookupResults && autoGunLookupResults.length > 0 && (
                                   <div className="flex items-center gap-1.5">
                                     <button
-                                      onClick={() => setAutoGunLookupChecked(new Set(autoGunLookupResults.map((_, i) => i)))}
+                                      onClick={() => {
+                                        // 「已存在」的枪名不可再添加，全选时跳过
+                                        const existingNames = new Set(addModeGuns.map(g => String(g?.name || '').trim()).filter(Boolean));
+                                        const next = new Set<number>();
+                                        (autoGunLookupResults || []).forEach((r, i) => {
+                                          if (!existingNames.has(r.gunName)) next.add(i);
+                                        });
+                                        setAutoGunLookupChecked(next);
+                                      }}
                                       className="text-[10px] text-emerald-700 hover:underline"
                                     >
                                       全选
@@ -3974,15 +4022,21 @@ const Dashboard = () => {
                                   <div className="max-h-40 overflow-y-auto flex flex-col gap-0.5">
                                     {autoGunLookupResults.map((r, idx) => {
                                       const checked = autoGunLookupChecked.has(idx);
+                                      // 当前任务里已有同名枪名则不可重复添加
+                                      const existing = addModeGuns.some(g => String(g?.name || '').trim() === r.gunName);
                                       return (
-                                        <label key={idx} className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer hover:bg-emerald-100/60 text-xs ${checked ? 'bg-emerald-100' : ''}`}>
+                                        <label key={idx} className={`flex items-center gap-2 px-2 py-1 rounded text-xs ${checked ? 'bg-emerald-100' : ''} ${existing ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-emerald-100/60'}`}>
                                           <input
                                             type="checkbox"
                                             checked={checked}
                                             onChange={() => toggleAutoGunLookupChecked(idx)}
+                                            disabled={existing}
                                             className="w-3 h-3 accent-emerald-600"
                                           />
                                           <span className={`font-bold ${r.used ? 'text-sky-600' : 'text-gray-800'}`}>{r.gunName}</span>
+                                          {existing
+                                            ? <GunLookupTag text="已存在" />
+                                            : r.used && <GunLookupTag text="已安排" />}
                                           <span className="text-[10px] text-gray-400">[{r.category} / {r.tableName}]</span>
                                         </label>
                                       );
@@ -4535,7 +4589,15 @@ const Dashboard = () => {
                                     {autoGunLookupResults && autoGunLookupResults.length > 0 && (
                                       <div className="flex items-center gap-1.5">
                                         <button
-                                          onClick={() => setAutoGunLookupChecked(new Set(autoGunLookupResults.map((_, i) => i)))}
+                                          onClick={() => {
+                                            // 「已存在」的枪名不可再添加，全选时跳过
+                                            const existingNames = new Set((currentItem.guns || []).map(g => (g.name || '').trim()).filter(Boolean));
+                                            const next = new Set<number>();
+                                            (autoGunLookupResults || []).forEach((r, i) => {
+                                              if (!existingNames.has(r.gunName)) next.add(i);
+                                            });
+                                            setAutoGunLookupChecked(next);
+                                          }}
                                           className="text-[10px] text-emerald-700 hover:underline"
                                         >
                                           全选
@@ -4565,7 +4627,9 @@ const Dashboard = () => {
                                                 className="w-3 h-3 accent-emerald-600"
                                               />
                                               <span className={`font-bold ${r.used ? 'text-sky-600' : 'text-gray-800'}`}>{r.gunName}</span>
-                                              {existing && <span className="text-[10px] text-gray-400">(已存在)</span>}
+                                              {existing
+                                                ? <GunLookupTag text="已存在" />
+                                                : r.used && <GunLookupTag text="已安排" />}
                                               <span className="text-[10px] text-gray-400">[{r.category} / {r.tableName}]</span>
                                             </label>
                                           );

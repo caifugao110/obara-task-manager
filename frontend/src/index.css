@@ -119,6 +119,13 @@ input[type="number"] {
 .task-cell-plus:focus-visible {
   opacity: 1;
 }
+/* 单元格被单击选中（等待 Ctrl+V 粘贴）后加号常亮：不再依赖 hover，固定 opacity 1 且没有过渡，
+   避免指针在加号附近进出 hover 时反复显隐造成闪烁。选中态由 .task-cell-plus--selected 承载，
+   焦点离开加号（Ctrl+V 已不再作用于本格）时由 React 清掉选中态，加号恢复「仅 hover 显形」。 */
+.task-cell-plus--selected {
+  opacity: 1;
+  transition: none;
+}
 
 .table-header-row-secondary {
   position: sticky;

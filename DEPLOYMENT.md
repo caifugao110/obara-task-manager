@@ -2,6 +2,8 @@
 
 本文档说明 Obara 任务管理系统在 Windows 环境下的启动、部署、备份和排障方式。
 
+> 其他文档：[README](README.md)（功能与使用） · [开发者指南](docs/DEVELOPMENT.md) · [API 文档](docs/API.md) · [WeKnora 部署指南](weknora/README.md)
+
 ## 目录
 
 - [环境要求](#环境要求)

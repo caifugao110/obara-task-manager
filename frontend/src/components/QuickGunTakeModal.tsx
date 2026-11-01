@@ -21,6 +21,7 @@ import { axiosInstance } from '../services/api';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { acquireSocket } from '../utils/socketClient';
 import { resolveGunHours } from '../utils/gunHoursRules';
+import type { TaskSheet } from '../types';
 import QuickConfirmAssignModal, { type QuickConfirmGunRow } from './QuickConfirmAssignModal';
 
 /** 表级编辑锁持有者（lockedBy.self 表示锁由当前登录人自己持有，如另一个标签页开着台账） */
@@ -95,6 +96,9 @@ interface QuickGunTakeModalProps {
   currentUserId?: string;
   offline?: boolean;
   designers?: DesignerOption[];
+  // 二级浮层「安排确认图」写入任务成功后回调：回传目标设计员/日期与写入后的工时表，
+  // 供宿主页面（主页面）立即回显；跨客户端的刷新由确认图弹窗自行广播
+  onTasksCreated?: (info: { designerId: string; date: string; sheet?: TaskSheet }) => void;
 }
 
 // 记住上次取号用的表：同一批料常连续取号，下次呼出直接停在原表
@@ -136,6 +140,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   currentUserId,
   offline = false,
   designers = [],
+  onTasksCreated,
 }) => {
   const { specNumberDigits, settings: systemSettings } = useSystemSettings();
 
@@ -339,6 +344,12 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     // 其他客户端取号/改行后，下一行号会变：静默重取一次
     handle.on('gun_ledger_updated', (data: any) => {
       if (data?.action !== 'update_rows' && data?.action !== 'delete_table' && data?.action !== 'add_table') return;
+      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = window.setTimeout(() => { void fetchOptions(true); }, 250);
+    });
+
+    // 其他客户端安排了确认图任务：「已安排」标记会过期，同样静默重取一次
+    handle.on('task_refreshed', () => {
       if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = window.setTimeout(() => { void fetchOptions(true); }, 250);
     });
@@ -1049,7 +1060,11 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       rows={assignRows}
       designers={designers}
       addToast={addToast}
-      onCreated={() => { void fetchOptions(true); }}
+      onCreated={(info) => {
+        // 取号选项里的「已安排」标记要跟着更新；任务表的回显交给宿主页面
+        void fetchOptions(true);
+        if (info) onTasksCreated?.(info);
+      }}
       zIndexClass="z-[60]"
       hintText="从快速取号打开 · Esc 关闭"
     />

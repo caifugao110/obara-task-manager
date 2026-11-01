@@ -1018,7 +1018,18 @@ const GunLedger: React.FC = () => {
           items,
         });
       }
-      socketRef.current?.emit('task_updated');
+      // 广播变更坐标（设计员 + 目标日期所在年月）：服务端据此回传该工时表，
+      // 其他客户端直接本地合并。不带坐标时对方只能整月重拉，只读用户还要再等 3 秒节流
+      const [assignYear, assignMonth] = String(assignDate).split('-').map(Number);
+      if (Number.isInteger(assignYear) && Number.isInteger(assignMonth)) {
+        socketRef.current?.emit('task_updated', {
+          designerId: assignDesignerId,
+          month: assignMonth,
+          year: assignYear,
+        });
+      } else {
+        socketRef.current?.emit('task_updated');
+      }
       fetchUsedGunNames();
       const designerLabel = designers.find(d => d.id === assignDesignerId)?.name || '设计人员';
       if (mergedGunCount > 0 && items.length === 0) {
@@ -3066,7 +3077,7 @@ const GunLedger: React.FC = () => {
                                 step={1}
                                 defaultValue={1}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking)}
-                                title="向下复制行数（1~10）：例如填 3 表示把本行客户名向下复制到 3 行空行；复制后数字自动归 1"
+                                title="向下复制行数（1~10）：例如填 3 表示把本行客户名向下复制到 3 行空行；按回车可直接执行（等同点击右侧加号）；复制后数字自动归 1"
                                 onInput={e => {
                                   const v = (e.target as HTMLInputElement).value;
                                   const n = parseInt(v, 10);
@@ -3074,12 +3085,20 @@ const GunLedger: React.FC = () => {
                                     (e.target as HTMLInputElement).value = '10';
                                   }
                                 }}
+                                onKeyDown={e => {
+                                  // 回车等同于点击右侧「向下复制」加号按钮
+                                  if (e.key !== 'Enter') return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()) return;
+                                  handleCopyDown(row);
+                                }}
                                 className="w-10 px-1 py-0.5 text-center text-xs border border-gray-300 rounded outline-none focus:border-emerald-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                               />
                               <button
                                 onClick={() => handleCopyDown(row)}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()}
-                                title="向下复制：数字为复制行数，填 3 则把本行客户名复制到下方 3 行空行（时间填当前日期、担当填当前操作者，下方行焊枪名继承本行前缀/后缀、仅编号不同）；复制后数字自动归 1"
+                                title="向下复制：数字为复制行数，填 3 则把本行客户名复制到下方 3 行空行（时间填当前日期、担当填当前操作者，下方行焊枪名继承本行前缀/后缀、仅编号不同）；在左侧数字框中按回车也可执行；复制后数字自动归 1"
                                 className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
                               >
                                 <Plus size={14} />
@@ -3323,8 +3342,9 @@ const GunLedger: React.FC = () => {
           designers={designers}
           addToast={addToast}
           onCreated={() => {
+            // 跨客户端的变更广播已由确认图弹窗按「目标设计员 + 目标月份」坐标发出，
+            // 这里不再补发一次空信号（会把别人的刷新退化成整月重拉）
             fetchUsedGunNames();
-            socketRef.current?.emit('task_updated');
           }}
         />
       )}

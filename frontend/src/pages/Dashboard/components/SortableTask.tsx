@@ -7,6 +7,7 @@ import { hasStoredUserMarkColor, isWhiteTaskColor, taskSelectionKey } from '../u
 import { getLeaveRowColors, getTaskDisplayColors } from '../../../utils/taskColors';
 import { useSystemSettings } from '../../../context/SystemSettingsContext';
 import GunDragHandle from './GunDragHandle';
+import GunNameCopyButton from './GunNameCopyButton';
 
 // 工时单元格显示：0 或空值不显示数字（避免「暂停/取消」等 0 工时任务满屏 0）
 const formatHoursCell = (value: number | string | null | undefined) => {
@@ -315,8 +316,10 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             </div>
             {/* 他人正在修改本枪名完成状态时：隐藏悬停操作按钮组，原位显示「正在修改」标记 */}
             {editingMarkSession?.gunIndex === index ? editingMarkBadge : (
-            /* 枪名操作按钮组：拖动 / 上移 / 下移 / 删除，拉开间距避免相互干扰 */
-            <div className="flex items-center gap-1 shrink-0 pl-1">
+            /* 枪名操作按钮组：复制 / 拖动 / 上移 / 下移 / 删除，拉开间距避免相互干扰 */
+            <div className="flex items-center gap-2 shrink-0 pl-2">
+            {/* 复制枪名：拖动手柄左侧，所有登录用户可用（不区分权限） */}
+            <GunNameCopyButton gunName={gun.name} />
             {isAdmin && (
               <GunDragHandle
                 item={item}

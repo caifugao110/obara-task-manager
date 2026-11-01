@@ -86,6 +86,15 @@ export interface SocketHandle {
  */
 export const getCurrentSocketId = (): string | undefined => currentSocket?.id;
 
+/**
+ * 当前共享连接实例（尚未建立连接时为 null）。
+ *
+ * 供「没有 token、也不该自己 manage 连接」的弹窗组件广播变更信号使用：
+ * 例如快速确认图安排弹窗写入任务后，需要让其他客户端立刻看到新任务。
+ * 不增加引用计数——连接的生命周期仍由各页面 acquireSocket/release 决定。
+ */
+export const getCurrentSocket = (): Socket | null => currentSocket;
+
 export const acquireSocket = (token: string): SocketHandle => {
   const holder = Symbol('socket-holder');
   holders.add(holder);
