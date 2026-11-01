@@ -218,6 +218,8 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 端口被占用 | 上次进程没退 | `stop.bat`，或按 `DEPLOYMENT.md` 手动释放 |
 | 鉴权路径忽然变慢 | 热路径里用了 `readDb()` 深拷贝整库 | 换窄读接口 |
 | Node 版本报错 | 低于 22 | 升到 22 LTS |
+| 鼠标点过任务行、再按任意键就冒出一圈黑框 | dnd-kit 的行是 `tabIndex=0` 可聚焦元素，按键后浏览器按 `:focus-visible` 画 UA 默认轮廓（Tailwind preflight 不重置） | 可聚焦行/单元格的 className 显式加 `focus:outline-none focus-visible:outline-none`，选中态用自绘边框表达 |
+| 新增的全局 `keydown` 监听把弹窗的 Esc/快捷键抢了 | 主页面有 5 处独立 window 级 Esc 监听、互不 `stopPropagation` | 新语义先判所有弹窗状态并 `return`，按「弹窗 → 页面选中」的顺序串联 |
 
 ## 相关文档
 

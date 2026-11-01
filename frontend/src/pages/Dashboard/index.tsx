@@ -5,13 +5,14 @@ import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
 import { OFFLINE_SHEETS_CACHE_KEY } from '../../utils/offlineSheetsCache';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
 import { resolveAutoFillHours, GunLocation } from '../../utils/gunHoursRules';
+import { copyTaskTableToClipboard } from '../../utils/taskCopy';
 import {
   detectTaskContentType,
   getTaskBaseColor,
@@ -91,6 +92,69 @@ const GunLookupTag = ({ text }: { text: string }) => (
   </span>
 );
 
+/**
+ * 实测某条主任务在页面上「任务名文本」真正可用的宽度（px），口径统一为**普通用户看到的样子**。
+ *
+ * 为什么不能直接用列宽 18rem：主任务行里除了任务名，前面还固定有一个「完成状态标记」按钮
+ * （完成 / 未完成二选一，hover 才显形，平时 opacity-0 但照样占 18px + 4px 间距），
+ * 所以文字实际可用宽度是 288 - 8 - 6 - 1 - 22 ≈ 251px，比 288 窄。
+ * 管理员还会额外多出「上移 / 下移」按钮（普通用户没有），这里**不把它们算回去**，
+ * 保证不管谁复制，粘出来的表格都按「普通用户看到的宽度」断行。
+ */
+const measureTaskNameWidth = (taskId: string): number | undefined => {
+  try {
+    const root = document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`);
+    const nameEl = root?.querySelector<HTMLElement>('.task-name');
+    if (!nameEl) return undefined;
+
+    const nameStyle = window.getComputedStyle(nameEl);
+    const ownPadding = (parseFloat(nameStyle.paddingLeft) || 0) + (parseFloat(nameStyle.paddingRight) || 0);
+    const flex = nameEl.parentElement;
+    // 行内可用宽度：取任务名所在的 flex 容器内容宽度（无 padding，含两侧按钮）
+    const flexWidth = flex ? flex.clientWidth : nameEl.getBoundingClientRect().width;
+
+    // 扣掉前面的「完成状态标记」按钮（普通用户固定 1 个：18px + margin-right 4px）。
+    // 排在任务名后面的「上移 / 下移」是管理员才有的，**故意不加回去**，这样谁复制宽度都一样。
+    let leadingButtonsWidth = 0;
+    const markGroup = nameEl.previousElementSibling as HTMLElement | null;
+    if (markGroup) {
+      const markStyle = window.getComputedStyle(markGroup);
+      if (markStyle.position !== 'absolute') {
+        leadingButtonsWidth = markGroup.getBoundingClientRect().width + (parseFloat(markStyle.marginRight) || 0);
+      }
+    }
+
+    const width = flexWidth - leadingButtonsWidth - ownPadding;
+    return width > 60 ? Math.round(width) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * 多选时定一个列宽：同一张表只能有一个宽度，但选中行的排版形态可能不一样——
+ * 带枪名的行文字排在按钮之间（≈251px），没有枪名的单行是居中排版、两侧各留 48px（≈177px）。
+ * 这里取**出现次数最多**的那个宽度（并列时取先选中的那一行），
+ * 让多数行的断行与屏幕一致，且同样的选择每次复制结果都相同。
+ */
+const pickNameContentWidth = (items: TaskItem[]): number | undefined => {
+  const widths = items
+    .map(item => measureTaskNameWidth(item.id))
+    .filter((width): width is number => typeof width === 'number');
+  if (widths.length === 0) return undefined;
+  const counts = new Map<number, number>();
+  widths.forEach(width => counts.set(width, (counts.get(width) || 0) + 1));
+  let best = widths[0];
+  let bestCount = 0;
+  counts.forEach((count, width) => {
+    if (count > bestCount) {
+      best = width;
+      bestCount = count;
+    }
+  });
+  return best;
+};
+
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
   const { specNumberDigits, settings: systemSettings, refreshSettings } = useSystemSettings();
@@ -159,6 +223,10 @@ const Dashboard = () => {
     selectedTasksRef.current = selectedTasks;
   }, [selectedTasks]);
   const [selectedCell, setSelectedCell] = useState<{designerId: string, date: string} | null>(null);
+  const selectedCellRef = useRef<{designerId: string, date: string} | null>(null);
+  useEffect(() => {
+    selectedCellRef.current = selectedCell;
+  }, [selectedCell]);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const handledJumpKeyRef = useRef<string | null>(null);
   const hasShownDisconnectToast = useRef(false);
@@ -210,6 +278,10 @@ const Dashboard = () => {
   const deferredRefreshTimerRef = useRef<number | null>(null);
   const pendingFullRefreshRef = useRef(false);
   const isOfflineModeRef = useRef(isOfflineMode);
+
+  // 「~」连按截图的时间戳：物理键上 ~ = Shift+`，连按 ~ 必然连按两次 Shift，
+  // 双击 Shift（快速确认图修改）的判定要据此避开误触，因此把最近一次 ~ 的时间提到外层 ref。
+  const lastTildePressAtRef = useRef(0);
 
   useEffect(() => {
     isOfflineModeRef.current = isOfflineMode;
@@ -570,6 +642,8 @@ const Dashboard = () => {
       if (e.key === 'Shift') {
         if (e.repeat || shiftComboUsed) return;
         if (isTypingTarget()) return;
+        // 刚按过 ~（截屏快捷键）时打断判定：~ 就是 Shift+`，连按 ~ 不该弹出「确认图修改」
+        if (Date.now() - lastTildePressAtRef.current < 500) { resetTap(); return; }
         const now = Date.now();
         if (lastShiftAt && now - lastShiftAt <= DOUBLE_SHIFT_INTERVAL) {
           resetTap();
@@ -662,6 +736,124 @@ const Dashboard = () => {
     };
   }, [
     canTakeGunNumber, isOfflineMode, quickGunTakeOpen, modalOpen, quickModifyOpen,
+    helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast,
+  ]);
+
+  // 复制选中主任务（连按两次 ~ 触发）：把主任务行 + 全部枪名 + 对应工时写成一张 HTML 表格放进剪贴板，
+  // 复制若干主任务为一张表格（仅管理员）：items 必须来自同一个人同一天，按表格里的先后顺序传入
+  const copyTaskAsTable = useCallback(async (items: TaskItem[]) => {
+    if (!isAdmin) {
+      addToast('仅管理员可复制主任务表格', 'error');
+      return;
+    }
+    if (items.length === 0) return;
+    try {
+      // 实测页面上任务名的文本可用宽度：完成/上下移按钮虽然淡出不可见，但仍然占着宽度，
+      // 只有按实测宽度排版，粘出来的断行位置才和屏幕上（普通用户看到的）一致
+      const result = await copyTaskTableToClipboard({
+        items,
+        config: systemSettings.taskColorConfig,
+        nameContentWidth: pickNameContentWidth(items),
+      });
+      if (result === 'rich') {
+        addToast('已复制为表格，可直接进行粘贴', 'success');
+      } else if (result === 'plain') {
+        addToast('已复制为纯文本（当前浏览器不允许写带格式剪贴板）', 'success');
+      } else {
+        addToast('复制失败，请重试', 'error');
+      }
+    } catch (error) {
+      console.error('主任务复制失败:', error);
+      addToast('复制失败，请重试', 'error');
+    }
+  }, [isAdmin, systemSettings.taskColorConfig, addToast]);
+
+  // 连按两次 ~ 触发：支持多选，但**只能选同一个人同一天**（跨单元格复制出来没法排成一张表）
+  const copySelectedTaskAsTable = useCallback(async () => {
+    if (!isAdmin) {
+      addToast('仅管理员可复制主任务表格', 'error');
+      return;
+    }
+    const selections = selectedTasksRef.current;
+    if (selections.length === 0) {
+      addToast('请先选中主任务，再连按两次 ~ 复制', 'error');
+      return;
+    }
+    const { designerId, date } = selections[0];
+    if (selections.some(selection => selection.designerId !== designerId || selection.date !== date)) {
+      addToast('只能复制同一个人同一天的主任务，请重新选择', 'error');
+      return;
+    }
+    const sheet = sheets.find(s => s.designerId === designerId);
+    const dayItems = sheet && Array.isArray(sheet.days?.[date]) ? sheet.days[date] : [];
+    const selectedIds = new Set(selections.map(selection => selection.itemId));
+    // 按表格里的实际顺序取任务，而不是用户点击的先后顺序，保证粘出来与屏幕顺序一致
+    const items = dayItems.filter(task => selectedIds.has(task.id));
+    if (items.length !== selections.length) {
+      addToast('部分主任务已不存在，请刷新后重试', 'error');
+      return;
+    }
+    await copyTaskAsTable(items);
+  }, [isAdmin, sheets, copyTaskAsTable, addToast]);
+
+  // 复制：连按两次 ~（间隔 400ms 内）= 把当前选中的主任务复制成表格。
+  // ~ 在物理键上是 Shift+`，所以这里不能像空格那样排除 shiftKey；
+  // 光标在输入框/可编辑区域内、或已有弹窗打开时不参与判定，避免录入时误触。
+  // 识别方式同时认 e.key（'~' / 全角 '～'）与物理键位 code === 'Backquote'：
+  // 中文输入法开着时 e.key 可能是 'Process'、全角模式下是 '～'，只认 e.key 会静默失效。
+  // 权限：与「快速取号」「确认图修改」一致，**仅管理员**注册该监听（普通用户按键无任何反应）。
+  useEffect(() => {
+    if (!isAdmin) return;
+    const DOUBLE_TILDE_INTERVAL = 400;
+    let lastTildeAt = 0;
+
+    const resetTap = () => { lastTildeAt = 0; };
+
+    const isTypingTarget = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      return !!el.closest('input, textarea, select, [contenteditable="true"]');
+    };
+
+    const handleTildeKeyDown = (e: KeyboardEvent) => {
+      const isTilde = e.key === '~' || e.key === '～' || e.code === 'Backquote';
+      if (!isTilde) {
+        // 其它按键一律打断判定，避免「敲了别的键再按 ~」被误判成连按
+        resetTap();
+        return;
+      }
+      // 输入框内一律不参与判定（输入法正在拼字时也走这条）；isComposing 不再单独拦，
+      // 否则中文输入法激活时按 ~ 会被整段忽略
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget()) {
+        resetTap();
+        return;
+      }
+      // 记下时间：双击 Shift 的判定据此避让（见 handleDoubleShiftKeyDown）
+      lastTildePressAtRef.current = Date.now();
+      e.preventDefault();
+      const now = Date.now();
+      if (lastTildeAt && now - lastTildeAt <= DOUBLE_TILDE_INTERVAL) {
+        resetTap();
+        if (modalOpen || quickModifyOpen || quickGunTakeOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
+        void copySelectedTaskAsTable();
+      } else {
+        lastTildeAt = now;
+        // 第一次按下就给个回执：既是操作提示，也用来判断「按键到底有没有被识别到」
+        addToast('再按一次 ~ 复制选中主任务为表格', 'success');
+      }
+    };
+
+    // 鼠标点击（选任务、点单元格）打断判定，避免「点一下再按 ~」被误判为连按
+    const handleTildeMouseDown = () => { resetTap(); };
+
+    window.addEventListener('keydown', handleTildeKeyDown);
+    window.addEventListener('mousedown', handleTildeMouseDown);
+    return () => {
+      window.removeEventListener('keydown', handleTildeKeyDown);
+      window.removeEventListener('mousedown', handleTildeMouseDown);
+    };
+  }, [
+    isAdmin, copySelectedTaskAsTable, modalOpen, quickModifyOpen, quickGunTakeOpen,
     helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast,
   ]);
 
@@ -1513,14 +1705,28 @@ const Dashboard = () => {
       if (modalOpen) {
         setModalOpen(false);
         stopEditingCell(modalDesignerId, modalDate);
+        return;
       }
+
+      // 其余弹窗（快速修改 / 快速取号 / 操作说明 / 改密码）各自处理 Esc，这里不再抢键
+      if (quickModifyOpen || quickGunTakeOpen || helpGuideOpen || changePasswordOpen) return;
+
+      // 主页面：Esc 取消主任务选中（单选 / 多选通用），顺手也清掉加号单元格的选中态
+      if (isEditableKeyboardTarget(e.target)) return;
+      if (selectedTasksRef.current.length === 0 && !selectedCellRef.current) return;
+
+      setSelectedTasks([]);
+      setSelectedCell(null);
     };
 
     window.addEventListener('keydown', handleEsc);
     return () => {
       window.removeEventListener('keydown', handleEsc);
     };
-  }, [batchReplaceOpen, modalOpen, modalDesignerId, modalDate, stopEditingCell]);
+  }, [
+    batchReplaceOpen, modalOpen, modalDesignerId, modalDate, stopEditingCell,
+    quickModifyOpen, quickGunTakeOpen, helpGuideOpen, changePasswordOpen,
+  ]);
 
   const fetchWorkdayOverrides = useCallback(async () => {
     try {
@@ -3059,6 +3265,8 @@ const Dashboard = () => {
                                                 gunDropTarget={gunDropTarget && !gunDropTarget.isSelf && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate && gunDropTarget.itemId === item.id ? (gunDropTarget.invalid ? 'invalid' : 'valid') : null}
                                                 taskInsertMarker={cellTaskDrop && cellTaskDrop.itemId === item.id ? (cellTaskDrop.duplicate ? 'invalid' : 'valid') : null}
                                                 editingMarkSession={cellSessions.find(s => s.userId !== user?.id && s.itemId === item.id && (canViewEditingUser || s.mode === 'colorMark')) || null}
+                                                // 同一天的第 2 条主任务起画分界线，区分「同一人同一天的不同主任务」
+                                                showTopSeparator={itemIndex > 0}
                                                 onSelectTask={(itemId, designerId, date, append) => {
                                                   if (!canEditTasks) return;
                                                   if (warnIfCellLocked(designerId, date, itemId)) return;
@@ -3623,7 +3831,7 @@ const Dashboard = () => {
                       <span className="flex items-center gap-1 shrink-0 w-[128px] whitespace-nowrap">
                         <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Esc</kbd>
                       </span>
-                      <div className="text-[13px] text-gray-700">关闭弹出窗口</div>
+                      <div className="text-[13px] text-gray-700">取消选中任务 / 关闭弹出窗口</div>
                     </li>
                   </ul>
                 </div>
@@ -3637,26 +3845,36 @@ const Dashboard = () => {
                   <span className="font-bold text-sm text-gray-800">界面快捷操作</span>
                   <span className="text-[11px] text-gray-400 ml-auto">任意位置均可触发</span>
                 </div>
-                <ul className="divide-y divide-gray-100">
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="shrink-0 w-[92px]">
-                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl×2</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">连按两次，定位到今日任务（等同点击左下角状态）</div>
-                  </li>
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="shrink-0 w-[92px]">
-                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Shift×2</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">连按两次，快速添加确认图修改（仅管理员）</div>
-                  </li>
-                  <li className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                    <span className="shrink-0 w-[92px]">
-                      <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Space×2</kbd>
-                    </span>
-                    <div className="text-[13px] text-gray-700">连按两次，快速取号（选台账分类与表，连续取 1–10 个焊枪名）</div>
-                  </li>
-                </ul>
+                <div className="grid grid-cols-1 md:grid-cols-2">
+                  <ul className="divide-y divide-gray-100 md:border-r md:border-gray-100">
+                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="shrink-0 w-[72px]">
+                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl×2</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">定位今日任务</div>
+                    </li>
+                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="shrink-0 w-[72px]">
+                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Shift×2</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">添加确认图修改</div>
+                    </li>
+                  </ul>
+                  <ul className="divide-y divide-gray-100 border-t border-gray-100 md:border-t-0">
+                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="shrink-0 w-[72px]">
+                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Space×2</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">快速取号（1–10 个焊枪名）</div>
+                    </li>
+                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                      <span className="shrink-0 w-[72px]">
+                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">~×2</kbd>
+                      </span>
+                      <div className="text-[13px] text-gray-700">复制选中主任务（表格格式，可直接粘贴）</div>
+                    </li>
+                  </ul>
+                </div>
               </div>
             </div>
 

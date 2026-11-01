@@ -16,7 +16,7 @@ const formatHoursCell = (value: number | string | null | undefined) => {
   return Number.isFinite(numeric) && numeric > 0 ? value : '';
 };
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null, showTopSeparator = false }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null, showTopSeparator?: boolean }) => {
   const { settings } = useSystemSettings();
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
@@ -96,6 +96,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
     </span>
   ) : null;
 
+  // 选中任务后按任意键会冒出一圈黑框，来源是这个 div 本身可聚焦（tabIndex=0 + dnd-kit 注入的 role="button"）：
+  // 鼠标点中后再按键盘，浏览器会把当前焦点判为「键盘焦点」并画出 UA 默认焦点框（Windows 上就是黑色圆角描边）。
+  // 下面的 focus:outline-none 用来关掉它；选中态已有 2px 蓝框标识，键盘拖拽（Tab 聚焦 / Space 起拖）不受影响。
   return (
     <div
       ref={setNodeRef}
@@ -142,8 +145,21 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
         }
       }}
       tabIndex={isAdmin ? 0 : -1}
-      className={`task-row relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
+      className={`task-row relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 focus:outline-none focus-visible:outline-none ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
     >
+      {/* 同一设计人员同一天有多个主任务时，第 2 条起在顶部画一条分界线：
+          主任务之间是 1px 深灰线（#6b7280），主任务与它自己的枪名行之间是 1px 浅灰线（#e5e7eb），
+          粗细一样、只靠深浅拉开层级，避免两条同色主任务（尤其都是「设计」浅黄）糊成一片。
+          top:-1 让它正好压住上一条任务的 border-b（1px #d1d5db），接缝处只剩一条深灰线，不会出现双线。
+          用绝对定位而不是 border-top：外层 div 已用 inline style 写了 border（选中态 2px 蓝框），
+          inline 会盖掉 className 里的边框；绝对定位也让它不占布局高度，拖拽/行高实测不受影响。
+          该主任务被选中时隐藏本线：蓝色 2px 选中框本身就画在这一圈，叠在一起会显得边框发脏。 */}
+      {showTopSeparator && !isSelected && (
+        <div
+          className="absolute left-0 right-0 pointer-events-none z-[5]"
+          style={{ top: -1, height: 1, backgroundColor: '#6b7280' }}
+        />
+      )}
       {/* 枪名拖拽路径扫过时的预选中高亮：整条主任务描边变色（绿=可放置，红=重复不可放置） */}
       {gunDropTarget && (
         <div
