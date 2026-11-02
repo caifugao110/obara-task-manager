@@ -65,6 +65,12 @@ const securityConfig = {
   },
   spec: {
     sharePath: process.env.SPEC_SHARE_PATH || '\\\\192.168.160.6\\仕样书$'
+  },
+  schedule: {
+    // 各产品大日程（状态跟踪的数量/纳期/已发图优先来源）
+    filePath: process.env.PRODUCTION_SCHEDULE_PATH || '\\\\192.168.160.70\\各产品大日程\\各产品大日程.xls',
+    // 网络共享文件的解析结果缓存时长；文件更新后最多滞后该时长生效
+    cacheMs: parseInt(process.env.PRODUCTION_SCHEDULE_CACHE_MS, 10) || 300000
   }
 };
 

@@ -8,6 +8,7 @@ const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday'
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
 const gunExport = require('./gunLedgerExport');
+const scheduleSyncService = require('./scheduleSyncService');
 
 // 备份最终化：rawDb.backup() 生成的备份文件继承源库的 WAL 模式，
 // 会在备份目录留下 .db-wal / .db-shm 伴随文件，导致前端列表出现多条记录。
@@ -32,6 +33,7 @@ const defaultMaintenanceSettings = {
   dailyBackupEnabled: true,
   dailyTaskExportEnabled: true,
   dailyGunLedgerExportEnabled: true,
+  dailyScheduleSyncEnabled: true,
   offlineBackupEnabled: true,
   backupRetentionDays: 30,
   offlineBackupRetentionDays: 7,
@@ -100,6 +102,7 @@ const normalizeMaintenanceSettings = (settings = {}) => {
     dailyBackupEnabled: settings.dailyBackupEnabled ?? defaultMaintenanceSettings.dailyBackupEnabled,
     dailyTaskExportEnabled: settings.dailyTaskExportEnabled ?? defaultMaintenanceSettings.dailyTaskExportEnabled,
     dailyGunLedgerExportEnabled: settings.dailyGunLedgerExportEnabled ?? defaultMaintenanceSettings.dailyGunLedgerExportEnabled,
+    dailyScheduleSyncEnabled: settings.dailyScheduleSyncEnabled ?? defaultMaintenanceSettings.dailyScheduleSyncEnabled,
     offlineBackupEnabled: settings.offlineBackupEnabled ?? defaultMaintenanceSettings.offlineBackupEnabled,
     yearlyCleanupEnabled: settings.yearlyCleanupEnabled ?? defaultMaintenanceSettings.yearlyCleanupEnabled,
     backupRetentionDays: Math.max(1, parseInt(settings.backupRetentionDays, 10) || defaultMaintenanceSettings.backupRetentionDays),
@@ -513,7 +516,7 @@ const runScheduledMaintenance = async () => {
   if (schedulerRunning) return { skipped: true, reason: 'already-running' };
   schedulerRunning = true;
   const startedAt = new Date();
-  const result = { startedAt: startedAt.toISOString(), backup: null, taskExport: null, gunLedgerExport: null, backupCleanup: null, yearlyCleanup: null, errors: [] };
+  const result = { startedAt: startedAt.toISOString(), backup: null, taskExport: null, gunLedgerExport: null, scheduleSync: null, backupCleanup: null, yearlyCleanup: null, errors: [] };
 
   console.log(`[maintenance] 计划维护开始 (${formatLocalDateTime(startedAt)})`);
   try {
@@ -527,6 +530,29 @@ const runScheduledMaintenance = async () => {
     if (settings.dailyBackupEnabled) result.backup = await createDatabaseBackup();
     if (settings.dailyTaskExportEnabled) result.taskExport = exportTaskData();
     if (settings.dailyGunLedgerExportEnabled) result.gunLedgerExport = exportGunLedgerData();
+    // 状态跟踪同步放在导出之后、清理之前：
+    //   - 备份已在最前面完成，同步若写坏数据还能用本次备份回滚；
+    //   - 不占用清理阶段的文件句柄，也不影响过期文件回收。
+    if (settings.dailyScheduleSyncEnabled) {
+      try {
+        const syncResult = await scheduleSyncService.applySyncPlan();
+        result.scheduleSync = {
+          skipped: !syncResult.applied,
+          added: syncResult.stats.added,
+          updated: syncResult.stats.updated,
+          unchanged: syncResult.stats.unchanged,
+          salesFilled: syncResult.stats.salesFilled,
+          leaderFilled: syncResult.stats.leaderFilled,
+          salesMissing: syncResult.stats.salesMissing,
+          lookup: syncResult.stats.salesLookup
+        };
+        console.log(`[maintenance] 状态跟踪同步完成：新增 ${result.scheduleSync.added} 条，更新 ${result.scheduleSync.updated} 条，补全营业担当 ${result.scheduleSync.salesFilled} 条`);
+      } catch (error) {
+        result.scheduleSync = { skipped: true, reason: error.message };
+        result.errors.push(`状态跟踪同步失败：${error.message}`);
+        console.error('[maintenance] 状态跟踪同步失败:', error.message);
+      }
+    }
     result.backupCleanup = cleanupOldBackups();
     result.yearlyCleanup = await runYearlyTaskCleanup();
     return result;

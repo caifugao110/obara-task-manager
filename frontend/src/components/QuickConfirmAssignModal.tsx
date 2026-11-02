@@ -7,6 +7,8 @@ import {
   ClipboardList,
   Loader2,
   RefreshCw,
+  RotateCcw,
+  Search,
   Square,
   User,
   Users,
@@ -67,6 +69,8 @@ interface QuickConfirmAssignModalProps {
   zIndexClass?: string;
   // 底部左侧提示：从台账页（Shift×2）和从快速取号打开时的入口不同
   hintText?: string;
+  // 枪名来源：today = 今天取的全部号（台账页入口）；batch = 刚取的这一批（取号结果框入口）
+  scope?: 'today' | 'batch';
 }
 
 const todayStr = () => {
@@ -105,6 +109,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   onCreated,
   zIndexClass = 'z-50',
   hintText = 'Shift × 2 呼出 · Esc 关闭',
+  scope = 'today',
 }) => {
   const { specNumberDigits, settings } = useSystemSettings();
 
@@ -116,6 +121,10 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   const [urgent, setUrgent] = useState(false);
   const [deadlineMap, setDeadlineMap] = useState<Record<string, string | null>>({});
   const [deadlineLoading, setDeadlineLoading] = useState(false);
+
+  // 枪名列表筛选：仕样号下拉（精确到仕样号）+ 关键字（仕样号/客户/枪名模糊）
+  const [specFilter, setSpecFilter] = useState('');
+  const [keyword, setKeyword] = useState('');
 
   const [dayTasks, setDayTasks] = useState<DayTask[]>([]);
   const [checking, setChecking] = useState(false);
@@ -147,6 +156,8 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
     setMergeMode(false);
     setMergeTargetId('');
     setSubmitting(false);
+    setSpecFilter('');
+    setKeyword('');
     lastRowsSignatureRef.current = '';
   }, [open]);
 
@@ -175,6 +186,29 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
     () => rows.filter(r => selectedIds.has(r.rowId)),
     [rows, selectedIds]
   );
+
+  // 仕样号下拉选项：从客户列里按仕样号位数抽出，附带该仕样号下的枪名数
+  const specOptions = useMemo(() => {
+    const counter = new Map<string, number>();
+    rows.forEach(row => {
+      extractSpecNumbers(row.customer || '', specNumberDigits).forEach(spec => {
+        counter.set(spec, (counter.get(spec) || 0) + 1);
+      });
+    });
+    return Array.from(counter.entries()).sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+  }, [rows, specNumberDigits]);
+
+  // 列表筛选：仕样号（精确）与关键字（仕样号/客户/枪名模糊）同时生效
+  const filteredRows = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    return rows.filter(row => {
+      if (specFilter && !extractSpecNumbers(row.customer || '', specNumberDigits).includes(specFilter)) return false;
+      if (!kw) return true;
+      return `${row.gunName} ${row.customer} ${row.category} ${row.tableName}`.toLowerCase().includes(kw);
+    });
+  }, [rows, specFilter, keyword, specNumberDigits]);
+
+  const filterActive = Boolean(specFilter || keyword.trim());
 
   const groups = useMemo(() => groupByCustomer(selectedRows), [selectedRows]);
 
@@ -277,9 +311,10 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
     // deadlineMap 故意不进依赖：它由本 effect 自己写入，进依赖会自触发死循环
   }, [open, showDeadline, groupNamesSignature, specNumberDigits]);
 
+  // 全选只作用于当前筛选结果，避免筛选后误勾到看不见的枪名
   const allSelectableIds = useMemo(
-    () => rows.filter(r => !r.used).map(r => r.rowId),
-    [rows]
+    () => filteredRows.filter(r => !r.used).map(r => r.rowId),
+    [filteredRows]
   );
   const allSelected = allSelectableIds.length > 0 && allSelectableIds.every(id => selectedIds.has(id));
 
@@ -433,7 +468,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   return (
     <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center`} role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => !submitting && onClose()} />
-      <div className="relative bg-white rounded-xl shadow-2xl w-[620px] max-w-[94vw] max-h-[90vh] flex flex-col overflow-hidden border border-gray-200">
+      <div className="relative bg-white rounded-xl shadow-2xl w-[780px] max-w-[96vw] max-h-[92vh] flex flex-col overflow-hidden border border-gray-200">
         {/* 头部 */}
         <div className="relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1d4ed8] via-[#2563eb] to-[#3b82f6] text-white shrink-0">
           <div className="flex items-center gap-2.5">
@@ -442,7 +477,9 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
             </div>
             <div>
               <div className="font-bold text-base leading-tight">快速确认图安排</div>
-              <div className="text-[11px] opacity-80 leading-tight mt-0.5">今日取号枪名 → 按客户分组 → 安排确认图任务</div>
+              <div className="text-[11px] opacity-80 leading-tight mt-0.5">
+                {scope === 'batch' ? '本次取的枪名' : '今日取号枪名'} → 按客户分组 → 安排确认图任务
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2.5 shrink-0">
@@ -495,13 +532,13 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
         </div>
 
         <div className="flex-1 overflow-auto p-5 space-y-4 bg-gray-50/70">
-          {/* 步骤 1：今日取的枪名 */}
+          {/* 步骤 1：取号枪名列表（可按仕样号/关键字筛选） */}
           <section>
             <div className="flex items-center gap-2 mb-2">
               <span className="flex items-center justify-center w-5 h-5 rounded-full bg-[#2563eb] text-white text-[11px] font-bold shrink-0">1</span>
-              <span className="text-sm font-bold text-gray-800">今日取的枪名</span>
+              <span className="text-sm font-bold text-gray-800">{scope === 'batch' ? '本次取的枪名' : '今日取的枪名'}</span>
               <span className="text-[11px] text-gray-400">
-                共 {rows.length} 个，已选 {selectedRows.length} 个
+                共 {filterActive ? `${filteredRows.length}/${rows.length}` : rows.length} 个，已选 {selectedRows.length} 个
                 {totalHours > 0 && ` · ${totalHours.toFixed(2)}h`}
               </span>
               {allSelectableIds.length > 0 && (
@@ -517,17 +554,76 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
               )}
             </div>
 
+            {/* 筛选：仕样号下拉 + 关键字（仕样号 / 客户 / 枪名） */}
+            {rows.length > 0 && (
+              <div className="flex items-center gap-2 mb-2">
+                <div className="relative flex-1 min-w-0">
+                  <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    value={keyword}
+                    onChange={e => setKeyword(e.target.value)}
+                    placeholder="筛选仕样号 / 客户 / 枪名"
+                    className="w-full h-8 pl-6 pr-7 rounded-md border border-gray-200 bg-white text-[12px] text-gray-700 outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-300 transition"
+                  />
+                  {keyword && (
+                    <button
+                      type="button"
+                      onClick={() => setKeyword('')}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-600 transition cursor-pointer"
+                      title="清空关键字"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+                {specOptions.length > 0 && (
+                  <select
+                    value={specFilter}
+                    onChange={e => setSpecFilter(e.target.value)}
+                    title="按仕样号筛选"
+                    className={`shrink-0 h-8 px-2 rounded-md border text-[12px] outline-none focus:ring-2 focus:ring-blue-400 transition max-w-[240px] ${
+                      specFilter
+                        ? 'border-blue-300 bg-blue-50 text-blue-700 font-semibold'
+                        : 'border-gray-200 bg-white text-gray-600'
+                    }`}
+                  >
+                    <option value="">全部仕样号</option>
+                    {specOptions.map(([spec, count]) => (
+                      <option key={spec} value={spec}>{spec}（{count}）</option>
+                    ))}
+                  </select>
+                )}
+                {filterActive && (
+                  <button
+                    type="button"
+                    onClick={() => { setSpecFilter(''); setKeyword(''); }}
+                    className="shrink-0 h-8 px-2 rounded-md border border-gray-200 bg-white text-[11px] font-semibold text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition inline-flex items-center gap-1 cursor-pointer"
+                    title="清除全部筛选条件"
+                  >
+                    <RotateCcw size={11} />清除
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
               {rows.length === 0 ? (
                 <div className="px-3 py-6 text-[12px] text-gray-400 text-center leading-relaxed">
-                  今天还没有取号记录
+                  {scope === 'batch' ? '本次没有取到枪名' : '今天还没有取号记录'}
                   <div className="mt-1 text-[11px] text-gray-400">
-                    台账里「时间」为今天、「担当」为当前登录人员的枪名会出现在这里
+                    {scope === 'batch'
+                      ? '重新取号后，本次取到的枪名会出现在这里'
+                      : '台账里「时间」为今天、「担当」为当前登录人员的枪名会出现在这里'}
                   </div>
                 </div>
+              ) : filteredRows.length === 0 ? (
+                <div className="px-3 py-6 text-[12px] text-gray-400 text-center leading-relaxed">
+                  没有符合筛选条件的枪名
+                  <div className="mt-1 text-[11px] text-gray-400">调整仕样号或关键字后再试</div>
+                </div>
               ) : (
-                <ul className="max-h-[240px] overflow-auto divide-y divide-gray-100">
-                  {rows.map(row => {
+                <ul className="max-h-[340px] overflow-auto divide-y divide-gray-100">
+                  {filteredRows.map(row => {
                     const checked = selectedIds.has(row.rowId);
                     const disabled = row.used || submitting;
                     return (

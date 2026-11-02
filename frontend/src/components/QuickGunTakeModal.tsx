@@ -175,6 +175,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignLoading, setAssignLoading] = useState(false);
   const [assignRows, setAssignRows] = useState<QuickConfirmGunRow[]>([]);
+  // 浮层数据来源：batch = 刚取到的这一批；today = 今天取的全部号
+  const [assignScope, setAssignScope] = useState<'today' | 'batch'>('today');
 
   const customerRef = useRef<HTMLInputElement | null>(null);
   const resultPrimaryRef = useRef<HTMLButtonElement | null>(null);
@@ -299,6 +301,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     setLoadError('');
     setAssignOpen(false);
     setAssignRows([]);
+    setAssignScope('today');
     // 数量沿用上次的值：同一批料连续取号时通常数量相同
     const rememberedCount = (() => {
       try { return Number(localStorage.getItem(LAST_COUNT_KEY) || '') || 1; } catch { return 1; }
@@ -600,21 +603,23 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     safeCount, offline, addToast, fetchOptions,
   ]);
 
-  // 取号成功后的可选动作：把「我今天取的号」直接带入确认图安排
-  const handleOpenAssign = useCallback(async () => {
+  /**
+   * 打开「快速确认图安排」浮层
+   * - batch：只带刚取到的这一批枪名（取号结果框左下角入口）
+   * - today：带今天取的全部号（取号弹窗顶部的常驻入口）
+   */
+  const handleOpenAssign = useCallback(async (scope: 'today' | 'batch' = 'today') => {
     if (offline) {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
+    const batch = scope === 'batch' ? lastTaken : null;
+    if (scope === 'batch' && (!batch || batch.rows.length === 0)) {
+      addToast('还没有本次取号结果，先去取号再安排确认图', 'error');
+      return;
+    }
     setAssignLoading(true);
     try {
-      // 重新拉一次，保证包含刚取的号（取号后虽已静默刷新，这里再取一次最稳）
-      const res = await axiosInstance.get('/gun-ledger/quick-take/options');
-      const list: QuickTakeTodayRow[] = Array.isArray(res.data?.todayTaken) ? res.data.todayTaken : [];
-      if (list.length === 0) {
-        addToast('今天还没有取号记录，先去取号再安排确认图', 'error');
-        return;
-      }
       // 已被主任务使用的枪名不能再分配确认图任务（与台账页一致）
       let usedGunNames = new Set<string>();
       try {
@@ -623,14 +628,37 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       } catch {
         // 拉取失败仅影响「已安排」标识，不阻断安排流程
       }
-      setAssignRows(list.map(row => ({
+
+      let base: QuickTakeTodayRow[];
+      if (batch) {
+        // 结果框里的枪名就是刚写进台账的这一批，直接用，不再拉今日全部
+        base = batch.rows.map(r => ({
+          rowId: `quick-take-${r.serialNumber}-${r.gunName}`,
+          gunName: r.gunName,
+          customer: batch.customer,
+          category: batch.category,
+          tableName: batch.tableName,
+          serialNumber: r.serialNumber,
+        }));
+      } else {
+        // 重新拉一次，保证包含刚取的号（取号后虽已静默刷新，这里再取一次最稳）
+        const res = await axiosInstance.get('/gun-ledger/quick-take/options');
+        base = Array.isArray(res.data?.todayTaken) ? (res.data.todayTaken as QuickTakeTodayRow[]) : [];
+        if (base.length === 0) {
+          addToast('今天还没有取号记录，先去取号再安排确认图', 'error');
+          return;
+        }
+      }
+
+      setAssignScope(scope);
+      setAssignRows(base.map(row => ({
         rowId: row.rowId,
         gunName: row.gunName,
         customer: row.customer,
         category: row.category,
         tableName: row.tableName,
         hours: resolveGunHours('confirm', row.gunName, { category: row.category, tableName: row.tableName }, systemSettings) ?? 0,
-        used: usedGunNames.has(row.gunName),
+        used: usedGunNames.has(String(row.gunName).trim()),
       })));
       setAssignOpen(true);
     } catch (err: any) {
@@ -638,7 +666,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     } finally {
       setAssignLoading(false);
     }
-  }, [offline, addToast, systemSettings]);
+  }, [offline, addToast, systemSettings, lastTaken]);
 
   const handleCopyGunName = useCallback(async () => {
     if (!lastTaken || lastTaken.rows.length === 0) return;
@@ -672,16 +700,16 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {/* 二级浮层：把今天取的号安排成确认图任务（不必先取号，随时可打开） */}
+            {/* 二级浮层：为今日取到的号安排确认图任务（不必先取号，随时可打开） */}
             <button
               type="button"
-              onClick={() => void handleOpenAssign()}
+              onClick={() => void handleOpenAssign('today')}
               disabled={assignLoading || offline || submitting}
               title="浮层：把今天取的号按客户分组安排确认图任务（不必先取号）"
-              className="flex items-center gap-1 h-7 px-2.5 rounded-full bg-white/15 border border-white/25 text-[11px] font-bold text-white hover:bg-white/25 transition cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1 h-7 px-2.5 rounded-full bg-white/15 border border-white/25 text-[11px] font-bold text-white hover:bg-white/25 transition cursor-pointer disabled:opacity-50 whitespace-nowrap"
             >
               {assignLoading ? <Loader2 size={12} className="animate-spin" /> : <ClipboardList size={12} />}
-              安排确认图
+              为今日取号安排确认图
               {todayTakenCount > 0 && (
                 <span className="text-[10px] font-bold px-1 rounded bg-white/25">{todayTakenCount}</span>
               )}
@@ -1143,7 +1171,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     {lastTaken && resultOpen && (
       <div className="fixed inset-0 z-[55] flex items-center justify-center px-4" role="dialog" aria-modal="true" aria-label="取号成功">
         <div className="absolute inset-0 bg-black/35 backdrop-blur-[2px]" onClick={closeResult} />
-        <div className="relative w-[440px] max-w-full max-h-[88vh] flex flex-col overflow-hidden rounded-xl border border-emerald-100 bg-white shadow-2xl">
+        <div className="relative w-[480px] max-w-full max-h-[88vh] flex flex-col overflow-hidden rounded-xl border border-emerald-100 bg-white shadow-2xl">
           {/* 头部：成功语义（绿），与取号弹窗的蓝区分开 */}
           <div className="relative flex items-center gap-2.5 px-4 py-3.5 bg-gradient-to-r from-[#047857] via-[#059669] to-[#10b981] text-white shrink-0">
             <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25 shrink-0">
@@ -1204,12 +1232,15 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
           <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-t border-gray-100 bg-gray-50/70">
             <button
               type="button"
-              onClick={() => void handleOpenAssign()}
+              onClick={() => void handleOpenAssign('batch')}
               disabled={assignLoading || offline}
-              title="把今天取的号按客户分组安排确认图任务"
+              title={`只把本次取到的 ${lastTaken.rows.length} 个枪名安排确认图任务`}
               className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 hover:text-emerald-700 transition disabled:opacity-50"
             >
-              {assignLoading ? <Loader2 size={12} className="animate-spin" /> : <ClipboardList size={12} />}安排确认图
+              {assignLoading ? <Loader2 size={12} className="animate-spin" /> : <ClipboardList size={12} />}
+              <span>
+                快速安排这<span className="font-bold tabular-nums">{lastTaken.rows.length}</span>个确认图
+              </span>
             </button>
             <div className="ml-auto flex items-center gap-2">
               <button
@@ -1234,7 +1265,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       </div>
     )}
 
-    {/* 可选：把今天取的号安排确认图任务（浮在取号弹窗之上） */}
+    {/* 可选：把取到的号安排确认图任务（浮在取号弹窗之上） */}
     <QuickConfirmAssignModal
       open={assignOpen}
       onClose={() => setAssignOpen(false)}
@@ -1247,7 +1278,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
         if (info) onTasksCreated?.(info);
       }}
       zIndexClass="z-[60]"
-      hintText="从快速取号打开 · Esc 关闭"
+      scope={assignScope}
+      hintText={assignScope === 'batch' ? '仅本次取到的枪名 · Esc 关闭' : '今日取号枪名 · Esc 关闭'}
     />
     </>
   );

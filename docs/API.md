@@ -1506,6 +1506,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
     "quantity": "100",
     "deliveryDate": "2026-08-15",
     "shippedCount": 60,
+    "sheetName": "南京焊钳",
     "unconfirmedCount": 0,
     "totalVarieties": 10,
     "feedbackVarieties": 8,
@@ -1532,6 +1533,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 |------|------|
 | `id` | 记录唯一标识，创建时自动生成 |
 | `factory` | 工厂（`O/NJG`、`O/SHA`；前端按营业担当自动匹配工厂规则填充） |
+| `sheetName` | 该行来自「各产品大日程.xls」的哪张工作表（`南京焊钳`、`上海焊钳`、`南京焊钳修改`、`上海焊钳修改`）。同步与行内刷新时由服务端写入，用于按表筛选；历史记录可能为空，前端按工厂兜底 |
 | `clientName` | 客户名称 |
 | `specNumber` | 仕样号 |
 | `productionPlanMonth` | 添加时间月份（`YYYY-MM`），创建时缺省取当前月 |
@@ -1675,6 +1677,46 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 响应：返回所有状态追踪记录数组。
 
+### 预览「同步生产大日程」
+
+`POST /api/status-tracking/sync-schedule/preview`
+
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
+
+读取共享盘上的「各产品大日程.xls」（路径由 `PRODUCTION_SCHEDULE_PATH` 配置），解析南京焊钳、上海焊钳、南京焊钳修改、上海焊钳修改四张工作表的 4 个月份块，与现有状态追踪记录比对后返回变更统计，不写库。
+
+有效仕样号判定：位数与 `settings.system.specNumberDigits` 一致，且该行数量大于 0。
+
+响应字段：
+
+| 字段 | 说明 |
+|------|------|
+| `added` | 表格有、状态跟踪没有的条数 |
+| `updated` | 两边都有但字段有差异（含补全营业担当/组长）的条数 |
+| `unchanged` | 两边完全一致的条数 |
+| `locked` | 该行正被其他用户或窗口编辑、本次会跳过的条数 |
+| `skipped` | 不符合有效仕样号条件被忽略的行数 |
+| `salesFilled` | 本次会自动补全营业担当的条数 |
+| `leaderFilled` | 本次会自动补全组长的条数 |
+| `salesMissing` | 仕样书里也取不到营业担当、同步后仍需人工补填的条数 |
+| `salesLookup` | 仕样书解析情况 `{ specs, resolved, missingPdf, noSalesPerson, failed, shareAvailable }` |
+| `months` | 各月份块的条数分布 `[{ month, count }]` |
+| `filePath` | 实际读取的大日程文件路径 |
+
+营业担当来源：按仕样号在 `SPEC_SHARE_PATH` 指向的共享目录里找最新版仕样书 PDF（`58249.08.PDF` 优先于 `58249.PDF`），用分类规则解析签核区；解析结果按「文件 + 大小 + 修改时间」缓存 12 小时，目录索引缓存 10 分钟。组长由 `settings.leaderRules` 按营业担当推出。共享目录不可访问时 `salesLookup.shareAvailable` 为 `false`，同步只写表格字段，不会失败。
+
+文件不可读时返回 `503` 与 `message`。
+
+### 执行「同步生产大日程」
+
+`POST /api/status-tracking/sync-schedule`
+
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
+
+按预览结果落库：新增记录写入 `factory`、`sheetName`（来源工作表）、`clientName`、`specNumber`、`productionPlanMonths`、`quantity`、`deliveryDate`、`shippedCount`；已有记录只覆盖这些来源字段（`sheetName` 同时用于补齐历史记录），`salesPerson`、`leader`、确认类等人工维护字段保留。营业担当只在原记录为空时补全（取自仕样书），组长由 `leaderRules` 按营业担当推出、同样只补空值，人工改过的值不会被覆盖。表格的客户或纳期为空时保留原值，不会被清空。被他人锁定（行锁）的记录跳过。
+
+成功后广播 `status_tracking_bulk` 事件，响应中包含 `message` 与上述统计字段。同一份文件重复执行结果幂等（第二次 `added`、`updated` 均为 0）。
+
 ### 导出状态跟踪表
 
 `GET /api/status-tracking/export`
@@ -1687,15 +1729,18 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 |------|------|------|
 | `month` | 否 | 月份，格式 `YYYY-MM`，按添加时间月份字段过滤（与 `deliveryMonth` 二选一） |
 | `deliveryMonth` | 否 | 纳期月份，格式 `YYYY-MM`，按纳期字段过滤（与 `month` 二选一） |
-| `factory` | 否 | 按工厂筛选 |
+| `factory` | 否 | 按工厂筛选（`O/NJG`、`O/SHA`） |
+| `sheetName` | 否 | 按记录来自哪张日程表筛选：`南京焊钳`、`上海焊钳`、`南京焊钳修改`、`上海焊钳修改`。可重复传多个（`?sheetName=南京焊钳&sheetName=上海焊钳`）或逗号分隔，按「任一命中」筛选，供前端的合并项「焊钳」「焊钳修改」使用。老记录没有 `sheetName` 时按工厂兜底（`O/NJG`→南京焊钳、`O/SHA`→上海焊钳） |
 | `searchTerm` | 否 | 搜索关键词，匹配客户名、仕样号、营业担当、组长 |
 | `fullTableSearch` | 否 | 是否全表搜索，`true` 时忽略 `month` 和 `deliveryMonth` 参数 |
+| `showOutdatedDelivery` | 否 | 仅在 `fullTableSearch=true` 时生效。默认 `false`：**剔除设计纳期已过期或缺失的记录**（`designDeliveryDays < 1`，即纳期早于今天或 `deliveryDate` 为空）；传 `true` 才导出全部记录 |
 
 响应：`.xls` 文件流，文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`。
 
 说明：
 
 - 未开启全表搜索时，`month` 和 `deliveryMonth` 必须二选一。
+- 全表搜索（`fullTableSearch=true`）默认会静默过滤掉设计纳期已过期或纳期为空的记录，需要全量导出时必须显式带 `showOutdatedDelivery=true`；按月份导出时不做该过滤。
 - `month` 按添加时间月份字段过滤。
 - `deliveryMonth` 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录。
 - 导出列包括工厂、客户、数量、纳期、已发图、未确认、总种数、反馈种数、反馈计划、下图计划及状态、确认数量、确认种数、下图种数、未下种数、未下数量、未确认数、设计纳期、营业担当、组长。
@@ -3126,6 +3171,7 @@ PUT 请求：
     "dailyBackupEnabled": true,
     "dailyTaskExportEnabled": true,
     "dailyGunLedgerExportEnabled": true,
+    "dailyScheduleSyncEnabled": true,
     "offlineBackupEnabled": true,
     "backupRetentionDays": 30,
     "taskExportRetentionDays": 30,
@@ -3185,6 +3231,7 @@ PUT 请求：
 | `settings.dailyBackupEnabled` | 是否启用每日数据库备份 |
 | `settings.dailyTaskExportEnabled` | 是否启用每日任务数据导出 |
 | `settings.dailyGunLedgerExportEnabled` | 是否启用每日编号台账导出 |
+| `settings.dailyScheduleSyncEnabled` | 是否启用每日「同步生产大日程」（含营业担当/组长补全），默认 `true` |
 | `settings.offlineBackupEnabled` | 是否启用断网备份（服务关闭前自动备份） |
 | `settings.backupRetentionDays` | 数据库备份保留天数 |
 | `settings.taskExportRetentionDays` | 任务导出保留天数 |
@@ -3239,6 +3286,7 @@ PUT 请求：
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
   "dailyGunLedgerExportEnabled": true,
+  "dailyScheduleSyncEnabled": true,
   "offlineBackupEnabled": true,
   "backupRetentionDays": 30,
   "offlineBackupRetentionDays": 7,
@@ -3265,6 +3313,7 @@ PUT 请求：
 | `dailyBackupEnabled` | 是 | 是否启用每日数据库备份 |
 | `dailyTaskExportEnabled` | 是 | 是否启用每日任务数据导出 |
 | `dailyGunLedgerExportEnabled` | 是 | 是否启用每日编号台账导出 |
+| `dailyScheduleSyncEnabled` | 否 | 是否启用每日「同步生产大日程」；缺省时沿用现值，旧前端提交不含该字段也不会报错 |
 | `offlineBackupEnabled` | 是 | 是否启用断网备份（服务关闭前自动备份） |
 | `backupRetentionDays` | 是 | 数据库备份保留天数（1-3650） |
 | `offlineBackupRetentionDays` | 是 | 断网备份保留天数（1-3650） |
@@ -3909,13 +3958,28 @@ PUT 请求：
 
 从共享目录搜索指定仕样号的最新 PDF，并提取详细信息（中间商、最终客户、项目名称、数量、纳期、营业担当等）。
 
+数据来源有两处，**「各产品大日程」优先，仕样书 PDF 兜底**：
+
+| 字段 | 取值来源 |
+|------|----------|
+| `quantity`、`deliveryDate`、`shippedCount`、`factory`、`scheduleSheet`、`scheduleMonth` | 大日程命中时以表格为准；未命中回退 PDF（`shippedCount` 与 `scheduleSheet` 则为 `null` / 空串，由前端按 0 / 保留原值处理） |
+| `clientName`、`middleMan`、`finalClient`、`projectName`、`salesPerson`、`isModification` | PDF 解析；PDF 不可用时 `clientName` 回退为表格「客户」列原文，其余为空字符串 / `false` |
+
+「各产品大日程」由 `PRODUCTION_SCHEDULE_PATH` 指定（见环境变量章节），只解析「南京焊钳」「上海焊钳」「南京焊钳修改」「上海焊钳修改」四张工作表，`南京*` 对应工厂 `O/NJG`、`上海*` 对应 `O/SHA`。
+
 请求：
 
 ```json
 {
-  "specNumber": "12345"
+  "specNumber": "12345",
+  "productionPlanMonth": "2026-11"
 }
 ```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `specNumber` | 是 | 仕样号，纯数字，位数与系统设置 `specNumberDigits` 一致 |
+| `productionPlanMonth` | 否 | 添加时间月份（`YYYY-MM`，兼容传 `month`），状态追踪页用它定位大日程的月份块。缺省或格式不符时依次取「当前月份块 → 离当前月最近的月份块」；表格中该仕样号只出现在别的月份时仍会返回表格数据，不会判为未命中 |
 
 说明：
 
@@ -3943,9 +4007,23 @@ PUT 请求：
   "projectName": "项目名称",
   "quantity": "100",
   "deliveryDate": "2026-12-31",
-  "salesPerson": "营业担当姓名"
+  "salesPerson": "营业担当姓名",
+  "isModification": false,
+  "factory": "O/NJG",
+  "shippedCount": 60,
+  "scheduleSheet": "南京焊钳",
+  "scheduleMonth": "2026-11"
 }
 ```
+
+| 字段 | 说明 |
+|------|------|
+| `quantity` | 数量，字符串；大日程优先，回退 PDF |
+| `deliveryDate` | 纳期 `YYYY-MM-DD`，无法解析时为 `null` |
+| `factory` | 工厂。大日程命中时取工作表归属（`O/NJG` / `O/SHA`）；未命中为 `''`，由前端按营业担当规则推断 |
+| `shippedCount` | 已发图数量（整数）。仅大日程命中时有值；未命中固定为 `null`，前端保留原记录值 |
+| `scheduleMonth` | 命中的大日程月份块（`YYYY-MM`）。`''` 表示未命中大日程，前端据此判断「是否覆盖已发图」 |
+| `isModification` | 是否焊钳修改件，来自 PDF；PDF 不可用时为 `false` |
 
 响应（失败）：
 
@@ -3956,6 +4034,16 @@ PUT 请求：
 }
 ```
 
+常见失败消息：
+
+| 消息 | 说明 |
+|------|------|
+| `仕样号不能为空` / `仕样号必须为 N 位数字` | 参数校验未通过（`400`） |
+| `无法访问共享目录，请检查网络连接和权限` | 大日程未命中，且仕样书共享目录不可访问 |
+| `未找到仕样号 N 的PDF文件` | 大日程与共享目录中均无该仕样号 |
+| `解析PDF信息失败` | 大日程未命中，且 PDF 解析不到信息 |
+
+> 大日程命中时即使 PDF 共享盘不可用也不会返回失败，只是客户名/营业担当等信息退化为表格客户列原文与空字符串。
 > 接口失败时不向客户端回传内部错误细节（可能含上游 URL / 文件路径），详细信息仅写服务端日志。
 
 ### 获取仕样 PDF 原始文本
@@ -4277,6 +4365,8 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在后端控制台显示一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时首次启动后应立即修改 |
 | `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`）；未显式配置时代码回退到该内置地址（`backend/config/security.js`） |
+| `PRODUCTION_SCHEDULE_PATH` | 内置回退值 `\\192.168.160.70\各产品大日程\各产品大日程.xls` | 各产品大日程 Excel 路径。`POST /api/spec/spec-info` 优先从此表取数量/纳期/已发图/工厂；不可读时静默回退 PDF，不阻断接口 |
+| `PRODUCTION_SCHEDULE_CACHE_MS` | `300000` | 大日程解析缓存时长（毫秒）。按文件 mtime 复用解析结果；读取失败后 30 秒内不重复访问共享目录 |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
@@ -4325,5 +4415,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `rateLimit.windowMs` / `rateLimit.max` | 配置块仍保留，但当前三层限流器均未读取这两个值：全局限流阈值取环境变量 `API_RATE_LIMIT_MAX`（默认 3000），窗口固定 15 分钟；登录/改密独立限流阈值在 `backend/routes/auth.js` 内硬编码 |
 | `database.sqlitePath` | SQLite 数据库路径（`SQLITE_DB_PATH`，默认 `./data.db`） |
 | `spec.sharePath` | 仕样书 PDF 共享目录路径（`SPEC_SHARE_PATH`；未配置时代码回退到内置地址 `\\192.168.160.6\仕样书$`） |
+| `schedule.filePath` | 各产品大日程 Excel 路径（`PRODUCTION_SCHEDULE_PATH`；未配置时代码回退到内置地址 `\\192.168.160.70\各产品大日程\各产品大日程.xls`） |
+| `schedule.cacheMs` | 大日程解析结果缓存时长（`PRODUCTION_SCHEDULE_CACHE_MS`，默认 `300000`） |
 
-最后更新：2026-10-29
+最后更新：2026-11-02

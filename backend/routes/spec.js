@@ -7,6 +7,8 @@ const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const db = require('../db');
 const specPdfParser = require('../utils/specPdfParser');
+const productionSchedule = require('../utils/productionSchedule');
+const { getPdfParse } = require('../utils/pdfText');
 
 // 获取系统配置的仕样号位数（默认 5，可配置为 5 或 6）
 function getConfiguredSpecDigits() {
@@ -31,48 +33,6 @@ function validateSpecNumberDigits(specNumber) {
   return { valid: true };
 }
 
-let PDFParse = null;
-async function getPdfParse() {
-  if (!PDFParse) {
-    if (typeof DOMMatrix === 'undefined') {
-      global.DOMMatrix = class {
-        constructor(init) {
-          this.m11 = 1; this.m12 = 0; this.m21 = 0; this.m22 = 1; this.m41 = 0; this.m42 = 0;
-          if (init && typeof init === 'object' && 'm11' in init) {
-            Object.assign(this, init);
-          }
-        }
-        multiply(other) { return this; }
-        transformPoint(point) { return point; }
-        inverse() { return this; }
-      };
-    }
-    if (typeof ImageData === 'undefined') {
-      global.ImageData = class {
-        constructor(data, width, height) {
-          this.data = data; this.width = width; this.height = height;
-        }
-      };
-    }
-    if (typeof Path2D === 'undefined') {
-      global.Path2D = class {
-        constructor() {}
-        moveTo() {}
-        lineTo() {}
-        arc() {}
-        rect() {}
-        closePath() {}
-        addPath() {}
-      };
-    }
-    if (typeof process.getBuiltinModule === 'undefined') {
-      process.getBuiltinModule = () => ({});
-    }
-    const module = require('pdf-parse');
-    PDFParse = module.PDFParse;
-  }
-  return PDFParse;
-}
 
 function trimTrailingSeparators(value) {
   return String(value || '').replace(/[\\/]+$/, '');
@@ -499,58 +459,94 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
   const digitCheck = validateSpecNumberDigits(n);
   if (!digitCheck.valid) return res.json({success: false, message: digitCheck.message});
 
+  // 状态跟踪会传入添加时间月份，用于取「各产品大日程」中对应月份块的数据
+  var requestedMonth = String(req.body.productionPlanMonth || req.body.month || '').trim();
+  var preferredMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : '';
+
   try {
 
     var r = await Promise.race([
 
       (async function() {
 
-        var ok = fs2.existsSync(SPEC_SHARE_PATH) || fs2.existsSync(SPEC_SHARE_PATH_BS);
+        // 大日程表格优先：命中时数量/纳期/已发图/工厂以表格为准
+        var scheduleEntry = productionSchedule.findScheduleEntry(n, preferredMonth);
 
-        if (!ok) return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
+        // PDF 仍尽量解析，用于补充客户名称、营业担当等信息；
+        // PDF 不可用时只要表格命中就继续返回表格数据
+        var info = null;
+        var pdfState = 'missing';
 
-        var pdf = findLatestSpecPdf(n);
+        try {
 
-        if (!pdf) return {success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'};
+          var ok = fs2.existsSync(SPEC_SHARE_PATH) || fs2.existsSync(SPEC_SHARE_PATH_BS);
 
-        var info = await extractSpecInfoFromPdf(pdf);
+          if (!ok) {
+            pdfState = 'share-unavailable';
+          } else {
+            var pdf = findLatestSpecPdf(n);
+            if (pdf) {
+              info = await extractSpecInfoFromPdf(pdf);
+              pdfState = info ? 'parsed' : 'parse-failed';
+            }
+          }
 
-        if (!info) return {success: false, message: '解析PDF信息失败'};
+        } catch (e) {
+          pdfState = 'error';
+          console.warn('[spec] 解析仕样书失败:', e.message);
+        }
+
+        if (!scheduleEntry && !info) {
+          if (pdfState === 'share-unavailable') {
+            return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
+          }
+          if (pdfState === 'parse-failed' || pdfState === 'error') {
+            return {success: false, message: '解析PDF信息失败'};
+          }
+          return {success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'};
+        }
 
         var clientName = '';
 
-        if (info.middleMan && info.finalClient && info.projectName) {
+        if (info) {
+          if (info.middleMan && info.finalClient && info.projectName) {
+            clientName = `${n}>${info.middleMan}_${info.finalClient}-${info.projectName}`;
+          } else if (info.middleMan && info.finalClient) {
+            clientName = `${n}>${info.middleMan}_${info.finalClient}`;
+          } else if (info.middleMan && info.projectName) {
+            clientName = `${n}>${info.middleMan}-${info.projectName}`;
+          } else if (info.middleMan) {
+            clientName = `${n}>${info.middleMan}`;
+          } else if (info.finalClient && info.projectName) {
+            clientName = `${n}>${info.finalClient}-${info.projectName}`;
+          } else if (info.finalClient) {
+            clientName = `${n}>${info.finalClient}`;
+          }
+        }
 
-          clientName = `${n}>${info.middleMan}_${info.finalClient}-${info.projectName}`;
-
-        } else if (info.middleMan && info.finalClient) {
-
-          clientName = `${n}>${info.middleMan}_${info.finalClient}`;
-
-        } else if (info.middleMan && info.projectName) {
-
-          clientName = `${n}>${info.middleMan}-${info.projectName}`;
-
-        } else if (info.middleMan) {
-
-          clientName = `${n}>${info.middleMan}`;
-
-        } else if (info.finalClient && info.projectName) {
-
-          clientName = `${n}>${info.finalClient}-${info.projectName}`;
-
-        } else if (info.finalClient) {
-
-          clientName = `${n}>${info.finalClient}`;
-
+        // PDF 解析不到客户时，用大日程客户列的原文（形如「58249>O/IND_...」）
+        if (!clientName && scheduleEntry && scheduleEntry.clientText) {
+          clientName = /^\d/.test(scheduleEntry.clientText)
+            ? scheduleEntry.clientText
+            : `${n}>${scheduleEntry.clientText}`;
         }
 
         var deliveryDateStr = null;
 
-        if (info.deliveryDate) {
-
+        // 纳期优先取大日程表格
+        if (scheduleEntry && scheduleEntry.deliveryDate) {
+          deliveryDateStr = scheduleEntry.deliveryDate;
+        } else if (info && info.deliveryDate) {
           deliveryDateStr = info.deliveryDate.year + '-' + String(info.deliveryDate.month).padStart(2, '0') + '-' + String(info.deliveryDate.day).padStart(2, '0');
+        }
 
+        var quantity = '';
+
+        // 数量优先取大日程表格，取不到再回退 PDF
+        if (scheduleEntry && scheduleEntry.quantity !== '') {
+          quantity = scheduleEntry.quantity;
+        } else if (info && info.quantity) {
+          quantity = info.quantity;
         }
 
         return {
@@ -561,19 +557,30 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
           clientName: clientName,
 
-          middleMan: info.middleMan,
+          middleMan: info ? info.middleMan : '',
 
-          finalClient: info.finalClient,
+          finalClient: info ? info.finalClient : '',
 
-          projectName: info.projectName,
+          projectName: info ? info.projectName : '',
 
-          quantity: info.quantity,
+          quantity: quantity,
 
           deliveryDate: deliveryDateStr,
 
-          salesPerson: info.salesPerson,
+          salesPerson: info ? info.salesPerson : '',
 
-          isModification: info.isModification
+          isModification: info ? info.isModification : false,
+
+          // 表格命中的工作表决定工厂：南京 → O/NJG，上海 → O/SHA
+          factory: scheduleEntry ? scheduleEntry.factory : '',
+
+          // 命中的工作表名（南京焊钳/上海焊钳/南京焊钳修改/上海焊钳修改），供按表筛选
+          scheduleSheet: scheduleEntry ? scheduleEntry.sheetName : '',
+
+          // 已发图取表格；未命中表格时为 null，由前端按原有记录处理
+          shippedCount: scheduleEntry ? scheduleEntry.shippedCount : null,
+
+          scheduleMonth: scheduleEntry ? scheduleEntry.month : ''
 
         };
 

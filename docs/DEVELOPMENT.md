@@ -217,6 +217,8 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 后端一启动就退出 | `JWT_SECRET` 为空 | 填 `backend/.env` |
 | 端口被占用 | 上次进程没退 | `stop.bat`，或按 `DEPLOYMENT.md` 手动释放 |
 | 鉴权路径忽然变慢 | 热路径里用了 `readDb()` 深拷贝整库 | 换窄读接口 |
+| 状态追踪的数量/纳期/已发图和表格对不上 | 大日程解析结果按 mtime + `PRODUCTION_SCHEDULE_CACHE_MS`（默认 5 分钟）缓存；共享文件读不到时接口静默回退 PDF | 等缓存过期或重启后端确认最新值；日志搜 `[productionSchedule]` 判断是「读取失败」还是「仕样号未命中」 |
+| 同步后营业担当/组长是空的 | 营业担当只能来自 `SPEC_SHARE_PATH` 下的仕样书 PDF：没有对应仕样书、解析结果与表单标签混淆、或该担当不在「组长规则」里都会留空（不猜） | 看同步预览里的 `salesLookup`（`missingPdf` / `noSalesPerson`）；日志搜 `[specInfoLookup]`；组长缺失就去「状态跟踪 → 组长规则」补成员 |
 | Node 版本报错 | 低于 22 | 升到 22 LTS |
 | 鼠标点过任务行、再按任意键就冒出一圈黑框 | dnd-kit 的行是 `tabIndex=0` 可聚焦元素，按键后浏览器按 `:focus-visible` 画 UA 默认轮廓（Tailwind preflight 不重置） | 可聚焦行/单元格的 className 显式加 `focus:outline-none focus-visible:outline-none`，选中态用自绘边框表达 |
 | 新增的全局 `keydown` 监听把弹窗的 Esc/快捷键抢了 | 主页面有 5 处独立 window 级 Esc 监听、互不 `stopPropagation` | 新语义先判所有弹窗状态并 `return`，按「弹窗 → 页面选中」的顺序串联 |

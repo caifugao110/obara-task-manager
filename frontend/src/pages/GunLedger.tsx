@@ -3143,23 +3143,23 @@ const GunLedger: React.FC = () => {
       <footer className="shrink-0 bg-white border-t border-gray-200 px-6 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center text-sm text-gray-500">
           <div className="flex items-center gap-2.5 min-w-0">
-            {/* 左下角快捷入口：连按两次 Shift 或点击此处打开「快速确认图安排」 */}
+            {/* 左下角快捷入口：连按两次 Shift 或点击此处打开「为今日取号安排确认图」 */}
             {isAdmin && canAccess && (
               <button
                 type="button"
                 onClick={() => { if (warnIfOffline()) return; setQuickAssignOpen(true); }}
                 disabled={!online}
                 title={online
-                  ? '连按两次 Shift 也可打开：自动列出今天取号（担当=你）的枪名，一键安排确认图任务'
+                  ? '连按两次 Shift 也可打开：自动列出今天取号（担当=你）的枪名，一键为这些号安排确认图任务'
                   : '当前离线，禁止编辑'}
-                className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[11px] font-semibold transition shrink-0 ${
+                className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[11px] font-semibold transition shrink-0 whitespace-nowrap ${
                   online
                     ? 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-600 hover:text-white hover:border-blue-600'
                     : 'text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed'
                 }`}
               >
                 <kbd className="px-1 py-0.5 bg-white/80 border border-current/30 rounded text-[10px] font-mono leading-none">Shift×2</kbd>
-                快速确认图安排
+                为今日取号安排确认图
                 {todayTakenRows.length > 0 && (
                   <span className="px-1 rounded-full bg-blue-600 text-white text-[10px] leading-4">{todayTakenRows.length}</span>
                 )}

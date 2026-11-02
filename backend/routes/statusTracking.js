@@ -10,6 +10,8 @@ const Joi = require('joi');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const { getStatusTrackingLock } = require('../utils/statusTrackingLocks');
+const { calculateDesignDeliveryDays, withDynamicDesignDeliveryDays } = require('../utils/designDelivery');
+const scheduleSyncService = require('../utils/scheduleSyncService');
 
 // 行锁归属判定：与 socket 层的占用仲裁同一口径。
 //   1) 锁归他人账号 → 拒绝（他人不得改动我正在编辑的行）；
@@ -32,6 +34,8 @@ const rowLockConflictMessage = (lock, req) => {
 const statusTrackingItemSchema = Joi.object({
   id: Joi.string().allow(''),
   factory: Joi.string().allow(''),
+  // 该行来自「各产品大日程.xls」的哪张工作表，仅同步/刷新时由服务端写入
+  sheetName: Joi.string().allow(''),
   clientName: Joi.string().allow(''),
   specNumber: Joi.string().allow(''),
   productionPlanMonth: Joi.string().pattern(/^\d{4}-\d{2}$/).allow(''),
@@ -71,25 +75,6 @@ function getCurrentMonthValue() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function calculateDesignDeliveryDays(deliveryDate) {
-  if (!deliveryDate) return 0;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const targetDate = new Date(deliveryDate);
-  if (Number.isNaN(targetDate.getTime())) return 0;
-  targetDate.setHours(0, 0, 0, 0);
-  const diffTime = targetDate.getTime() - today.getTime();
-  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-}
-
-function withDynamicDesignDeliveryDays(item) {
-  if (!item) return item;
-  return {
-    ...item,
-    designDeliveryDays: calculateDesignDeliveryDays(item.deliveryDate)
-  };
-}
-
 function getItemPlanMonth(item) {
   return getItemPlanMonths(item)[0] || '';
 }
@@ -112,6 +97,11 @@ function makeSpecMonthKey(specNumber, productionPlanMonth) {
 function makeSpecMonthKeys(item) {
   return getItemPlanMonths(item).map(month => makeSpecMonthKey(item.specNumber, month));
 }
+
+// 记录来自哪张日程表（南京焊钳/上海焊钳/南京焊钳修改/上海焊钳修改）。
+// 老数据没有 sheetName，只能按工厂列兜底——兜底区分不出「修改」表，等下次同步会补上准确值。
+const FACTORY_DEFAULT_SHEET = { 'O/NJG': '南京焊钳', 'O/SHA': '上海焊钳' };
+const getItemSheetName = (item) => (item && item.sheetName) || FACTORY_DEFAULT_SHEET[item && item.factory] || '';
 
 router.get('/items', [authMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
@@ -291,9 +281,56 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware, accessSettingsMiddl
   res.json(dynamicItems);
 }));
 
+
+// ─── 同步生产大日程 ───────────────────────────────────────────────────────────
+// 「各产品大日程.xls」中的南京焊钳、上海焊钳、南京焊钳修改、上海焊钳修改四张工作表，
+// 是状态跟踪里工厂/客户/数量/纳期/已发图的来源。同步时把四张表所有有效仕样号
+// （位数符合系统配置、数量>0）按所属月份块写入状态跟踪：已有记录只覆盖这些来源字段；
+// 营业担当与组长从仕样书 PDF 自动补全，且只补空字段，不覆盖人工维护的值。
+// 比对/应用逻辑在 utils/scheduleSyncService.js（按钮与定时任务共用）。
+
+// 行锁：本窗口正在编辑的行直接跳过，不冲掉未保存的输入
+const syncIsLocked = (req) => (itemId) => Boolean(rowLockConflictMessage(getStatusTrackingLock(itemId), req));
+
+router.post('/sync-schedule/preview', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
+  try {
+    const { stats, filePath } = await scheduleSyncService.buildSyncPlan({ isLocked: syncIsLocked(req) });
+    res.json({ success: true, ...stats, filePath });
+  } catch (error) {
+    if (error.code === 'SCHEDULE_UNAVAILABLE') {
+      return res.status(503).json({ message: error.message, filePath: error.filePath });
+    }
+    throw error;
+  }
+}));
+
+router.post('/sync-schedule', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
+  let result;
+  try {
+    result = await scheduleSyncService.applySyncPlan({ isLocked: syncIsLocked(req) });
+  } catch (error) {
+    if (error.code === 'SCHEDULE_UNAVAILABLE') {
+      return res.status(503).json({ message: error.message, filePath: error.filePath });
+    }
+    throw error;
+  }
+
+  const { stats, data, applied } = result;
+  const io = req.app.get('io');
+  if (io && applied) {
+    io.emit('status_tracking_bulk', (data.statusTrackingItems || []).map(withDynamicDesignDeliveryDays));
+  }
+
+  res.json({
+    success: true,
+    ...stats,
+    message: `同步完成：新增 ${stats.added} 条，更新 ${stats.updated} 条，补全营业担当 ${stats.salesFilled} 条`
+  });
+}));
+
 router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
-  const { month, deliveryMonth, factory, searchTerm, fullTableSearch, showOutdatedDelivery } = req.query;
-  
+  const { month, deliveryMonth, factory, sheetName, searchTerm, fullTableSearch, showOutdatedDelivery } = req.query;
+
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
   
@@ -321,6 +358,16 @@ router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware
   
   if (factory) {
     filteredItems = filteredItems.filter(item => item.factory === factory);
+  }
+
+  // 按「来自哪张日程表」筛选（南京焊钳/上海焊钳/南京焊钳修改/上海焊钳修改）
+  // 合并项（焊钳 / 焊钳修改）会重复传多个 sheetName，这里按「任一命中」处理
+  const sheetNames = (Array.isArray(sheetName) ? sheetName : [sheetName])
+    .flatMap(value => String(value || '').split(','))
+    .map(value => value.trim())
+    .filter(Boolean);
+  if (sheetNames.length) {
+    filteredItems = filteredItems.filter(item => sheetNames.includes(getItemSheetName(item)));
   }
   
   if (searchTerm && searchTerm.trim()) {
@@ -585,6 +632,8 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
       const newItem = {
         id: existingItem?.id || Date.now().toString() + Math.random().toString(36).slice(2, 9),
         factory: String(row[columnMap.factory] || '').trim(),
+        // 导入表里没有这一列，覆盖导入时保留原记录的表名，避免按表筛选失效
+        sheetName: existingItem?.sheetName || '',
         clientName: String(row[columnMap.clientName] || '').trim(),
         productionPlanMonth: productionPlanMonths[0] || '',
         productionPlanMonths,

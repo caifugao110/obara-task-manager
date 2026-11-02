@@ -124,7 +124,9 @@ const READ_ONLY_POST_PATHS = new Set([
   '/api/design-standards/search',
   '/api/design-standards/chat',
   '/api/tasks/batch-replace/search',
-  '/api/status-tracking/import/check'
+  '/api/status-tracking/import/check',
+  // 同步生产大日程的预览：只比对不写库，真正落库的 /sync-schedule 仍会留痕
+  '/api/status-tracking/sync-schedule/preview'
 ]);
 
 // GET 中值得留痕的敏感读取：导出（数据外带）、数据库统计（库体量探测）
@@ -211,6 +213,7 @@ const getActionDescription = (method, path, body) => {
     'status-tracking/import': '导入状态跟踪表',
     'status-tracking/import/check': '检查导入文件',
     'status-tracking/sync': '同步状态跟踪',
+    'status-tracking/sync-schedule': '同步生产大日程',
     'status-tracking/cleanup': '清理状态跟踪',
     'work-hours/export': '导出工时管理表',
     'spec/spec-info': '查询仕样信息',

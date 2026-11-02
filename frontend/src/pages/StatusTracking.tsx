@@ -32,11 +32,12 @@ import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import { acquireSocket, getCurrentSocketId } from '../utils/socketClient';
-import { useSystemSettings } from '../context/SystemSettingsContext';
 
 interface StatusItem {
   id: string;
   factory: string;
+  /** 来自「各产品大日程.xls」的哪张工作表（南京焊钳/上海焊钳/南京焊钳修改/上海焊钳修改） */
+  sheetName?: string;
   clientName: string;
   specNumber: string;
   productionPlanMonth?: string;
@@ -77,6 +78,11 @@ interface SpecInfoResponse {
   quantity?: string;
   deliveryDate?: string;
   salesPerson?: string;
+  factory?: string;
+  shippedCount?: number | null;
+  /** 命中的工作表名，用于按表筛选 */
+  scheduleSheet?: string;
+  scheduleMonth?: string;
 }
 
 interface LeaderRule {
@@ -84,6 +90,32 @@ interface LeaderRule {
   members: string[];
 }
 
+// 「同步生产大日程」预览/执行返回的统计
+interface ScheduleSyncStats {
+  success: boolean;
+  total: number;
+  added: number;
+  updated: number;
+  unchanged: number;
+  locked: number;
+  skipped: number;
+  /** 本次会自动补全营业担当 / 组长 的记录数 */
+  salesFilled?: number;
+  leaderFilled?: number;
+  /** 仕样书里也拿不到营业担当的记录数 */
+  salesMissing?: number;
+  salesLookup?: {
+    specs: number;
+    resolved: number;
+    missingPdf: number;
+    noSalesPerson: number;
+    failed: number;
+    shareAvailable: boolean;
+  };
+  months: { month: string; count: number }[];
+  filePath?: string;
+  message?: string;
+}
 interface FactoryRule {
   factory: string;
   members: string[];
@@ -120,6 +152,36 @@ const defaultFactoryRulesConfig: FactoryRulesConfig = {
 };
 
 const factoryOptions = ['O/NJG', 'O/SHA'];
+
+// 「各产品大日程.xls」的四张工作表：状态跟踪的记录来源。
+// 工厂列只有 O/NJG、O/SHA，区分不出「修改」表，所以按 sheetName 单独筛。
+// 筛选条在最前面额外提供两个合并项：「焊钳」= 南京+上海，「焊钳修改」= 南京修改+上海修改。
+interface SheetFilterOption {
+  key: string;
+  sheets: string[];
+  hint: string;
+}
+
+const SHEET_FILTERS: SheetFilterOption[] = [
+  { key: '焊钳', sheets: ['南京焊钳', '上海焊钳'], hint: '南京焊钳 + 上海焊钳' },
+  { key: '南京焊钳', sheets: ['南京焊钳'], hint: '只看南京焊钳' },
+  { key: '上海焊钳', sheets: ['上海焊钳'], hint: '只看上海焊钳' },
+  { key: '焊钳修改', sheets: ['南京焊钳修改', '上海焊钳修改'], hint: '南京焊钳修改 + 上海焊钳修改' },
+  { key: '南京焊钳修改', sheets: ['南京焊钳修改'], hint: '只看南京焊钳修改' },
+  { key: '上海焊钳修改', sheets: ['上海焊钳修改'], hint: '只看上海焊钳修改' }
+];
+
+const getSheetFilter = (key: string): SheetFilterOption | undefined =>
+  SHEET_FILTERS.find(option => option.key === key);
+
+// 老记录没有 sheetName，按工厂兜底（区分不出「修改」表，下次同步会补上准确值）
+const FACTORY_DEFAULT_SHEET: Record<string, string> = {
+  'O/NJG': '南京焊钳',
+  'O/SHA': '上海焊钳'
+};
+
+const getItemSheetName = (item: StatusItem): string =>
+  (item.sheetName || FACTORY_DEFAULT_SHEET[item.factory] || '').trim();
 
 const getLeaderBySalesPerson = (salesPerson: string, rules: LeaderRule[]): string => {
   for (const rule of rules) {
@@ -251,19 +313,13 @@ const VerticalHeader = ({ text }: { text: string }) => (
 
 const StatusTracking = () => {
   const { user, token, logout } = useAuth();
-  const { specNumberDigits } = useSystemSettings();
   const [settings, setSettings] = useState(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [allItems, setAllItems] = useState<StatusItem[]>([]);
-  const [fullTableSearch, setFullTableSearch] = useState(false);
-  const [showOutdatedDelivery, setShowOutdatedDelivery] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [updatingItemId, setUpdatingItemId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [showModal, setShowModal] = useState(false);
   const [planMonthEditorItemId, setPlanMonthEditorItemId] = useState<string | null>(null);
-  const [specNumberInput, setSpecNumberInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [leaderRules, setLeaderRules] = useState<LeaderRule[]>(defaultLeaderRules);
   const [factoryRulesConfig, setFactoryRulesConfig] = useState<FactoryRulesConfig>(defaultFactoryRulesConfig);
@@ -279,7 +335,8 @@ const StatusTracking = () => {
   const [monthFilterMode, setMonthFilterMode] = useState<'production' | 'delivery'>('production');
   const [currentMonth, setCurrentMonth] = useState(getCurrentMonthValue);
   const [deliveryMonth, setDeliveryMonth] = useState(getCurrentMonthValue);
-  const [factoryFilter, setFactoryFilter] = useState<string>('');
+  // 按「来自哪张日程表」筛选，空串表示不过滤（四张表全看）
+  const [sheetFilter, setSheetFilter] = useState<string>('');
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
   // editingSessions 的实时镜像：socket effect 的依赖只有 [token, logout]，
   // 卸载清理时需要读取最新锁列表，直接闭包捕获会拿到过期值
@@ -291,6 +348,11 @@ const StatusTracking = () => {
   userRef.current = user;
   const [offlineWarning, setOfflineWarning] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // 同步生产大日程：按钮先取预览统计，确认后才真正写库
+  const [scheduleSyncStats, setScheduleSyncStats] = useState<ScheduleSyncStats | null>(null);
+  const [scheduleSyncing, setScheduleSyncing] = useState(false);
+  // 预览阶段要读共享盘 + 解析仕样书（首次约十几秒），按钮文案据此区分两种等待
+  const [scheduleSyncPhase, setScheduleSyncPhase] = useState<'idle' | 'planning' | 'applying'>('idle');
   const [sortConfig, setSortConfig] = useState<{ key: 'deliveryDate' | 'designDeliveryDays'; direction: 'asc' | 'desc' } | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dateInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -540,15 +602,6 @@ const StatusTracking = () => {
     };
   }, [token]);
 
-  const createItemOnServer = useCallback(async (item: StatusItem) => {
-    if (!token || !isAdmin) {
-      throw new Error('Not authorized');
-    }
-    const authHeader = { headers: { Authorization: `Bearer ${token}` } };
-    const res = await axios.post('/api/status-tracking/items', item, authHeader);
-    return res.data as StatusItem;
-  }, [token, isAdmin]);
-
   const updateItemOnServer = useCallback(async (item: StatusItem) => {
     if (!token || !isAdmin) {
       throw new Error('Not authorized');
@@ -563,103 +616,6 @@ const StatusTracking = () => {
     addToast('保存到服务器失败，已重新加载服务器数据', 'error');
     loadItems();
   }, [loadItems]);
-
-  const addItem = useCallback(async () => {
-    if (!isAdmin) {
-      addToast('无权限添加记录', 'error');
-      return;
-    }
-    if (!specNumberInput.trim()) {
-      addToast('请输入仕样号', 'error');
-      return;
-    }
-    const trimmedSpec = specNumberInput.trim();
-    if (!/^\d+$/.test(trimmedSpec) || trimmedSpec.length !== specNumberDigits) {
-      addToast(`仕样号必须为 ${specNumberDigits} 位数字`, 'error');
-      return;
-    }
-
-    const operationMonth = getCurrentMonthValue();
-    const normalizedSpecNumber = specNumberInput.trim().toLowerCase();
-    const existingItem = allItems.find(item => (
-      item.specNumber.toLowerCase() === normalizedSpecNumber &&
-      getItemPlanMonths(item).includes(operationMonth)
-    ));
-    if (existingItem) {
-      addToast(`该仕样号 "${specNumberInput.trim()}" 已存在于${formatMonthLabel(operationMonth)}添加时间`, 'error');
-      return;
-    }
-
-    setLoading(true);
-    let specInfo: SpecInfoResponse | null = null;
-    let fetchError = false;
-    
-    try {
-      const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
-      const res = await axios.post('/api/spec/spec-info', { specNumber: specNumberInput.trim() }, { ...authHeader, timeout: 15000 });
-      
-      if (!res.data.success) {
-        fetchError = true;
-      } else {
-        specInfo = res.data;
-      }
-    } catch (err: any) {
-      fetchError = true;
-    }
-
-    try {
-      const designDeliveryDays = specInfo?.deliveryDate ? calculateDesignDeliveryDays(specInfo.deliveryDate) : 0;
-      const leader = specInfo?.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : '';
-      const factory = getFactoryBySalesPerson(specInfo?.salesPerson || '', factoryRulesConfig);
-
-      const newItem: StatusItem = {
-        id: Date.now().toString(),
-        factory,
-        clientName: specInfo?.clientName || '',
-        specNumber: specInfo?.specNumber || specNumberInput.trim(),
-        productionPlanMonth: operationMonth,
-        productionPlanMonths: [operationMonth],
-        quantity: specInfo?.quantity || '',
-        deliveryDate: specInfo?.deliveryDate || '',
-        designDeliveryDays,
-        salesPerson: specInfo?.salesPerson || '',
-        leader,
-        shippedCount: 0,
-        unconfirmedCount: 0,
-        totalVarieties: 0,
-        feedbackVarieties: 0,
-        feedbackPlan: '',
-        drawingPlanStatus: '',
-        confirmedQuantity: 0,
-        confirmedVarieties: 0,
-        drawnVarieties: 0,
-        undrawnVarieties: 0,
-        undrawnQuantity: 0,
-        unconfirmedQuantity: 0
-      };
-
-      const savedItem = await createItemOnServer(newItem);
-      const updated = [...allItems, savedItem];
-      saveItems(updated);
-
-      if (fetchError) {
-        addToast(`已添加记录，但未找到仕样号信息，请手动编辑客户、数量、纳期等字段`, 'success');
-      } else {
-        addToast('已添加新的状态跟踪记录', 'success');
-      }
-
-      if (operationMonth !== currentMonth) {
-        setCurrentMonth(operationMonth);
-      }
-
-      setShowModal(false);
-      setSpecNumberInput('');
-    } catch (err: any) {
-      addToast('添加记录失败: ' + (err.message || '未知错误'), 'error');
-    } finally {
-      setLoading(false);
-    }
-  }, [specNumberInput, allItems, token, saveItems, createItemOnServer, leaderRules, factoryRulesConfig, currentMonth]);
 
   const updateField = useCallback((id: string, field: keyof StatusItem, value: any) => {
     if (!isAdmin) {
@@ -812,7 +768,14 @@ const StatusTracking = () => {
     setUpdatingItemId(id);
     try {
       const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
-      const res = await axios.post('/api/spec/spec-info', { specNumber: item.specNumber }, { ...authHeader, timeout: 15000 });
+      // 传入该行的添加时间月份，让后端取「各产品大日程」对应月份块的数据
+      const planMonths = getItemPlanMonths(item);
+      const currentMonthValue = getCurrentMonthValue();
+      const preferredMonth = planMonths.includes(currentMonthValue) ? currentMonthValue : (planMonths[0] || '');
+      const res = await axios.post('/api/spec/spec-info', {
+        specNumber: item.specNumber,
+        productionPlanMonth: preferredMonth
+      }, { ...authHeader, timeout: 15000 });
 
       if (!res.data.success) {
         addToast(res.data.message || '获取仕样信息失败', 'error');
@@ -820,11 +783,13 @@ const StatusTracking = () => {
       }
 
       const specInfo: SpecInfoResponse = res.data;
-      const designDeliveryDays = specInfo.deliveryDate ? calculateDesignDeliveryDays(specInfo.deliveryDate) : 0;
+      const effectiveDeliveryDate = specInfo.deliveryDate || item.deliveryDate;
+      const designDeliveryDays = effectiveDeliveryDate ? calculateDesignDeliveryDays(effectiveDeliveryDate) : 0;
       const leader = specInfo.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : item.leader;
-      const factory = specInfo.salesPerson
-        ? getFactoryBySalesPerson(specInfo.salesPerson, factoryRulesConfig)
-        : item.factory;
+      // 大日程工作表命中的工厂优先，其次按营业担当规则，最后保留原值
+      const factory = specInfo.factory
+        || (specInfo.salesPerson ? getFactoryBySalesPerson(specInfo.salesPerson, factoryRulesConfig) : item.factory);
+      const matchedSchedule = Boolean(specInfo.scheduleMonth);
 
       let updatedItem: StatusItem | null = null;
       const updated = allItems.map(i => {
@@ -833,11 +798,15 @@ const StatusTracking = () => {
             ...i,
             clientName: specInfo.clientName || i.clientName,
             quantity: specInfo.quantity || i.quantity,
-            deliveryDate: specInfo.deliveryDate || i.deliveryDate,
+            deliveryDate: effectiveDeliveryDate,
             designDeliveryDays,
             salesPerson: specInfo.salesPerson || i.salesPerson,
             leader,
-            factory
+            factory,
+            // 命中大日程时更新「来自哪张表」，未命中保留原值
+            sheetName: specInfo.scheduleSheet || i.sheetName,
+            // 命中大日程时已发图以表格为准（表格为空则显示空），未命中保留原值
+            shippedCount: matchedSchedule ? (specInfo.shippedCount ?? 0) : i.shippedCount
           };
           return updatedItem;
         }
@@ -918,24 +887,18 @@ const StatusTracking = () => {
     setExporting(true);
     try {
       const params = new URLSearchParams();
-      if (!fullTableSearch) {
-        if (monthFilterMode === 'production') {
-          params.append('month', currentMonth);
-        } else {
-          params.append('deliveryMonth', deliveryMonth);
-        }
+      if (monthFilterMode === 'production') {
+        params.append('month', currentMonth);
+      } else {
+        params.append('deliveryMonth', deliveryMonth);
       }
-      if (factoryFilter) {
-        params.append('factory', factoryFilter);
+      if (sheetFilter) {
+        // 合并项（焊钳 / 焊钳修改）会一次传多个 sheetName，后端按「任一命中」筛选
+        const sheets = getSheetFilter(sheetFilter)?.sheets || [sheetFilter];
+        sheets.forEach(sheet => params.append('sheetName', sheet));
       }
       if (searchTerm.trim()) {
         params.append('searchTerm', searchTerm.trim());
-      }
-      if (fullTableSearch) {
-        params.append('fullTableSearch', 'true');
-        if (showOutdatedDelivery) {
-          params.append('showOutdatedDelivery', 'true');
-        }
       }
       
       const res = await axios.get(`/api/status-tracking/export?${params.toString()}`, {
@@ -962,7 +925,45 @@ const StatusTracking = () => {
     } finally {
       setExporting(false);
     }
-  }, [token, monthFilterMode, currentMonth, deliveryMonth, factoryFilter, searchTerm, fullTableSearch, showOutdatedDelivery]);
+  }, [token, monthFilterMode, currentMonth, deliveryMonth, sheetFilter, searchTerm]);
+
+  // 同步生产大日程：先从服务端取预览（新增/更新/未变/被锁条数），确认后再落库。
+  // 大日程在网络共享盘上，预览还要顺带解析仕样书补全营业担当，
+  // 首次（无缓存）约十几秒，因此单独放宽超时并区分按钮文案。
+  const handleScheduleSyncPreview = useCallback(async () => {
+    if (!isAdmin) {
+      addToast('无权限同步生产大日程', 'error');
+      return;
+    }
+    setScheduleSyncing(true);
+    setScheduleSyncPhase('planning');
+    try {
+      const res = await axiosInstance.post('/status-tracking/sync-schedule/preview', {}, { timeout: 180000 });
+      setScheduleSyncStats(res.data as ScheduleSyncStats);
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '读取「各产品大日程.xls」失败，请稍后重试', 'error');
+    } finally {
+      setScheduleSyncing(false);
+      setScheduleSyncPhase('idle');
+    }
+  }, [isAdmin]);
+
+  const handleScheduleSyncConfirm = useCallback(async () => {
+    setScheduleSyncing(true);
+    setScheduleSyncPhase('applying');
+    try {
+      const res = await axiosInstance.post('/status-tracking/sync-schedule', {}, { timeout: 180000 });
+      const data = res.data as ScheduleSyncStats;
+      addToast(data.message || `同步完成：新增 ${data.added} 条，更新 ${data.updated} 条`, 'success');
+      setScheduleSyncStats(null);
+      loadItems();
+    } catch (err: any) {
+      addToast(err?.response?.data?.message || '同步生产大日程失败', 'error');
+    } finally {
+      setScheduleSyncing(false);
+      setScheduleSyncPhase('idle');
+    }
+  }, [loadItems]);
 
   useEffect(() => {
     fetchSettings();
@@ -1164,20 +1165,18 @@ const StatusTracking = () => {
 
   const filteredItems = useMemo(() => {
     let result = allItems;
-    if (!fullTableSearch && monthFilterMode === 'production') {
+    if (monthFilterMode === 'production') {
       result = result.filter(item => {
         const planMonths = getItemPlanMonths(item);
         return planMonths.length === 0 || planMonths.includes(currentMonth);
       });
     }
-    if (!fullTableSearch && monthFilterMode === 'delivery') {
+    if (monthFilterMode === 'delivery') {
       result = result.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
     }
-    if (fullTableSearch && !showOutdatedDelivery) {
-      result = result.filter(item => (item.designDeliveryDays ?? 0) >= 1);
-    }
-    if (factoryFilter) {
-      result = result.filter(item => item.factory === factoryFilter);
+    if (sheetFilter) {
+      const sheets = getSheetFilter(sheetFilter)?.sheets || [sheetFilter];
+      result = result.filter(item => sheets.includes(getItemSheetName(item)));
     }
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
@@ -1208,7 +1207,7 @@ const StatusTracking = () => {
       });
     }
     return result;
-  }, [allItems, searchTerm, factoryFilter, monthFilterMode, currentMonth, deliveryMonth, fullTableSearch, showOutdatedDelivery, sortConfig]);
+  }, [allItems, searchTerm, sheetFilter, monthFilterMode, currentMonth, deliveryMonth, sortConfig]);
 
   const toggleSort = useCallback((key: 'deliveryDate' | 'designDeliveryDays') => {
     setSortConfig(prev => {
@@ -1307,7 +1306,7 @@ const StatusTracking = () => {
     });
   };
 
-  if (loading || !settingsLoaded) {
+  if (!settingsLoaded) {
     return <LoadingScreen skeleton="statustracking" />;
   }
 
@@ -1371,26 +1370,6 @@ const StatusTracking = () => {
               className="pl-10 pr-4 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
-          <label className="flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={fullTableSearch}
-              onChange={(e) => setFullTableSearch(e.target.checked)}
-              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-            />
-            <span className="ml-2 text-sm text-gray-600">全表搜索</span>
-          </label>
-          {fullTableSearch && (
-            <label className="flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showOutdatedDelivery}
-                onChange={(e) => setShowOutdatedDelivery(e.target.checked)}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <span className="ml-2 text-sm text-gray-600">过时纳期</span>
-            </label>
-          )}
         </div>
 
         <div className="flex-1"></div>
@@ -1398,11 +1377,13 @@ const StatusTracking = () => {
         <div className="flex items-center space-x-4">
           {isAdmin && (
             <button
-              onClick={() => setShowModal(true)}
-              disabled={offlineWarning}
-              className="px-6 py-1.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-bold rounded-full shadow-md hover:shadow-lg transition-all duration-200 tracking-wide disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-md"
+              onClick={handleScheduleSyncPreview}
+              disabled={scheduleSyncing || offlineWarning}
+              title="从「各产品大日程.xls」的南京焊钳/上海焊钳/南京焊钳修改/上海焊钳修改四张表同步有效仕样号，并按仕样书自动补全营业担当与组长"
+              className="flex shrink-0 items-center gap-2 whitespace-nowrap px-5 py-1.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-bold rounded-full shadow-md hover:shadow-lg transition-all duration-200 tracking-wide disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-md"
             >
-              添加记录
+              <RefreshCw size={16} className={scheduleSyncing ? 'animate-spin' : ''} />
+              {scheduleSyncPhase === 'planning' ? '读取仕样书...' : scheduleSyncPhase === 'applying' ? '同步中...' : '同步生产大日程'}
             </button>
           )}
           {isAdmin && (
@@ -1415,77 +1396,6 @@ const StatusTracking = () => {
               导出显示结果
             </button>
           )}
-          <div className="relative">
-            <select
-              value={factoryFilter}
-              onChange={(e) => setFactoryFilter(e.target.value)}
-              className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-            >
-              <option value="">全部工厂</option>
-              {factoryOptions.map(option => (
-                <option key={option} value={option}>{option}</option>
-              ))}
-            </select>
-            <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-          </div>
-
-          <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setMonthFilterMode('production')}
-              className={`px-3 py-1.5 text-sm font-medium transition ${
-                monthFilterMode === 'production'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              添加时间
-            </button>
-            <button
-              type="button"
-              onClick={() => setMonthFilterMode('delivery')}
-              className={`px-3 py-1.5 text-sm font-medium border-l border-gray-300 transition ${
-                monthFilterMode === 'delivery'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              纳期
-            </button>
-          </div>
-
-          <div className="flex items-center space-x-1">
-            <div className="relative">
-              <select
-                value={currentMonth}
-                onChange={(e) => setCurrentMonth(e.target.value)}
-                disabled={monthFilterMode !== 'production'}
-                className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
-              >
-                {generateMonthOptions(allItems).map(option => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-              <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-1">
-            <div className="relative">
-              <select
-                value={deliveryMonth}
-                onChange={(e) => setDeliveryMonth(e.target.value)}
-                disabled={monthFilterMode !== 'delivery'}
-                className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
-              >
-                {generateDeliveryMonthOptions(allItems).map(option => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-              <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-            </div>
-          </div>
-
           {isAdmin && (
             <button
               onClick={() => {
@@ -1527,6 +1437,104 @@ const StatusTracking = () => {
           <span>当前为只读模式，仅可查看数据，无法编辑</span>
         </div>
       )}
+
+      {/* 筛选条：产品（四张日程表）单选 + 添加时间/纳期 + 月份。
+          四张表并列而不是下拉，一眼能看到当前在看哪张表；添加时间与纳期共用一个月份选择器，
+          切换左侧模式时选择器同时切换含义和取值。 */}
+      <div className="shrink-0 bg-white border-b border-gray-200 px-6 py-2 flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {SHEET_FILTERS.map((option, index) => {
+            const active = sheetFilter === option.key;
+            // 合并项与单项之间用细竖线分组，避免六项连成一片看不出层级
+            const isGroupStart = index === 1 || index === 3;
+            return (
+              <React.Fragment key={option.key}>
+                {isGroupStart && <span className="mx-0.5 h-4 w-[1px] bg-gray-200" />}
+                <button
+                  type="button"
+                  onClick={() => setSheetFilter(active ? '' : option.key)}
+                  title={active ? '再次点击取消筛选，显示全部记录' : option.hint}
+                  className={`px-3 py-1 text-sm rounded-full border transition ${
+                    active
+                      ? 'bg-blue-600 border-blue-600 text-white font-bold shadow-sm'
+                      : option.sheets.length > 1
+                        ? 'bg-slate-50 border-gray-300 text-gray-700 font-semibold hover:border-blue-400 hover:text-blue-600'
+                        : 'bg-white border-gray-300 text-gray-600 hover:border-blue-400 hover:text-blue-600'
+                  }`}
+                >
+                  {option.key}
+                </button>
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        <div className="h-5 w-[1px] bg-gray-200"></div>
+
+        <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setMonthFilterMode('production')}
+            className={`px-3 py-1.5 text-sm font-medium transition ${
+              monthFilterMode === 'production'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            添加时间
+          </button>
+          <button
+            type="button"
+            onClick={() => setMonthFilterMode('delivery')}
+            className={`px-3 py-1.5 text-sm font-medium border-l border-gray-300 transition ${
+              monthFilterMode === 'delivery'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            纳期
+          </button>
+        </div>
+
+        {/* 两种模式共用一个选择器：显示与修改的都是当前模式对应的月份 */}
+        <div className="relative">
+          <select
+            value={monthFilterMode === 'production' ? currentMonth : deliveryMonth}
+            onChange={(e) => {
+              if (monthFilterMode === 'production') {
+                setCurrentMonth(e.target.value);
+              } else {
+                setDeliveryMonth(e.target.value);
+              }
+            }}
+            title={monthFilterMode === 'production' ? '按添加时间月份筛选' : '按纳期月份筛选'}
+            className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+          >
+            {(monthFilterMode === 'production'
+              ? generateMonthOptions(allItems)
+              : generateDeliveryMonthOptions(allItems)
+            ).map(option => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+        </div>
+
+        <div className="ml-auto flex items-center gap-3 text-xs text-gray-500">
+          {sheetFilter && (
+            <button
+              type="button"
+              onClick={() => setSheetFilter('')}
+              className="text-blue-600 hover:text-blue-800 hover:underline"
+            >
+              显示全部
+            </button>
+          )}
+          <span>
+            共 <span className="font-bold text-gray-700">{filteredItems.length}</span> 条
+          </span>
+        </div>
+      </div>
 
       <main className={`flex-1 px-6 pb-6 overflow-y-auto overflow-x-auto ${offlineWarning ? 'offline-locked' : ''}`}>
         <div className="h-6 shrink-0"></div>
@@ -1631,8 +1639,19 @@ const StatusTracking = () => {
                   <tr>
                     <td colSpan={20} className="px-4 py-12 text-center text-gray-400">
                       <Shield size={48} className="mx-auto mb-4 opacity-50" />
-                      <div className="text-lg font-medium">暂无状态跟踪记录</div>
-                      <div className="text-sm mt-2">{isAdmin ? '点击上方"添加记录"按钮，输入仕样号开始跟踪' : '请联系管理员添加状态跟踪记录'}</div>
+                      {allItems.length > 0 ? (
+                        <>
+                          <div className="text-lg font-medium">当前筛选条件下没有记录</div>
+                          <div className="text-sm mt-2">
+                            换个月份或点筛选条右侧的「显示全部」试试
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-lg font-medium">暂无状态跟踪记录</div>
+                          <div className="text-sm mt-2">{isAdmin ? '点击右上角「同步生产大日程」，从各产品大日程同步仕样号' : '请联系管理员同步生产大日程'}</div>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ) : (
@@ -1647,6 +1666,12 @@ const StatusTracking = () => {
                     const lockHint = lockedBySameAccount
                       ? '该记录正在你的其他窗口/设备中编辑，请在该窗口继续或先退出编辑'
                       : `${editingSession?.username || '他人'} 正在编辑此记录，请稍后再试`;
+                    // 「已发图」与「数量」相同时标绿，便于识别已发完
+                    const quantityValue = parseInt(item.quantity, 10);
+                    const shippedMatchesQuantity = item.quantity !== ''
+                      && Number.isFinite(quantityValue)
+                      && quantityValue > 0
+                      && (item.shippedCount || 0) === quantityValue;
 
                     return (
                       <tr
@@ -1731,7 +1756,7 @@ const StatusTracking = () => {
                             value={item.shippedCount || ''}
                             onChange={(e) => updateField(item.id, 'shippedCount', parseInt(validateNumberInput(e.target.value)) || 0)}
                             disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className={`w-full text-center border rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed ${shippedMatchesQuantity ? 'bg-green-100 border-green-500 text-green-800' : 'border-gray-300'}`}
                           />
                         </td>
                         <td className="px-1 py-2 border-b border-gray-200 text-center font-bold">
@@ -1961,6 +1986,119 @@ const StatusTracking = () => {
         </div>
       </footer>
 
+      {scheduleSyncStats && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => !scheduleSyncing && setScheduleSyncStats(null)}
+          />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[480px] max-w-[92vw] border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <RefreshCw size={20} className={scheduleSyncing ? 'animate-spin' : ''} />
+                同步生产大日程
+              </div>
+              <button
+                className="p-1 rounded hover:bg-white/20 transition"
+                onClick={() => !scheduleSyncing && setScheduleSyncStats(null)}
+                disabled={scheduleSyncing}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <p className="text-sm text-gray-600 leading-relaxed">
+                将读取「各产品大日程.xls」中
+                <span className="font-semibold text-gray-800">南京焊钳、上海焊钳、南京焊钳修改、上海焊钳修改</span>
+                四张工作表的全部有效仕样号（位数符合系统配置且数量&gt;0），按所属月份写入状态跟踪。
+                已有记录只覆盖工厂、客户、数量、纳期、已发图；营业担当与组长按仕样书自动补全，
+                但只填空缺，人工改过的值不会被覆盖。
+              </p>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-center">
+                  <div className="text-xl font-bold text-blue-700">{scheduleSyncStats.added}</div>
+                  <div className="text-xs text-blue-500 mt-0.5">将新增</div>
+                </div>
+                <div className="rounded-lg bg-amber-50 border border-amber-100 px-3 py-2 text-center">
+                  <div className="text-xl font-bold text-amber-600">{scheduleSyncStats.updated}</div>
+                  <div className="text-xs text-amber-500 mt-0.5">将更新</div>
+                </div>
+                <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-center">
+                  <div className="text-xl font-bold text-gray-600">{scheduleSyncStats.unchanged}</div>
+                  <div className="text-xs text-gray-500 mt-0.5">已一致</div>
+                </div>
+              </div>
+
+              {(scheduleSyncStats.salesFilled !== undefined || scheduleSyncStats.leaderFilled !== undefined) && (
+                <div className="rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2 text-xs text-emerald-800 leading-relaxed">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <Users size={14} />
+                    自动补全营业担当 {scheduleSyncStats.salesFilled || 0} 条、组长 {scheduleSyncStats.leaderFilled || 0} 条
+                  </div>
+                  <div className="text-emerald-700/80 mt-0.5">
+                    营业担当取自仕样书 PDF，组长按「组长规则」由营业担当推出；只补空字段，不覆盖已有值。
+                  </div>
+                  {(scheduleSyncStats.salesMissing || 0) > 0 && (
+                    <div className="text-amber-700 mt-1">
+                      另有 {scheduleSyncStats.salesMissing} 条在仕样书中未找到营业担当
+                      {scheduleSyncStats.salesLookup && scheduleSyncStats.salesLookup.missingPdf > 0
+                        ? `（其中 ${scheduleSyncStats.salesLookup.missingPdf} 条没有对应仕样书）`
+                        : ''}
+                      ，同步后需人工补填。
+                    </div>
+                  )}
+                  {scheduleSyncStats.salesLookup && !scheduleSyncStats.salesLookup.shareAvailable && (
+                    <div className="text-amber-700 mt-1">仕样书共享目录不可访问，本次只同步表格字段；营业担当留待下次同步或人工填写。</div>
+                  )}
+                </div>
+              )}
+
+              <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 space-y-1">
+                <div>
+                  <span className="text-gray-400">有效仕样号：</span>
+                  {scheduleSyncStats.total} 条
+                  {scheduleSyncStats.skipped > 0 && (
+                    <span className="text-gray-400">（另有 {scheduleSyncStats.skipped} 行不符合条件已忽略）</span>
+                  )}
+                </div>
+                {scheduleSyncStats.months.length > 0 && (
+                  <div>
+                    <span className="text-gray-400">月份分布：</span>
+                    {scheduleSyncStats.months.map(m => `${formatMonthLabel(m.month)} ${m.count} 条`).join('，')}
+                  </div>
+                )}
+                {scheduleSyncStats.locked > 0 && (
+                  <div className="text-amber-600">
+                    <span className="text-amber-500">正在他人编辑中：</span>
+                    {scheduleSyncStats.locked} 条将被跳过，请保存后再同步
+                  </div>
+                )}
+              </div>
+
+              <div className="flex space-x-3 pt-1">
+                <button
+                  onClick={() => setScheduleSyncStats(null)}
+                  disabled={scheduleSyncing}
+                  className="flex-1 px-4 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg transition disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleScheduleSyncConfirm}
+                  disabled={scheduleSyncing || (scheduleSyncStats.added === 0 && scheduleSyncStats.updated === 0)}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {scheduleSyncing ? <RefreshCw size={16} className="animate-spin" /> : null}
+                  {scheduleSyncing ? '同步中...' : '开始同步'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {deleteConfirmId && isAdmin && (() => {
         const targetItem = allItems.find(item => item.id === deleteConfirmId);
         if (!targetItem) {
@@ -2003,64 +2141,6 @@ const StatusTracking = () => {
         );
       })()}
 
-      {showModal && isAdmin && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !loading && setShowModal(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
-            <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between">
-              <div className="flex items-center gap-2 font-bold text-lg">
-                <Plus size={20} />
-                添加状态跟踪记录
-              </div>
-              <button className="p-1 rounded hover:bg-white/20 transition" onClick={() => !loading && setShowModal(false)} disabled={loading}>
-                <X size={20} />
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1.5 ml-1">仕样号</label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={specNumberInput}
-                    onChange={(e) => setSpecNumberInput(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter') addItem();
-                    }}
-                    placeholder={`请输入仕样号（${specNumberDigits}位数字）`}
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg text-lg text-gray-800 font-semibold tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white focus:border-transparent transition disabled:opacity-60"
-                    autoFocus
-                  />
-                  {loading && (
-                    <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-blue-600" size={20} />
-                  )}
-                </div>
-                <div className="flex items-start gap-2 mt-2.5 p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
-                  <AlertCircle size={14} className="text-blue-500 shrink-0 mt-0.5" />
-                  <p className="text-xs text-blue-700/80 leading-relaxed">请输入 {specNumberDigits} 位仕样号，系统将自动从PDF文件中获取客户名、纳期、数量和营业担当信息</p>
-                </div>
-              </div>
-            </div>
-            <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
-              <button
-                onClick={() => setShowModal(false)}
-                disabled={loading}
-                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-50"
-              >
-                取消
-              </button>
-              <button
-                onClick={addItem}
-                disabled={loading}
-                className="px-5 py-2 rounded-lg bg-blue-600 text-white font-bold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-              >
-                {loading && <RefreshCw size={14} className="animate-spin" />}
-                {loading ? '获取中...' : '添加'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {planMonthEditorItemId && isAdmin && (() => {
         const editingItem = allItems.find(item => item.id === planMonthEditorItemId);

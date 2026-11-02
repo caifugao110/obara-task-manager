@@ -225,6 +225,7 @@ nssm remove ObaraTaskManager
 7. 后端启动后匿名访问 `http://localhost:5000/api/system/version` 返回 `401` JSON（该接口已要求登录，避免匿名探测版本号）；带登录 Token 请求时返回 `200` 版本信息。
 8. 前端能打开并完成登录、主页面加载、任务保存、导出文件下载等关键流程。
 9. 如果使用仕样 PDF 搜索，运行后端的 Windows 用户能访问 `SPEC_SHARE_PATH` 配置的共享目录。
+10. 如果启用「各产品大日程」取值（状态追踪的数量/纳期/已发图），运行后端的 Windows 用户能读取 `PRODUCTION_SCHEDULE_PATH` 指向的 Excel；文件不可读时接口会自动回退 PDF，不报错但表格数据不生效——可在后端日志中搜 `[productionSchedule]` 确认是否读取失败。
 
 ### 健康检查
 
@@ -283,6 +284,10 @@ GITEE_REPO_OWNER=caifugao110
 GITEE_REPO_NAME=obara-task-manager
 SQLITE_DB_PATH=./data.db
 SPEC_SHARE_PATH=\\<server>\仕样书$
+# 各产品大日程 Excel（状态追踪的数量/纳期/已发图优先来源），不配置时回退内置地址
+PRODUCTION_SCHEDULE_PATH=\\<server>\各产品大日程\各产品大日程.xls
+# 大日程解析缓存时长（毫秒），默认 5 分钟；共享文件更新后最多滞后该时长生效
+# PRODUCTION_SCHEDULE_CACHE_MS=300000
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
 LOGIN_IP_RATE_LIMIT_MAX=300
@@ -305,6 +310,8 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `GITEE_REPO_NAME` | - | Gitee 仓库名称 |
 | `SQLITE_DB_PATH` | `./data.db` | SQLite 数据库文件路径 |
 | `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`）；未显式配置时代码回退到该内置地址（`backend/config/security.js`） |
+| `PRODUCTION_SCHEDULE_PATH` | 内置回退值 `\\192.168.160.70\各产品大日程\各产品大日程.xls` | 各产品大日程 Excel 文件路径（`.xls`/`.xlsx`）。状态追踪页的「数量」「纳期」「已发图」与工厂优先取此表：解析「南京焊钳」「上海焊钳」「南京焊钳修改」「上海焊钳修改」四张工作表，`南京*` 对应 `O/NJG`、`上海*` 对应 `O/SHA`；读不到时回退 PDF 与已存数据，不会阻断接口。运行后端的 Windows 用户需要有该共享文件的读取权限 |
+| `PRODUCTION_SCHEDULE_CACHE_MS` | `300000` | 大日程解析结果缓存时长（毫秒）。解析结果按文件 mtime 复用，共享文件更新后最多滞后该时长生效；读取失败后 30 秒内不重复访问共享目录（避免每次状态追踪请求都卡在不可达的网络路径上） |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；登录/改密独立限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被独立限流器使用 |
 | `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流阈值：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
@@ -985,4 +992,4 @@ backend/
 6. **检查备份目录可写性**：确认服务账号对 `backups/database/`、`backups/task-exports/`、`backups/offline/` 等维护目录有写权限，并关注磁盘剩余空间；备份失败会写入后端日志
 7. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-10-29
+最后更新：2026-11-02

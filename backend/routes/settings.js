@@ -198,12 +198,7 @@ router.put('/workday-overrides', [authMiddleware, adminMiddleware, asyncHandler(
   res.json(overrides);
 })]);
 
-const defaultLeaderRules = [
-  { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },
-  { leader: '张啸', members: ['李守健', '邓明江', '贾银鑫', '熊飞'] },
-  { leader: '张明', members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '梁科研', '吴方盛', '许华俊'] },
-  { leader: '陈青松', members: ['张广奇', '李劲日', '曹圩圩', '许孟涵'] }
-];
+const defaultLeaderRules = require('../utils/leaderRules').DEFAULT_LEADER_RULES;
 
 const leaderRulesSchema = Joi.array().items(
   Joi.object({

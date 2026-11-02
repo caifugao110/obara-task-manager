@@ -97,6 +97,8 @@ interface MaintenanceSettings {
   dailyBackupEnabled: boolean;
   dailyTaskExportEnabled: boolean;
   dailyGunLedgerExportEnabled: boolean;
+  /** 每日把「各产品大日程」同步进状态跟踪（含营业担当/组长补全） */
+  dailyScheduleSyncEnabled: boolean;
   offlineBackupEnabled: boolean;
   backupRetentionDays: number;
   offlineBackupRetentionDays: number;
@@ -123,6 +125,17 @@ interface MaintenanceLastRun {
   backup?: { fileName: string; size: number } | null;
   taskExport?: { fileName?: string; taskSheets?: number; taskItems?: number; skipped?: boolean; reason?: string } | null;
   gunLedgerExport?: { fileName?: string; categories?: number; skipped?: boolean; reason?: string } | null;
+  scheduleSync?: {
+    skipped?: boolean;
+    reason?: string;
+    added?: number;
+    updated?: number;
+    unchanged?: number;
+    salesFilled?: number;
+    leaderFilled?: number;
+    salesMissing?: number;
+    lookup?: { specs: number; resolved: number; missingPdf: number; noSalesPerson: number; failed: number; shareAvailable: boolean };
+  } | null;
   backupCleanup?: { removedCount: number } | null;
   yearlyCleanup?: {
     skipped?: boolean;
@@ -160,6 +173,7 @@ const defaultMaintenanceSettings: MaintenanceSettings = {
   dailyBackupEnabled: true,
   dailyTaskExportEnabled: true,
   dailyGunLedgerExportEnabled: true,
+  dailyScheduleSyncEnabled: true,
   offlineBackupEnabled: true,
   backupRetentionDays: 30,
   offlineBackupRetentionDays: 7,
@@ -1955,7 +1969,7 @@ const SystemSettings = () => {
                     <Database className="mr-2 text-blue-600" size={22} />
                     数据库维护
                   </h3>
-                  <p className="text-sm text-gray-500 mt-1">每日 {(maintenanceSettings.scheduleTimes || []).join('、') || '—'} 自动执行已开启的备份与导出任务、清理过期文件。</p>
+                  <p className="text-sm text-gray-500 mt-1">每日 {(maintenanceSettings.scheduleTimes || []).join('、') || '—'} 自动执行已开启的备份与导出任务、状态跟踪同步，并清理过期文件。</p>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={fetchMaintenanceStatus} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 font-bold rounded-lg transition">
@@ -1986,12 +2000,12 @@ const SystemSettings = () => {
                     <input type="time" value={maintenanceSettings.scheduleTimes?.[1] || ''} onChange={(e) => updateScheduleTime(1, e.target.value)} className="w-32 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
                   </div>
                 </div>
-                <p className="text-xs text-gray-400 mt-3 leading-relaxed">到达执行时间后，按下方开关备份数据库、导出任务表格与编号台账，并按各项保留天数清理四个目录中的过期文件；总开关停用后所有计划任务跳过。</p>
+                <p className="text-xs text-gray-400 mt-3 leading-relaxed">到达执行时间后，按下方开关备份数据库、导出任务表格与编号台账、同步状态跟踪，并按各项保留天数清理四个目录中的过期文件；总开关停用后所有计划任务跳过。</p>
               </div>
 
               {/* 每日自动任务：开关、保留天数、存放目录集中在同一张卡片 */}
               <div className="text-sm font-bold text-gray-700 mb-3">每日自动任务</div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
                 <div className={`rounded-xl border border-blue-200 bg-blue-50/40 p-4 ${maintenanceSettings.dailyBackupEnabled ? '' : 'opacity-60'}`}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2 font-bold text-gray-800"><Database size={17} className="text-blue-600" />数据库备份</div>
@@ -2038,6 +2052,20 @@ const SystemSettings = () => {
                     <span className="text-xs font-bold text-gray-600">导出存放目录（相对后端）</span>
                     <input value={maintenanceSettings.gunLedgerExportDir} onChange={(e) => updateMaintenanceField('gunLedgerExportDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-400" />
                   </label>
+                </div>
+
+                <div className={`rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 ${maintenanceSettings.dailyScheduleSyncEnabled ? '' : 'opacity-60'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 font-bold text-gray-800"><RefreshCw size={17} className="text-indigo-600" />状态跟踪同步</div>
+                    <input type="checkbox" checked={maintenanceSettings.dailyScheduleSyncEnabled} onChange={(e) => updateMaintenanceField('dailyScheduleSyncEnabled', e.target.checked)} className="w-5 h-5 accent-indigo-600" />
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-3 min-h-[48px]">
+                    读取「各产品大日程.xls」四张工作表的有效仕样号，同步进状态跟踪的工厂/客户/数量/纳期/已发图；
+                    并按仕样书 PDF 补全营业担当、按组长规则补全组长（只填空缺，不覆盖人工维护的值）。
+                  </p>
+                  <div className="rounded-lg bg-white/80 border border-indigo-100 px-2.5 py-2 text-[11px] text-gray-600 leading-relaxed">
+                    执行顺序：备份 → 导出 → 同步 → 清理。首次同步需解析仕样书，约十几秒；之后命中缓存只需数秒。
+                  </div>
                 </div>
               </div>
 
@@ -2198,6 +2226,13 @@ const SystemSettings = () => {
                         : ge?.skipped ? { label: '编号台账', tone: 'muted', text: '无台账数据，跳过' }
                         : ge ? { label: '编号台账', tone: 'ok', text: `${ge.categories} 个分类已导出` }
                         : { label: '编号台账', tone: 'muted', text: '未生成' });
+                      const ss = lr.scheduleSync;
+                      steps.push(!maintenanceSettings.dailyScheduleSyncEnabled
+                        ? { label: '状态同步', tone: 'off', text: '未启用' }
+                        : !ss ? { label: '状态同步', tone: 'muted', text: '-' }
+                        : ss.reason ? { label: '状态同步', tone: 'warn', text: `失败：${ss.reason}` }
+                        : ss.skipped ? { label: '状态同步', tone: 'muted', text: '无变更，跳过' }
+                        : { label: '状态同步', tone: 'ok', text: `新增 ${ss.added || 0} / 更新 ${ss.updated || 0} 条，补全担当 ${ss.salesFilled || 0} 条` });
                       steps.push(lr.backupCleanup
                         ? { label: '过期清理', tone: 'ok', text: `删除 ${lr.backupCleanup.removedCount} 个过期文件` }
                         : { label: '过期清理', tone: 'muted', text: '-' });

@@ -202,6 +202,9 @@ const maintenanceSettingsSchema = Joi.object({
   dailyBackupEnabled: Joi.boolean().required(),
   dailyTaskExportEnabled: Joi.boolean().required(),
   dailyGunLedgerExportEnabled: Joi.boolean().required(),
+  // 新字段用 optional：旧前端页面（未重新加载的标签页）保存时不会因为缺字段被整体拒绝，
+  // 缺省时沿用数据库中的现值 / 内置默认值
+  dailyScheduleSyncEnabled: Joi.boolean().optional(),
   offlineBackupEnabled: Joi.boolean().required(),
   backupRetentionDays: Joi.number().integer().min(1).max(3650).required(),
   offlineBackupRetentionDays: Joi.number().integer().min(1).max(3650).required(),
