@@ -357,6 +357,19 @@ const buildGunLedgerIndex = (gunLedger) => {
   return index;
 };
 
+// 从任务名里提取客户/仕样信息——台账未登记枪名的 fallback。
+// 任务名典型格式："58622>昆山诺克_东山精密-墨西哥 确认图 [12/4]"
+// → 去掉尾部纳期标记 [M/D] 和任务类型后缀（确认图/确认图修改/设计变更/既制审图/设计）
+const extractCustomerFromTaskName = (taskName) => {
+  const name = String(taskName || '').trim();
+  if (!name) return '';
+  // 去掉末尾纳期标记 [M/D]
+  const withoutDeadline = name.replace(/\s*\[\d{1,2}\/\d{1,2}\]\s*$/, '').trim();
+  // 去掉尾部任务类型后缀
+  const cleaned = withoutDeadline.replace(/\s*(确认图修改|确认图|设计变更|既制审图|设计)$/, '').trim();
+  return cleaned;
+};
+
 // 枪名搜索（含归属）——供主页面「确认图修改」快捷键快速添加使用
 // 返回台账中匹配的枪名 + 该枪名当前所在任务（设计员 / 日期 / 任务名），
 // 前端据此把「确认图修改」默认安排给该枪名所属任务的设计员。
@@ -411,12 +424,18 @@ router.get('/gun-name-search', authMiddleware, asyncHandler(async (req, res) => 
 
   const matches = Array.from(names).map(gunName => {
     const info = index.get(gunName);
+    const owners = ownersByGun.get(gunName) || [];
+    // customer 来源优先级：台账索引 > 首个 owner 的任务名提取 > 空
+    let customer = (info && info.customer) || '';
+    if (!customer && owners.length > 0) {
+      customer = extractCustomerFromTaskName(owners[0].taskName);
+    }
     return {
       gunName,
-      customer: (info && info.customer) || '',
+      customer,
       category: (info && info.category) || '',
       tableName: (info && info.tableName) || '',
-      owners: decorateOwners(ownersByGun.get(gunName) || []),
+      owners: decorateOwners(owners),
       prefix: gunName.toLowerCase().indexOf(lower) === 0 ? 0 : 1
     };
   });
