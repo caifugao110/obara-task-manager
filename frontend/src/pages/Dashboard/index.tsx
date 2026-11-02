@@ -77,6 +77,24 @@ import type {
   Toast,
 } from './types';
 
+// 任务定位目标：一条任务由「设计员 + 日期 + 任务 id」唯一确定
+interface TaskLocateTarget {
+  designerId: string;
+  date: string;
+  itemId: string;
+}
+
+// 按「任务 id + 设计员 + 日期」找到该任务行的 DOM 节点（URL 跳转与安排后定位共用）
+const findTaskNode = (designerId: string, date: string, itemId: string) => {
+  if (!designerId || !date || !itemId) return null;
+  const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
+  return document.querySelector(
+    `[data-task-id="${escapeSelector(itemId)}"][data-designer-id="${escapeSelector(designerId)}"][data-date="${escapeSelector(date)}"]`
+  ) as HTMLElement | null;
+};
+
+const taskLocateKey = (target: TaskLocateTarget) => `${target.designerId}|${target.date}|${target.itemId}`;
+
 // 主任务「任务内容」复选框对应的类型（6 个并列选项）：
 // 确认图 / 设计 / 确认图修改 按枪名规则取工时，且支持「任务加急」；
 // 设计变更 / 既制审图 取系统设置中的固定工时；
@@ -1527,6 +1545,78 @@ const Dashboard = () => {
   // 用 ref 保证本函数引用永久稳定。
   const currentDateRef = useRef(currentDate);
   currentDateRef.current = currentDate;
+
+  // ===== 安排成功后的定位 =====
+  // 安排确认图 / 添加确认图修改 / 新增任务成功后，除了收起弹窗，还要把用户「送到」
+  // 刚生成的那条任务上：目标月份不对就切月份、分组折叠就展开、被人员筛选挡掉就放开筛选，
+  // 滚到视口中央并闪一圈绿色高亮。所有入口（新增任务、快速添加确认图修改、取号后安排确认图）
+  // 都走同一套逻辑，避免各处行为不一致。
+  const [locateFlashKey, setLocateFlashKey] = useState<string | null>(null);
+  const locateFlashTimerRef = useRef<number | null>(null);
+  // 定位重试链：切月份要等整月数据、展开分组/放开筛选要等下一帧，目标行不会立刻存在，
+  // 因此按 150ms 步进重试，最多约 4.5s（跨月刷新也够用），找到就滚过去并闪高亮。
+  const locateRetryTimerRef = useRef<number | null>(null);
+
+  const flashLocatedTask = useCallback((key: string) => {
+    if (locateFlashTimerRef.current !== null) window.clearTimeout(locateFlashTimerRef.current);
+    setLocateFlashKey(key);
+    locateFlashTimerRef.current = window.setTimeout(() => {
+      setLocateFlashKey(null);
+      locateFlashTimerRef.current = null;
+    }, 2800);
+  }, []);
+
+  const scrollToTask = useCallback((target: TaskLocateTarget, attempt = 0) => {
+    const node = findTaskNode(target.designerId, target.date, target.itemId);
+    if (!node) {
+      if (attempt >= 30) return;
+      if (locateRetryTimerRef.current !== null) window.clearTimeout(locateRetryTimerRef.current);
+      locateRetryTimerRef.current = window.setTimeout(() => {
+        locateRetryTimerRef.current = null;
+        scrollToTask(target, attempt + 1);
+      }, 150);
+      return;
+    }
+    node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    flashLocatedTask(taskLocateKey(target));
+  }, [flashLocatedTask]);
+
+  const locateTask = useCallback((target?: TaskLocateTarget | null) => {
+    if (!target?.designerId || !target?.date || !target?.itemId) return;
+    const [year, month] = String(target.date).split('-').map(Number);
+    if (!Number.isInteger(year) || !Number.isInteger(month)) return;
+
+    // 1) 分组折叠 → 展开（同时写回 localStorage，与手动展开保持一致）
+    const designer = designers.find(d => d.id === target.designerId);
+    const group = designer ? (designer.group || '未分组') : '';
+    if (group) {
+      setCollapsedGroups(prev => {
+        if (!prev[group]) return prev;
+        const next = { ...prev, [group]: false };
+        localStorage.setItem('collapsedGroups', JSON.stringify(next));
+        return next;
+      });
+      // 2) 人员被当前筛选挡在外面 → 切到该人员所在分组（隐藏人员则直接切到本人），
+      //    否则这一行根本不会渲染，滚也滚不到
+      if (!filteredDesigners.some(d => d.id === target.designerId)) {
+        setSelectedDesignerId(designer?.hidden ? target.designerId : `group:${group}`);
+      }
+    }
+
+    // 3) 目标月份不在当前视图 → 切月份；重试链会在新数据渲染出来后完成定位
+    const current = currentDateRef.current;
+    if (current.getFullYear() !== year || current.getMonth() + 1 !== month) {
+      setCurrentDate(new Date(year, month - 1, 1));
+    }
+    scrollToTask(target);
+  }, [designers, filteredDesigners, scrollToTask]);
+
+  // 卸载时清掉两个计时器，避免回调落到已卸载的组件上
+  useEffect(() => () => {
+    if (locateFlashTimerRef.current !== null) window.clearTimeout(locateFlashTimerRef.current);
+    if (locateRetryTimerRef.current !== null) window.clearTimeout(locateRetryTimerRef.current);
+  }, []);
+
   const emitTaskUpdated = useCallback((designerId?: string) => {
     if (!designerId) {
       socketRef.current?.emit('task_updated');
@@ -1554,17 +1644,11 @@ const Dashboard = () => {
       } else {
         emitTaskUpdated();
       }
-      // 新增的任务就在当前视图里时，滚动到该任务行（行未渲染则静默跳过）
-      if (!sameMonth || !itemId) return;
-      window.setTimeout(() => {
-        const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
-        const target = document.querySelector(
-          `[data-task-id="${escapeSelector(itemId)}"][data-designer-id="${escapeSelector(designerId)}"][data-date="${escapeSelector(date)}"]`
-        ) as HTMLElement | null;
-        target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-      }, 260);
+      // 弹窗自己已经关闭，这里把用户带到刚添加的那条任务上：
+      // 安排到别的月份时 locateTask 会先切月份再滚过去（不再像以前那样静默跳过）
+      if (itemId) locateTask({ designerId, date, itemId });
     },
-    [upsertSheet, emitTaskUpdated]
+    [upsertSheet, emitTaskUpdated, locateTask]
   );
 
   const fetchSheets = useCallback(async () => {
@@ -1582,18 +1666,23 @@ const Dashboard = () => {
   // 快速取号弹窗里的「安排确认图」写入成功后：把目标表合并进当前视图。
   // 跨客户端的广播由确认图弹窗自己发出（带 designerId + 目标月份坐标，别人增量合并），
   // 这里只负责本端回显，不能再 emit 一次，否则其他客户端会收到两条信号重复刷新。
+  // 安排完成后按用户预期收起取号弹窗（连同其上的确认图弹窗），并定位到刚生成的确认图任务。
   const handleQuickAssignCreated = useCallback(
-    (info?: { designerId: string; date: string; sheet?: TaskSheet }) => {
+    (info?: { designerId: string; date: string; sheet?: TaskSheet; itemIds?: string[] }) => {
       if (!info?.designerId) return;
       const [year, month] = String(info.date).split('-').map(Number);
       const current = currentDateRef.current;
       const sameMonth = current.getFullYear() === year && current.getMonth() + 1 === month;
-      // 安排到其他月份时当前视图不受影响，不做任何刷新
-      if (!sameMonth) return;
-      if (info.sheet) upsertSheet(info.sheet);
-      else void fetchSheets();
+      setQuickGunTakeOpen(false);
+      if (sameMonth) {
+        if (info.sheet) upsertSheet(info.sheet);
+        else void fetchSheets();
+      }
+      // 定位到本次生成的第一条确认图任务（新建优先；只有合并时定位到被合并的那条）
+      const firstItemId = info.itemIds?.find(Boolean);
+      if (firstItemId) locateTask({ designerId: info.designerId, date: info.date, itemId: firstItemId });
     },
-    [upsertSheet, fetchSheets]
+    [upsertSheet, fetchSheets, locateTask]
   );
 
   const handleUserDesignPlanColorMark = useCallback(async (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => {
@@ -3265,6 +3354,8 @@ const Dashboard = () => {
                                                 gunDropTarget={gunDropTarget && !gunDropTarget.isSelf && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate && gunDropTarget.itemId === item.id ? (gunDropTarget.invalid ? 'invalid' : 'valid') : null}
                                                 taskInsertMarker={cellTaskDrop && cellTaskDrop.itemId === item.id ? (cellTaskDrop.duplicate ? 'invalid' : 'valid') : null}
                                                 editingMarkSession={cellSessions.find(s => s.userId !== user?.id && s.itemId === item.id && (canViewEditingUser || s.mode === 'colorMark')) || null}
+                                                // 刚安排好的任务定位后闪一圈高亮（2.8s 后自动清除）
+                                                locateFlash={locateFlashKey === `${d.id}|${day.fullDate}|${item.id}`}
                                                 // 同一天的第 2 条主任务起画分界线，区分「同一人同一天的不同主任务」
                                                 showTopSeparator={itemIndex > 0}
                                                 onSelectTask={(itemId, designerId, date, append) => {
@@ -3857,7 +3948,7 @@ const Dashboard = () => {
                       <span className="shrink-0 w-[72px]">
                         <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Shift×2</kbd>
                       </span>
-                      <div className="text-[13px] text-gray-700">添加确认图修改</div>
+                      <div className="text-[13px] text-gray-700">添加确认图修改<span className="text-gray-400">（添加后自动定位）</span></div>
                     </li>
                   </ul>
                   <ul className="divide-y divide-gray-100 border-t border-gray-100 md:border-t-0">
@@ -5172,6 +5263,12 @@ const Dashboard = () => {
                         setFocusTarget(null);
                         setModalOpen(false);
                         stopEditingCell(modalDesignerId, modalDate);
+                        // 新增（含「确认图」等任务内容）保存后：收起弹窗并定位到这条新任务，
+                        // 让「刚才安排的那张确认图」直接出现在视野里，不用自己翻表去找
+                        const createdItemId = res.data?.item?.id;
+                        if (createdItemId && modalDesignerId && modalDate) {
+                          locateTask({ designerId: modalDesignerId, date: modalDate, itemId: String(createdItemId) });
+                        }
                         addToast('任务已保存', 'success');
                       } catch (err) {
                         addToast('保存失败', 'error');

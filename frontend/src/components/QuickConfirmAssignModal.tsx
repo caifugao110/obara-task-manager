@@ -60,8 +60,9 @@ interface QuickConfirmAssignModalProps {
   addToast: (message: string, type: 'success' | 'error') => void;
   // 创建/合并成功后通知调用方刷新「已用枪名」等派生数据。
   // 同时回传目标设计员/日期与写入后的工时表，调用方可在本端立即合并
-  // （其他客户端的刷新由本弹窗自己广播，调用方不要再重复发信号）
-  onCreated: (info?: { designerId: string; date: string; sheet?: TaskSheet }) => void;
+  // （其他客户端的刷新由本弹窗自己广播，调用方不要再重复发信号）；
+  // itemIds 为本次写入命中的任务 id（新建在前、合并的在后），调用方据此定位到刚安排好的确认图
+  onCreated: (info?: { designerId: string; date: string; sheet?: TaskSheet; itemIds?: string[] }) => void;
   // 浮层层级：从其他弹窗（如主页面快速取号）内部唤起时需要压在其上方
   zIndexClass?: string;
   // 底部左侧提示：从台账页（Shift×2）和从快速取号打开时的入口不同
@@ -364,6 +365,9 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
       let mergedGunCount = 0;
       // 最后一次写入返回的工时表：带回去让调用方本地合并，省掉一次整月拉取
       let latestSheet: TaskSheet | undefined;
+      // 本次命中的任务 id：新建的在前（用户最关心「刚生成的确认图」），合并的在后
+      const createdItemIds: string[] = [];
+      const mergedItemIds: string[] = [];
       for (const [itemId, target] of mergeTargets.entries()) {
         const allGuns = [...target.item.guns, ...target.guns];
         await axiosInstance.put('/tasks/item', {
@@ -383,10 +387,14 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
         });
         if (hoursRes.data?.sheet) latestSheet = hoursRes.data.sheet;
         mergedGunCount += target.guns.length;
+        mergedItemIds.push(itemId);
       }
       if (items.length > 0) {
         const batchRes = await axiosInstance.post('/tasks/item/batch', { designerId, date, items });
         if (batchRes.data?.sheet) latestSheet = batchRes.data.sheet;
+        (Array.isArray(batchRes.data?.items) ? batchRes.data.items : []).forEach((it: any) => {
+          if (it?.id) createdItemIds.push(String(it.id));
+        });
       }
 
       const designerLabel = designerOptions.find(d => d.id === designerId)?.name || '设计人员';
@@ -411,7 +419,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
           socket.emit('task_updated');
         }
       }
-      onCreated({ designerId, date, sheet: latestSheet });
+      onCreated({ designerId, date, sheet: latestSheet, itemIds: [...createdItemIds, ...mergedItemIds] });
       onClose();
     } catch (err: any) {
       addToast(err?.response?.data?.message || '确认图安排失败', 'error');

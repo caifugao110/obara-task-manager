@@ -100,7 +100,7 @@ interface QuickGunTakeModalProps {
   designers?: DesignerOption[];
   // 二级浮层「安排确认图」写入任务成功后回调：回传目标设计员/日期与写入后的工时表，
   // 供宿主页面（主页面）立即回显；跨客户端的刷新由确认图弹窗自行广播
-  onTasksCreated?: (info: { designerId: string; date: string; sheet?: TaskSheet }) => void;
+  onTasksCreated?: (info: { designerId: string; date: string; sheet?: TaskSheet; itemIds?: string[] }) => void;
 }
 
 // 记住上次取号用的表：同一批料常连续取号，下次呼出直接停在原表
@@ -167,6 +167,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   const [specNotFound, setSpecNotFound] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [lastTaken, setLastTaken] = useState<LastTakenInfo | null>(null);
+  // 取号成功结果用独立模态框展示（不再挤在右栏表单里）；关掉后回到取号弹窗继续取下一批
+  const [resultOpen, setResultOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   // 取号成功后的可选动作：把「我最近取的号」直接安排确认图任务
@@ -175,7 +177,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   const [assignRows, setAssignRows] = useState<QuickConfirmGunRow[]>([]);
 
   const customerRef = useRef<HTMLInputElement | null>(null);
-  const lastTakenRef = useRef<HTMLDivElement | null>(null);
+  const resultPrimaryRef = useRef<HTMLButtonElement | null>(null);
   const specTimerRef = useRef<number | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
   // 只认最后一次仕样号查询的结果，避免连续输入时旧响应覆盖新值
@@ -291,6 +293,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     setSpecNotFound(false);
     setSpecLoading(false);
     setLastTaken(null);
+    setResultOpen(false);
     setCopied(false);
     setSubmitting(false);
     setLoadError('');
@@ -385,14 +388,18 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     };
   }, [open, token, applyLocks, fetchOptions]);
 
-  // 取号成功后把结果面板滚进视野：右侧表单区可滚动，成功提示常在折叠线以下
+  // 关闭取号结果框：回到取号弹窗，焦点落回客户输入框，方便直接取下一批
+  const closeResult = useCallback(() => {
+    setResultOpen(false);
+    window.setTimeout(() => customerRef.current?.focus(), 60);
+  }, []);
+
+  // 结果框打开后把焦点移进去：否则底下的「确认取号」仍是焦点元素，再按 Enter 会重复提交
   useEffect(() => {
-    if (!lastTaken) return;
-    const timer = window.setTimeout(() => {
-      lastTakenRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }, 60);
+    if (!resultOpen) return;
+    const timer = window.setTimeout(() => resultPrimaryRef.current?.focus(), 60);
     return () => window.clearTimeout(timer);
-  }, [lastTaken]);
+  }, [resultOpen]);
 
   // 打开后聚焦客户输入框
   useEffect(() => {
@@ -401,17 +408,21 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     return () => window.clearTimeout(timer);
   }, [open, tableId]);
 
-  // Esc 关闭（提交中或确认图安排浮层打开时不响应，先关上层）
+  // Esc 关闭：确认图浮层（自己处理 Esc）→ 取号结果框 → 取号弹窗，逐层回退
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || submitting || assignOpen) return;
       e.stopPropagation();
+      if (resultOpen) {
+        closeResult();
+        return;
+      }
       onClose();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [open, submitting, assignOpen, onClose]);
+  }, [open, submitting, assignOpen, resultOpen, closeResult, onClose]);
 
   // 输入纯仕样号时自动解析客户名（与台账页行为一致）
   const scheduleSpecLookup = useCallback((raw: string) => {
@@ -446,7 +457,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     scheduleSpecLookup(value);
   }, [scheduleSpecLookup]);
 
-  // 关闭弹窗时清掉未触发的仕样号查询，避免回调落到已关闭的弹窗上
+  // 关闭弹窗时清掉未触发的仕样号查询，避免回调落到已关闭的弹窗上；顺手丢弃上次取号结果，
+  // 否则重新呼出时会残留上一批的枪名
   useEffect(() => {
     if (open) return;
     if (specTimerRef.current) {
@@ -454,6 +466,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       specTimerRef.current = null;
     }
     setSpecLoading(false);
+    setResultOpen(false);
+    setLastTaken(null);
   }, [open]);
 
   const selectTable = useCallback((table: QuickTakeTable & { category: string }) => {
@@ -520,6 +534,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   );
 
   const handleSubmit = useCallback(async () => {
+    // 结果框还开着时忽略提交（避免 Enter 穿透到底下的表单）
+    if (resultOpen) return;
     if (!activeTable) {
       addToast('请先选择要取号的表格', 'error');
       return;
@@ -564,20 +580,14 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
         category: activeTable.category,
         tableName: activeTable.name,
       });
-      const created = createdRows.length || 1;
-      addToast(
-        created > 1
-          ? `已连续取号 ${created} 个：${data.gunName || ''} ~ ${data.lastGunName || ''}（序号 ${data.serialNumber}–${data.lastSerialNumber}）`
-          : `已取号 ${data.gunName || ''}（序号 ${data.serialNumber ?? ''}）`,
-        'success'
-      );
-      // 表单复位：客户清空、备注清空、担当与数量保留，下一号立即可继续取
+      // 结果用独立模态框展示，不再在右栏堆一张绿色卡片；toast 也会与结果框重复，这里不再弹
+      setResultOpen(true);
+      // 表单复位：客户清空、备注清空、担当/数量/前缀保留，关掉结果框即可继续取
       setCustomer('');
       setResolvedClient(null);
       setSpecNotFound(false);
       setCopied(false);
       await fetchOptions(true);
-      window.setTimeout(() => customerRef.current?.focus(), 50);
     } catch (err: any) {
       addToast(err?.response?.data?.message || '取号失败，请重试', 'error');
       // 锁冲突：重新拉一次，让列表显示最新持有者
@@ -586,7 +596,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       setSubmitting(false);
     }
   }, [
-    activeTable, lockedByOther, customer, resolvedClient, prefixDraft, prefixError,
+    resultOpen, activeTable, lockedByOther, customer, resolvedClient, prefixDraft, prefixError,
     safeCount, offline, addToast, fetchOptions,
   ]);
 
@@ -1071,36 +1081,22 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
                       </div>
                     )}
 
-                    {/* 上一次取号结果（可选：顺手安排确认图任务） */}
-                    {lastTaken && (
-                      <div ref={lastTakenRef} className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2">
-                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
-                          <Check size={12} />已取号成功
-                          {lastTaken.rows.length > 1 && (
-                            <span className="ml-0.5 text-[10px] font-bold px-1 rounded bg-emerald-600 text-white">共 {lastTaken.rows.length} 个</span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => void handleCopyGunName()}
-                            className="ml-auto shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-900"
-                            title={lastTaken.rows.length > 1 ? '复制全部枪名（每行一个）' : '复制枪名'}
-                          >
-                            {copied ? <Check size={11} /> : <Copy size={11} />}{copied ? '已复制' : '复制'}
-                          </button>
-                        </div>
-                        <div className="mt-1 max-h-[68px] overflow-auto space-y-0.5">
-                          {lastTaken.rows.map(row => (
-                            <div key={`${row.serialNumber}-${row.gunName}`} className="flex items-baseline gap-2">
-                              <span className="font-mono text-[13px] font-bold text-emerald-800 truncate">{row.gunName}</span>
-                              <span className="text-[11px] text-emerald-600 shrink-0">#{row.serialNumber}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="text-[11px] text-emerald-600/90 truncate mt-0.5 flex items-center gap-1">
-                          <span className="truncate">{lastTaken.customer}</span>
-                          <span className="shrink-0 text-emerald-500/70">· {lastTaken.category}/{lastTaken.tableName}</span>
-                        </div>
-                      </div>
+                    {/* 结果框关掉后的轻量回看入口：只有一行，不占右栏版面 */}
+                    {lastTaken && !resultOpen && (
+                      <button
+                        type="button"
+                        onClick={() => setResultOpen(true)}
+                        title="重新查看本次取号结果"
+                        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-emerald-100 bg-emerald-50/60 text-[11px] text-emerald-700 hover:bg-emerald-50 transition"
+                      >
+                        <Check size={11} className="shrink-0" />
+                        <span className="truncate">
+                          上次取号 #{lastTaken.rows[0]?.serialNumber}
+                          {lastTaken.rows.length > 1 ? `–#${lastTaken.rows[lastTaken.rows.length - 1]?.serialNumber}` : ''}
+                          （{lastTaken.rows.length} 个）
+                        </span>
+                        <span className="ml-auto shrink-0 font-bold">查看</span>
+                      </button>
                     )}
                   </>
                 )}
@@ -1142,6 +1138,101 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
         </div>
       </div>
     </div>
+
+    {/* 取号结果：独立模态框，叠在取号弹窗之上、确认图浮层之下，不再挤占右栏 */}
+    {lastTaken && resultOpen && (
+      <div className="fixed inset-0 z-[55] flex items-center justify-center px-4" role="dialog" aria-modal="true" aria-label="取号成功">
+        <div className="absolute inset-0 bg-black/35 backdrop-blur-[2px]" onClick={closeResult} />
+        <div className="relative w-[440px] max-w-full max-h-[88vh] flex flex-col overflow-hidden rounded-xl border border-emerald-100 bg-white shadow-2xl">
+          {/* 头部：成功语义（绿），与取号弹窗的蓝区分开 */}
+          <div className="relative flex items-center gap-2.5 px-4 py-3.5 bg-gradient-to-r from-[#047857] via-[#059669] to-[#10b981] text-white shrink-0">
+            <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25 shrink-0">
+              <Check size={17} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-base leading-tight">已取号成功</span>
+                {lastTaken.rows.length > 1 && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-white/25">共 {lastTaken.rows.length} 个</span>
+                )}
+              </div>
+              <div className="text-[11px] text-white/80 leading-tight mt-0.5 truncate">
+                序号 #{lastTaken.rows[0]?.serialNumber}
+                {lastTaken.rows.length > 1 ? `–#${lastTaken.rows[lastTaken.rows.length - 1]?.serialNumber}` : ''}
+                <span className="mx-1 text-white/40">·</span>
+                {lastTaken.category}/{lastTaken.tableName}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={closeResult}
+              title="关闭（Esc）"
+              className="ml-auto shrink-0 p-1.5 rounded-full hover:bg-white/20 transition cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* 客户 / 仕样号 */}
+          <div className="px-4 pt-3 shrink-0">
+            <div className="flex items-center gap-1 text-[11px] text-gray-400">
+              <User size={11} />客户 / 仕样号
+            </div>
+            <div className="mt-0.5 text-[13px] font-bold text-gray-800 leading-snug break-all">{lastTaken.customer || '—'}</div>
+          </div>
+
+          {/* 已写入台账的枪名：逐条列出，不滚动也能看全（最多 10 条） */}
+          <div className="px-4 pt-3 pb-3 min-h-0 overflow-auto">
+            <div className="flex items-center justify-between mb-1">
+              <span className="inline-flex items-center gap-1 text-[11px] text-gray-400">
+                <Hash size={11} />已写入台账的枪名
+              </span>
+              <span className="text-[10px] text-gray-400">序号即台账行号</span>
+            </div>
+            <ul className="rounded-lg border border-emerald-100 overflow-hidden divide-y divide-emerald-50 bg-emerald-50/30">
+              {lastTaken.rows.map((row, i) => (
+                <li key={`${row.serialNumber}-${row.gunName}`} className="flex items-center gap-2 px-2.5 py-1.5">
+                  <span className="shrink-0 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded bg-emerald-100 text-emerald-700 text-[9px] font-bold">{i + 1}</span>
+                  <span className="font-mono text-[14px] font-bold text-gray-800 truncate" title={row.gunName}>{row.gunName}</span>
+                  <span className="ml-auto shrink-0 text-[10px] text-gray-400 tabular-nums">#{row.serialNumber}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* 底部动作：安排确认图（顺手） / 复制枪名 / 继续取号 */}
+          <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-t border-gray-100 bg-gray-50/70">
+            <button
+              type="button"
+              onClick={() => void handleOpenAssign()}
+              disabled={assignLoading || offline}
+              title="把今天取的号按客户分组安排确认图任务"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 hover:text-emerald-700 transition disabled:opacity-50"
+            >
+              {assignLoading ? <Loader2 size={12} className="animate-spin" /> : <ClipboardList size={12} />}安排确认图
+            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleCopyGunName()}
+                title={lastTaken.rows.length > 1 ? '复制全部枪名（每行一个）' : '复制枪名'}
+                className="h-8 px-3 rounded-lg border border-gray-300 bg-white text-[12px] font-semibold text-gray-600 hover:bg-gray-100 transition inline-flex items-center gap-1"
+              >
+                {copied ? <Check size={12} /> : <Copy size={12} />}{copied ? '已复制' : '复制枪名'}
+              </button>
+              <button
+                type="button"
+                ref={resultPrimaryRef}
+                onClick={closeResult}
+                className="h-8 px-3 rounded-lg bg-emerald-600 text-white text-[12px] font-bold hover:bg-emerald-700 transition inline-flex items-center gap-1"
+              >
+                继续取号
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
 
     {/* 可选：把今天取的号安排确认图任务（浮在取号弹窗之上） */}
     <QuickConfirmAssignModal

@@ -16,7 +16,7 @@ const formatHoursCell = (value: number | string | null | undefined) => {
   return Number.isFinite(numeric) && numeric > 0 ? value : '';
 };
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null, showTopSeparator = false }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null, showTopSeparator?: boolean }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null, showTopSeparator = false, locateFlash = false }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null, showTopSeparator?: boolean, locateFlash?: boolean }) => {
   const { settings } = useSystemSettings();
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
@@ -158,6 +158,18 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
         <div
           className="absolute left-0 right-0 pointer-events-none z-[5]"
           style={{ top: -1, height: 1, backgroundColor: '#6b7280' }}
+        />
+      )}
+      {/* 定位高亮：安排/添加成功后滚到本行，用一圈绿色脉冲标出「就是这一条」，
+          2.6s 后淡出（locateFlash 由调用方计时清除）。层级压在最上面，但完全不挡鼠标 */}
+      {locateFlash && (
+        <div
+          className="task-locate-flash absolute inset-0 z-30 pointer-events-none"
+          style={{
+            border: '2px solid #10b981',
+            borderRadius: 3,
+            backgroundColor: 'rgba(16,185,129,0.16)',
+          }}
         />
       )}
       {/* 枪名拖拽路径扫过时的预选中高亮：整条主任务描边变色（绿=可放置，红=重复不可放置） */}
