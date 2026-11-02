@@ -366,12 +366,15 @@ router.get('/quick-take/options', [authMiddleware, adminMiddleware, accessSettin
 
 // 快速取号入参：客户/仕样号必填（取号的意义是占住这个枪名编号，客户信息随之落库）；
 // count 为本次连续取号的数量，从「最新未取行号」起连续占用 count 个序号
+// prefix：本次取号自定义前缀（首号改成 SRTX-5AC25051 时传 SRTX-5AC）。
+// 不传则沿用表规则前缀；编号仍由规则决定，保证「前缀可改、编号不可改」。
 const quickTakeSchema = Joi.object({
   customer: Joi.string().trim().min(1).max(500).required(),
   remarks: Joi.string().allow('').max(500),
   responsiblePerson: Joi.string().allow('').max(50),
   time: Joi.string().allow('').max(30),
-  count: Joi.number().integer().min(1).max(QUICK_TAKE_MAX_COUNT).default(1)
+  count: Joi.number().integer().min(1).max(QUICK_TAKE_MAX_COUNT).default(1),
+  prefix: Joi.string().trim().max(40).pattern(/^\S+$/)
 });
 
 // POST /api/gun-ledger/tables/:tableId/quick-take —— 在主页面直接给「最新未取行」取号
@@ -405,6 +408,8 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
 
   const serialNumber = rows.length + 1;
   const count = Number(value.count) || 1;
+  // 自定义前缀：前端把首号改写后的前缀传上来，本批全部沿用；不传则用表规则前缀
+  const effectivePrefix = value.prefix === undefined ? String(rule.prefix || '') : String(value.prefix);
   const meta = userMeta(req);
   const now = new Date().toISOString();
   const customer = String(value.customer || '').trim();
@@ -418,7 +423,7 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
   const createdRows = [];
   for (let i = 0; i < count; i += 1) {
     const serial = serialNumber + i;
-    const gunName = `${rule.prefix || ''}${buildGunNumber(rule, serial)}`;
+    const gunName = `${effectivePrefix}${buildGunNumber(rule, serial)}`;
     // 规则编号理论上不会重复；命中说明存量数据被手工改过，直接拒绝避免出现同名枪名
     if (takenNames.has(gunName)) {
       return res.status(409).json({ message: `焊枪名「${gunName}」已存在，取号冲突，请刷新后重试` });
@@ -450,6 +455,7 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
     count,
     rows: createdRows,
     row: createdRows[0],
+    prefix: effectivePrefix,
     gunName: createdRows[0].gunName,
     gunNames: createdRows.map(r => r.gunName),
     serialNumber,

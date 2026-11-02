@@ -9,8 +9,10 @@ import {
   Loader2,
   Lock,
   Minus,
+  PencilLine,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldAlert,
   Sparkles,
@@ -115,11 +117,11 @@ const clampCount = (value: number) => {
 const isLockedByOther = (table: QuickTakeTable | null | undefined) =>
   Boolean(table?.lockedBy && !table.lockedBy.self);
 
-/** 按规则计算某个序号对应的焊枪名（与后端 buildGunNumber 一致） */
-const buildGunName = (rule: QuickTakeGunNameRule | null | undefined, serialNumber: number) => {
+/** 按规则计算某个序号对应的编号部分（不含前缀，与后端 buildGunNumber 一致） */
+const buildGunNumberPart = (rule: QuickTakeGunNameRule | null | undefined, serialNumber: number) => {
   if (!rule) return '';
   const num = Number(rule.start || 0) + (serialNumber - 1);
-  return `${rule.prefix || ''}${String(num).padStart(Number(rule.pad) || 4, '0')}`;
+  return String(num).padStart(Number(rule.pad) || 4, '0');
 };
 
 
@@ -157,6 +159,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   // 本次连续取号的数量（从最新未取行号起连续占用）
   const [count, setCount] = useState(1);
   const [countInput, setCountInput] = useState('1');
+  // 「将生成的枪名」首号的前缀：默认取表规则前缀，可改写，本批所有号沿用同一前缀
+  const [prefixDraft, setPrefixDraft] = useState('');
 
   const [resolvedClient, setResolvedClient] = useState<string | null>(null);
   const [specLoading, setSpecLoading] = useState(false);
@@ -192,15 +196,27 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   const lockedByOther = isLockedByOther(activeTable);
   const tableUnavailable = !activeTable || lockedByOther || !activeTable.hasRule;
 
-  // 数量归一化（1..50）：输入框可能短暂存在非法值，这里按最终值渲染预览与提交
+  // 数量归一化（1..10）：输入框可能短暂存在非法值，这里按最终值渲染预览与提交
   const safeCount = clampCount(count);
+
+  // 前缀校验：非空（表规则本身无前缀时允许留空）、不含空白（编号由规则固定，前缀可自由改写）
+  const rulePrefix = activeTable?.rule?.prefix || '';
+  const prefixError = /\s/.test(prefixDraft)
+    ? '前缀不能包含空格'
+    : !prefixDraft.trim() && rulePrefix
+      ? '前缀不能为空'
+      : '';
+  const prefixChanged = Boolean(activeTable?.rule) && !prefixError && prefixDraft.trim() !== rulePrefix;
+
   const previewRows = useMemo(() => {
     if (!activeTable || !activeTable.rule) return [];
+    const prefix = prefixDraft.trim() || rulePrefix;
     return Array.from({ length: safeCount }, (_, i) => {
       const serial = activeTable.nextSerial + i;
-      return { serial, gunName: buildGunName(activeTable.rule, serial) };
+      const number = buildGunNumberPart(activeTable.rule, serial);
+      return { serial, number, gunName: `${prefix}${number}` };
     });
-  }, [activeTable, safeCount]);
+  }, [activeTable, safeCount, prefixDraft, rulePrefix]);
 
   const filteredTables = useMemo(() => {
     const list = (options?.categories || []).find(c => c.name === activeCategory)?.tables || [];
@@ -311,6 +327,12 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       setTableId(fallback.id);
     }
   }, [open, options, allTables, tableId]);
+
+  // 前缀回到所选表的标准规则值：切表或重新打开时重置；仅下一行号变化（如刚取完号）时保留，
+  // 方便同一批料继续沿用自定义前缀
+  useEffect(() => {
+    setPrefixDraft(activeTable?.rule?.prefix || '');
+  }, [open, activeTable?.id, activeTable?.rule?.prefix]);
 
   // 表锁实时同步：共享连接上订阅锁事件，并主动索取一次最新快照
   useEffect(() => {
@@ -492,6 +514,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     activeTable
     && !tableUnavailable
     && customer.trim()
+    && !prefixError
     && !submitting
     && !offline
   );
@@ -514,6 +537,10 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       customerRef.current?.focus();
       return;
     }
+    if (prefixError) {
+      addToast(prefixError, 'error');
+      return;
+    }
     if (offline) {
       addToast('当前离线，禁止编辑', 'error');
       return;
@@ -523,6 +550,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       const res = await axiosInstance.post(`/gun-ledger/tables/${activeTable.id}/quick-take`, {
         customer: (resolvedClient || customer).trim(),
         count: safeCount,
+        // 首号改写后的前缀：本批所有号沿用（编号仍由表规则递增）；留空则交回后端用表规则前缀
+        prefix: prefixDraft.trim() || undefined,
       });
       const data = res.data || {};
       const createdRows = (Array.isArray(data.rows) ? data.rows : []).map((r: any) => ({
@@ -557,7 +586,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       setSubmitting(false);
     }
   }, [
-    activeTable, lockedByOther, customer, resolvedClient,
+    activeTable, lockedByOther, customer, resolvedClient, prefixDraft, prefixError,
     safeCount, offline, addToast, fetchOptions,
   ]);
 
@@ -628,7 +657,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
               <Sparkles size={17} />
             </div>
             <div>
-              <div className="font-bold text-base leading-tight">标准焊枪名快速取号</div>
+              <div className="font-bold text-base leading-tight">焊枪名快速取号</div>
               <div className="text-[11px] opacity-80 leading-tight mt-0.5">选分类与表格 → 跳到最新未取行号 → 按标准规则生成焊枪名</div>
             </div>
           </div>
@@ -951,7 +980,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
                       </div>
                     </div>
 
-                    {/* 将生成的枪名：放在客户栏下方，字号放大，最多 10 个两列铺开不滚动 */}
+                    {/* 将生成的枪名：首号前缀可直接改写，后续号自动沿用同一前缀、编号按规则递增 */}
                     {previewRows.length > 0 && (
                       <div className={`rounded-lg border overflow-hidden ${lockedByOther || tableUnavailable
                         ? 'border-gray-200 bg-white'
@@ -962,21 +991,82 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
                           </span>
                           <span className="text-[10px] font-bold text-blue-700">共 {previewRows.length} 个</span>
                         </div>
-                        {previewRows.length === 1 ? (
-                          <div className={`px-2.5 py-2 font-mono text-[15px] font-bold truncate ${lockedByOther || tableUnavailable ? 'text-gray-400' : 'text-blue-800'}`}>
-                            {previewRows[0].gunName || '—'}
+
+                        {/* 首号：前缀可编辑 + 编号固定（编号由表规则决定，不可改） */}
+                        <div className="px-2.5 pt-2 pb-1.5">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className="shrink-0 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-blue-100 text-blue-700 text-[9px] font-bold">1</span>
+                            <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-blue-700">
+                              <PencilLine size={9} />首号前缀可改写
+                            </span>
+                            <span className="ml-auto shrink-0 text-[10px] text-gray-400 tabular-nums">序号 #{previewRows[0].serial}</span>
                           </div>
-                        ) : (
-                          <ul className="px-2.5 py-1.5 grid grid-cols-2 gap-x-3 gap-y-1">
-                            {previewRows.map(row => (
-                              <li key={row.serial} className="flex items-baseline justify-between gap-1.5 min-w-0">
-                                <span className={`font-mono text-[13px] font-semibold leading-snug truncate ${lockedByOther || tableUnavailable ? 'text-gray-400' : 'text-gray-800'}`}>
-                                  {row.gunName || '—'}
+                          <div className={`flex items-center h-9 px-1.5 rounded-md border bg-white transition ${
+                            lockedByOther || tableUnavailable
+                              ? 'border-gray-200 bg-gray-50'
+                              : prefixError
+                                ? 'border-red-300 ring-2 ring-red-100'
+                                : 'border-blue-300 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100'
+                          }`}>
+                            <input
+                              value={prefixDraft}
+                              onChange={e => setPrefixDraft(e.target.value.replace(/\s/g, ''))}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); void handleSubmit(); }
+                              }}
+                              disabled={tableUnavailable || submitting}
+                              maxLength={40}
+                              spellCheck={false}
+                              autoComplete="off"
+                              aria-label="枪名前缀（首号）"
+                              title="只改首号数字前面的前缀，编号由表规则决定、不可改"
+                              placeholder="前缀"
+                              style={{ width: `calc(${Math.max(prefixDraft.length, 5)}ch + 2px)` }}
+                              className="min-w-0 max-w-full bg-transparent font-mono text-[15px] font-bold text-blue-800 outline-none placeholder:font-sans placeholder:text-[11px] placeholder:font-normal placeholder:text-gray-300 disabled:text-gray-400"
+                            />
+                            <span className="mx-1 h-4 w-px shrink-0 bg-gray-200" />
+                            <span className={`shrink-0 font-mono text-[15px] font-bold tabular-nums select-none ${
+                              lockedByOther || tableUnavailable ? 'text-gray-400' : 'text-gray-500'
+                            }`}>{previewRows[0].number}</span>
+                          </div>
+                          {prefixError ? (
+                            <div className="mt-1 text-[10px] font-semibold text-red-500">{prefixError}</div>
+                          ) : (
+                            <div className="mt-1 text-[10px] text-gray-400 truncate">
+                              编号 {previewRows[0].number} 由规则固定，只可改前面的前缀
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 第 2 个起：沿用首号前缀，编号连续递增 */}
+                        {previewRows.length > 1 && (
+                          <ul className="px-2.5 py-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-dashed border-blue-100">
+                            {previewRows.slice(1).map((row, i) => (
+                              <li key={row.serial} className="flex items-baseline gap-1 min-w-0">
+                                <span className="shrink-0 inline-flex items-center justify-center h-3.5 min-w-3.5 px-0.5 rounded bg-gray-100 text-gray-500 text-[9px] font-bold">{i + 2}</span>
+                                <span className={`font-mono text-[12px] font-semibold leading-snug truncate ${lockedByOther || tableUnavailable ? 'text-gray-400' : 'text-gray-800'}`}>
+                                  {row.gunName}
                                 </span>
-                                <span className="shrink-0 text-[10px] text-gray-400 tabular-nums">#{row.serial}</span>
                               </li>
                             ))}
                           </ul>
+                        )}
+
+                        {/* 前缀与标准规则不一致时给出对照，一键还原 */}
+                        {prefixChanged && (
+                          <div className="flex items-center gap-1 px-2.5 py-1.5 border-t border-amber-100 bg-amber-50/70 text-[10px] text-amber-700">
+                            <AlertTriangle size={10} className="shrink-0" />
+                            <span className="truncate">已改前缀，标准为 <span className="font-mono font-bold">{rulePrefix || '（空）'}</span></span>
+                            <button
+                              type="button"
+                              onClick={() => setPrefixDraft(rulePrefix)}
+                              disabled={submitting}
+                              className="ml-auto shrink-0 inline-flex items-center gap-0.5 font-bold text-amber-800 hover:text-amber-900 disabled:opacity-50"
+                              title="恢复该表的标准前缀"
+                            >
+                              <RotateCcw size={9} />恢复
+                            </button>
+                          </div>
                         )}
                       </div>
                     )}

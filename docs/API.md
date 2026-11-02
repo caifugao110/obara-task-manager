@@ -2177,8 +2177,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 |------|------|
 | `takenCount` | 表内已有真实行数 |
 | `nextSerial` | 最新未取行号（`takenCount + 1`） |
-| `nextGunName` | 按该表生效焊枪名规则 + `nextSerial` 预置的枪名；无规则时为空串 |
-| `rule` | 生效规则的可预览参数 `{ prefix, start, pad }`，前端据此在本地算出「连续取 N 个」时每个序号对应的枪名；无规则为 `null` |
+| `nextGunName` | 按该表生效焊枪名规则 + `nextSerial` 预置的枪名；无规则时为空串。前端把它拆成「可编辑前缀 + 固定编号」两段展示，改前缀后再随取号请求的 `prefix` 回传 |
+| `rule` | 生效规则的可预览参数 `{ prefix, start, pad }`，前端据此在本地算出「连续取 N 个」时每个序号对应的枪名（编号 = `start + serial - 1`，左补 `pad` 位）；无规则为 `null` |
 | `hasRule` | 是否存在生效的焊枪名规则（无规则的表不能取号） |
 | `todayTaken` | **今天由当前登录人取的号**（`time` 列 = 今天，且 `createdBy.id` = 当前用户；历史行无 `createdBy` 时回退按 `担当 = 当前用户姓名` 判定），按 `createdAt` 倒序（刚取的排最前）。供取号页头的「安排确认图」二级浮层使用 |
 | `lastGunName` / `lastTakenAt` | 最后一行（序号最大者）的枪名与更新时间 |
@@ -2195,7 +2195,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 ```json
 {
   "customer": "57908>O/客户名",
-  "count": 3
+  "count": 3,
+  "prefix": "SRTC-5C"
 }
 ```
 
@@ -2203,6 +2204,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 |------|------|------|
 | `customer` | 是 | 客户名或仕样号（前端会先用 `/api/spec/spec-info` 把纯仕样号解析为客户名） |
 | `count` | 否 | 本次连续取号数量，`1`–`10`，缺省 `1`；从最新未取行号起连续占用 `count` 个序号 |
+| `prefix` | 否 | 本次取号的枪名前缀，缺省用表规则前缀；整批都沿用同一前缀，编号仍按规则递增。不含空白、最长 40 字符。例：传 `SRTC-5C` + `count=3` → `SRTC-5C15023`、`SRTC-5C15024`、`SRTC-5C15025` |
 | `remarks` | 否 | 焊枪规格或备注（主页面弹窗已不再采集，保留字段供其它调用方使用） |
 | `responsiblePerson` | 否 | 担当，缺省用当前登录人姓名（主页面弹窗不再采集） |
 | `time` | 否 | 台账「时间」列，缺省用服务器当天 `YYYY.MM.DD`（主页面弹窗不再采集） |
@@ -2210,6 +2212,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 枪名由该表生效规则 + 序号（`已有行数 + 1` 起）生成，与台账页内取号完全同源，不接受客户端指定枪名。
+- 只有**前缀**可以被 `prefix` 覆盖（主页面弹窗里改写首号前缀即走这个字段），编号部分始终由规则决定，保证同表编号连续不重复。`prefix` 只影响本次写入的行，**不会修改表的 `gunNameRule`**，下一次取号仍按规则前缀预置。
 - 连续取多个号时整批一次性写入：任何一个生成出的枪名与存量重名都整体拒绝（`409`），不会出现「前几个成功、后面失败」的半截状态。
 - **表级编辑锁保护**：表正被他人打开时返回 `409`，响应体附 `lockedBy`；锁由本人持有时放行。
 - 表未配置焊枪名规则时返回 `400`；`count` 超出 `1`–`10` 时返回 `400`。
@@ -2221,6 +2224,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 {
   "success": true,
   "count": 3,
+  "prefix": "SRTC-2C",
   "rows": [
     { "id": "gun-row-a", "serialNumber": 24, "gunName": "SRTC-2C15023", "customer": "…", "time": "2026.10.31", "responsiblePerson": "张啸", "remarks": "" },
     { "id": "gun-row-b", "serialNumber": 25, "gunName": "SRTC-2C15024", "…": "…" },
