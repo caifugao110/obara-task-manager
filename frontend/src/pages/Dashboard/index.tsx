@@ -645,6 +645,8 @@ const Dashboard = () => {
   // Shift 是打字常用键，光标在输入框内时不参与判定，避免录入时误弹
   useEffect(() => {
     if (!isAdmin) return;
+    // 离线模式下整条快捷键停用（不注册监听，按键无任何反应），仅保留 Ctrl×2 定位
+    if (isOfflineMode) return;
     const DOUBLE_SHIFT_INTERVAL = 400;
     let lastShiftAt = 0;
     let shiftComboUsed = false;
@@ -666,10 +668,6 @@ const Dashboard = () => {
         if (lastShiftAt && now - lastShiftAt <= DOUBLE_SHIFT_INTERVAL) {
           resetTap();
           if (quickModifyOpen || modalOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
-          if (isOfflineMode) {
-            addToast('当前离线，禁止编辑', 'error');
-            return;
-          }
           e.preventDefault();
           setQuickModifyOpen(true);
         } else {
@@ -697,7 +695,7 @@ const Dashboard = () => {
       window.removeEventListener('keyup', handleDoubleShiftKeyUp);
       window.removeEventListener('mousedown', handleDoubleShiftMouseDown);
     };
-  }, [isAdmin, isOfflineMode, quickModifyOpen, modalOpen, helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast]);
+  }, [isAdmin, isOfflineMode, quickModifyOpen, modalOpen, helpGuideOpen, batchReplaceOpen, changePasswordOpen]);
 
   // 快速取号：连按两次空格（间隔 400ms 内）呼出「分类 → 表格 → 取号」弹窗，仅管理员且有台账权限时生效
   // 空格是文本录入的高频键，光标在输入框/可编辑区域内一律不参与判定；
@@ -705,6 +703,8 @@ const Dashboard = () => {
   // 否则双击必然先滚一屏再弹窗。
   useEffect(() => {
     if (!canTakeGunNumber) return;
+    // 离线模式下整条快捷键停用（不注册监听，连按空格无反应），仅保留 Ctrl×2 定位
+    if (isOfflineMode) return;
     const DOUBLE_SPACE_INTERVAL = 400;
     let lastSpaceAt = 0;
 
@@ -733,10 +733,6 @@ const Dashboard = () => {
       if (lastSpaceAt && now - lastSpaceAt <= DOUBLE_SPACE_INTERVAL) {
         resetTap();
         if (quickGunTakeOpen || modalOpen || quickModifyOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
-        if (isOfflineMode) {
-          addToast('当前离线，禁止编辑', 'error');
-          return;
-        }
         setQuickGunTakeOpen(true);
       } else {
         lastSpaceAt = now;
@@ -754,11 +750,11 @@ const Dashboard = () => {
     };
   }, [
     canTakeGunNumber, isOfflineMode, quickGunTakeOpen, modalOpen, quickModifyOpen,
-    helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast,
+    helpGuideOpen, batchReplaceOpen, changePasswordOpen,
   ]);
 
-  // 复制选中主任务（连按两次 ~ 触发）：把主任务行 + 全部枪名 + 对应工时写成一张 HTML 表格放进剪贴板，
-  // 复制若干主任务为一张表格（仅管理员）：items 必须来自同一个人同一天，按表格里的先后顺序传入
+  // 复制选中主任务（连按两次 ~ 触发）：把主任务行 + 全部枪名写成一张 HTML 表格放进剪贴板，
+  // 表里只有任务名/枪名一列（不带工时）；items 必须来自同一个人同一天，按表格里的先后顺序传入
   const copyTaskAsTable = useCallback(async (items: TaskItem[]) => {
     if (!isAdmin) {
       addToast('仅管理员可复制主任务表格', 'error');
@@ -822,6 +818,8 @@ const Dashboard = () => {
   // 权限：与「快速取号」「确认图修改」一致，**仅管理员**注册该监听（普通用户按键无任何反应）。
   useEffect(() => {
     if (!isAdmin) return;
+    // 离线模式下整条快捷键停用（不注册监听，连按 ~ 无反应），仅保留 Ctrl×2 定位
+    if (isOfflineMode) return;
     const DOUBLE_TILDE_INTERVAL = 400;
     let lastTildeAt = 0;
 
@@ -871,7 +869,7 @@ const Dashboard = () => {
       window.removeEventListener('mousedown', handleTildeMouseDown);
     };
   }, [
-    isAdmin, copySelectedTaskAsTable, modalOpen, quickModifyOpen, quickGunTakeOpen,
+    isAdmin, isOfflineMode, copySelectedTaskAsTable, modalOpen, quickModifyOpen, quickGunTakeOpen,
     helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast,
   ]);
 

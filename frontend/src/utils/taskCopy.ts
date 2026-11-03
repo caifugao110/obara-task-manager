@@ -1,6 +1,6 @@
 /**
- * 主任务「复制为表格」：把选中的主任务（主任务行 + 每个枪名行 + 右列工时）写成一段
- * 带底色与实线边框的 HTML 表格，和纯文本（Tab 分隔）一起放进剪贴板。
+ * 主任务「复制为表格」：把选中的主任务（主任务行 + 每个枪名行）写成一段
+ * 带底色与实线边框的 HTML 表格，和纯文本一起放进剪贴板。**不含工时列**（只有任务名/枪名）。
  *
  * 效果等同于在 Excel 里框选一块区域按 Ctrl+C，再粘到支持富文本的地方：粘出来是**真实表格**
  * ——文字可以选中、可以改，底色和框线跟着走，不是图片。
@@ -10,11 +10,13 @@
  *    并额外加 border / width 这类老式表格属性做兜底；
  * 2. 底色与文字色沿用表格里看到的配色（`getTaskDisplayColors`：暂停/取消纯红黑字、设计浅黄、
  *    已完成白底、加急亮黄红字…），保证「屏幕上什么样，粘出来就什么样」；
- * 3. **尺寸与折行位置对齐屏幕**：字号 11px、行高 1.625、内边距与字体族都照抄表格，
+ * 3. **尺寸与折行位置对齐屏幕**：字号、行高、内边距与字体族都照抄表格，
  *    任务名列的宽度则由调用方从 DOM 实测后传入（`nameContentWidth`，见下方常量说明），
  *    因此任务名过长时的断行位置与用户在页面上看到的一模一样；
- * 4. 剪贴板同时写 `text/html` 与 `text/plain`：富文本场景取 HTML 得到表格；纯文本场景取 Tab
- *    分隔的文本，粘到 Excel 还会自动分成两列。
+ *    在此基础上**整体等比放大 4/3**（见 `SCALE`）：页面上 11px 粘到 Excel / Word 里偏小，
+ *    放大时字号、内边距、列宽一起乘，每行能放的字数不变，折行位置仍然对得上屏幕；
+ * 4. 剪贴板同时写 `text/html` 与 `text/plain`：富文本场景取 HTML 得到表格；纯文本场景取
+ *    每行一条任务名/枪名的纯文本，内容不丢。
  */
 import {
   getLeaveRowColors,
@@ -35,24 +37,31 @@ import type { GunItem, TaskItem } from '../pages/Dashboard/types';
  * 实际复制时由调用方用 DOM 实测后传进来（`nameContentWidth`），这里只是极端情况下的兜底。
  */
 const DEFAULT_NAME_CONTENT_WIDTH = 251;
-/** 工时列的文本可用宽度：48 - px 4×2 - 1px 边框（数字永远不会折行，取个接近值即可） */
-const HOURS_CONTENT_WIDTH = 39;
-/** 字号：表格 text-[11px] */
+/** 字号：表格 text-[11px]（复制时按 SCALE 放大） */
 const FONT_SIZE = 11;
-/** 行高：表格 leading-relaxed = 1.625 */
+/** 行高：表格 leading-relaxed = 1.625（相对字号，随放大自动跟着变大） */
 const LINE_HEIGHT = 1.625;
-/** 内边距：py-1.5 / pl-2 / pr-1.5（工时列 px-1） */
+/** 内边距：py-1.5 / pl-2 / pr-1.5（复制时按 SCALE 放大） */
 const PAD_Y = 6;
 const PAD_LEFT = 8;
 const PAD_RIGHT = 6;
-const HOURS_PAD_X = 4;
+
+/**
+ * 整体放大系数：页面表格是 11px，粘到 Excel / Word 里看着偏小，统一放大 4/3（≈1.333）。
+ * **必须等比放大**：字号、内边距、任务名列宽度一起乘，每行还能放同样多的字，
+ * 折行位置才继续和屏幕一致；只放大字号会平白多折出一行。
+ */
+const SCALE = 4 / 3;
+/** 页面 px → 复制时 px：保留两位小数，避免样式串过长（14.666… → 14.67） */
+const scaled = (value: number) => Math.round(value * SCALE * 100) / 100;
+/** 拼一个已放大、带 px 单位的样式值 */
+const px = (value: number) => `${scaled(value)}px`;
 
 /**
  * 字体族直接照抄 Tailwind 默认 sans（表格用的就是它），末尾补微软雅黑兜底。
  * 字体不一致 → 同样的字宽度不同 → 断行位置跟着跑偏，所以这里不能随便换字体。
  */
 const FONT_FAMILY = "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Microsoft YaHei', sans-serif";
-const MONO_FONT_FAMILY = "Consolas, 'Courier New', monospace";
 
 /** 边框颜色：纯黑实线，比页面上的浅灰更醒目（粘出去后仍能看清格子边界） */
 const BORDER_COLOR = '#000000';
@@ -67,13 +76,6 @@ const ESCAPE_MAP: Record<string, string> = {
 };
 
 const escapeHtml = (value: string) => String(value ?? '').replace(ESCAPE_PATTERN, ch => ESCAPE_MAP[ch]);
-
-/** 与表格一致：工时 0 / 空不显示数字（「暂停/取消」等 0 工时任务不至于满屏 0） */
-const formatHours = (value: number | string | null | undefined) => {
-  if (value === null || value === undefined || value === '') return '';
-  const numeric = typeof value === 'number' ? value : parseFloat(String(value));
-  return Number.isFinite(numeric) && numeric > 0 ? String(value) : '';
-};
 
 /** 请假/出差行与表格一致显示状态文字而不是任务名 */
 const resolveLeaveLabel = (item: TaskItem) => {
@@ -93,7 +95,6 @@ interface TableRowModel {
   label: string;
   bg: string;
   textColor: string;
-  hours: string;
   /** 主任务行：与表格一致，无枪名时居中、有枪名时左对齐 */
   align: 'left' | 'center';
   /** 主任务行按 break-all 折行（表格主任务行带 break-all 类），枪名行按正常规则折行 */
@@ -129,8 +130,6 @@ const buildRows = ({ items, config }: TaskTableOptions): TableRowModel[] => {
       label: item.leaveType ? resolveLeaveLabel(item) : (item.taskName || '无'),
       bg: rowBg,
       textColor: rowTextColor,
-      // 主任务行只有「没有枪名」时才显示工时（与表格一致）
-      hours: guns.length > 0 ? '' : formatHours(item.hours),
       align: guns.length === 0 ? 'center' : 'left',
       breakAll: true,
       startsTask: true,
@@ -142,7 +141,6 @@ const buildRows = ({ items, config }: TaskTableOptions): TableRowModel[] => {
         // 枪名被标记为「已完成」（白色）时该行保留白底
         bg: isWhiteColor(gun.color) ? '#ffffff' : rowBg,
         textColor: rowTextColor,
-        hours: formatHours(gun.hours),
         align: 'left',
         breakAll: false,
         startsTask: false,
@@ -153,7 +151,10 @@ const buildRows = ({ items, config }: TaskTableOptions): TableRowModel[] => {
   return rows;
 };
 
-/** 任务名单元格样式：宽度/字号/行高/内边距照抄表格，保证折行位置一致 */
+/**
+ * 任务名单元格样式：字号/行高/内边距/列宽都按页面实测值 **等比放大 SCALE 倍**
+ * （contentWidth 传入的已经是放大后的宽度），这样折行位置仍与屏幕一致。
+ */
 const nameCellStyle = (row: TableRowModel, contentWidth: number) =>
   [
     // 显式声明 content-box：粘贴目标若全局设了 border-box（多数网页编辑器、本页面本身都这么做），
@@ -163,33 +164,16 @@ const nameCellStyle = (row: TableRowModel, contentWidth: number) =>
     `background-color:${row.bg}`,
     `color:${row.textColor}`,
     `border:1px solid ${BORDER_COLOR}`,
-    `padding:${PAD_Y}px ${PAD_RIGHT}px ${PAD_Y}px ${PAD_LEFT}px`,
+    `padding:${px(PAD_Y)} ${px(PAD_RIGHT)} ${px(PAD_Y)} ${px(PAD_LEFT)}`,
     `text-align:${row.align}`,
     'vertical-align:middle',
     `font-family:${FONT_FAMILY}`,
-    `font-size:${FONT_SIZE}px`,
+    `font-size:${px(FONT_SIZE)}`,
     'font-weight:500',
     `line-height:${LINE_HEIGHT}`,
     'white-space:normal',
     // 主任务行与表格的 break-all 一致；枪名行优先按空格折
     row.breakAll ? 'word-break:break-all' : 'word-break:normal; overflow-wrap:anywhere',
-  ].join(';');
-
-/** 工时单元格样式：与表格一致——等宽字体加粗、水平居中 */
-const hoursCellStyle = (row: TableRowModel) =>
-  [
-    'box-sizing:content-box',
-    `width:${HOURS_CONTENT_WIDTH}px`,
-    `background-color:${row.bg}`,
-    `color:${row.textColor}`,
-    `border:1px solid ${BORDER_COLOR}`,
-    `padding:${PAD_Y}px ${HOURS_PAD_X}px`,
-    'text-align:center',
-    'vertical-align:middle',
-    `font-family:${MONO_FONT_FAMILY}`,
-    `font-size:${FONT_SIZE}px`,
-    'font-weight:700',
-    `line-height:${LINE_HEIGHT}`,
   ].join(';');
 
 /**
@@ -198,23 +182,22 @@ const hoursCellStyle = (row: TableRowModel) =>
  */
 export const buildTaskTableHtml = (options: TaskTableOptions): string => {
   const rows = buildRows(options);
-  // td 的 width 是内容盒宽度（浏览器按 content-box 处理），因此这里直接用文本可用宽度
-  const nameContentWidth = Math.max(
+  // td 的 width 是内容盒宽度（浏览器按 content-box 处理），因此这里直接用文本可用宽度；
+  // 再按 SCALE 放大——字号同样放大，两者等比，折行位置与屏幕保持一致
+  const screenContentWidth = Math.max(
     60,
     Math.round(options.nameContentWidth && options.nameContentWidth > 60
       ? options.nameContentWidth
       : DEFAULT_NAME_CONTENT_WIDTH)
   );
+  const nameContentWidth = scaled(screenContentWidth);
   const body = rows
-    .map(row => {
-      const nameCell = `<td width="${nameContentWidth}" style="${nameCellStyle(row, nameContentWidth)}">${escapeHtml(row.label)}</td>`;
-      const hoursCell = `<td width="${HOURS_CONTENT_WIDTH}" style="${hoursCellStyle(row)}">${escapeHtml(row.hours)}</td>`;
-      return `<tr>${nameCell}${hoursCell}</tr>`;
-    })
+    // width 属性只作兜底（老式解析器不认小数），真实宽度由 style 里的 px 决定
+    .map(row => `<tr><td width="${Math.round(nameContentWidth)}" style="${nameCellStyle(row, nameContentWidth)}">${escapeHtml(row.label)}</td></tr>`)
     .join('');
 
   return [
-    `<table border="1" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid ${BORDER_COLOR};font-family:${FONT_FAMILY};font-size:${FONT_SIZE}px;color:${TASK_TEXT_COLOR};">`,
+    `<table border="1" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid ${BORDER_COLOR};font-family:${FONT_FAMILY};font-size:${px(FONT_SIZE)};color:${TASK_TEXT_COLOR};">`,
     '<tbody>',
     body,
     '</tbody>',
@@ -223,12 +206,12 @@ export const buildTaskTableHtml = (options: TaskTableOptions): string => {
 };
 
 /**
- * 纯文本版本（Tab 分隔）：记事本/终端里能看清内容，粘到 Excel 还会自动分成两列。
- * 即使某行右侧没有工时也保留 Tab，粘进 Excel 时每行都稳定占两列。
+ * 纯文本版本：每行一条任务名/枪名（不带 Tab）。
+ * 只有一列，粘到记事本/终端或 Excel 里都直接是一条一条的文字。
  */
 export const buildTaskTableText = (options: TaskTableOptions): string =>
   buildRows(options)
-    .map(row => `${row.label}\t${row.hours}`)
+    .map(row => row.label)
     .join('\n');
 
 /** 纯文本兜底复制（异步剪贴板 → 临时 textarea + execCommand） */
