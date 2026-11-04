@@ -23,6 +23,13 @@ import {
   stripDeadlineSuffix,
 } from '../../../utils/specDeadline';
 import { getTaskBaseColor } from '../../../utils/taskColors';
+import {
+  ALL_GROUPS,
+  ALL_GROUPS_LABEL,
+  buildGroupOptions,
+  designersInGroup as filterDesignersByGroup,
+  resolveUserGroup,
+} from '../../../utils/groupFilter';
 import type { Designer, TaskItem, TaskSheet } from '../types';
 
 // 枪名归属：该枪名当前被放在哪位设计员的哪一天、哪条任务里
@@ -149,6 +156,8 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
   const [deadlineLoading, setDeadlineLoading] = useState(false);
 
   const [selected, setSelected] = useState<GunNameSearchResult | null>(null);
+  // 「分组」：null = 自动跟随匹配到的设计人员所在分组；有值 = 用户手动指定
+  const [groupOverride, setGroupOverride] = useState<string | null>(null);
   const [designerId, setDesignerId] = useState('');
   const [date, setDate] = useState(todayStr());
   const [hours, setHours] = useState('');
@@ -236,6 +245,30 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
     [designerOptions, defaultDesignerId]
   );
 
+  // 「分组」默认自动匹配：取（下拉已选 / 该枪名所属）设计人员所在分组；
+  // 该设计人员没有分组、或还没匹配到人时，退化为「全部人员」
+  const groupOfDesigner = useCallback(
+    (id: string) => resolveUserGroup(designerOptions.find(d => d.id === id)?.group) || ALL_GROUPS,
+    [designerOptions]
+  );
+  const matchedDesignerId = designerId || defaultDesignerId;
+  const autoGroup = matchedDesignerId ? groupOfDesigner(matchedDesignerId) : ALL_GROUPS;
+  // null = 自动匹配（跟随设计人员），有值 = 用户手动指定
+  const activeGroup = groupOverride ?? autoGroup;
+
+  const groupOptions = useMemo(() => buildGroupOptions(designerOptions, ''), [designerOptions]);
+
+  // 设计人员只列当前分组的人；「全部人员」时不过滤
+  const designerOptionsInGroup = useMemo(
+    () => filterDesignersByGroup(designerOptions, activeGroup),
+    [designerOptions, activeGroup]
+  );
+
+  const matchedDesignerName = useMemo(
+    () => designerOptions.find(d => d.id === matchedDesignerId)?.name || '',
+    [designerOptions, matchedDesignerId]
+  );
+
   // 所有命中的归属条数（一个枪名可能被安排在多天/多条任务里）
   const totalOwners = useMemo(
     () => results.reduce((sum, r) => sum + (r.owners?.length || 0), 0),
@@ -268,6 +301,7 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
     setDeadlineLoading(false);
     deadlineSeqRef.current += 1;
     setSelected(null);
+    setGroupOverride(null);
     setDesignerId('');
     setDate(todayStr());
     setHours('');
@@ -408,6 +442,8 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
     setSelected(result);
     const ownerId = result.owners[0]?.designerId || '';
     setDesignerId(designerOptions.some(d => d.id === ownerId) ? ownerId : '');
+    // 换了枪名就重新自动匹配分组（跟随新匹配到的设计人员）
+    setGroupOverride(null);
     setDate(todayStr());
     // 工时取「确认图修改」规则：接口回传的台账位置最准（实时），本地缓存仅作兜底
     const location = (result.category && result.tableName)
@@ -767,7 +803,40 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
               </div>
 
               <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="flex items-center gap-1 text-[11px] font-bold text-gray-500">
+                      <Users size={11} />分组
+                      {groupOverride === null && matchedDesignerId ? (
+                        <span className="ml-auto text-[10px] font-semibold text-emerald-600" title="根据匹配到的设计人员自动带出">
+                          自动匹配
+                        </span>
+                      ) : groupOverride !== null ? (
+                        <span className="ml-auto text-[10px] font-semibold text-gray-400" title="已手动指定分组">手动</span>
+                      ) : null}
+                    </label>
+                    <select
+                      value={activeGroup}
+                      onChange={e => {
+                        const next = e.target.value;
+                        setGroupOverride(next);
+                        // 切组后已选设计人员不属于该分组时清空，避免「分组 A + 分组 B 的人」这种矛盾组合
+                        if (designerId && !filterDesignersByGroup(designerOptions, next).some(d => d.id === designerId)) {
+                          setDesignerId('');
+                        }
+                      }}
+                      disabled={submitting}
+                      title={groupOverride === null && matchedDesignerId
+                        ? `已按匹配到的设计人员「${matchedDesignerName}」自动带出所属分组`
+                        : '可手动切换分组，设计人员列表会跟着过滤'}
+                      className="w-full h-9 px-2 bg-gray-50 border border-gray-200 rounded-md text-sm outline-none focus:ring-2 focus:ring-emerald-400 focus:bg-white transition"
+                    >
+                      <option value={ALL_GROUPS}>{ALL_GROUPS_LABEL}</option>
+                      {groupOptions.map(name => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="flex flex-col gap-1">
                     <label className="flex items-center gap-1 text-[11px] font-bold text-gray-500">
                       <User size={11} />设计人员
@@ -778,9 +847,13 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
                       disabled={submitting}
                       className="w-full h-9 px-2 bg-gray-50 border border-gray-200 rounded-md text-sm outline-none focus:ring-2 focus:ring-emerald-400 focus:bg-white transition"
                     >
-                      <option value="">请选择设计人员</option>
-                      {designerOptions.map(d => (
-                        <option key={d.id} value={d.id}>{d.name}{d.group ? `（${d.group}）` : ''}</option>
+                      <option value="">
+                        {designerOptionsInGroup.length === 0 ? '该分组暂无设计人员' : '请选择设计人员'}
+                      </option>
+                      {designerOptionsInGroup.map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}{activeGroup === ALL_GROUPS && d.group ? `（${d.group}）` : ''}
+                        </option>
                       ))}
                     </select>
                   </div>
@@ -812,7 +885,11 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
                             key={group.key}
                             type="button"
                             disabled={submitting}
-                            onClick={() => setDesignerId(group.designerId)}
+                            onClick={() => {
+                              setDesignerId(group.designerId);
+                              // 点选归属设计员后，分组重新按该设计员自动匹配
+                              setGroupOverride(null);
+                            }}
                             title={group.owners
                               .map(o => `${o.taskName || '（无任务名）'} · ${o.date} · ${o.gunHours}h`)
                               .join('\n')}

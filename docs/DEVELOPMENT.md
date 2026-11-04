@@ -142,7 +142,7 @@ getCurrentSocket()?.emit('task_updated', {
 |---|---|
 | 接口增删改 | `docs/API.md` |
 | Socket 事件增减 | `docs/API.md` 的 Socket.IO 章节 |
-| 页面增删、功能变化 | `README.md` |
+| 页面增删、功能变化 | `README.md`；**用户可感知的操作方式/提示语变化同时同步 `docs/USER-GUIDE.md`** |
 | 环境变量增删 | `README.md`、`DEPLOYMENT.md`、`docs/API.md`、`backend/.env.example` |
 | 权限开关、角色规则 | `README.md` 权限模型 + `docs/API.md` 权限速查 |
 | 部署方式、启动脚本 | `DEPLOYMENT.md` |
@@ -227,6 +227,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 
 | 文档 | 内容 |
 |---|---|
+| [使用手册](USER-GUIDE.md) | 面向使用者的操作说明、判定规则与提示语速查 |
 | [API 文档](API.md) | REST 接口与 Socket.IO 事件全量参考 |
 | [README](../README.md) | 功能、权限、数据结构、项目结构、命令 |
 | [Windows 部署指南](../DEPLOYMENT.md) | 部署、备份、排障 |

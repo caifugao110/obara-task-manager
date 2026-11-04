@@ -17,7 +17,16 @@ import {
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
 import { getCurrentSocket } from '../utils/socketClient';
+import { useAuth } from '../context/AuthContext';
 import { useSystemSettings } from '../context/SystemSettingsContext';
+import {
+  ALL_GROUPS,
+  ALL_GROUPS_LABEL,
+  buildGroupOptions,
+  defaultGroupOf,
+  designersInGroup as filterDesignersByGroup,
+  resolveUserGroup,
+} from '../utils/groupFilter';
 import type { TaskSheet } from '../types';
 import { getTaskBaseColor } from '../utils/taskColors';
 import {
@@ -112,8 +121,14 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   scope = 'today',
 }) => {
   const { specNumberDigits, settings } = useSystemSettings();
+  const { user } = useAuth();
+
+  // 登录人所属分组：作为「分组」下拉的默认值；未分组时默认「全部人员」
+  const userGroup = resolveUserGroup(user?.group);
+  const defaultGroup = defaultGroupOf(userGroup);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [group, setGroup] = useState(defaultGroup);
   const [designerId, setDesignerId] = useState('');
   const [date, setDate] = useState(todayStr());
   const [showDeadline, setShowDeadline] = useState(true);
@@ -143,9 +158,23 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
     [designers]
   );
 
-  // 打开时重置状态
+  // 「分组」下拉选项：全部人员 + 设计人员现有分组（含登录人自身分组，
+  // 本组暂时没有设计人员时也要能选中）
+  const groupOptions = useMemo(
+    () => buildGroupOptions(designerOptions, userGroup),
+    [designerOptions, userGroup]
+  );
+
+  // 设计人员按所选分组过滤：「全部人员」时不过滤
+  const designersInGroup = useMemo(
+    () => filterDesignersByGroup(designerOptions, group),
+    [designerOptions, group]
+  );
+
+  // 打开时重置状态（「分组」默认落在登录人所属分组，未分组时即「全部人员」）
   useEffect(() => {
     if (!open) return;
+    setGroup(defaultGroup);
     setDesignerId('');
     setDate(todayStr());
     setShowDeadline(true);
@@ -159,7 +188,13 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
     setSpecFilter('');
     setKeyword('');
     lastRowsSignatureRef.current = '';
-  }, [open]);
+  }, [open, defaultGroup]);
+
+  // 切换分组后，已选设计人员不属于当前分组时清空，避免「分组 A + 分组 B 的人」这种矛盾组合
+  useEffect(() => {
+    if (!designerId) return;
+    if (!designersInGroup.some(d => d.id === designerId)) setDesignerId('');
+  }, [designerId, designersInGroup]);
 
   // Esc 关闭（提交中不响应，避免关掉正在写入的请求）
   useEffect(() => {
@@ -695,7 +730,24 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
             </div>
 
             <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="flex items-center gap-1 text-[11px] font-bold text-gray-500">
+                    <Users size={11} />分组
+                  </label>
+                  <select
+                    value={group}
+                    onChange={e => setGroup(e.target.value)}
+                    disabled={submitting}
+                    title={userGroup ? `默认显示本账号所属分组：${userGroup}` : '本账号未分组，默认显示全部人员'}
+                    className="w-full h-9 px-2 bg-gray-50 border border-gray-200 rounded-md text-sm outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                  >
+                    <option value={ALL_GROUPS}>{ALL_GROUPS_LABEL}</option>
+                    {groupOptions.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
                 <div className="flex flex-col gap-1">
                   <label className="flex items-center gap-1 text-[11px] font-bold text-gray-500">
                     <User size={11} />设计人员
@@ -706,9 +758,13 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
                     disabled={submitting}
                     className="w-full h-9 px-2 bg-gray-50 border border-gray-200 rounded-md text-sm outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                   >
-                    <option value="">请选择设计人员</option>
-                    {designerOptions.map(d => (
-                      <option key={d.id} value={d.id}>{d.name}{d.group ? `（${d.group}）` : ''}</option>
+                    <option value="">
+                      {designersInGroup.length === 0 ? '该分组暂无设计人员' : '请选择设计人员'}
+                    </option>
+                    {designersInGroup.map(d => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}{group === ALL_GROUPS && d.group ? `（${d.group}）` : ''}
+                      </option>
                     ))}
                   </select>
                 </div>

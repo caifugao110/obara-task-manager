@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const securityConfig = require('./config/security');
+const { DEFAULT_LEADER_RULES } = require('./utils/leaderRules');
 
 const sqlitePath = path.resolve(__dirname, securityConfig.database.sqlitePath);
 
@@ -512,9 +513,46 @@ const getInitialDb = () => ({
   }
 });
 
+// 组长规则的历史默认值：存量数据若与之完全一致，说明管理员没自定义过，
+// 启动时自动升级为当前默认（新增成员能立即生效）；已自定义过的规则保持原样。
+const LEGACY_DEFAULT_LEADER_RULES = [
+  {
+    leader: '陈大仪',
+    members: ['郭涛', '王兴龙', '王会永', '李广亮']
+  },
+  {
+    leader: '张啸',
+    members: ['李守健', '邓明江', '贾银鑫', '熊飞']
+  },
+  {
+    leader: '张明',
+    members: ['吴露鹭', '茅舒', '沈雨帆', '张晟隽', '梁科研', '吴方盛', '许华俊']
+  },
+  {
+    leader: '陈青松',
+    members: ['张广奇', '李劲日', '曹圩圩', '许孟涵']
+  }
+];
+
+const isSameLeaderRules = (rules, target) => {
+  if (!Array.isArray(rules) || rules.length !== target.length) return false;
+  return target.every((expected, i) => {
+    const rule = rules[i];
+    if (!rule || typeof rule !== 'object') return false;
+    if (String(rule.leader || '').trim() !== expected.leader) return false;
+    const members = Array.isArray(rule.members) ? rule.members.map(m => String(m || '').trim()) : null;
+    if (!members || members.length !== expected.members.length) return false;
+    return expected.members.every((name, idx) => members[idx] === name);
+  });
+};
+
 const applySettingsDefaults = (parsed) => {
   if (!parsed.designers) parsed.designers = [];
   if (!parsed.settings) parsed.settings = {};
+  // 组长规则：仅当存量值仍是旧版默认时升级为新默认，避免覆盖管理员的个性化配置
+  if (isSameLeaderRules(parsed.settings.leaderRules, LEGACY_DEFAULT_LEADER_RULES)) {
+    parsed.settings.leaderRules = deepClone(DEFAULT_LEADER_RULES);
+  }
   if (!parsed.settings.leaderboard) parsed.settings.leaderboard = { enabled: true, allowAdmins: true, allowViewers: false };
   if (!parsed.settings.workHours) {
     parsed.settings.workHours = parsed.settings.leaderboard

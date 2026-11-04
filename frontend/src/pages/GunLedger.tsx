@@ -38,6 +38,14 @@ import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsCon
 import { useDebounce } from '../utils/debounce';
 import { acquireSocket } from '../utils/socketClient';
 import {
+  ALL_GROUPS,
+  ALL_GROUPS_LABEL,
+  buildGroupOptions,
+  defaultGroupOf,
+  designersInGroup as filterDesignersByGroup,
+  resolveUserGroup,
+} from '../utils/groupFilter';
+import {
   BUILTIN_TABLE_GUN_HOURS,
   FALLBACK_GUN_HOURS,
   GUN_HOURS_TASK_LABELS,
@@ -381,6 +389,8 @@ const GunLedger: React.FC = () => {
   const [assignmentMode, setAssignmentMode] = useState(false);
   const [selectedGunRowIds, setSelectedGunRowIds] = useState<Set<string>>(new Set());
   const [showAssignPanel, setShowAssignPanel] = useState(false);
+  // 分配面板「分组」：空字符串表示跟随默认值（登录人所在分组，未分组时全部人员）
+  const [assignGroup, setAssignGroup] = useState('');
   const [assignDesignerId, setAssignDesignerId] = useState('');
   const [assignDate, setAssignDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [designers, setDesigners] = useState<Designer[]>([]);
@@ -394,6 +404,20 @@ const GunLedger: React.FC = () => {
   const [assignShowDeadline, setAssignShowDeadline] = useState(true);
   // 分配面板「任务加急」开关：勾选后本次创建的确认图任务全部标记为加急（默认关闭）
   const [assignUrgent, setAssignUrgent] = useState(false);
+
+  // 分配面板的分组过滤：默认落在登录人所属分组，账号未分组时默认「全部人员」
+  const assignUserGroup = resolveUserGroup(user?.group);
+  const effectiveAssignGroup = assignGroup || defaultGroupOf(assignUserGroup);
+  // 下拉选项：设计人员现有分组 + 登录人自身分组（本组暂时没人也能选中）
+  const assignGroupOptions = useMemo(
+    () => buildGroupOptions(designers, assignUserGroup),
+    [designers, assignUserGroup]
+  );
+  // 设计人员只列当前分组的人；「全部人员」时不过滤
+  const assignDesignerOptions = useMemo(
+    () => filterDesignersByGroup(designers, effectiveAssignGroup),
+    [designers, effectiveAssignGroup]
+  );
 
   // 快速确认图安排（连按两次 Shift 呼出）：汇总当前登录人员今天取的枪名
   const [quickAssignOpen, setQuickAssignOpen] = useState(false);
@@ -3184,8 +3208,8 @@ const GunLedger: React.FC = () => {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !assigning && setShowAssignPanel(false)} />
-            <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] border border-gray-200 overflow-hidden">
-              <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between">
+            <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] max-h-[92vh] flex flex-col border border-gray-200 overflow-hidden">
+              <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-2 font-bold text-lg">
                   <ClipboardList size={20} />
                   分配确认图任务
@@ -3229,7 +3253,7 @@ const GunLedger: React.FC = () => {
                   </button>
                 </div>
               </div>
-              <div className="p-5 flex flex-col gap-4">
+              <div className="p-5 flex flex-col gap-4 flex-1 overflow-auto">
                 <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm text-blue-700">
                   已选 <span className="font-bold">{selectedRows.length}</span> 个枪名，按客户分为 <span className="font-bold">{customerSet.size}</span> 组
                   {customerSet.size > 0 && (
@@ -3239,6 +3263,33 @@ const GunLedger: React.FC = () => {
                   )}
                 </div>
                 <div className="flex flex-col gap-1.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <label className="text-xs font-bold text-gray-500 uppercase">分组</label>
+                    <span className="text-[10px] text-gray-400 truncate" title={assignUserGroup ? `本账号所属分组：${assignUserGroup}` : '本账号未分组，默认显示全部人员'}>
+                      {assignUserGroup ? `本账号所属分组：${assignUserGroup}` : '账号未分组，默认全部人员'}
+                    </span>
+                  </div>
+                  <select
+                    value={effectiveAssignGroup}
+                    onChange={e => {
+                      const next = e.target.value;
+                      setAssignGroup(next);
+                      // 切组后已选设计人员不属于该分组时清空，避免「分组 A + 分组 B 的人」这种矛盾组合
+                      const nextOptions = next === ALL_GROUPS
+                        ? designers
+                        : designers.filter(d => (d.group || '').trim() === next);
+                      setAssignDesignerId(prev => (prev && nextOptions.some(d => d.id === prev) ? prev : ''));
+                    }}
+                    disabled={assigning}
+                    className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
+                  >
+                    <option value={ALL_GROUPS}>{ALL_GROUPS_LABEL}</option>
+                    {assignGroupOptions.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-bold text-gray-500 uppercase">设计人员</label>
                   <select
                     value={assignDesignerId}
@@ -3246,9 +3297,13 @@ const GunLedger: React.FC = () => {
                     disabled={assigning}
                     className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
                   >
-                    <option value="">请选择设计人员</option>
-                    {designers.map(d => (
-                      <option key={d.id} value={d.id}>{d.name}{d.group ? `（${d.group}）` : ''}</option>
+                    <option value="">
+                      {assignDesignerOptions.length === 0 ? '该分组暂无设计人员' : '请选择设计人员'}
+                    </option>
+                    {assignDesignerOptions.map(d => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}{effectiveAssignGroup === ALL_GROUPS && d.group ? `（${d.group}）` : ''}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -3312,7 +3367,7 @@ const GunLedger: React.FC = () => {
                   </div>
                 )}
               </div>
-              <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+              <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2 shrink-0">
                 <button
                   onClick={() => setShowAssignPanel(false)}
                   disabled={assigning}
@@ -3322,7 +3377,7 @@ const GunLedger: React.FC = () => {
                 </button>
                 <button
                   onClick={handleConfirmAssign}
-                  disabled={!assignDesignerId || !assignDate || assigning || designers.length === 0}
+                  disabled={!assignDesignerId || !assignDate || assigning || assignDesignerOptions.length === 0}
                   className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {assigning ? '分配中...' : '确认分配'}

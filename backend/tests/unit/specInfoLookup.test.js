@@ -7,6 +7,7 @@ const { _private: specLookup } = require('../../utils/specInfoLookup');
 test('组长规则：命中成员返回组长，未命中返回空串', () => {
   assert.strictEqual(resolveLeader('茅舒', DEFAULT_LEADER_RULES), '张明');
   assert.strictEqual(resolveLeader('熊飞', DEFAULT_LEADER_RULES), '张啸');
+  assert.strictEqual(resolveLeader('孙海山', DEFAULT_LEADER_RULES), '张啸');
   assert.strictEqual(resolveLeader('查无此人', DEFAULT_LEADER_RULES), '');
   assert.strictEqual(resolveLeader('', DEFAULT_LEADER_RULES), '');
 });
