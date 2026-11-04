@@ -199,14 +199,23 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
   }, [rows, specNumberDigits]);
 
   // 列表筛选：仕样号（精确）与关键字（仕样号/客户/枪名模糊）同时生效
+  // 排序：可安排的枪名按原顺序排在前面，已安排（used）的统一沉到列表底部，
+  // 这样用户一进来先看到可以勾的枪名，不用先翻过一串灰掉的「已安排」
   const filteredRows = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
-    return rows.filter(row => {
+    const matched = rows.filter(row => {
       if (specFilter && !extractSpecNumbers(row.customer || '', specNumberDigits).includes(specFilter)) return false;
       if (!kw) return true;
       return `${row.gunName} ${row.customer} ${row.category} ${row.tableName}`.toLowerCase().includes(kw);
     });
+    const pending: QuickConfirmGunRow[] = [];
+    const arranged: QuickConfirmGunRow[] = [];
+    matched.forEach(row => (row.used ? arranged : pending).push(row));
+    return [...pending, ...arranged];
   }, [rows, specFilter, keyword, specNumberDigits]);
+
+  // 第一个「已安排」行在列表中的位置（用于插入分隔条，-1 表示没有）
+  const firstUsedIndex = useMemo(() => filteredRows.findIndex(r => r.used), [filteredRows]);
 
   const filterActive = Boolean(specFilter || keyword.trim());
 
@@ -623,11 +632,17 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
                 </div>
               ) : (
                 <ul className="max-h-[340px] overflow-auto divide-y divide-gray-100">
-                  {filteredRows.map(row => {
+                  {filteredRows.map((row, idx) => {
                     const checked = selectedIds.has(row.rowId);
                     const disabled = row.used || submitting;
                     return (
-                      <li key={row.rowId}>
+                      <React.Fragment key={row.rowId}>
+                      {idx === firstUsedIndex && (
+                        <li className="sticky top-0 z-[1] px-3 py-1 bg-sky-50/95 backdrop-blur-[1px] text-[10px] font-semibold text-sky-600 tracking-wide">
+                          已安排 {filteredRows.length - firstUsedIndex} 个 · 已存在于任务中，不可再分配
+                        </li>
+                      )}
+                      <li>
                         <label
                           className={`flex items-center gap-2.5 px-3 py-2 transition ${disabled
                             ? 'opacity-60 cursor-not-allowed'
@@ -655,6 +670,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
                           <span className="shrink-0 text-[11px] font-bold text-blue-700">{row.hours}h</span>
                         </label>
                       </li>
+                      </React.Fragment>
                     );
                   })}
                 </ul>

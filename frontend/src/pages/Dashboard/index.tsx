@@ -1144,7 +1144,32 @@ const Dashboard = () => {
       const usedRes = await axiosInstance.get('/tasks/used-gun-names').catch(() => null);
       const usedSet = new Set<string>((usedRes?.data?.gunNames || []).map((n: string) => String(n).trim()));
       matches.forEach(m => { m.used = usedSet.has(m.gunName); });
-      setAutoGunLookupResults(matches);
+
+      // 当前任务里已存在的同名枪名（渲染时打「已存在」标签、禁止再添加，这里先算出来参与排序）
+      const existingNames = new Set<string>();
+      if (context === 'add') {
+        addModeGuns.forEach(g => {
+          const name = String(g?.name || '').trim();
+          if (name) existingNames.add(name);
+        });
+      } else if (itemId && modalDesignerId && modalDate) {
+        const targetItem = getAllItems(modalDesignerId, modalDate).find(i => i.id === itemId);
+        const itemNow = targetItem ? getItemWithPendingChanges(targetItem) : null;
+        (itemNow?.guns || []).forEach(g => {
+          const name = String(g?.name || '').trim();
+          if (name) existingNames.add(name);
+        });
+      }
+
+      // 列表排序（同组内保持台账原顺序）：
+      // 可添加的排最前 → 「已安排」倒数第二（被其他任务占用，可以重复安排）
+      // → 「已存在」排最底（当前任务里已有，不可添加，用户不需要先翻过它们）
+      const ordered = [
+        ...matches.filter(m => !existingNames.has(m.gunName) && !m.used),
+        ...matches.filter(m => !existingNames.has(m.gunName) && m.used),
+        ...matches.filter(m => existingNames.has(m.gunName)),
+      ];
+      setAutoGunLookupResults(ordered);
       if (matches.length === 0) {
         addToast(`未在枪台账中找到仕样号 ${specNumber} 对应的枪名`, 'error');
       } else {
