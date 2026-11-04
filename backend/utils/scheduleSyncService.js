@@ -50,8 +50,8 @@ const defaultIsLocked = (itemId) => {
   }
 };
 
-const readEntriesOrThrow = () => {
-  const entries = productionSchedule.getAllScheduleEntries({ forceReload: true });
+const readEntriesOrThrow = async () => {
+  const entries = await productionSchedule.getAllScheduleEntries({ forceReload: true });
   if (!entries) {
     const status = productionSchedule.getScheduleStatus();
     throw new ScheduleUnavailableError(status.filePath, status);
@@ -64,7 +64,7 @@ const readEntriesOrThrow = () => {
  * @param {{ isLocked?: (itemId: string) => boolean }} [options]
  */
 async function buildSyncPlan({ isLocked } = {}) {
-  const entries = readEntriesOrThrow();
+  const entries = await readEntriesOrThrow();
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
   const specDigits = getSpecDigits();

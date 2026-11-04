@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const securityConfig = require('../config/security');
 const specPdfParser = require('./specPdfParser');
-const { readPdfLines } = require('./pdfText');
+const { readPdfLinesOffThread } = require('./pdfTextPool');
 
 const SHARE_DIR = securityConfig.spec.sharePath;
 const INDEX_TTL_MS = 10 * 60 * 1000;
@@ -81,8 +81,9 @@ const extractFromSignatureBlock = (lines) => {
 };
 
 // 解析单份仕样书：先用分类专用规则（覆盖 7 类客户仕样书），失败再走签核区兜底
+// 文本提取在 worker 线程（utils/pdfTextPool.js）执行，批量同步几十份也不会卡住主线程
 const parseSpecPdf = async (filePath) => {
-  const lines = await readPdfLines(filePath);
+  const lines = await readPdfLinesOffThread(filePath);
   const category = specPdfParser.detectSpecCategory(lines);
   if (category) {
     const info = specPdfParser.extractSpecInfoByCategory(lines, category);
@@ -105,8 +106,9 @@ const parseSpecPdf = async (filePath) => {
 };
 
 // 仕样号 → 最新版 PDF 文件名（58249.08.PDF 优先于 58249.PDF）
-const buildPdfIndex = () => {
-  const files = fs.readdirSync(SHARE_DIR);
+// 8 万多份文件的 readdir 走异步：共享盘抖动时不会卡住事件循环
+const buildPdfIndex = async () => {
+  const files = await fs.promises.readdir(SHARE_DIR);
   const map = new Map();
   for (const file of files) {
     const matched = /^(\d{5,6})(?:\.(\d{2}))?\.PDF$/i.exec(file);
@@ -120,13 +122,13 @@ const buildPdfIndex = () => {
   return map;
 };
 
-const getPdfIndex = ({ forceReload = false } = {}) => {
+const getPdfIndex = async ({ forceReload = false } = {}) => {
   const now = Date.now();
   if (!forceReload && indexCache && now - indexCache.at < INDEX_TTL_MS) {
     return indexCache.map;
   }
   try {
-    const map = buildPdfIndex();
+    const map = await buildPdfIndex();
     indexCache = { at: now, map };
     return map;
   } catch (error) {
@@ -168,7 +170,7 @@ async function resolveSalesPersons(specNumbers, { forceReload = false } = {}) {
   const responsibles = new Map();
   if (unique.length === 0) return { responsibles, stats };
 
-  const index = getPdfIndex({ forceReload });
+  const index = await getPdfIndex({ forceReload });
   if (!index) {
     stats.shareAvailable = false;
     return { responsibles, stats };
@@ -182,7 +184,7 @@ async function resolveSalesPersons(specNumbers, { forceReload = false } = {}) {
     const filePath = path.join(SHARE_DIR, hit.file);
     let signature;
     try {
-      const stat = fs.statSync(filePath);
+      const stat = await fs.promises.stat(filePath);
       if (!stat.isFile() || stat.size > MAX_PDF_BYTES) { stats.failed++; continue; }
       signature = { file: hit.file, size: stat.size, mtimeMs: stat.mtimeMs };
     } catch (error) {

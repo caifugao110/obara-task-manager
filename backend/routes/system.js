@@ -1253,7 +1253,7 @@ router.get('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(
 // 前端只有一句笼统提示。这里强制重读一次共享文件，返回路径、可读性、条目数、
 // 真实错误码与 net use 连接状态，管理员不必再登录服务器翻日志。
 router.get('/schedule-probe', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  const probe = productionSchedule.probeSchedule();
+  const probe = await productionSchedule.probeSchedule();
   res.json({ success: true, ...probe });
 }));
 

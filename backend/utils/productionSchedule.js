@@ -44,6 +44,7 @@ const SCHEDULE_ERROR_HINTS = {
   ENOENT: '共享目录里没有该文件，请确认文件名仍为「各产品大日程.xls」',
   UNKNOWN: '共享连接不可用（认证失败或网络不通），请检查共享凭据配置',
   ENODEV: '网络提供程序未就绪，请检查到共享服务器的网络连接',
+  EHOSTUNREACH: '共享服务器不可达（445/139 端口不通），请确认服务器在线、IP 未变更，或修正 PRODUCTION_SCHEDULE_PATH',
   ETIMEDOUT: '访问共享目录超时，请检查网络与共享服务器状态'
 };
 
@@ -57,6 +58,7 @@ const SHORT_HINTS = {
   ENOENT: '共享目录里找不到该文件',
   UNKNOWN: '共享连接不可用（认证失败或网络不通）',
   ENODEV: '网络提供程序未就绪',
+  EHOSTUNREACH: '共享服务器不可达',
   ETIMEDOUT: '访问共享超时'
 };
 const shortHintForError = (code) => SHORT_HINTS[code] || '请检查共享目录权限与网络连接';
@@ -318,14 +320,67 @@ function countEntries(index) {
   return total;
 }
 
-function getScheduleIndex(now = new Date(), options = {}) {
+// 同一时刻只允许有一次共享盘读取在飞：多个用户同时查询仕样号时，
+// 后来的请求复用同一个 Promise，避免并发对共享盘发起多次读（每次都可能是几十秒）。
+let inflightLoad = null;
+
+// 共享服务器可达性结果缓存：主机彻底不通时不能每次请求都花 2 秒探一遍
+let reachability = { host: '', ok: true, at: 0 };
+const REACHABILITY_TTL_MS = 60 * 1000;
+
+async function checkReachability(filePath) {
+  const host = uncShare.getShareHost(filePath);
+  // 本地磁盘路径（非 UNC）不需要探测
+  if (!host) return { ok: true };
+
+  const now = Date.now();
+  if (reachability.host === host && now - reachability.at < REACHABILITY_TTL_MS) {
+    return { ok: reachability.ok, host, cached: true };
+  }
+
+  const probe = await uncShare.probeHost(host, 2000);
+  reachability = { host, ok: probe.ok, at: Date.now() };
+  if (!probe.ok) {
+    console.warn(`[productionSchedule] 共享服务器 ${host} 不可达（${probe.code}，探测耗时 ${probe.elapsedMs}ms）`);
+  }
+  return { ok: probe.ok, host, port: probe.port, code: probe.code };
+}
+
+function recordFailure(filePath, nowMs, code, error) {
+  runtime.lastError = {
+    code,
+    message: error && error.message ? error.message : String(error || ''),
+    hint: hintForError(code),
+    shortHint: shortHintForError(code),
+    at: new Date().toISOString(),
+    shareEnsure: null
+  };
+  warnThrottled(`[productionSchedule] 无法读取大日程文件 ${filePath}（${code}，运行账户 ${getProcessUser()}）:`, error);
+  cache = {
+    filePath,
+    loadedAt: nowMs,
+    mtimeMs: 0,
+    entryCount: 0,
+    index: null
+  };
+}
+
+/**
+ * 读取并解析大日程（异步）。
+ *
+ * 这里必须是异步：文件在网络共享上，同步 fs.statSync / XLSX.readFile 会占住
+ * Node 的事件循环，共享服务器不可达时一次就阻塞 30 秒以上，期间所有 HTTP 请求
+ * 一起卡死——前端看到的是「页面很慢 + 查询仕样号总是失败」，而 services 的
+ * Promise.race 15 秒超时也根本没机会触发（定时器同样在事件循环里）。
+ *
+ * @returns {Promise<Map<string, object[]>|null>}
+ */
+async function getScheduleIndex(now = new Date(), options = {}) {
   const filePath = getScheduleFilePath();
   if (!filePath) return null;
 
   const nowMs = Date.now();
   const cacheMs = getCacheMs();
-  // 「同步生产大日程」是用户显式触发的动作，必须拿到共享盘上的最新文件，
-  // 不能吃 5 分钟缓存（否则同步完看起来没变化）
   const forceReload = options.forceReload === true;
 
   if (!forceReload && cache.filePath === filePath && cache.index && nowMs - cache.loadedAt < cacheMs) {
@@ -337,73 +392,80 @@ function getScheduleIndex(now = new Date(), options = {}) {
     return null;
   }
 
-  // 首次 stat 失败（多半是 Session 0 没有共享凭据）时，uncShare 会按配置执行
-  // net use 再重试一次；因此这里把「stat + 解析」整体作为一次可重试的读取。
-  const outcome = uncShare.withShareRetry(filePath, () => {
-    const stat = fs.statSync(filePath);
-    if (cache.filePath === filePath && cache.index && cache.mtimeMs === stat.mtimeMs) {
-      return { stat, index: cache.index, entryCount: cache.entryCount, reused: true };
-    }
-    const workbook = XLSX.readFile(filePath, { cellDates: false });
-    const index = buildIndex(workbook, now);
-    return { stat, index, entryCount: countEntries(index), reused: false };
-  }, getShareCredentials());
+  if (inflightLoad) return inflightLoad;
 
-  if (!outcome.ok) {
-    const error = outcome.error || {};
-    const code = error.code || 'ERROR';
-    // net use 成功、文件操作仍被拒 → 连接建起来了但身份不对（多为 guest/匿名），
-    // 这类情况给通用提示没有帮助，直接说明该配什么。
-    const guestSession = Boolean(outcome.ensure && outcome.ensure.ok
-      && (code === 'EPERM' || code === 'EACCES'));
-    // 已经配了凭据还 EPERM：说明 net use 用的账号本身没有该共享/文件的读权限
-    const credsRejected = Boolean(guestSession && outcome.ensure.credsConfigured);
-    const guestHint = credsRejected
-      ? `已用配置的账号（${process.env.PRODUCTION_SCHEDULE_UNC_USER}）连接共享，但文件访问仍被拒：请确认该账号在 ${uncShare.getShareRoot(filePath) || '共享服务器'} 上具有读权限（共享权限与 NTFS 权限都要给）`
-      : `共享连接已建立但文件访问被拒：当前运行账户（${getProcessUser()}）在共享服务器上多半不存在，连接以 guest/匿名身份建立。请在 backend/.env 配置 PRODUCTION_SCHEDULE_UNC_USER 与 PRODUCTION_SCHEDULE_UNC_PASSWORD（服务器上真实存在且有读权限的账号）`;
-    runtime.lastError = {
-      code,
-      message: error.message || String(error),
-      hint: guestSession ? guestHint : hintForError(code),
-      shortHint: guestSession
+  inflightLoad = (async () => {
+    // 先确认服务器端口通不通：不通就直接失败，不让 SMB 自己耗 30 秒
+    const reach = await checkReachability(filePath);
+    if (!reach.ok) {
+      recordFailure(filePath, nowMs, 'EHOSTUNREACH', new Error(`共享服务器 ${reach.host} 不可达（${reach.code || 'ETIMEDOUT'}）`));
+      return null;
+    }
+
+    const outcome = await uncShare.withShareRetryAsync(filePath, async () => {
+      const stat = await fs.promises.stat(filePath);
+      if (cache.filePath === filePath && cache.index && cache.mtimeMs === stat.mtimeMs) {
+        return { stat, index: cache.index, entryCount: cache.entryCount, reused: true };
+      }
+      const buffer = await fs.promises.readFile(filePath);
+      const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+      const index = buildIndex(workbook, now);
+      return { stat, index, entryCount: countEntries(index), reused: false };
+    }, getShareCredentials());
+
+    if (!outcome.ok) {
+      const error = outcome.error || {};
+      const code = error.code || 'ERROR';
+      const guestSession = Boolean(outcome.ensure && outcome.ensure.ok
+        && (code === 'EPERM' || code === 'EACCES'));
+      const credsRejected = Boolean(guestSession && outcome.ensure.credsConfigured);
+      const guestHint = credsRejected
+        ? `已用配置的账号（${process.env.PRODUCTION_SCHEDULE_UNC_USER}）连接共享，但文件访问仍被拒：请确认该账号在 ${uncShare.getShareRoot(filePath) || '共享服务器'} 上具有读权限（共享权限与 NTFS 权限都要给）`
+        : `共享连接已建立但文件访问被拒：当前运行账户（${getProcessUser()}）在共享服务器上多半不存在，连接以 guest/匿名身份建立。请在 backend/.env 配置 PRODUCTION_SCHEDULE_UNC_USER 与 PRODUCTION_SCHEDULE_UNC_PASSWORD（服务器上真实存在且有读权限的账号）`;
+
+      recordFailure(filePath, nowMs, code, error);
+      runtime.lastError.hint = guestSession ? guestHint : hintForError(code);
+      runtime.lastError.shortHint = guestSession
         ? (credsRejected
           ? '共享账号无读权限，请给该账号授予共享与 NTFS 读权限'
           : '共享连接以 guest 身份建立，文件访问被拒；请在 backend/.env 配置共享账号')
-        : shortHintForError(code),
-      at: new Date().toISOString(),
-      shareEnsure: outcome.ensure
+        : shortHintForError(code);
+      runtime.lastError.shareEnsure = outcome.ensure
         ? { attempted: outcome.ensure.attempted, ok: outcome.ensure.ok, message: outcome.ensure.message }
-        : null
-    };
-    warnThrottled(`[productionSchedule] 无法读取大日程文件 ${filePath}（${code}，运行账户 ${getProcessUser()}）:`, error);
+        : null;
+      return null;
+    }
+
+    const { stat, index, entryCount } = outcome.value;
+    runtime.lastError = null;
+    runtime.lastSuccessAt = new Date(nowMs).toISOString();
     cache = {
       filePath,
       loadedAt: nowMs,
-      mtimeMs: 0,
-      entryCount: 0,
-      index: null
+      mtimeMs: stat.mtimeMs,
+      entryCount,
+      index
     };
-    return null;
-  }
+    return index;
+  })();
 
-  const { stat, index, entryCount } = outcome.value;
-  runtime.lastError = null;
-  runtime.lastSuccessAt = new Date(nowMs).toISOString();
-  cache = {
-    filePath,
-    loadedAt: nowMs,
-    mtimeMs: stat.mtimeMs,
-    entryCount,
-    index
-  };
-  return index;
+  try {
+    return await inflightLoad;
+  } finally {
+    inflightLoad = null;
+  }
 }
 
-function findScheduleEntry(specNumber, preferredMonth) {
+/**
+ * 按仕样号取大日程条目（异步）。
+ * @param {string} specNumber
+ * @param {string} [preferredMonth] YYYY-MM
+ */
+async function findScheduleEntry(specNumber, preferredMonth) {
   const normalizedSpec = String(specNumber === null || specNumber === undefined ? '' : specNumber).trim();
   if (!normalizedSpec) return null;
 
-  const index = getScheduleIndex();
+  const index = await getScheduleIndex();
   if (!index) return null;
 
   const entries = index.get(normalizedSpec);
@@ -433,8 +495,8 @@ function findScheduleEntry(specNumber, preferredMonth) {
 // 「同步生产大日程」用：一次取回四张工作表的全部仕样号条目
 // （每张表内的 4 个月份块都会展开，entry.month 为推导出的 YYYY-MM）。
 // 文件不可读时返回 null，由调用方给出提示。
-function getAllScheduleEntries(options = {}) {
-  const index = getScheduleIndex(options.now || new Date(), {
+async function getAllScheduleEntries(options = {}) {
+  const index = await getScheduleIndex(options.now || new Date(), {
     forceReload: options.forceReload === true
   });
   if (!index) return null;
@@ -482,23 +544,26 @@ function getUnavailableMessage() {
 
 // 裸文件系统探针：绕过 XLSX 解析，分别试 stat / readFile / readdir，
 // 用于区分「共享根本连不上」「只有 stat 失败」「文件被独占」这几种情况。
-function probeFileSystem(filePath) {
+// 同样走异步 API，避免管理员点一次排障就把整个后端卡住。
+async function probeFileSystem(filePath) {
   const result = { stat: { ok: false }, read: { ok: false }, readdir: { ok: false } };
+  const host = uncShare.getShareHost(filePath);
+  result.host = host ? await uncShare.probeHost(host, 2000) : { ok: true, port: 0, elapsedMs: 0, code: '' };
   try {
-    const stat = fs.statSync(filePath);
+    const stat = await fs.promises.stat(filePath);
     result.stat = { ok: true, size: stat.size, mtime: new Date(stat.mtimeMs).toISOString(), isFile: stat.isFile() };
   } catch (error) {
     result.stat = { ok: false, code: error.code || '', message: error.message };
   }
   try {
-    const buffer = fs.readFileSync(filePath);
+    const buffer = await fs.promises.readFile(filePath);
     result.read = { ok: true, bytes: buffer.length };
   } catch (error) {
     result.read = { ok: false, code: error.code || '', message: error.message };
   }
   try {
     const dir = require('path').dirname(filePath);
-    const files = fs.readdirSync(dir);
+    const files = await fs.promises.readdir(dir);
     result.readdir = { ok: true, dir, count: files.length, files: files.slice(0, 10) };
   } catch (error) {
     result.readdir = { ok: false, code: error.code || '', message: error.message };
@@ -507,9 +572,9 @@ function probeFileSystem(filePath) {
 }
 
 // 管理员排查用：强制重读一次，返回能直接判断成败的信息（不写库、不改缓存之外的状态）
-function probeSchedule() {
+async function probeSchedule() {
   const startedAt = Date.now();
-  const entries = getAllScheduleEntries({ forceReload: true });
+  const entries = await getAllScheduleEntries({ forceReload: true });
   const status = getScheduleStatus();
   const sheets = {};
   const months = new Set();
@@ -528,7 +593,7 @@ function probeSchedule() {
     lastSuccessAt: status.lastSuccessAt,
     lastError: status.lastError,
     share: status.share,
-    raw: probeFileSystem(status.filePath)
+    raw: await probeFileSystem(status.filePath)
   };
 }
 

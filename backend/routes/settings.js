@@ -20,6 +20,14 @@ const accessSettingsSchema = Joi.object({
   allowViewers: Joi.boolean().required()
 });
 
+// 状态跟踪表比其他页面多一个「一般管理员可同步生产大日程」开关：
+// 关闭后仅 superadmin 能点「同步生产大日程」，一般管理员按钮置灰。
+const STATUS_TRACKING_SYNC_KEY = 'allowAdminScheduleSync';
+
+const statusTrackingSettingsSchema = accessSettingsSchema.keys({
+  [STATUS_TRACKING_SYNC_KEY]: Joi.boolean().default(true)
+});
+
 const workdayOverrideSchema = Joi.object({
   date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
   type: Joi.string().valid(OVERRIDE_WORKDAY, OVERRIDE_WEEKEND, null).allow(null).required()
@@ -39,21 +47,33 @@ const normalizeAccessSettingsForKey = (key, settings = defaultAccessSettings) =>
   return normalized;
 };
 
+// 存量数据没有该字段时按「允许」处理，保持升级前的行为不变
+const normalizeStatusTrackingSettings = (settings = defaultAccessSettings) => ({
+  ...normalizeAccessSettings(settings),
+  [STATUS_TRACKING_SYNC_KEY]: settings?.[STATUS_TRACKING_SYNC_KEY] !== false
+});
+
 const getAccessSettings = (key) => asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const settings = normalizeAccessSettingsForKey(key, data.settings?.[key]);
+  const stored = data.settings?.[key];
+  const settings = key === 'statusTracking'
+    ? normalizeStatusTrackingSettings(stored)
+    : normalizeAccessSettingsForKey(key, stored);
   res.json(settings);
 });
 
 const updateAccessSettings = (key) => [authMiddleware, superAdminMiddleware, asyncHandler(async (req, res) => {
-  const { error, value } = accessSettingsSchema.validate(req.body, { stripUnknown: true });
+  const schema = key === 'statusTracking' ? statusTrackingSettingsSchema : accessSettingsSchema;
+  const { error, value } = schema.validate(req.body, { stripUnknown: true });
   if (error) {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
   }
 
   const data = db.readDb();
   if (!data.settings) data.settings = {};
-  data.settings[key] = normalizeAccessSettingsForKey(key, value);
+  data.settings[key] = key === 'statusTracking'
+    ? normalizeStatusTrackingSettings(value)
+    : normalizeAccessSettingsForKey(key, value);
   await db.writeDb(data);
   res.json(data.settings[key]);
 })];

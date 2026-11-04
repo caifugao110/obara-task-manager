@@ -8,7 +8,7 @@ const securityConfig = require('../config/security');
 const db = require('../db');
 const specPdfParser = require('../utils/specPdfParser');
 const productionSchedule = require('../utils/productionSchedule');
-const { getPdfParse } = require('../utils/pdfText');
+const { readPdfTextOffThread } = require('../utils/pdfTextPool');
 
 // 获取系统配置的仕样号位数（默认 5，可配置为 5 或 6）
 function getConfiguredSpecDigits() {
@@ -76,7 +76,7 @@ function isPathSafe(specNumber) {
   return true;
 }
 
-function makePath(specNumber, suffix) {
+function buildCandidatePath(specNumber, suffix) {
   if (!isPathSafe(specNumber)) return null;
 
   if (specNumber.length > 20) return null;
@@ -95,27 +95,57 @@ function makePath(specNumber, suffix) {
     return null;
   }
 
-  if (fs2.existsSync(fp)) return fp;
-  if (fs2.existsSync(bp)) return bp;
-  return null;
+  return { fp, bp };
 }
 
-function findLatestSpecPdf(n) {
-  var shareAccessible = fs2.existsSync(SPEC_SHARE_PATH) || fs2.existsSync(SPEC_SHARE_PATH_BS);
+const fileExists = async (target) => {
+  try {
+    await fs2.promises.access(target);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+// 仕样书共享目录是否可访问：结果缓存 30 秒，避免每次查询都对共享盘做一轮探测。
+// 走异步 API——共享盘不可达时 existsSync 会阻塞整个事件循环（详见 productionSchedule 的同类问题）。
+let shareState = { ok: true, at: 0 };
+const SHARE_CHECK_TTL_MS = 30 * 1000;
+
+async function shareReachable() {
+  const now = Date.now();
+  if (now - shareState.at < SHARE_CHECK_TTL_MS) return shareState.ok;
+  const ok = (await fileExists(SPEC_SHARE_PATH)) || (await fileExists(SPEC_SHARE_PATH_BS));
+  shareState = { ok, at: now };
+  return ok;
+}
+
+// 取该仕样号的最新版 PDF（58249.08.PDF 优先于 58249.PDF）。
+// 各候选并行探测：串行 10 次网络 access 会叠加成上百毫秒，且期间占着请求。
+async function findLatestSpecPdf(n) {
+  var shareAccessible = await shareReachable();
   if (!shareAccessible) return null;
 
-  var latest = null;
-  var bestVer = -1;
-
-  var base = makePath(n, '.PDF');
-  if (base) { latest = base; bestVer = 0; }
-
+  var candidates = [{ suffix: '.PDF', version: 0 }];
   for (var i = 1; i <= 9; i++) {
     var v = (i < 10 ? '0' : '') + i;
-    var fp = makePath(n, '.' + v + '.PDF');
-    if (fp) { latest = fp; bestVer = i; }
+    candidates.push({ suffix: '.' + v + '.PDF', version: i });
   }
-  return latest;
+
+  var found = await Promise.all(candidates.map(async function(item) {
+    var built = buildCandidatePath(n, item.suffix);
+    if (!built) return null;
+    if (await fileExists(built.fp)) return { file: built.fp, version: item.version };
+    if (await fileExists(built.bp)) return { file: built.bp, version: item.version };
+    return null;
+  }));
+
+  var latest = null;
+  for (var k = 0; k < found.length; k++) {
+    var hit = found[k];
+    if (hit && (!latest || hit.version > latest.version)) latest = hit;
+  }
+  return latest ? latest.file : null;
 }
 
 function isSkipDataLine(line) {
@@ -147,17 +177,18 @@ function parseDateQuantityLine(line) {
 }
 
 // PDF 解析资源保护：
-// - 共享目录中的 PDF 由人工上传，体积不可控，超大文件解析会占满内存与 CPU；
-// - 解析超时（Promise.race）只是让 HTTP 先返回，解析本身仍在后台继续跑，
-//   并发请求可叠加占用，因此再加一层「同时解析数上限」，超出直接拒绝。
+// - 共享目录中的 PDF 由人工上传，体积不可控，超大文件解析会占用大量内存与 CPU；
+// - 解析本身已移到 worker 线程（utils/pdfTextPool.js），主线程不再被 CPU 计算占住，
+//   因此这里的上限只用于限制「同时排队 + 解析」的总量，防止批量刷新把队列堆爆。
 const MAX_SPEC_PDF_BYTES = 20 * 1024 * 1024;
-const MAX_CONCURRENT_PARSES = 2;
+const MAX_CONCURRENT_PARSES = 12;
 let activePdfParses = 0;
 
-// 解析前先 stat：不是普通文件或超过体积上限时直接跳过，不读入内存
-const checkSpecPdfReadable = (filePath) => {
+// 解析前先 stat：不是普通文件或超过体积上限时直接跳过，不读入内存。
+// 走异步 API——仕样书也在共享盘上，statSync 遇到共享不可达会卡住整个事件循环。
+const checkSpecPdfReadable = async (filePath) => {
   try {
-    const stat = fs2.statSync(filePath);
+    const stat = await fs2.promises.stat(filePath);
     if (!stat.isFile()) return { ok: false, reason: '目标不是普通文件' };
     if (stat.size > MAX_SPEC_PDF_BYTES) {
       return { ok: false, reason: `文件大小 ${(stat.size / 1024 / 1024).toFixed(1)}MB 超过 20MB 上限，已拒绝解析` };
@@ -169,7 +200,7 @@ const checkSpecPdfReadable = (filePath) => {
 };
 
 async function extractSpecInfoFromPdf(p) {
-  const readable = checkSpecPdfReadable(p);
+  const readable = await checkSpecPdfReadable(p);
   if (!readable.ok) {
     console.warn('[spec] 跳过解析:', readable.reason, p);
     return null;
@@ -177,11 +208,9 @@ async function extractSpecInfoFromPdf(p) {
   if (activePdfParses >= MAX_CONCURRENT_PARSES) return null;
   activePdfParses += 1;
   try {
-    var buf = fs2.readFileSync(p);
-    var ParseClass = await getPdfParse();
-    var pdf = new ParseClass({data: buf});
-    var textResult = await pdf.getText();
-    var t = (textResult && textResult.text) || '';
+    // 取文本这一步在 worker 线程执行：getText() 是纯 CPU 计算，
+    // 几十份仕样书一起解析也不会把主线程（HTTP/DB）堵住。
+    var t = await readPdfTextOffThread(p);
 
     var info = {
       specNumber: '',
@@ -374,11 +403,11 @@ router.post('/delivery-date', [authMiddleware, adminMiddleware], asyncHandler(as
 
       (async function() {
 
-        var ok = fs2.existsSync(SPEC_SHARE_PATH) || fs2.existsSync(SPEC_SHARE_PATH_BS);
+        var ok = await shareReachable();
 
         if (!ok) return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
 
-        var pdf = findLatestSpecPdf(n);
+        var pdf = await findLatestSpecPdf(n);
 
         if (!pdf) return {success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'};
 
@@ -418,13 +447,13 @@ router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(as
   const digitCheck = validateSpecNumberDigits(n);
   if (!digitCheck.valid) return res.json({success: false, message: digitCheck.message});
   try {
-    var ok = fs2.existsSync(SPEC_SHARE_PATH) || fs2.existsSync(SPEC_SHARE_PATH_BS);
-    if (!ok) return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
-    var pdf = findLatestSpecPdf(n);
+    var ok = await shareReachable();
+    if (!ok) return res.json({success: false, message: '无法访问共享目录，请检查网络连接和权限'});
+    var pdf = await findLatestSpecPdf(n);
     if (!pdf) return res.json({success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'});
 
     // 与 extractSpecInfoFromPdf 相同的保护：体积上限 + 并发解析上限
-    const readable = checkSpecPdfReadable(pdf);
+    const readable = await checkSpecPdfReadable(pdf);
     if (!readable.ok) return res.json({success: false, message: readable.reason});
     if (activePdfParses >= MAX_CONCURRENT_PARSES) {
       return res.json({success: false, message: '系统正在解析其他仕样书，请稍后重试'});
@@ -432,11 +461,8 @@ router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(as
 
     activePdfParses += 1;
     try {
-      var buf = fs2.readFileSync(pdf);
-      var ParseClass = await getPdfParse();
-      var pdfParser = new ParseClass({data: buf});
-      var textResult = await pdfParser.getText();
-      var t = (textResult && textResult.text) || '';
+      // 同样是 CPU 密集的解析，统一走 worker 线程
+      var t = await readPdfTextOffThread(pdf);
 
       var lines = t.split('\n').map((l, idx) => ({line: idx + 1, text: l.trim()})).filter(l => l.text);
 
@@ -470,7 +496,9 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
       (async function() {
 
         // 大日程表格优先：命中时数量/纳期/已发图/工厂以表格为准
-        var scheduleEntry = productionSchedule.findScheduleEntry(n, preferredMonth);
+        // 注意：这里必须 await —— 大日程在共享盘上，同步读取会占住事件循环，
+        // 共享服务器不可达时整个后端会被拖住几十秒（所有接口一起变慢）。
+        var scheduleEntry = await productionSchedule.findScheduleEntry(n, preferredMonth);
 
         // PDF 仍尽量解析，用于补充客户名称、营业担当等信息；
         // PDF 不可用时只要表格命中就继续返回表格数据
@@ -479,12 +507,12 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
         try {
 
-          var ok = fs2.existsSync(SPEC_SHARE_PATH) || fs2.existsSync(SPEC_SHARE_PATH_BS);
+          var ok = await shareReachable();
 
           if (!ok) {
             pdfState = 'share-unavailable';
           } else {
-            var pdf = findLatestSpecPdf(n);
+            var pdf = await findLatestSpecPdf(n);
             if (pdf) {
               info = await extractSpecInfoFromPdf(pdf);
               pdfState = info ? 'parsed' : 'parse-failed';

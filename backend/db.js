@@ -488,7 +488,7 @@ const getInitialDb = () => ({
   settings: {
     leaderboard: { enabled: true, allowAdmins: true, allowViewers: false },
     workHours: { enabled: true, allowAdmins: true, allowViewers: false },
-    statusTracking: { enabled: true, allowAdmins: true, allowViewers: false },
+    statusTracking: { enabled: true, allowAdmins: true, allowViewers: false, allowAdminScheduleSync: true },
     systemSettings: { enabled: true, allowAdmins: true, allowViewers: false },
     gunLedger: { enabled: true, allowAdmins: true, allowViewers: false },
     maintenance: {
@@ -563,6 +563,10 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.statusTracking = parsed.settings.workHours
       ? { ...parsed.settings.workHours }
       : { enabled: true, allowAdmins: true, allowViewers: false };
+  }
+  // 「同步生产大日程」给一般管理员的开关：存量数据缺省视为允许
+  if (parsed.settings.statusTracking.allowAdminScheduleSync !== false) {
+    parsed.settings.statusTracking.allowAdminScheduleSync = true;
   }
   if (!parsed.settings.systemSettings) {
     parsed.settings.systemSettings = { enabled: true, allowAdmins: true, allowViewers: false };

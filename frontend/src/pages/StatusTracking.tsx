@@ -133,7 +133,8 @@ interface EditingSession {
   socketId: string;
 }
 
-const defaultSettings = { enabled: true, allowAdmins: true, allowViewers: false };
+// allowAdminScheduleSync：超级管理员控制一般管理员能否点「同步生产大日程」
+const defaultSettings = { enabled: true, allowAdmins: true, allowViewers: false, allowAdminScheduleSync: true };
 
 const defaultLeaderRules: LeaderRule[] = [
   { leader: '陈大仪', members: ['郭涛', '王兴龙', '王会永', '李广亮'] },
@@ -382,6 +383,8 @@ const StatusTracking = () => {
 
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  // 「同步生产大日程」权限：开关关闭时只保留超级管理员的入口，一般管理员按钮置灰
+  const canSyncSchedule = isSuperAdmin || settings.allowAdminScheduleSync !== false;
   // 离线 = socket 断开 或 后端 HTTP 不可达（取并集，任一不满足即禁止编辑）
   const isOffline = syncStatus === 'disconnected' || backendUnreachable;
   const isRealtimeSyncAvailable = Boolean(token);
@@ -935,6 +938,10 @@ const StatusTracking = () => {
       addToast('无权限同步生产大日程', 'error');
       return;
     }
+    if (!canSyncSchedule) {
+      addToast('超级管理员已关闭「同步生产大日程」权限', 'error');
+      return;
+    }
     setScheduleSyncing(true);
     setScheduleSyncPhase('planning');
     try {
@@ -946,7 +953,7 @@ const StatusTracking = () => {
       setScheduleSyncing(false);
       setScheduleSyncPhase('idle');
     }
-  }, [isAdmin]);
+  }, [isAdmin, canSyncSchedule]);
 
   const handleScheduleSyncConfirm = useCallback(async () => {
     setScheduleSyncing(true);
@@ -1378,8 +1385,10 @@ const StatusTracking = () => {
           {isAdmin && (
             <button
               onClick={handleScheduleSyncPreview}
-              disabled={scheduleSyncing || offlineWarning}
-              title="从「各产品大日程.xls」的南京焊钳/上海焊钳/南京焊钳修改/上海焊钳修改四张表同步有效仕样号，并按仕样书自动补全营业担当与组长"
+              disabled={scheduleSyncing || offlineWarning || !canSyncSchedule}
+              title={!canSyncSchedule
+                ? '超级管理员已关闭「同步生产大日程」权限，如需使用请联系超级管理员'
+                : '从「各产品大日程.xls」的南京焊钳/上海焊钳/南京焊钳修改/上海焊钳修改四张表同步有效仕样号，并按仕样书自动补全营业担当与组长'}
               className="flex shrink-0 items-center gap-2 whitespace-nowrap px-5 py-1.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-sm font-bold rounded-full shadow-md hover:shadow-lg transition-all duration-200 tracking-wide disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-md"
             >
               <RefreshCw size={16} className={scheduleSyncing ? 'animate-spin' : ''} />
@@ -1649,7 +1658,13 @@ const StatusTracking = () => {
                       ) : (
                         <>
                           <div className="text-lg font-medium">暂无状态跟踪记录</div>
-                          <div className="text-sm mt-2">{isAdmin ? '点击右上角「同步生产大日程」，从各产品大日程同步仕样号' : '请联系管理员同步生产大日程'}</div>
+                          <div className="text-sm mt-2">
+                            {isAdmin
+                              ? (canSyncSchedule
+                                ? '点击右上角「同步生产大日程」，从各产品大日程同步仕样号'
+                                : '超级管理员已关闭「同步生产大日程」权限，请联系超级管理员同步')
+                              : '请联系管理员同步生产大日程'}
+                          </div>
                         </>
                       )}
                     </td>
@@ -1943,20 +1958,24 @@ const StatusTracking = () => {
           <div className="mt-6 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
             <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
               <Shield className="mr-2 text-purple-600" size={22} />
-              状态跟踪表查看权限设置
+              状态跟踪表权限设置
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
                 { label: '启用状态跟踪表', detail: 'Global Toggle', key: 'enabled' as const },
                 { label: '一般管理员', detail: 'Admin Access', key: 'allowAdmins' as const },
-                { label: '普通用户', detail: 'User Access', key: 'allowViewers' as const }
+                { label: '普通用户', detail: 'User Access', key: 'allowViewers' as const },
+                { label: '一般管理员可同步生产大日程', detail: 'Admin Sync Access', key: 'allowAdminScheduleSync' as const }
               ].map(item => (
-                <div key={item.key} className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100">
-                  <div>
-                    <div className="font-bold text-gray-700">{item.label}</div>
+                <div key={item.key} className="flex items-center justify-between gap-3 p-5 bg-gray-50 rounded-xl border border-gray-100">
+                  <div className="min-w-0">
+                    <div className="font-bold text-gray-700 text-sm leading-tight">{item.label}</div>
                     <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">{item.detail}</div>
+                    {item.key === 'allowAdminScheduleSync' && (
+                      <div className="text-[11px] text-gray-400 mt-1 leading-tight">关闭后仅超级管理员可同步</div>
+                    )}
                   </div>
-                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                  <div className="relative inline-block w-12 h-6 shrink-0 align-middle select-none transition duration-200 ease-in">
                     <input
                       type="checkbox"
                       checked={settings[item.key]}

@@ -1237,6 +1237,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `enabled` | 页面总开关 |
 | `allowAdmins` | 是否允许一般管理员访问 |
 | `allowViewers` | 是否允许普通用户访问；未登录游客不能进入任务报表、工时管理、状态追踪和系统设置页面 |
+| `allowAdminScheduleSync` | 仅 `statusTracking` 有：是否允许一般管理员执行「同步生产大日程」，缺省 `true`；为 `false` 时仅 `superadmin` 能调用同步接口 |
 
 规则：
 
@@ -1277,6 +1278,11 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 `PUT /api/settings/status-tracking`
 
 权限：仅 `superadmin`
+
+说明：
+
+- 除通用的 `enabled`、`allowAdmins`、`allowViewers` 外，还带 `allowAdminScheduleSync`（状态跟踪页底部「一般管理员可同步生产大日程」开关，默认 `true`）。为 `false` 时一般管理员无法执行「同步生产大日程」，前端按钮置灰，后端同步接口返回 `403`；`superadmin` 不受限。
+- 请求体缺省该字段时按 `true` 保存，旧客户端提交三项也不会报错。
 
 ### 获取焊枪台账权限设置
 
@@ -1681,7 +1687,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `POST /api/status-tracking/sync-schedule/preview`
 
-权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验；当 `settings.statusTracking.allowAdminScheduleSync=false` 时仅 `superadmin` 可调用（一般管理员返回 `403`）。
 
 读取共享盘上的「各产品大日程.xls」（路径由 `PRODUCTION_SCHEDULE_PATH` 配置），解析南京焊钳、上海焊钳、南京焊钳修改、上海焊钳修改四张工作表的 4 个月份块，与现有状态追踪记录比对后返回变更统计，不写库。
 
@@ -1722,7 +1728,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `POST /api/status-tracking/sync-schedule`
 
-权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验。
+权限：`admin`、`superadmin`，且需通过状态追踪页面的权限配置校验；当 `settings.statusTracking.allowAdminScheduleSync=false` 时仅 `superadmin` 可调用（一般管理员返回 `403`）。
 
 按预览结果落库：新增记录写入 `factory`、`sheetName`（来源工作表）、`clientName`、`specNumber`、`productionPlanMonths`、`quantity`、`deliveryDate`、`shippedCount`；已有记录只覆盖这些来源字段（`sheetName` 同时用于补齐历史记录），`salesPerson`、`leader`、确认类等人工维护字段保留。营业担当只在原记录为空时补全（取自仕样书），组长由 `leaderRules` 按营业担当推出、同样只补空值，人工改过的值不会被覆盖。表格的客户或纳期为空时保留原值，不会被清空。被他人锁定（行锁）的记录跳过。
 
@@ -3182,10 +3188,10 @@ PUT 请求：
 | `entryCount` / `sheets` / `monthBlocks` | 解析出的条目数、按工作表分布、涉及的月份块 |
 | `elapsedMs` | 本次读取耗时 |
 | `processUser` | 运行后端的 Windows 账户（服务自启时常见为 `SYSTEM` 或 `Administrator`） |
-| `lastError` | 最近一次失败：`code`（`EPERM`/`EBUSY`/`ENOENT` 等）、`message`、`hint`（处置建议）、`shareEnsure`（自动 `net use` 的结果） |
+| `lastError` | 最近一次失败：`code`（`EPERM`/`EBUSY`/`ENOENT`/`EHOSTUNREACH` 等）、`message`、`hint`（处置建议）、`shareEnsure`（自动 `net use` 的结果）。`EHOSTUNREACH` 表示共享服务器 445/139 端口不通（服务器离线或 IP 变更），此时不会有 SMB 级别的错误码 |
 | `lastSuccessAt` | 最近一次成功读取的时间 |
 | `share` | 共享根、是否配置了凭据（`credentialConfigured`）、最近一次自动 `net use` 的时间/结果/账户（`lastEnsure`）；失败时 `lastEnsure.connections` 会列出本会话到该服务器已有的连接，`errorNo` 为 `net use` 返回码（如 `1219` 表示已存在其他凭据的连接） |
-| `raw` | 裸文件操作结果：分别试 `stat`、`readFile`、`readdir`，全为 `EPERM` 说明共享连接已建立但身份不对（多为 guest/匿名） |
+| `raw` | 裸文件操作结果：`host`（445/139 端口探测结果）、分别试 `stat`、`readFile`、`readdir`；文件级操作全为 `EPERM` 说明共享连接已建立但身份不对（多为 guest/匿名） |
 
 ### 获取维护状态
 

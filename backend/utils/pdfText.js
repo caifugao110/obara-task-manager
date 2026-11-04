@@ -52,17 +52,29 @@ async function getPdfParse() {
   return PDFParse;
 }
 
-// 读取 PDF 全文并返回按行切分后的文本数组（去空行）。
-const readPdfLines = async (filePath) => {
-  const buffer = fs.readFileSync(filePath);
+// 读取 PDF 全文，返回原始文本字符串。
+// 注意：`pdf.getText()` 是纯 CPU 计算，几 MB 的仕样书要跑几百毫秒到一秒，
+// 在主线程上执行会整段占住事件循环（多人同时录入时叠加成连续卡顿）。
+// 请求路径请走 utils/pdfTextPool.js 的 readPdfTextOffThread，把它交给 worker 线程。
+const readPdfText = async (filePath) => {
+  const buffer = await fs.promises.readFile(filePath);
   const ParseClass = await getPdfParse();
   const pdf = new ParseClass({ data: buffer });
   const textResult = await pdf.getText();
-  const text = (textResult && textResult.text) || '';
-  return text.split('\n').map(line => line.trim()).filter(line => line);
+  return (textResult && textResult.text) || '';
 };
+
+const toLines = (text) => String(text || '')
+  .split('\n')
+  .map(line => line.trim())
+  .filter(line => line);
+
+// 读取 PDF 全文并返回按行切分后的文本数组（去空行）。
+const readPdfLines = async (filePath) => toLines(await readPdfText(filePath));
 
 module.exports = {
   getPdfParse,
-  readPdfLines
+  readPdfText,
+  readPdfLines,
+  toLines
 };

@@ -19,7 +19,11 @@
 // 凭据配置仅作为服务会话无法复用登录凭据时的兜底。
 
 const path = require('path');
-const { execFileSync } = require('child_process');
+const net = require('net');
+const { execFileSync, execFile } = require('child_process');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
 
 const NET_TIMEOUT_MS = 15000;
 // 连接建立成功后，短时间内不再重复执行 net use
@@ -349,13 +353,234 @@ function getShareStatus(filePath, options = {}) {
   };
 }
 
+// ============================================================
+// 异步版本（请求路径专用）
+// ------------------------------------------------------------
+// 上面的 execFileSync / fs.xxxSync 会把 Node 的事件循环整段占住：
+// 共享服务器不可达时一次 stat 就要 30 秒以上，net use 再占满 15 秒超时，
+// 期间所有 HTTP 请求（页面加载、任务列表、登录）全部排队，前端只看到「页面很慢」
+// 和「查询超时」。请求路径上一律用下面的异步实现，让等待发生在 libuv 线程池里。
+// ============================================================
+
+/**
+ * 从 UNC 路径取出服务器名（不含共享名）。
+ * @param {string} filePath
+ * @returns {string} 非 UNC 路径返回空串
+ */
+function getShareHost(filePath) {
+  const match = /^[\\/]{2}([^\\/]+)[\\/]/.exec(String(filePath || '').trim());
+  return match ? match[1] : '';
+}
+
+/**
+ * 端口连通性探测：判断共享服务器到底通不通。
+ * 服务器不可达时 SMB 的 stat 要等 Windows 自己的超时（实测 30 秒以上），
+ * 先花 1~2 秒探一次 445/139，可以立刻给出「主机不可达」而不是让用户干等。
+ * @param {string} host
+ * @param {number} [timeoutMs]
+ * @returns {Promise<{ ok: boolean, port: number, elapsedMs: number, code: string }>}
+ */
+async function probeHost(host, timeoutMs = 2000) {
+  const startedAt = Date.now();
+  const ports = [445, 139];
+  const attempt = (port) => new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    const done = (ok, code) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve({ ok, code: code || '', port });
+    };
+    socket.setTimeout(Math.max(500, timeoutMs));
+    socket.once('connect', () => done(true, ''));
+    socket.once('timeout', () => done(false, 'ETIMEDOUT'));
+    socket.once('error', (error) => done(false, error.code || 'ERROR'));
+  });
+
+  // 两个端口并发探测：串行探两次会让首个请求白等 4 秒
+  const results = await Promise.all(ports.map(attempt));
+  const hit = results.find(item => item.ok);
+  if (hit) return { ok: true, port: hit.port, elapsedMs: Date.now() - startedAt, code: '' };
+  return { ok: false, port: 0, elapsedMs: Date.now() - startedAt, code: results[0].code || 'ETIMEDOUT' };
+}
+
+async function runNetUseAsync(shareRoot, user, password) {
+  const args = user
+    ? ['use', shareRoot, `/user:${user}`, password || '', '/persistent:no']
+    : ['use', shareRoot, '/persistent:no'];
+  try {
+    await execFileAsync(getNetBinary(), args, {
+      timeout: NET_TIMEOUT_MS,
+      windowsHide: true,
+      encoding: 'latin1'
+    });
+    return { ok: true, message: '共享连接建立成功' };
+  } catch (error) {
+    const raw = `${error.stdout || ''} ${error.stderr || ''}`.replace(/\s+/g, ' ').trim();
+    if (/\b1219\b/.test(raw)) {
+      return { ok: false, message: '1219 已存在到该服务器的连接（使用了其他凭据）', errorNo: '1219' };
+    }
+    const codeMatch = raw.match(/\b(5|53|67|86|1326|1331|1909|2202|2250)\b/);
+    return {
+      ok: false,
+      message: (raw || error.message || 'net use 执行失败').slice(0, 300),
+      errorNo: codeMatch ? codeMatch[1] : ''
+    };
+  }
+}
+
+async function dropServerSessionsAsync(shareRoot) {
+  const match = /^[\\/]{2}([^\\/]+)/.exec(String(shareRoot || ''));
+  if (!match) return { ok: false, message: '无法解析服务器名' };
+  const serverRoot = `\\\\${match[1]}`;
+  const attempts = [
+    { strategy: 'ipc', args: ['use', `${serverRoot}\\IPC$`, '/delete', '/y'] },
+    { strategy: 'server', args: ['use', serverRoot, '/delete', '/y'] },
+    { strategy: 'all', args: ['use', '*', '/delete', '/y'] }
+  ];
+  const failures = [];
+  for (const attempt of attempts) {
+    try {
+      await execFileAsync(getNetBinary(), attempt.args, {
+        timeout: NET_TIMEOUT_MS,
+        windowsHide: true,
+        encoding: 'latin1'
+      });
+      return { ok: true, strategy: attempt.strategy, message: `已断开 ${serverRoot} 的旧连接（${attempt.strategy}）` };
+    } catch (error) {
+      const raw = `${error.stdout || ''} ${error.stderr || ''}`.replace(/\s+/g, ' ').trim();
+      failures.push(`${attempt.strategy}: ${(raw || error.message || '').slice(0, 120)}`);
+    }
+  }
+  return { ok: false, message: `断开旧连接失败（${failures.join(' | ')}）` };
+}
+
+async function listConnectionsAsync(shareRoot) {
+  const match = /^[\\/]{2}([^\\/]+)/.exec(String(shareRoot || ''));
+  if (!match) return { ok: false, lines: [], message: '无法解析服务器名' };
+  try {
+    const { stdout } = await execFileAsync(getNetBinary(), ['use'], {
+      timeout: NET_TIMEOUT_MS,
+      windowsHide: true,
+      encoding: 'latin1'
+    });
+    const server = match[1].toLowerCase();
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && (line.toLowerCase().includes(`\\\\${server}`) || /^\\\\/.test(line)));
+    return { ok: true, lines: lines.slice(0, 20) };
+  } catch (error) {
+    const raw = `${error.stdout || ''} ${error.stderr || ''}`.replace(/\s+/g, ' ').trim();
+    return { ok: false, lines: [], message: (raw || error.message || '').slice(0, 200) };
+  }
+}
+
+/**
+ * ensureShareAccess 的异步版本，语义完全一致（含 1219 逐级断开重连）。
+ * @param {string} filePath
+ * @param {{ user?: string, password?: string, shareRoot?: string, force?: boolean,
+ *           allowCurrentCredentials?: boolean }} [options]
+ */
+async function ensureShareAccessAsync(filePath, options = {}) {
+  const shareRoot = options.shareRoot || getShareRoot(filePath);
+  if (!shareRoot) {
+    return { attempted: false, credsConfigured: false, ok: false, shareRoot: '', message: '不是 UNC 共享路径' };
+  }
+  if (!isWindows()) {
+    return { attempted: false, credsConfigured: false, ok: false, shareRoot, message: '非 Windows 环境，跳过 net use' };
+  }
+
+  const credentials = options.user
+    ? { user: options.user, password: options.password || '' }
+    : resolveCredentials(shareRoot);
+  const credsConfigured = Boolean(credentials);
+
+  if (!credentials && options.allowCurrentCredentials === false) {
+    return {
+      attempted: false,
+      credsConfigured: false,
+      ok: false,
+      shareRoot,
+      message: '未配置共享访问凭据（UNC_CREDENTIALS 或 PRODUCTION_SCHEDULE_UNC_USER/PASSWORD）'
+    };
+  }
+
+  const cacheKey = shareRoot.toLowerCase();
+  const cached = ensureState.get(cacheKey);
+  if (!options.force && cached && cached.ok && Date.now() - cached.at < ENSURE_COOLDOWN_MS) {
+    return { ...cached, attempted: true, credsConfigured, cached: true };
+  }
+
+  let result = credentials
+    ? await runNetUseAsync(shareRoot, credentials.user, credentials.password)
+    : await runNetUseAsync(shareRoot);
+
+  let droppedSession = null;
+  for (let round = 0; round < 2 && result.errorNo === '1219' && credentials; round += 1) {
+    const drop = await dropServerSessionsAsync(shareRoot);
+    if (!droppedSession) droppedSession = drop;
+    if (!drop.ok) break;
+    result = await runNetUseAsync(shareRoot, credentials.user, credentials.password);
+  }
+
+  const record = {
+    at: Date.now(),
+    ok: result.ok,
+    message: droppedSession ? `${result.message}（${droppedSession.message}）` : result.message,
+    errorNo: result.errorNo || '',
+    user: credentials ? credentials.user : `（当前进程凭据 ${getProcessAccount()}）`,
+    shareRoot
+  };
+  if (!result.ok) {
+    const listing = await listConnectionsAsync(shareRoot);
+    record.connections = listing.lines;
+    if (!listing.ok) record.connectionsError = listing.message;
+  }
+  ensureState.set(cacheKey, record);
+  if (!result.ok) {
+    console.warn(`[uncShare] net use ${shareRoot} 失败（${record.user}）: ${record.message}`);
+  } else {
+    console.log(`[uncShare] net use ${shareRoot} 成功（${record.user}${record.errorNo ? `，${record.errorNo}` : ''}）`);
+  }
+  return { attempted: true, credsConfigured, ...record };
+}
+
+/**
+ * withShareRetry 的异步版本：读取失败且错误码属于认证/会话类时，重建连接后重试一次。
+ * @template T
+ * @param {string} filePath
+ * @param {() => Promise<T>} operation
+ * @param {{ user?: string, password?: string, shareRoot?: string }} [options]
+ * @returns {Promise<{ ok: boolean, value?: T, error?: NodeJS.ErrnoException, ensure?: object }>}
+ */
+async function withShareRetryAsync(filePath, operation, options = {}) {
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    if (!AUTH_ERROR_CODES.has(error.code)) return { ok: false, error };
+
+    const ensure = await ensureShareAccessAsync(filePath, options);
+    if (!ensure.attempted || !ensure.ok) return { ok: false, error, ensure };
+
+    try {
+      return { ok: true, value: await operation(), ensure };
+    } catch (retryError) {
+      return { ok: false, error: retryError, ensure };
+    }
+  }
+}
+
 module.exports = {
   getShareRoot,
+  getShareHost,
   parseCredentialMap,
   resolveCredentials,
   ensureShareAccess,
   withShareRetry,
   getShareStatus,
+  probeHost,
+  ensureShareAccessAsync,
+  withShareRetryAsync,
   _private: {
     AUTH_ERROR_CODES,
     ENSURE_COOLDOWN_MS,

@@ -292,7 +292,18 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware, accessSettingsMiddl
 // 行锁：本窗口正在编辑的行直接跳过，不冲掉未保存的输入
 const syncIsLocked = (req) => (itemId) => Boolean(rowLockConflictMessage(getStatusTrackingLock(itemId), req));
 
-router.post('/sync-schedule/preview', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
+// 「同步生产大日程」的开关关闭时，只有超级管理员能执行：
+// 前端会把一般管理员的按钮置灰，这里再做一层兜底，防止直接调接口绕过。
+const scheduleSyncPermission = (req, res, next) => {
+  if (req.user?.role === 'superadmin') return next();
+  const settings = db.readSettings()?.statusTracking;
+  if (settings?.allowAdminScheduleSync === false) {
+    return res.status(403).json({ message: '超级管理员已关闭一般管理员的「同步生产大日程」权限' });
+  }
+  return next();
+};
+
+router.post('/sync-schedule/preview', [authMiddleware, adminMiddleware, scheduleSyncPermission, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   try {
     const { stats, filePath } = await scheduleSyncService.buildSyncPlan({ isLocked: syncIsLocked(req) });
     res.json({ success: true, ...stats, filePath });
@@ -304,7 +315,7 @@ router.post('/sync-schedule/preview', [authMiddleware, adminMiddleware, accessSe
   }
 }));
 
-router.post('/sync-schedule', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
+router.post('/sync-schedule', [authMiddleware, adminMiddleware, scheduleSyncPermission, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   let result;
   try {
     result = await scheduleSyncService.applySyncPlan({ isLocked: syncIsLocked(req) });
