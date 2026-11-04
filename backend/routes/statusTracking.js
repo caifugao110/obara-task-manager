@@ -298,7 +298,7 @@ router.post('/sync-schedule/preview', [authMiddleware, adminMiddleware, accessSe
     res.json({ success: true, ...stats, filePath });
   } catch (error) {
     if (error.code === 'SCHEDULE_UNAVAILABLE') {
-      return res.status(503).json({ message: error.message, filePath: error.filePath });
+      return res.status(503).json({ message: error.message, filePath: error.filePath, detail: error.detail, share: error.share });
     }
     throw error;
   }
@@ -310,7 +310,7 @@ router.post('/sync-schedule', [authMiddleware, adminMiddleware, accessSettingsMi
     result = await scheduleSyncService.applySyncPlan({ isLocked: syncIsLocked(req) });
   } catch (error) {
     if (error.code === 'SCHEDULE_UNAVAILABLE') {
-      return res.status(503).json({ message: error.message, filePath: error.filePath });
+      return res.status(503).json({ message: error.message, filePath: error.filePath, detail: error.detail, share: error.share });
     }
     throw error;
   }

@@ -91,6 +91,7 @@ const {
   removeStatusTrackingSessions
 } = require('./utils/statusTrackingLocks');
 const taskStore = require('./taskStore');
+const productionSchedule = require('./utils/productionSchedule');
 
 // Middleware
 const { auditLogMiddleware } = require('./middleware/auditLog');
@@ -688,6 +689,17 @@ db.init();
 server.listen(securityConfig.server.port, () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
   db.initAdmin();
+  // 共享盘预热：配了 PRODUCTION_SCHEDULE_UNC_USER 时，先用该凭据把 SMB 连接建好。
+  // 否则「第一次读大日程」可能由一次普通 UNC 访问先落成 guest/匿名隐式会话，
+  // 之后再换凭据就会撞 1219，要多绕一轮断开重连才恢复。
+  try {
+    const warm = productionSchedule.ensureShareReady();
+    if (warm && warm.attempted) {
+      console.log(`[productionSchedule] 共享预热${warm.ok ? '成功' : '失败'}：${warm.message}`);
+    }
+  } catch (err) {
+    console.error('[productionSchedule] 共享预热异常:', err && err.message ? err.message : err);
+  }
   // 维护计划配置迁移（旧 scheduleTime 单值 -> scheduleTimes）在调度器内部完成
   startMaintenanceScheduler().catch((err) => {
     console.error('[maintenance] 维护计划调度启动失败:', err && err.message ? err.message : err);

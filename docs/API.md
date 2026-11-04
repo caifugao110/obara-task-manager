@@ -1698,6 +1698,17 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `skipped` | 不符合有效仕样号条件被忽略的行数 |
 | `salesFilled` | 本次会自动补全营业担当的条数 |
 | `leaderFilled` | 本次会自动补全组长的条数 |
+
+读取失败（如共享目录不可访问、文件被 Excel 独占）时返回 `503`：
+
+```json
+{
+  "message": "无法读取「各产品大日程.xls」（EPERM：…处置建议…）",
+  "filePath": "\\\\192.168.160.70\\各产品大日程\\各产品大日程.xls",
+  "detail": { "code": "EPERM", "hint": "…", "shareEnsure": { "attempted": true, "ok": true } },
+  "share": { "shareRoot": "\\\\192.168.160.70\\各产品大日程", "credentialConfigured": false, "lastEnsure": {} }
+}
+```
 | `salesMissing` | 仕样书里也取不到营业担当、同步后仍需人工补填的条数 |
 | `salesLookup` | 仕样书解析情况 `{ specs, resolved, missingPdf, noSalesPerson, failed, shareAvailable }` |
 | `months` | 各月份块的条数分布 `[{ month, count }]` |
@@ -3156,6 +3167,26 @@ PUT 请求：
 | `warnings.over10MB` | 逻辑数据超过 10MB（仅提示，非硬限制） |
 | `warnings.oldTaskData` | 任务数据超过 24 个月 |
 
+### 大日程读取探针
+
+`GET /api/system/schedule-probe`
+
+权限：仅 `superadmin`
+
+强制重读一次共享盘上的「各产品大日程.xls」（绕过 5 分钟缓存，不写库），用于排查状态追踪「同步生产大日程」读不到文件的问题。返回结构：
+
+| 字段 | 说明 |
+|------|------|
+| `filePath` | 实际读取的路径（`PRODUCTION_SCHEDULE_PATH`） |
+| `readable` | 本次是否读取并解析成功 |
+| `entryCount` / `sheets` / `monthBlocks` | 解析出的条目数、按工作表分布、涉及的月份块 |
+| `elapsedMs` | 本次读取耗时 |
+| `processUser` | 运行后端的 Windows 账户（服务自启时常见为 `SYSTEM` 或 `Administrator`） |
+| `lastError` | 最近一次失败：`code`（`EPERM`/`EBUSY`/`ENOENT` 等）、`message`、`hint`（处置建议）、`shareEnsure`（自动 `net use` 的结果） |
+| `lastSuccessAt` | 最近一次成功读取的时间 |
+| `share` | 共享根、是否配置了凭据（`credentialConfigured`）、最近一次自动 `net use` 的时间/结果/账户（`lastEnsure`）；失败时 `lastEnsure.connections` 会列出本会话到该服务器已有的连接，`errorNo` 为 `net use` 返回码（如 `1219` 表示已存在其他凭据的连接） |
+| `raw` | 裸文件操作结果：分别试 `stat`、`readFile`、`readdir`，全为 `EPERM` 说明共享连接已建立但身份不对（多为 guest/匿名） |
+
 ### 获取维护状态
 
 `GET /api/system/maintenance`
@@ -4367,6 +4398,9 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 | `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`）；未显式配置时代码回退到该内置地址（`backend/config/security.js`） |
 | `PRODUCTION_SCHEDULE_PATH` | 内置回退值 `\\192.168.160.70\各产品大日程\各产品大日程.xls` | 各产品大日程 Excel 路径。`POST /api/spec/spec-info` 优先从此表取数量/纳期/已发图/工厂；不可读时静默回退 PDF，不阻断接口 |
 | `PRODUCTION_SCHEDULE_CACHE_MS` | `300000` | 大日程解析缓存时长（毫秒）。按文件 mtime 复用解析结果；读取失败后 30 秒内不重复访问共享目录 |
+| `PRODUCTION_SCHEDULE_UNC_USER` | 空 | 访问大日程共享目录的账号。后端以服务/计划任务开机自启时运行在 Session 0，没有登录用户的共享认证；配置后读取失败会自动 `net use` 再重试 |
+| `PRODUCTION_SCHEDULE_UNC_PASSWORD` | 空 | 与 `PRODUCTION_SCHEDULE_UNC_USER` 配套的密码；仅用于建立共享连接，不写入日志 |
+| `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号分隔；用于双备份第二地址等其他共享 |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |

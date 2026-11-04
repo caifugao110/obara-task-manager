@@ -18,6 +18,7 @@ const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDis
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const maintenance = require('../utils/dbMaintenance');
+const productionSchedule = require('../utils/productionSchedule');
 const {
   DEFAULT_TASK_COLOR_CONFIG,
   TRIP_TASK_COLOR,
@@ -1246,6 +1247,14 @@ router.put('/settings', [authMiddleware, superAdminMiddleware], asyncHandler(asy
 
 router.get('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   res.json(maintenance.getMaintenanceStatus());
+}));
+
+// 共享盘排障：状态跟踪「同步生产大日程」读不到「各产品大日程.xls」时，
+// 前端只有一句笼统提示。这里强制重读一次共享文件，返回路径、可读性、条目数、
+// 真实错误码与 net use 连接状态，管理员不必再登录服务器翻日志。
+router.get('/schedule-probe', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const probe = productionSchedule.probeSchedule();
+  res.json({ success: true, ...probe });
 }));
 
 router.put('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {

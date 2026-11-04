@@ -627,7 +627,7 @@ node tests\gun-search-relational.js
 | `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器）；启动前自动检查 Node.js 22+、检查并释放端口、按需安装依赖。**不会自动执行 `git pull`**（供应链风险已移除），代码更新需人工确认后手动拉取 |
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
-| `stop.bat` | 停止前后端进程；停止前先调用断网备份接口备份数据库 |
+| `stop.bat` | 停止前后端进程；停止前先调用断网备份接口备份数据库。停止时**从监听端口的 PID 沿父进程链向上找到进程树顶层**（`cmd.exe` 由 VBS 启动 → `node.exe` npm → `cmd.exe` 子 shell → `node.exe` nodemon/vite → `node.exe` 服务本体），再 `taskkill /F /T` 整棵树，避免只杀掉监听进程、残留 npm/nodemon/cmd 继续占着日志文件或改文件后自动重启；随后按命令行路径清扫已不监听端口的残留进程、清理 `logs/*.pid`，并逐一回检端口给出真实结论（不再无条件打印成功）。若进程由服务/计划任务在 Session 0 启动，普通权限无法结束时会自动以管理员身份重启自身 |
 | `control/ObaraServiceController.csproj` | 使用 MSBuild 构建 Windows 服务控制台 EXE，详见「Windows 服务控制台」章节 |
 
 前端类型检查：
@@ -668,6 +668,9 @@ node --check backend\routes\tasks.js
 | `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录（如 `\\server\仕样书$`）；未在 `backend/.env` 中显式配置时，代码回退到该内置地址（`backend/config/security.js`），指向其他共享目录必须显式配置并重启后端 |
 | `PRODUCTION_SCHEDULE_PATH` | 内置回退值 `\\192.168.160.70\各产品大日程\各产品大日程.xls` | 各产品大日程 Excel 文件路径。状态追踪页的「数量」「纳期」「已发图」与工厂优先取此表（解析工作表「南京焊钳」「上海焊钳」「南京焊钳修改」「上海焊钳修改」）；读取不到时回退到 PDF / 已存数据。仓库内 `backend/templates/production-schedule/` 放了一份参考文件，仅用于离线查看排查，实际解析路径以此变量为准 |
 | `PRODUCTION_SCHEDULE_CACHE_MS` | `300000`（5 分钟） | 大日程解析结果缓存时长（毫秒）。文件位于网络共享，解析结果按 mtime 复用；共享文件更新后最多滞后该时长生效。读取失败后 30 秒内不重复访问共享目录，避免拖慢状态追踪请求 |
+| `PRODUCTION_SCHEDULE_UNC_USER` | 空 | 读取大日程共享目录所用账号。后端以服务/计划任务**开机自启**时运行在 Session 0，没有登录用户的共享认证（读共享文件报 `EPERM`）；配置该项后读取失败会自动 `net use` 再重试。不配也可，前提是给运行后端的账户在共享服务器上授了读权限 |
+| `PRODUCTION_SCHEDULE_UNC_PASSWORD` | 空 | 与 `PRODUCTION_SCHEDULE_UNC_USER` 配套的密码；只用于建立共享连接，不写入日志 |
+| `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号分隔（如双备份第二地址） |
 | `CORS_ORIGIN` | 开发环境默认 `*`；**生产环境必填** | 允许的前端地址，多个用逗号分隔；开发环境未配置时允许任意来源且不启用 CORS credentials；**生产环境未配置将导致服务启动失败（`process.exit(1)`），必须设置显式白名单** |
 | `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
 | `GITEE_REPO_OWNER` | 空（`.env.example` 提供示例值 `caifugao110`） | Gitee 仓库所有者；未配置时版本检查返回「未知」 |
@@ -1020,7 +1023,7 @@ obara-task-manager/
 | 焊枪台账导出 | `backend/utils/gunLedgerExport.js` | 焊枪编号台账按分类/全部分类导出为 Excel（含样式、斑马纹、边框） |
 | 焊枪台账表锁 | `backend/utils/gunTableLocks.js` | 表级独占编辑锁的内存态管理（申请/释放/心跳/僵死锁清理） |
 | 状态追踪行锁 | `backend/utils/statusTrackingLocks.js` | 状态追踪行锁的进程内单例：Socket 事件（占用/释放/断开清理）与 `routes/statusTracking.js` 的 HTTP 写接口（`PUT`/`DELETE` 前的行锁校验）读写同一份锁状态，广播逻辑仍留在 `server.js` |
-| 各产品大日程解析 | `backend/utils/productionSchedule.js` | 解析 `PRODUCTION_SCHEDULE_PATH` 指向的 Excel，把四张工作表按月份块拆成「仕样号 → 数量/纳期/已发图/工厂/客户原文」索引，`findScheduleEntry(specNumber, preferredMonth)` 供 `POST /api/spec/spec-info` 兜底取值。解析结果按文件 mtime + `PRODUCTION_SCHEDULE_CACHE_MS` 缓存（网络共享不宜每次请求都读），读取失败后 30 秒内不重试并节流告警，接口在失败时静默回退到 PDF |
+| 各产品大日程解析 | `backend/utils/productionSchedule.js` | 解析 `PRODUCTION_SCHEDULE_PATH` 指向的 Excel，把四张工作表按月份块拆成「仕样号 → 数量/纳期/已发图/工厂/客户原文」索引，`findScheduleEntry(specNumber, preferredMonth)` 供 `POST /api/spec/spec-info` 兜底取值。解析结果按文件 mtime + `PRODUCTION_SCHEDULE_CACHE_MS` 缓存（网络共享不宜每次请求都读），读取失败后 30 秒内不重试并节流告警，接口在失败时静默回退到 PDF。服务自启（Session 0）拿不到共享认证时，可配 `PRODUCTION_SCHEDULE_UNC_*` 让 `backend/utils/uncShare.js` 自动 `net use` 后重试；`GET /api/system/schedule-probe` 可直接看运行账户与真实错误码 |
 | 压缩打包 | `backend/utils/simpleZip.js` | 多分类导出时将多个 `.xls` 打包为 `.zip` |
 | 工作日工具 | `backend/utils/workday.js` | 工作日覆盖规则、周末判断等工具函数 |
 | 安全配置 | `backend/config/security.js` | JWT、CORS、Gitee API、数据库路径等安全配置 |

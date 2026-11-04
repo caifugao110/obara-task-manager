@@ -17,11 +17,15 @@ const { resolveLeader } = require('./leaderRules');
 const { calculateDesignDeliveryDays } = require('./designDelivery');
 
 class ScheduleUnavailableError extends Error {
-  constructor(filePath) {
-    super('无法读取「各产品大日程.xls」，请确认共享目录可访问或联系管理员');
+  constructor(filePath, status = {}) {
+    // 消息里带上真实错误码与处置建议：Session 0 的服务进程没有共享凭据、
+    // 文件被 Excel 独占、路径写错，三种情况的处理方式完全不同。
+    super(productionSchedule.getUnavailableMessage());
     this.name = 'ScheduleUnavailableError';
     this.code = 'SCHEDULE_UNAVAILABLE';
     this.filePath = filePath;
+    this.detail = status.lastError || null;
+    this.share = status.share || null;
   }
 }
 
@@ -49,7 +53,8 @@ const defaultIsLocked = (itemId) => {
 const readEntriesOrThrow = () => {
   const entries = productionSchedule.getAllScheduleEntries({ forceReload: true });
   if (!entries) {
-    throw new ScheduleUnavailableError(productionSchedule.getScheduleStatus().filePath);
+    const status = productionSchedule.getScheduleStatus();
+    throw new ScheduleUnavailableError(status.filePath, status);
   }
   return entries;
 };

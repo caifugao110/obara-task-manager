@@ -3,6 +3,7 @@
 const fs = require('fs');
 const XLSX = require('xlsx');
 const securityConfig = require('../config/security');
+const uncShare = require('./uncShare');
 
 // 只解析这四个工作表；工作表名以「南京」/「上海」开头，分别对应两个工厂
 const SCHEDULE_SHEETS = [
@@ -23,9 +24,55 @@ let cache = {
   filePath: '',
   loadedAt: 0,
   mtimeMs: 0,
+  entryCount: 0,
   index: null
 };
 let lastWarnAt = 0;
+
+// 读取失败的详细信息：前端只显示一句「请确认共享目录可访问」会掩盖真实原因
+// （Session 0 的服务进程读不到共享 vs 文件被 Excel 独占，处理方式完全不同），
+// 这里保留错误码与建议，供同步接口、诊断接口和日志使用。
+let runtime = {
+  lastError: null,
+  lastSuccessAt: ''
+};
+
+const SCHEDULE_ERROR_HINTS = {
+  EPERM: '后端以服务/计划任务方式运行时（Session 0）拿不到登录用户的共享凭据，请在 backend/.env 配置 PRODUCTION_SCHEDULE_UNC_USER 与 PRODUCTION_SCHEDULE_UNC_PASSWORD，或给运行该服务的账户授予共享权限',
+  EACCES: '进程没有该共享的访问权限，请配置 PRODUCTION_SCHEDULE_UNC_USER/PASSWORD，或给运行该服务的账户授予共享权限',
+  EBUSY: '文件正被 Excel 独占打开，关闭 Excel 后重试',
+  ENOENT: '共享目录里没有该文件，请确认文件名仍为「各产品大日程.xls」',
+  UNKNOWN: '共享连接不可用（认证失败或网络不通），请检查共享凭据配置',
+  ENODEV: '网络提供程序未就绪，请检查到共享服务器的网络连接',
+  ETIMEDOUT: '访问共享目录超时，请检查网络与共享服务器状态'
+};
+
+const hintForError = (code) => SCHEDULE_ERROR_HINTS[code] || '请检查共享目录权限与网络连接';
+
+// 前端 toast 里显示的一句话提示：长建议放 detail.hint / 文档里，避免提示框刷屏
+const SHORT_HINTS = {
+  EPERM: '权限不足，请配置共享账号或给运行账户授权',
+  EACCES: '权限不足，请配置共享账号或给运行账户授权',
+  EBUSY: '文件正被 Excel 独占打开，请关闭后重试',
+  ENOENT: '共享目录里找不到该文件',
+  UNKNOWN: '共享连接不可用（认证失败或网络不通）',
+  ENODEV: '网络提供程序未就绪',
+  ETIMEDOUT: '访问共享超时'
+};
+const shortHintForError = (code) => SHORT_HINTS[code] || '请检查共享目录权限与网络连接';
+
+// 运行后端的 Windows 账户：以服务/计划任务自启时常见为 SYSTEM，
+// 而共享权限往往只授给了具体用户——排障时这一项最关键。
+const getProcessUser = () => {
+  const domain = process.env.USERDOMAIN || '';
+  const user = process.env.USERNAME || '';
+  if (user) return domain ? `${domain}\\${user}` : user;
+  try {
+    return require('os').userInfo().username || '';
+  } catch (error) {
+    return '';
+  }
+};
 
 function pad2(value) {
   return String(value).padStart(2, '0');
@@ -257,6 +304,20 @@ function warnThrottled(message, error) {
   console.warn(message, error?.message || error || '');
 }
 
+// 共享凭据：后端以服务/计划任务自启时在 Session 0 运行，没有登录用户的共享认证，
+// 需要靠这对配置自己 net use（见 utils/uncShare.js）；未配置时沿用系统凭据。
+const getShareCredentials = () => {
+  const user = String(process.env.PRODUCTION_SCHEDULE_UNC_USER || '').trim();
+  if (!user) return {};
+  return { user, password: process.env.PRODUCTION_SCHEDULE_UNC_PASSWORD || '' };
+};
+
+function countEntries(index) {
+  let total = 0;
+  for (const list of index.values()) total += list.length;
+  return total;
+}
+
 function getScheduleIndex(now = new Date(), options = {}) {
   const filePath = getScheduleFilePath();
   if (!filePath) return null;
@@ -276,32 +337,66 @@ function getScheduleIndex(now = new Date(), options = {}) {
     return null;
   }
 
-  try {
+  // 首次 stat 失败（多半是 Session 0 没有共享凭据）时，uncShare 会按配置执行
+  // net use 再重试一次；因此这里把「stat + 解析」整体作为一次可重试的读取。
+  const outcome = uncShare.withShareRetry(filePath, () => {
     const stat = fs.statSync(filePath);
     if (cache.filePath === filePath && cache.index && cache.mtimeMs === stat.mtimeMs) {
-      cache.loadedAt = nowMs;
-      return cache.index;
+      return { stat, index: cache.index, entryCount: cache.entryCount, reused: true };
     }
-
     const workbook = XLSX.readFile(filePath, { cellDates: false });
     const index = buildIndex(workbook, now);
-    cache = {
-      filePath,
-      loadedAt: nowMs,
-      mtimeMs: stat.mtimeMs,
-      index
+    return { stat, index, entryCount: countEntries(index), reused: false };
+  }, getShareCredentials());
+
+  if (!outcome.ok) {
+    const error = outcome.error || {};
+    const code = error.code || 'ERROR';
+    // net use 成功、文件操作仍被拒 → 连接建起来了但身份不对（多为 guest/匿名），
+    // 这类情况给通用提示没有帮助，直接说明该配什么。
+    const guestSession = Boolean(outcome.ensure && outcome.ensure.ok
+      && (code === 'EPERM' || code === 'EACCES'));
+    // 已经配了凭据还 EPERM：说明 net use 用的账号本身没有该共享/文件的读权限
+    const credsRejected = Boolean(guestSession && outcome.ensure.credsConfigured);
+    const guestHint = credsRejected
+      ? `已用配置的账号（${process.env.PRODUCTION_SCHEDULE_UNC_USER}）连接共享，但文件访问仍被拒：请确认该账号在 ${uncShare.getShareRoot(filePath) || '共享服务器'} 上具有读权限（共享权限与 NTFS 权限都要给）`
+      : `共享连接已建立但文件访问被拒：当前运行账户（${getProcessUser()}）在共享服务器上多半不存在，连接以 guest/匿名身份建立。请在 backend/.env 配置 PRODUCTION_SCHEDULE_UNC_USER 与 PRODUCTION_SCHEDULE_UNC_PASSWORD（服务器上真实存在且有读权限的账号）`;
+    runtime.lastError = {
+      code,
+      message: error.message || String(error),
+      hint: guestSession ? guestHint : hintForError(code),
+      shortHint: guestSession
+        ? (credsRejected
+          ? '共享账号无读权限，请给该账号授予共享与 NTFS 读权限'
+          : '共享连接以 guest 身份建立，文件访问被拒；请在 backend/.env 配置共享账号')
+        : shortHintForError(code),
+      at: new Date().toISOString(),
+      shareEnsure: outcome.ensure
+        ? { attempted: outcome.ensure.attempted, ok: outcome.ensure.ok, message: outcome.ensure.message }
+        : null
     };
-    return index;
-  } catch (error) {
-    warnThrottled(`[productionSchedule] 无法读取大日程文件 ${filePath}:`, error);
+    warnThrottled(`[productionSchedule] 无法读取大日程文件 ${filePath}（${code}，运行账户 ${getProcessUser()}）:`, error);
     cache = {
       filePath,
       loadedAt: nowMs,
       mtimeMs: 0,
+      entryCount: 0,
       index: null
     };
     return null;
   }
+
+  const { stat, index, entryCount } = outcome.value;
+  runtime.lastError = null;
+  runtime.lastSuccessAt = new Date(nowMs).toISOString();
+  cache = {
+    filePath,
+    loadedAt: nowMs,
+    mtimeMs: stat.mtimeMs,
+    entryCount,
+    index
+  };
+  return index;
 }
 
 function findScheduleEntry(specNumber, preferredMonth) {
@@ -352,10 +447,88 @@ function getAllScheduleEntries(options = {}) {
 }
 
 function getScheduleStatus() {
+  const filePath = cache.filePath || getScheduleFilePath();
   return {
-    filePath: cache.filePath || getScheduleFilePath(),
+    filePath,
     loadedAt: cache.loadedAt ? new Date(cache.loadedAt).toISOString() : '',
-    mtimeMs: cache.mtimeMs
+    mtimeMs: cache.mtimeMs,
+    entryCount: cache.entryCount || 0,
+    lastSuccessAt: runtime.lastSuccessAt,
+    lastError: runtime.lastError,
+    share: uncShare.getShareStatus(filePath, getShareCredentials())
+  };
+}
+
+// 启动时预热共享连接：后端以服务/计划任务自启（Session 0）时，如果第一次访问
+// 共享盘的是普通 UNC 调用，Windows 可能先用 guest/匿名建一条隐式会话，
+// 之后再换配置的凭据就会撞 1219，要多绕一轮「断开再重连」。
+// 因此启动时若配了凭据，就主动先把连接建好；没配凭据则什么都不做。
+function ensureShareReady() {
+  const filePath = getScheduleFilePath();
+  if (!filePath) return { attempted: false, ok: false, message: '未配置大日程文件路径（PRODUCTION_SCHEDULE_PATH）' };
+  const credentials = getShareCredentials();
+  if (!credentials.user) return { attempted: false, ok: false, message: '未配置共享凭据，跳过预热' };
+  return uncShare.ensureShareAccess(filePath, { ...credentials, force: true });
+}
+
+// 同步失败时给用户看的消息：在原来的统一话术后面补上真实错误码与处置建议，
+// 否则「Session 0 没凭据」和「Excel 独占打开」看起来一模一样。
+function getUnavailableMessage() {
+  const { lastError } = runtime;
+  if (!lastError) return '无法读取「各产品大日程.xls」，请确认共享目录可访问或联系管理员';
+  const shortHint = lastError.shortHint || lastError.hint || '';
+  return `无法读取「各产品大日程.xls」（${lastError.code}${shortHint ? `：${shortHint}` : ''}）`;
+}
+
+// 裸文件系统探针：绕过 XLSX 解析，分别试 stat / readFile / readdir，
+// 用于区分「共享根本连不上」「只有 stat 失败」「文件被独占」这几种情况。
+function probeFileSystem(filePath) {
+  const result = { stat: { ok: false }, read: { ok: false }, readdir: { ok: false } };
+  try {
+    const stat = fs.statSync(filePath);
+    result.stat = { ok: true, size: stat.size, mtime: new Date(stat.mtimeMs).toISOString(), isFile: stat.isFile() };
+  } catch (error) {
+    result.stat = { ok: false, code: error.code || '', message: error.message };
+  }
+  try {
+    const buffer = fs.readFileSync(filePath);
+    result.read = { ok: true, bytes: buffer.length };
+  } catch (error) {
+    result.read = { ok: false, code: error.code || '', message: error.message };
+  }
+  try {
+    const dir = require('path').dirname(filePath);
+    const files = fs.readdirSync(dir);
+    result.readdir = { ok: true, dir, count: files.length, files: files.slice(0, 10) };
+  } catch (error) {
+    result.readdir = { ok: false, code: error.code || '', message: error.message };
+  }
+  return result;
+}
+
+// 管理员排查用：强制重读一次，返回能直接判断成败的信息（不写库、不改缓存之外的状态）
+function probeSchedule() {
+  const startedAt = Date.now();
+  const entries = getAllScheduleEntries({ forceReload: true });
+  const status = getScheduleStatus();
+  const sheets = {};
+  const months = new Set();
+  (entries || []).forEach((entry) => {
+    sheets[entry.sheetName] = (sheets[entry.sheetName] || 0) + 1;
+    months.add(entry.month);
+  });
+  return {
+    filePath: status.filePath,
+    readable: Boolean(entries),
+    entryCount: entries ? entries.length : 0,
+    sheets,
+    monthBlocks: Array.from(months).sort(),
+    elapsedMs: Date.now() - startedAt,
+    processUser: getProcessUser(),
+    lastSuccessAt: status.lastSuccessAt,
+    lastError: status.lastError,
+    share: status.share,
+    raw: probeFileSystem(status.filePath)
   };
 }
 
@@ -363,11 +536,15 @@ module.exports = {
   findScheduleEntry,
   getAllScheduleEntries,
   getScheduleStatus,
+  getUnavailableMessage,
+  probeSchedule,
+  ensureShareReady,
   // 导出给测试/排查使用
   _private: {
     parseDeliveryDate,
     extractSpecNumber,
     buildIndex,
-    getBlockMonth
+    getBlockMonth,
+    hintForError
   }
 };

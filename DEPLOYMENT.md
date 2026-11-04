@@ -57,7 +57,7 @@ start.bat
 |------|------|
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口），适合长期运行 |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
-| `stop.bat` | 先调用断网备份接口备份数据库，再按端口停止前后端进程 |
+| `stop.bat` | 先调用断网备份接口备份数据库，再按端口停止前后端进程：从监听 PID 沿父进程链向上定位进程树顶层后 `taskkill /F /T` 整棵树（只杀监听进程会残留 npm/nodemon/cmd，日志文件仍被占用），再清扫不占端口的残留进程并回检端口。进程若由服务/计划任务在 Session 0 启动，需管理员权限，脚本会自动提权重启自身 |
 
 默认访问地址：
 
@@ -288,6 +288,12 @@ SPEC_SHARE_PATH=\\<server>\仕样书$
 PRODUCTION_SCHEDULE_PATH=\\<server>\各产品大日程\各产品大日程.xls
 # 大日程解析缓存时长（毫秒），默认 5 分钟；共享文件更新后最多滞后该时长生效
 # PRODUCTION_SCHEDULE_CACHE_MS=300000
+# 共享目录访问凭据：后端以服务/计划任务开机自启时运行在 Session 0，拿不到登录用户的
+# 共享认证；配置后读取失败会自动 net use 再重试（详见「常见问题 → 同步生产大日程读数失败」）
+# PRODUCTION_SCHEDULE_UNC_USER=
+# PRODUCTION_SCHEDULE_UNC_PASSWORD=
+# 其他共享的通用凭据映射：\\server\share=用户名:密码，多项用英文分号分隔
+# UNC_CREDENTIALS=
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
 LOGIN_IP_RATE_LIMIT_MAX=300
@@ -688,6 +694,40 @@ taskkill /PID <PID> /F
 1. 确认已在系统设置中启用状态追踪页面
 2. 确认已登录，且当前用户角色有权限访问该页面
 3. 确认已创建状态追踪记录
+
+### 同步生产大日程报「无法读取「各产品大日程.xls」」但资源管理器能打开
+
+**现象**：状态追踪页点「同步生产大日程」提示「无法读取「各产品大日程.xls」，请确认共享目录可访问或联系管理员」，但用当前登录用户在资源管理器里能正常打开 `\\192.168.160.70\各产品大日程`。
+
+**原因**：SMB 认证按登录会话隔离。后端以服务 / 计划任务「开机自启」时运行在 **Session 0**（非交互会话），拿不到登录用户那份共享认证，于是共享文件读取失败，而管理员自己的桌面会话（Session 4）是好的。
+
+先看诊断接口确认失败类型（超级管理员）：
+
+```
+GET /api/system/schedule-probe
+```
+
+返回里几个字段足够定位：
+
+| 字段 | 含义 |
+|------|------|
+| `processUser` | 跑后端的 Windows 账户，例如 `WARTORBOX90\Administrator` 或 `NT AUTHORITY\SYSTEM` |
+| `readable` / `entryCount` | 能不能读、解析出多少条（正常应为 200+ 条） |
+| `lastError.code` | `EPERM` 权限/身份问题；`EBUSY` 文件被 Excel 独占；`ENOENT` 文件名或路径不对 |
+| `share.lastEnsure` | 后端最近一次自动 `net use` 的结果（`ok` + 使用的账户） |
+| `raw` | 分别试 `stat` / `readFile` / `readdir` 的结果，全 EPERM 说明连接建起来了但身份不对 |
+
+**两种修法，任选其一**：
+
+1. **给运行账户授权**（推荐，不必存密码）：在 `192.168.160.70` 上把 `processUser` 对应的账户加入该共享的**共享权限**和 **NTFS 权限**（读即可）。若 `processUser` 是 `NT AUTHORITY\SYSTEM`，需要授权的是机器账户 `WARTORBOX90$`。注意 `net use` 显示「状态 OK」但读写全 EPERM，通常是**连接以 guest/匿名身份建立**——共享开了 Guest，但文件 ACL 只给了 `Authenticated Users`/`Users`，这时必须配真实账号。
+2. **配置共享凭据**：在 `backend/.env` 填 `PRODUCTION_SCHEDULE_UNC_USER` / `PRODUCTION_SCHEDULE_UNC_PASSWORD`（服务器上真实存在且有读权限的账号），重启后端。读取失败时会自动执行
+   `net use \\192.168.160.70\各产品大日程 /user:<用户> <密码>` 再重试。
+   遇到 `1219`（该服务器已存在用其他凭据建立的连接，多为一次普通 UNC 访问留下的隐式 guest 会话）时，后端按
+   `\\server\IPC$ /delete` → `\\server /delete` → `* /delete` 逐级断开旧连接后重连；前两级常因隐式会话没有盘符而报 `2250`，
+   实际生效的多是最后的 `net use * /delete`——它会连带断开本进程会话里的其他共享（如 `仕样书$`），
+   那些共享下次被访问时会自动重建，属可接受的瞬时影响。
+
+补充：`/api/system/schedule-probe` 的 `raw.readdir` 也能确认目录里是否还叫「各产品大日程.xls」；`logs/backend.err.log` 里搜 `[productionSchedule]` 可看到错误码与运行账户，搜 `[uncShare]` 可看到每次自动连接的结果。凭据不会写入日志。
 
 ### 数据库文件损坏
 
