@@ -42,7 +42,7 @@ Authorization: Bearer <token>
 
 - 大多数接口直接返回 JSON 对象或数组，不统一包裹 `success/data`。
 - 错误响应通常包含 `message`，部分接口包含 `code` 或 `details`。
-- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问；唯一无需登录的查询类接口是 `GET /api/auth/session-policy`（会话有效期政策，供登录页展示提示）。另有一个人为设计的例外：`POST /api/system/maintenance/offline-backup` 允许**本机环回地址匿名调用**（供 `stop.bat` 等运维脚本在停止服务前触发备份；非环回请求仍须超级管理员），详见维护章节。
+- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问；唯一无需登录的查询类接口是 `GET /api/auth/session-policy`（会话有效期政策，供登录页展示提示）。另有一个人为设计的例外：`POST /api/system/maintenance/offline-backup` 允许携带后端启动时生成的**一次性令牌**（`logs/offline-backup.token` → `X-Offline-Backup-Token` 请求头，供 `stop.bat` 等运维脚本在停止服务前触发备份；令牌校验后立即轮换，其他请求仍须超级管理员），详见维护章节。
 - 请求体默认使用 `application/json`；文件导入接口使用 `multipart/form-data`。
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
@@ -1045,7 +1045,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 源与目标为同一设计人员同一天时，该接口也用于主任务在单元格内的上移 / 下移排序（前端主任务悬浮工具栏的「上移」「下移」按钮，`newIndex` 传相邻任务的下标）。
-- 移动后前端会发出 `task_updated` Socket 事件，其他客户端收到 `task_refreshed` 后刷新数据。
+- 移动后前端会发出 `task_updated` Socket 事件，并**带上全部受影响的工时表坐标**（`{ targets: [...] }` 形态，源表 + 目标表，同表时合并为一张；跨月移动两张表的年月还不同），其他客户端收到 `task_refreshed` 后直接本地合并这些表，不再整月重拉。响应里的 `sourceSheet` / `targetSheet` 同时用于本端回显（只并入当前视图月份的表，避免跨月串月）。
 
 ### 跨主任务移动单个枪名
 
@@ -3542,7 +3542,7 @@ PUT 请求：
 
 `POST /api/system/maintenance/offline-backup`
 
-权限：本机环回地址（`127.0.0.1`/`::1`/IPv4 映射地址 `::ffff:127.0.0.1`，供 stop.bat 等本地运维脚本匿名调用）；非环回请求须为已登录的 `superadmin`。环回判断使用 Socket 对端地址（`req.socket.remoteAddress`），`trust proxy` 下伪造 `X-Forwarded-For` 无法绕过。
+权限：请求头 `X-Offline-Backup-Token` 携带后端启动时写入 `logs/offline-backup.token` 的一次性令牌（供 `stop.bat` 等本地运维脚本使用；校验通过后令牌立即轮换，同一令牌只能使用一次）；无有效令牌时须为已登录的 `superadmin`。不再按来源地址放行——前端代理（Vite/nginx）会让局域网请求的源地址变成 `127.0.0.1`，据此放行等于匿名开放接口。
 
 说明：
 
@@ -4233,7 +4233,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 |------|------|------------|
 | `connect` | Socket 连接成功（可用于检测后端是否恢复） | - |
 | `connect_error` | Socket 连接失败（后端端口断开或网络异常） | - |
-| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端。可选参数 `{ designerId, month, year }` 用于增量广播，不传或坐标非法时退化为全量刷新信号 | 需已认证；**每个连接 10 秒最多 20 次**；超限时**不回发 `error`**，而是记录最后一次变更坐标并在限流窗口结束后补发一次 `task_refreshed`（见「任务刷新与增量广播」的限流与补发） |
+| `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端。增量广播参数有两种形态：单表 `{ designerId, month, year }`、多表 `{ targets: [{ designerId, month, year }, ...] }`（最多 8 张，超出部分丢弃）；不传或坐标全部非法时退化为全量刷新信号 | 需已认证；**每个连接 10 秒最多 20 次**；超限时**不回发 `error`**，而是记录最后一次变更坐标并在限流窗口结束后补发一次 `task_refreshed`（见「任务刷新与增量广播」的限流与补发） |
 | `request_state` | 主动索取一次指定状态快照，参数 `{ event }`，`event` 必须是白名单之一：`editing_state`、`gun_ledger_editing_state`、`gun_ledger_table_locks_state`、`status_tracking_editing_state`；服务端校验通过后以同名事件把当前快照回给**发起者**。用于页面晚挂载或 Socket 重连后补一次初始状态，避免只能等下一次变更广播 | 需已认证；**每个连接 10 秒最多 20 次**，超限与该事件不在白名单时**静默忽略**（不回发 `error`，也不回快照） |
 | `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、可选 `mode`（`edit` / `colorMark`）、可选 `itemId`（主任务 id，省略即整格会话）、可选 `gunIndex`（枪名下标，`colorMark` 模式下定位到具体枪名行，`null`/省略表示主任务本身） | 需已认证；用户身份一律取服务端会话，客户端传入的 `userId`/`username` 被忽略 |
 | `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放该 socket 在此单元格内的**全部主任务会话**（事件不带 `itemId`）；两者都不传则释放当前 socket 的所有编辑会话 | 需已认证 |
@@ -4251,7 +4251,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 | 事件 | 说明 | 接收方 |
 |------|------|--------|
-| `task_refreshed` | 任务数据已刷新。载荷为空时客户端全量刷新；载荷为 `{ sheets: [sheet] }` 时为增量更新，客户端直接本地合并这些工时表（详见「任务刷新与增量广播」） | 由 `task_updated` 事件触发时：除发起者外的其他客户端；由 HTTP 接口（导入/维护/分配）触发时：全体客户端（无载荷） |
+| `task_refreshed` | 任务数据已刷新。载荷为空时客户端全量刷新；载荷为 `{ sheets: [sheet, ...] }`（1~8 张）时为增量更新，客户端直接本地合并这些工时表（详见「任务刷新与增量广播」） | 由 `task_updated` 事件触发时：除发起者外的其他客户端；由 HTTP 接口（导入/维护/分配）触发时：全体客户端（无载荷） |
 | `editing_state` | 当前所有编辑中的会话状态（主任务粒度，一个单元格可能存在多条），连接成功后下发 | 仅当前连接 |
 | `user_editing` | 某用户正在编辑指定会话，参数为编辑会话（含 `designerId`、`date`、`userId`、`username`、`name`、`mode`、`itemId`、`gunIndex`、`socketId`） | **除发起者外**的其他客户端（发起者需自行维护本地状态） |
 | `editing_blocked` | 目标主任务（或整格）已被其他用户编辑，服务端拒绝新的编辑请求，参数为占用会话 | 仅发起者 |
@@ -4278,30 +4278,44 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 
 **1. 增量广播（携带坐标）**
 
-客户端发送：
+单表写入时发送顶层坐标：
 
 ```javascript
 socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 });
 ```
 
-- `designerId` 为变更所属设计人员，`month` 为 1-12 的月份，`year` 为年份，三者齐全且合法时服务端用它们从数据库读取最新工时表（`taskStore.getSheet`）。
+一次改动多张表时用 `targets`（移动主任务会同时改动源设计员表与目标设计员表，跨月移动还会落在不同月份）：
+
+```javascript
+socket.emit('task_updated', {
+  targets: [
+    { designerId: 'designer-1', month: 9, year: 2026 },
+    { designerId: 'designer-2', month: 10, year: 2026 }
+  ]
+});
+```
+
+- `designerId` 为变更所属设计人员，`month` 为 1-12 的月份，`year` 为年份。两种形态互斥：payload 中存在 `targets` 数组时按多表处理，否则读取顶层的 `designerId` / `month` / `year`（旧客户端仍可用）。
+- 多表最多 **8 张**（`MAX_BROADCAST_TARGETS`），超出部分直接丢弃；重复坐标按 `designerId + month + year` 去重。
+- 每个合法坐标都由服务端用 `taskStore.getSheet` 从数据库读取最新工时表。
 - 广播内容取自**数据库**而非客户端 payload，避免把客户端构造的任意内容转发给其他在线用户。
-- 广播：`task_refreshed` 携带 `{ sheets: [sheet] }`，`sheet` 即该设计人员当月工时表的最新完整数据，其他客户端可直接本地合并，无需重新拉取整月数据。
-- 坐标缺失/非法或读取失败时退化为第 2 种模式（无载荷的全量刷新信号），服务端日志记录读取异常。
+- 广播：`task_refreshed` 携带 `{ sheets: [{ ... }, ...] }`，每张 `sheet` 是该设计人员该月工时表的最新完整数据，其他客户端可直接本地合并，无需重新拉取整月数据。
+- **单张表读取失败不放弃整批**：其余表照常广播，仅服务端日志记录该表的读取异常；全部坐标非法或全部读取失败时退化为第 2 种模式（无载荷的全量刷新信号）。
 
 **2. 全量刷新信号（无载荷）**
 
-不传坐标或坐标不合法时广播空的 `task_refreshed`，客户端按原逻辑重新拉取整月数据与工作日覆盖规则。适用于批量操作、跨设计人员移动、工作日设置变更、导入/维护等影响范围不明确或不止一张表的场景。
+不传坐标或坐标全部不合法时广播空的 `task_refreshed`，客户端按原逻辑重新拉取整月数据与工作日覆盖规则。适用于批量操作、工作日设置变更、导入/维护等影响范围不明确或不止一张表的场景（**跨设计人员、跨月移动已改为带多表坐标的增量广播，不再走这条**）。
 
 发起方约定（哪些场景必须带坐标）：
 
 - **能确定「设计员 + 日期」的单表写入一律带坐标**：`month` / `year` 取自**目标日期**，不是发起方当前查看的月份。因此跨月安排（如 10 月看板里把任务排到 11 月）也能让其他客户端正确合并到对应表。
+- **一次改动多张表的写入必须用 `targets` 一次发全**：移动主任务（`POST /api/tasks/move`）、复制任务这类会同时改动源表与目标表的操作，把每张受影响表的坐标都带上。只发其中一张会让另一端的目标行迟迟不出现，退化成整月全量刷新。
 - 「快速确认图安排」弹窗（台账页 `Shift×2` 与主页面快速取号内的二级浮层共用）在整批创建/合并完成后**自行广播一次**带坐标的 `task_updated`；调用方页面只做本端回显（合并接口返回的 `sheet`），**不再补发**信号，避免其他客户端收到两条信号、其中一条还是全量刷新。
 - 不满足上述条件时才发空信号；空信号会让**只读客户端**再叠加 3 秒合并节流，实时性最差，非必要不要使用。
 
 前端接收侧的节流策略（仅主页面）：
 
-- 增量载荷只合并与当前查看月份一致（`sheet.month` / `sheet.year` 相同）的工时表，其他月份的变更丢弃，不触发拉取。
+- 增量载荷只合并与当前查看月份一致（`sheet.month` / `sheet.year` 相同）的工时表，其他月份的条目丢弃（不回退成全量刷新），不触发拉取。
 - 全量刷新信号对**只读用户**（无编辑权限或离线模式）合并到 3 秒一次；页面处于后台（`visibilityState === 'hidden'`）时直接跳过并置挂起标记，切回前台再补刷一次。
 - 有编辑权限的用户收到全量信号时立即刷新，保证协作实时性。
 
@@ -4311,7 +4325,7 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 
 - 该事件只是「数据已变更」的信号，丢弃最后一次信号会让其他客户端一直停在旧状态，因此**限流命中时不回发 `error`，也不直接丢弃**：服务端把这次的变更坐标记录在连接上，并在窗口结束后补发一次 `task_refreshed`。
 - 补发期间的后续变更只覆盖记录的坐标，不重复排定定时器（一个窗口最多一次补发，始终补发最新坐标）。
-- 补发内容与正常广播一致：坐标合法则从数据库读取最新工时表走增量广播，否则为空载荷的全量刷新信号。
+- 补发内容与正常广播一致：坐标合法（单表或多表）则从数据库读取最新工时表走增量广播，否则为空载荷的全量刷新信号。
 - 若在补发前窗口内又成功广播了一次（未被限流），待补发信号立即取消——最新数据已经送达，补发已无意义。
 - 连接断开（`disconnect`）时清理待补发定时器，避免连接销毁后仍持有 `socket` 引用。
 - 因此**前端不应依赖 `task_updated` 的 `error` 事件做退避**；其他事件（如 `status_tracking_start_edit`）超限仍会收到 `error`（`操作过于频繁，请稍后再试`）。
@@ -4408,6 +4422,7 @@ socket.emit('task_updated', { designerId: 'designer-1', month: 10, year: 2026 })
 | `PRODUCTION_SCHEDULE_UNC_PASSWORD` | 空 | 与 `PRODUCTION_SCHEDULE_UNC_USER` 配套的密码；仅用于建立共享连接，不写入日志 |
 | `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号分隔；用于双备份第二地址等其他共享 |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
+| `CRASH_EXIT_ON_UNCAUGHT` | 空（记录但不退出） | 进程级兜底开关。`uncaughtException` / `unhandledRejection` 默认**只记录不退出**：完整堆栈追加到 `logs/backend-crash.log` 并打到控制台，进程继续提供服务（代价是可能有请求卡在半途）；设为 `1` 时记录后 `process.exit(1)`，便于 nodemon 之类按崩溃重启。生产环境保持默认——直接退出会让 5000 端口消失、前端所有请求变成 `ECONNREFUSED`，而日志里只剩 nodemon 的一句 `app crashed` |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
 | `WEKNORA_API_KEY` | 空 | 主工作空间 API Key，仅服务端使用 |

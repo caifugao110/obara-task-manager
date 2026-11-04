@@ -386,7 +386,12 @@ async function probeHost(host, timeoutMs = 2000) {
   const attempt = (port) => new Promise((resolve) => {
     const socket = net.connect({ host, port });
     const done = (ok, code) => {
-      socket.removeAllListeners();
+      socket.removeAllListeners('connect');
+      socket.removeAllListeners('timeout');
+      // 保留一个空的 error 监听：destroy() 之后句柄仍可能补发 ECONNRESET /
+      // ENOTFOUND，一旦没有监听者，'error' 事件会升级成未捕获异常，
+      // 直接把整个后端进程带走（共享盘抖动时尤其容易命中）。
+      socket.on('error', () => {});
       socket.destroy();
       resolve({ ok, code: code || '', port });
     };

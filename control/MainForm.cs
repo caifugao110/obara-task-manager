@@ -43,6 +43,56 @@ namespace ObaraServiceController
         private int _hoverButton;
         private bool _isMonitoring;
 
+        // ------------------------------------------------------------------
+        // 自动重启（自愈）
+        //
+        // 背景：nodemon 崩溃后不会退出，只打印 "app crashed - waiting for
+        // file changes" 然后原地等待，5000 端口再也没有监听，前端所有请求
+        // 变成 ECONNREFUSED，而控制台只是把状态灯变红——必须有人手动点
+        // 「重启」。这里让控制台自己完成这个动作：探测到端口无响应且进程
+        // 已退出（或进程还在但端口长时间无响应 = nodemon 空转）时按退避
+        // 间隔重新拉起，并把每次动作写进日志。
+        //
+        // 只有在「本控制台托管的进程」上才生效（Armed）：如果后端是
+        // start.bat 的 backend-watchdog.bat 拉起的，控制台没有它的
+        // Process 对象，就不介入，避免两个守护者抢同一个端口。
+        // ------------------------------------------------------------------
+        private bool _autoRestartEnabled;
+        private int _autoRestartMaxAttempts;
+        private TimeSpan _autoRestartWindow;
+        private int[] _autoRestartDelays;
+        private AutoRestartState _backendAutoRestart;
+        private AutoRestartState _frontendAutoRestart;
+
+        // 连续多少次探测失败才认定为「不可用」：单次探测可能因为 CPU 抢占
+        // 或连接排队而超时，按 2 秒一轮计算，3 次约 6 秒。
+        private const int AutoRestartConfirmTicks = 3;
+
+        private sealed class AutoRestartState
+        {
+            public bool Armed;      // 由本控制台托管，具备自愈资格
+            public bool GaveUp;     // 窗口内重启次数用尽，等人工介入
+            public int DelayIndex;
+            public int AttemptsInWindow;
+            public int UnresponsiveTicks;
+            public int TotalRestarts;
+            public DateTime NextAttemptUtc = DateTime.MinValue;
+            public DateTime GraceUntilUtc = DateTime.MinValue;
+            public DateTime WindowStartUtc = DateTime.MinValue;
+
+            // 只清计数与计时，不动 Armed（是否具备资格由启动/停止动作决定）
+            public void Reset()
+            {
+                GaveUp = false;
+                DelayIndex = 0;
+                AttemptsInWindow = 0;
+                UnresponsiveTicks = 0;
+                NextAttemptUtc = DateTime.MinValue;
+                GraceUntilUtc = DateTime.MinValue;
+                WindowStartUtc = DateTime.MinValue;
+            }
+        }
+
         // Layout panels
         private Panel _titleBar;
         private Panel _mainPanel;
@@ -190,6 +240,14 @@ namespace ObaraServiceController
             _kbLatency = -1;
             _hoverButton = -1;
 
+            // 自动重启默认参数，LoadConfig 会按 App.config 覆盖
+            _autoRestartEnabled = true;
+            _autoRestartMaxAttempts = 5;
+            _autoRestartWindow = TimeSpan.FromMinutes(10);
+            _autoRestartDelays = new int[] { 15, 30, 60, 120 };
+            _backendAutoRestart = new AutoRestartState();
+            _frontendAutoRestart = new AutoRestartState();
+
             LoadConfig();
             // Keep ProcessManager's orphan-kill logic aware of the configured
             // ports, otherwise StopBackend/StopFrontend would only clean up
@@ -269,6 +327,11 @@ namespace ObaraServiceController
             LogMessage("系统", string.Format("后端目录: {0}  前端目录: {1}",
                 PathResolver.BackendPath, PathResolver.FrontendPath));
             LogMessage("系统", string.Format("知识库服务(WeKnora/Docker)健康检查: http://127.0.0.1:{0}/health", _config.KbApiPort));
+            LogMessage("系统", _autoRestartEnabled
+                ? string.Format("自动重启已启用：服务退出或端口无响应时自动拉起，{0} 分钟内最多 {1} 次，重试间隔 {2} 秒",
+                    (int)_autoRestartWindow.TotalMinutes, _autoRestartMaxAttempts,
+                    string.Join("/", _autoRestartDelays.Select(d => d.ToString()).ToArray()))
+                : "自动重启已关闭（App.config: AutoRestartEnabled=false）");
             CheckNodeEnvironment();
             UpdateAllStatusAsync();
         }
@@ -293,8 +356,43 @@ namespace ObaraServiceController
                 if (int.TryParse(kbApiPort, out kap) && kap >= 1 && kap <= 65535) _config.KbApiPort = kap;
                 int kcp;
                 if (int.TryParse(kbConsolePort, out kcp) && kcp >= 1 && kcp <= 65535) _config.KbConsolePort = kcp;
+
+                // ---- 自动重启（自愈）----
+                bool autoRestart;
+                if (bool.TryParse(System.Configuration.ConfigurationManager.AppSettings["AutoRestartEnabled"], out autoRestart))
+                    _autoRestartEnabled = autoRestart;
+
+                int autoRestartMax;
+                if (int.TryParse(System.Configuration.ConfigurationManager.AppSettings["AutoRestartMaxAttempts"], out autoRestartMax)
+                    && autoRestartMax >= 1)
+                    _autoRestartMaxAttempts = autoRestartMax;
+
+                int autoRestartWindowMinutes;
+                if (int.TryParse(System.Configuration.ConfigurationManager.AppSettings["AutoRestartWindowMinutes"], out autoRestartWindowMinutes)
+                    && autoRestartWindowMinutes >= 1)
+                    _autoRestartWindow = TimeSpan.FromMinutes(autoRestartWindowMinutes);
+
+                _autoRestartDelays = ParseDelays(System.Configuration.ConfigurationManager.AppSettings["AutoRestartDelays"], _autoRestartDelays);
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 解析 AutoRestartDelays（形如 "15,30,60,120"，单位秒）。
+        /// 缺省 / 格式不对时保留默认值，非法项忽略，避免一个手写错的配置
+        /// 把自愈彻底关掉。
+        /// </summary>
+        private static int[] ParseDelays(string raw, int[] fallback)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return fallback;
+            var values = new List<int>();
+            foreach (string part in raw.Split(','))
+            {
+                int seconds;
+                if (int.TryParse(part.Trim(), out seconds) && seconds >= 1 && seconds <= 3600)
+                    values.Add(seconds);
+            }
+            return values.Count > 0 ? values.ToArray() : fallback;
         }
 
         private void SaveConfig()
@@ -1914,6 +2012,8 @@ namespace ObaraServiceController
 
             if (consideredRunning)
             {
+                // 用户主动停止：撤销自愈资格，否则下一次探测就会把它重新拉起来
+                DisarmAutoRestart(KindBackend);
                 _processManager.StopBackend();
             }
             else
@@ -1931,7 +2031,7 @@ namespace ObaraServiceController
                     }
                     else return;
                 }
-                _processManager.StartBackend(_config.BackendPort);
+                if (_processManager.StartBackend(_config.BackendPort)) ArmAutoRestart(KindBackend);
             }
         }
 
@@ -1946,6 +2046,7 @@ namespace ObaraServiceController
 
             if (consideredRunning)
             {
+                DisarmAutoRestart(KindFrontend);
                 _processManager.StopFrontend();
             }
             else
@@ -1963,7 +2064,7 @@ namespace ObaraServiceController
                     }
                     else return;
                 }
-                _processManager.StartFrontend(_config.FrontendPort);
+                if (_processManager.StartFrontend(_config.FrontendPort)) ArmAutoRestart(KindFrontend);
             }
         }
 
@@ -1974,7 +2075,7 @@ namespace ObaraServiceController
                 _processManager.StopBackend();
                 System.Threading.Thread.Sleep(1000);
             }
-            _processManager.StartBackend(_config.BackendPort);
+            if (_processManager.StartBackend(_config.BackendPort)) ArmAutoRestart(KindBackend);
         }
 
         private void RestartFrontend()
@@ -1984,36 +2085,39 @@ namespace ObaraServiceController
                 _processManager.StopFrontend();
                 System.Threading.Thread.Sleep(1000);
             }
-            _processManager.StartFrontend(_config.FrontendPort);
+            if (_processManager.StartFrontend(_config.FrontendPort)) ArmAutoRestart(KindFrontend);
         }
 
         private void StartAll()
         {
             if (!_processManager.IsBackendRunning && !PortChecker.IsPortListening(_config.BackendPort))
             {
-                _processManager.StartBackend(_config.BackendPort);
+                if (_processManager.StartBackend(_config.BackendPort)) ArmAutoRestart(KindBackend);
             }
             else if (PortChecker.IsPortListening(_config.BackendPort) && !_processManager.IsBackendRunning)
             {
                 _processManager.KillProcessByPort(_config.BackendPort);
                 System.Threading.Thread.Sleep(500);
-                _processManager.StartBackend(_config.BackendPort);
+                if (_processManager.StartBackend(_config.BackendPort)) ArmAutoRestart(KindBackend);
             }
 
             if (!_processManager.IsFrontendRunning && !PortChecker.IsPortListening(_config.FrontendPort))
             {
-                _processManager.StartFrontend(_config.FrontendPort);
+                if (_processManager.StartFrontend(_config.FrontendPort)) ArmAutoRestart(KindFrontend);
             }
             else if (PortChecker.IsPortListening(_config.FrontendPort) && !_processManager.IsFrontendRunning)
             {
                 _processManager.KillProcessByPort(_config.FrontendPort);
                 System.Threading.Thread.Sleep(500);
-                _processManager.StartFrontend(_config.FrontendPort);
+                if (_processManager.StartFrontend(_config.FrontendPort)) ArmAutoRestart(KindFrontend);
             }
         }
 
         private void StopAll()
         {
+            // 全部停止是明确的用户意图：撤销自愈，避免刚停完又被拉起来
+            DisarmAutoRestart(KindBackend);
+            DisarmAutoRestart(KindFrontend);
             _processManager.StopAll();
         }
 
@@ -2090,12 +2194,141 @@ namespace ObaraServiceController
                 ApplyStatusResult(KindFrontend, frontendListening, frontendLatency.Result);
                 // The HTTP health probe already measured roundtrip latency.
                 ApplyStatusResult(KindKb, kbHealthy, kbProbe.Result.Value);
+
+                // 自愈放在状态刷新之后：先让用户看到红灯，再决定要不要自己动手
+                MaybeAutoRestart(KindBackend, backendListening);
+                MaybeAutoRestart(KindFrontend, frontendListening);
             }
             catch { }
             finally
             {
                 _isMonitoring = false;
             }
+        }
+
+        // ==================================================================
+        // 自动重启（自愈）
+        // ==================================================================
+
+        /// <summary>
+        /// 服务不可用（端口无监听）时，按退避间隔重新拉起。
+        /// 判定顺序：连续 3 轮探测失败 → 到点 → 再确认一次端口 → 结束空转进程 → 启动。
+        /// </summary>
+        private void MaybeAutoRestart(int kind, bool healthy)
+        {
+            if (!_autoRestartEnabled) return;
+
+            bool isBackend = kind == KindBackend;
+            AutoRestartState state = isBackend ? _backendAutoRestart : _frontendAutoRestart;
+            int port = isBackend ? _config.BackendPort : _config.FrontendPort;
+            string name = isBackend ? "后端" : "前端";
+
+            if (healthy)
+            {
+                // 本控制台托管的进程正在正常服务：从现在起具备自愈资格
+                if (!state.Armed)
+                {
+                    bool owned = isBackend ? _processManager.IsBackendRunning : _processManager.IsFrontendRunning;
+                    if (owned) state.Armed = true;
+                }
+                state.Reset();
+                return;
+            }
+
+            if (!state.Armed || state.GaveUp) return;
+
+            DateTime now = DateTime.UtcNow;
+            if (now < state.GraceUntilUtc) return;      // 刚拉起，给启动留时间
+
+            state.UnresponsiveTicks++;
+            if (state.UnresponsiveTicks < AutoRestartConfirmTicks) return;
+            if (now < state.NextAttemptUtc) return;
+
+            // 重启窗口：窗口内次数用尽就停手，避免"配置写错"这种必然失败
+            // 的情况被无限重试掩盖（日志会指明该去看哪个文件）
+            if (state.WindowStartUtc == DateTime.MinValue || now - state.WindowStartUtc > _autoRestartWindow)
+            {
+                state.WindowStartUtc = now;
+                state.AttemptsInWindow = 0;
+                state.DelayIndex = 0;
+            }
+
+            if (state.AttemptsInWindow >= _autoRestartMaxAttempts)
+            {
+                state.GaveUp = true;
+                LogMessage("自愈", string.Format(
+                    "{0}服务在 {1} 分钟内已自动重启 {2} 次仍未恢复，停止自动重启。请检查 logs\\backend-crash.log、logs\\backend.err.log（常见原因：配置写错、端口被占用、依赖缺失）",
+                    name, (int)_autoRestartWindow.TotalMinutes, state.AttemptsInWindow));
+                return;
+            }
+
+            // 动手前再探一次：单次探测偶发超时不能当成故障去杀进程
+            if (PortChecker.IsPortListening(port)) return;
+
+            bool processAlive = isBackend ? _processManager.IsBackendRunning : _processManager.IsFrontendRunning;
+
+            state.AttemptsInWindow++;
+            state.TotalRestarts++;
+
+            if (processAlive)
+            {
+                // nodemon 崩溃后不会退出（打印 app crashed 后原地等待），端口早已
+                // 没有监听。这种"活着但不干活"的进程必须先结束，否则
+                // StartBackend 会以"已在运行中"直接返回，自愈就成了空转。
+                LogMessage("自愈", string.Format("{0}进程存在但端口 {1} 无响应（nodemon 空转），先结束进程树再重启", name, port));
+                if (isBackend) _processManager.StopBackend();
+                else _processManager.StopFrontend();
+                System.Threading.Thread.Sleep(1000);
+            }
+            else
+            {
+                LogMessage("自愈", string.Format("检测到{0}服务已退出（端口 {1} 无监听），第 {2} 次自动重启", name, port, state.TotalRestarts));
+            }
+
+            bool started = isBackend
+                ? _processManager.StartBackend(port)
+                : _processManager.StartFrontend(port);
+
+            int delaySeconds = NextAutoRestartDelay(state);
+            state.UnresponsiveTicks = 0;
+            // 启动需要时间（node + vite 冷启动一般 3~8 秒），这段时间不做判定；
+            // 同时把下次重试推到 delay 之后：既不会在启动过程中误判，也不会
+            // 反复拉起一个起不来的服务。
+            state.GraceUntilUtc = now.AddSeconds(delaySeconds);
+            state.NextAttemptUtc = now.AddSeconds(delaySeconds);
+            state.DelayIndex = Math.Min(state.DelayIndex + 1, _autoRestartDelays.Length - 1);
+
+            if (started)
+                LogMessage("自愈", string.Format("{0}服务已重新拉起（第 {1} 次），{2} 秒后复查端口 {3}", name, state.TotalRestarts, delaySeconds, port));
+            else
+                LogMessage("自愈", string.Format("{0}服务启动失败，{1} 秒后重试", name, delaySeconds));
+        }
+
+        private int NextAutoRestartDelay(AutoRestartState state)
+        {
+            if (_autoRestartDelays == null || _autoRestartDelays.Length == 0) return 15;
+            int index = Math.Min(state.DelayIndex, _autoRestartDelays.Length - 1);
+            return _autoRestartDelays[index];
+        }
+
+        /// <summary>用户主动启动成功后调用：清空计数并授予自愈资格。</summary>
+        private void ArmAutoRestart(int kind)
+        {
+            AutoRestartState state = kind == KindBackend ? _backendAutoRestart : _frontendAutoRestart;
+            state.Reset();
+            state.Armed = true;
+            state.TotalRestarts = 0;
+            // 刚点下启动，node/nodemon 冷启动要几秒：这段时间不做故障判定，
+            // 否则第一轮探测就会把正常的启动过程当成"端口无响应"。
+            state.GraceUntilUtc = DateTime.UtcNow.AddSeconds(15);
+        }
+
+        /// <summary>用户主动停止后调用：撤销自愈资格，否则看门狗会把它重新拉起来。</summary>
+        private void DisarmAutoRestart(int kind)
+        {
+            AutoRestartState state = kind == KindBackend ? _backendAutoRestart : _frontendAutoRestart;
+            state.Reset();
+            state.Armed = false;
         }
 
         private void ApplyStatusResult(int kind, bool healthy, int latency)

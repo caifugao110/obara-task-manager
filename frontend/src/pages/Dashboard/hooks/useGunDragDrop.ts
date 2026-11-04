@@ -46,6 +46,8 @@ interface UseGunDragDropParams {
   setSelectedTasks: React.Dispatch<React.SetStateAction<SelectedTask[]>>;
   setSelectedCell: React.Dispatch<React.SetStateAction<{designerId: string, date: string} | null>>;
   socketRef: MutableRefObject<Socket | null>;
+  /** 当前视图月份（用于判断服务端回传的工时表是否属于本视图，避免跨月移动时串月） */
+  currentDateRef: MutableRefObject<Date>;
 }
 
 export const useGunDragDrop = ({
@@ -65,6 +67,7 @@ export const useGunDragDrop = ({
   setSelectedTasks,
   setSelectedCell,
   socketRef,
+  currentDateRef,
 }: UseGunDragDropParams) => {
   const [activeTask, setActiveTask] = useState<{item: TaskItem, designerId: string, date: string, isCtrlDrag?: boolean} | null>(null);
   // 正在拖拽的枪名（十字箭头手柄按住不放触发）；dims 为原枪名行两格（枪名格+工时格）的实测尺寸，用于浮层等比复刻
@@ -561,7 +564,15 @@ export const useGunDragDrop = ({
           }))
         });
         upsertSheet(res.data.sheet);
-        socketRef.current?.emit('task_updated');
+        // 带坐标广播：复制只影响目标设计员这一张表，对端可直接本地合并
+        const [copyYear, copyMonth] = String(targetDate).split('-').map(Number);
+        if (Number.isInteger(copyYear) && Number.isInteger(copyMonth)) {
+          socketRef.current?.emit('task_updated', {
+            targets: [{ designerId: targetDesignerId, month: copyMonth, year: copyYear }]
+          });
+        } else {
+          socketRef.current?.emit('task_updated');
+        }
         setActiveTask(null);
         addToast('任务已复制', 'success');
         return;
@@ -617,8 +628,16 @@ export const useGunDragDrop = ({
           return;
         }
 
+        // 逐条移动：接口一次只处理一条，且跨表写入必须串行（后端是「读整表-改-写回」，
+        // 并发会互相覆盖丢字段）。这里收集每次响应里返回的源表/目标表，
+        // 供本端回显与增量广播使用——旧实现丢掉了这两个返回值，只能整月全量重拉。
+        const affectedSheets = new Map<string, TaskSheet>();
+        const collectSheet = (sheet?: TaskSheet) => {
+          if (!sheet) return;
+          affectedSheets.set(`${sheet.designerId}::${sheet.month}::${sheet.year}`, sheet);
+        };
         for (const payload of movedPayloads) {
-          await axiosInstance.post('/tasks/move', {
+          const res = await axiosInstance.post('/tasks/move', {
             sourceDesignerId: payload.designerId,
             sourceDate: payload.date,
             itemId: payload.item.id,
@@ -626,6 +645,8 @@ export const useGunDragDrop = ({
             targetDate,
             newIndex: movedPayloads.length === 1 ? newIndex : undefined
           });
+          collectSheet(res.data?.sourceSheet);
+          collectSheet(res.data?.targetSheet);
         }
 
         // Add to history for undo
@@ -639,9 +660,29 @@ export const useGunDragDrop = ({
           }))
         });
 
-        socketRef.current?.emit('task_updated');
+        // 本端回显：只并入当前视图月份的表，跨月移动时把别月的表并入会造成串月
+        const viewMonth = currentDateRef.current.getMonth() + 1;
+        const viewYear = currentDateRef.current.getFullYear();
+        affectedSheets.forEach(sheet => {
+          if (sheet.month === viewMonth && sheet.year === viewYear) upsertSheet(sheet);
+        });
+
+        // 增量广播：把每张受影响的表坐标一起发出，其他客户端直接本地合并。
+        // 旧实现发的是空信号，对端只能拉整月全部设计员数据（只读账号还要再等 3 秒），
+        // 而且跨设计员移动时目标表不会被推送，目标行要等下一次刷新才出现。
+        const broadcastTargets = Array.from(affectedSheets.values()).map(sheet => ({
+          designerId: sheet.designerId,
+          month: sheet.month,
+          year: sheet.year
+        }));
+        if (broadcastTargets.length > 0) {
+          socketRef.current?.emit('task_updated', { targets: broadcastTargets });
+        } else {
+          // 后端未返回表（异常兜底）：退回全量刷新，保证最终一致
+          socketRef.current?.emit('task_updated');
+          fetchSheets();
+        }
         stopEditingCell();
-        fetchSheets();
         setSelectedTasks([]);
         setSelectedCell(null);
         addToast('任务已移动', 'success');

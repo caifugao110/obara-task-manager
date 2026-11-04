@@ -624,9 +624,10 @@ node tests\gun-search-relational.js
 
 | 脚本 | 说明 |
 |------|------|
-| `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器）；启动前自动检查 Node.js 22+、检查并释放端口、按需安装依赖。**不会自动执行 `git pull`**（供应链风险已移除），代码更新需人工确认后手动拉取 |
+| `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器）；启动前自动检查 Node.js 22+、检查并释放端口、按需安装依赖。**不会自动执行 `git pull`**（供应链风险已移除），代码更新需人工确认后手动拉取。后端由 `backend-watchdog.bat` 托管，**崩溃后自动拉起** |
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
+| `backend-watchdog.bat` | 后端守护循环，由 `start.bat` 调用。后端进程一旦结束就重新拉起（默认 10 秒，连续快速崩溃退避到 30/60 秒），把每次启动/退出/重启写入 `logs/backend-watchdog.log`；以 `npm run dev -- --exitcrash` 启动，使 nodemon 在崩溃时真正退出而不是停在 `app crashed` 空转。`OBARA_RESTART_DELAY` 调等待秒数，`OBARA_BACKEND_CMD` 可换成 `node server.js`（只守护、不监听文件变化） |
 | `stop.bat` | 停止前后端进程；停止前先调用断网备份接口备份数据库。停止时**从监听端口的 PID 沿父进程链向上找到进程树顶层**（`cmd.exe` 由 VBS 启动 → `node.exe` npm → `cmd.exe` 子 shell → `node.exe` nodemon/vite → `node.exe` 服务本体），再 `taskkill /F /T` 整棵树，避免只杀掉监听进程、残留 npm/nodemon/cmd 继续占着日志文件或改文件后自动重启；随后按命令行路径清扫已不监听端口的残留进程、清理 `logs/*.pid`，并逐一回检端口给出真实结论（不再无条件打印成功）。若进程由服务/计划任务在 Session 0 启动，普通权限无法结束时会自动以管理员身份重启自身 |
 | `control/ObaraServiceController.csproj` | 使用 MSBuild 构建 Windows 服务控制台 EXE，详见「Windows 服务控制台」章节 |
 
@@ -676,6 +677,7 @@ node --check backend\routes\tasks.js
 | `GITEE_REPO_OWNER` | 空（`.env.example` 提供示例值 `caifugao110`） | Gitee 仓库所有者；未配置时版本检查返回「未知」 |
 | `GITEE_REPO_NAME` | 空（`.env.example` 提供示例值 `obara-task-manager`） | Gitee 仓库名称；未配置时版本检查返回「未知」 |
 | `LOG_LEVEL` | `info` | 日志级别（预留变量：当前版本代码未读取，设置后不生效；日志输出到控制台与 `logs/` 下日志文件） |
+| `CRASH_EXIT_ON_UNCAUGHT` | 空（记录但不退出） | 进程级兜底开关。`uncaughtException` / `unhandledRejection` 默认只把完整堆栈追加到 `logs/backend-crash.log`（同时打到控制台）并继续提供服务；设为 `1` 时记录后 `process.exit(1)`，供 nodemon 等开发场景按崩溃重启。生产环境不要开——退出会让 5000 端口消失、前端请求全部变成 `ECONNREFUSED` |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
 | `WEKNORA_API_KEY` | 空 | 主工作空间 API Key，仅服务端使用 |
@@ -992,7 +994,7 @@ obara-task-manager/
 │   ├── docker-compose.yml
 │   ├── start.bat
 │   └── start.sh
-├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log）
+├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log；进程级未捕获异常堆栈在 backend-crash.log；后端自动重启记录在 backend-watchdog.log）
 ├── .gitignore
 ├── .npmrc                       # ignore-scripts=true：跳过 install 脚本，免安装 VS C++ 生成工具
 ├── DEPLOYMENT.md
@@ -1003,6 +1005,7 @@ obara-task-manager/
 ├── start.bat
 ├── start-hidden.vbs
 ├── start-process-hidden.vbs
+├── backend-watchdog.bat
 └── stop.bat
 ```
 
@@ -1138,7 +1141,7 @@ obara-task-manager/
 - 备份文件名：
   - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
   - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
-- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发：本机环回地址（localhost）可匿名调用（供 stop.bat 等运维脚本），非环回请求须为超级管理员。
+- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发：`stop.bat` 等本机运维脚本需读取后端启动时生成的 `logs/offline-backup.token`，并通过 `X-Offline-Backup-Token` 请求头传入一次性令牌（校验后立即轮换，同一令牌只能使用一次）；其他请求须为超级管理员。
 
 ### 维护配置
 
@@ -1182,7 +1185,7 @@ obara-task-manager/
 | 操作 | API | 说明 |
 |------|-----|------|
 | 数据库备份 | `POST /api/system/maintenance/backup` | 立即创建数据库备份 |
-| 断网备份 | `POST /api/system/maintenance/offline-backup` | 立即创建断网备份（本机环回匿名；外部请求需超级管理员） |
+| 断网备份 | `POST /api/system/maintenance/offline-backup` | 立即创建断网备份（本机脚本用一次性令牌；其他请求需超级管理员） |
 | 任务导出 | `POST /api/system/maintenance/export-tasks` | 立即导出任务数据 |
 | 编号台账导出 | `POST /api/system/maintenance/export-gun-ledger` | 立即导出全部焊枪编号台账为单个 `.xls` |
 | 清理过期备份 | `POST /api/system/maintenance/cleanup-backups` | 清理超过保留天数的备份 |
@@ -1232,6 +1235,34 @@ obara-task-manager/
 - 日志显示：实时输出前后端子进程日志，支持清空。
 - 配置持久化：端口与监控间隔保存在本地配置文件，重启后自动加载。
 - UI 风格：暗色科技风（自定义 `ThemeColors`），双缓冲优化，避免鼠标悬停卡顿；标题栏与确认对话框针对高 DPI 优化。
+- 自动重启（自愈）：服务进程退出、或进程还在但端口长时间无响应（nodemon 崩溃后 `app crashed` 空转）时，控制台自动重新拉起，详见下方「自动重启（自愈）」。
+
+### 自动重启（自愈）
+
+监控循环每轮除了刷新状态，还会判断是否需要「自己动手把服务拉回来」：
+
+| 判定 | 行为 |
+|------|------|
+| 连续 3 轮探测端口无响应（约 6 秒，过滤偶发超时） | 才认定服务不可用 |
+| 进程已退出 | 直接重启，日志记「检测到后端服务已退出（端口 5000 无监听），第 N 次自动重启」 |
+| 进程还在但端口无响应 | 判定为 nodemon 空转（崩溃后不退出），先结束进程树再重启 |
+| 重启后 | 等待退避间隔（默认 15/30/60/120 秒递增）再复查，避免启动过程被误判 |
+
+安全边界：
+
+- **只对「本控制台启动的进程」生效**。如果后端是 `start.bat` 的 `backend-watchdog.bat` 拉起的，控制台没有它的 `Process` 对象，不会介入，避免两个守护者抢同一个端口。
+- 用户点「停止」/「一键停止」后会撤销自愈资格，不会出现「刚停完又被拉起来」；点「启动」/「重启」成功后重新授予。
+- 同一时间窗（默认 10 分钟）内重启次数用尽（默认 5 次）就停手并输出告警，避免「配置写错」这类必然失败被无限重试掩盖。
+- 每次动作都写入日志面板，分类为 `自愈`。
+
+可调参数在 `control/App.config`：
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `AutoRestartEnabled` | `true` | 总开关，设为 `false` 退回「只报警不动作」 |
+| `AutoRestartMaxAttempts` | `5` | 时间窗内最多自动重启次数 |
+| `AutoRestartWindowMinutes` | `10` | 重启次数统计窗口（分钟） |
+| `AutoRestartDelays` | `15,30,60,120` | 重试间隔（秒，逗号分隔），按顺序递增，最后一项重复使用 |
 
 ### 构建版本自动生成
 

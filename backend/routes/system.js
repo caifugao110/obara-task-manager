@@ -18,6 +18,7 @@ const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDis
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const maintenance = require('../utils/dbMaintenance');
+const offlineBackupToken = require('../utils/offlineBackupToken');
 const productionSchedule = require('../utils/productionSchedule');
 const {
   DEFAULT_TASK_COLOR_CONFIG,
@@ -1281,18 +1282,14 @@ router.post('/maintenance/backup', [authMiddleware, superAdminMiddleware], async
   res.json({ message: '数据库备份已完成', backup });
 }));
 
-const isLoopbackAddress = (ip) => {
-  const normalized = String(ip || '').replace(/^::ffff:/, '');
-  return normalized === '127.0.0.1' || normalized === '::1';
-};
-
-// 本机运维脚本（stop.bat 经 localhost 调用）允许匿名环回访问；
-// 非环回的外部请求必须是超级管理员，杜绝匿名远程触发备份写盘。
-// 注意：环回判断必须使用 req.socket.remoteAddress（操作系统层面对端地址，不可伪造），
-// 不能用 req.ip —— trust proxy=1 时，直连请求中客户端伪造的
-// X-Forwarded-For: 127.0.0.1 会被采信，从而绕过本校验。
+// 本机运维脚本（stop.bat 经 localhost 调用）必须携带后端启动时生成的一次性令牌；
+// 其余请求必须是超级管理员。
+// 不能用“来源是否为环回地址”匿名放行：前端 Vite / nginx 代理会把所有局域网请求
+// 转成 127.0.0.1，等于把备份接口匿名开放给内网，可被反复触发写满磁盘。
+// 令牌校验通过后立即轮换，同一令牌只能用一次（见 utils/offlineBackupToken.js）。
 const offlineBackupAccess = (req, res, next) => {
-  if (isLoopbackAddress(req.socket.remoteAddress)) return next();
+  const token = req.get('X-Offline-Backup-Token');
+  if (token && offlineBackupToken.consumeToken(token)) return next();
   authMiddleware(req, res, (err) => {
     if (err) return next(err);
     superAdminMiddleware(req, res, next);

@@ -57,7 +57,9 @@ goto :end
 
 :trigger_backup
 echo [INFO] Creating offline backup before shutdown...
-powershell -Command "try { $r = Invoke-RestMethod -Uri 'http://localhost:%BACKEND_PORT%/api/system/maintenance/offline-backup' -Method POST -TimeoutSec 30; Write-Host ('[OK] Offline backup API returned: ' + $r.message + ' / ' + $r.reason) } catch { Write-Host '[WARN] Failed to trigger backup via API, will skip.' }"
+rem 后端启动时会在 logs\offline-backup.token 写入一次性令牌（校验后立即轮换），
+rem 这里读取后作为请求头传入；令牌缺失或已失效时仅告警并跳过，不影响停服流程。
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; try { $tokenFile = Join-Path '%LOG_DIR%' 'offline-backup.token'; if (-not (Test-Path -LiteralPath $tokenFile)) { throw 'token file not found' }; $token = (Get-Content -LiteralPath $tokenFile -Raw).Trim(); if (-not $token) { throw 'token file is empty' }; $r = Invoke-RestMethod -Uri 'http://localhost:%BACKEND_PORT%/api/system/maintenance/offline-backup' -Method POST -Headers @{ 'X-Offline-Backup-Token' = $token } -TimeoutSec 30; Write-Host ('[OK] Offline backup API returned: ' + $r.message + ' / ' + $r.reason) } catch { Write-Host ('[WARN] Failed to trigger backup via API, will skip. (' + $_.Exception.Message + ')') }"
 
 exit /b 0
 
@@ -123,7 +125,7 @@ rem ---------------------------------------------------------------
 :sweep_by_path
 echo.
 echo --- Sweeping leftover node/cmd processes of this installation ---
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $anchor=[regex]::Escape('%SCRIPT_DIR%'); $me=$PID; $all=@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine -match $anchor) -and ($_.ProcessId -ne $me) -and ($_.CommandLine -notmatch 'stop\.bat') -and ((($_.Name -eq 'node.exe') -and ($_.CommandLine -match 'nodemon|vite|server\.js')) -or (($_.Name -eq 'cmd.exe') -and ($_.CommandLine -match 'npm run dev'))) }); if($all.Count -eq 0){ Write-Host '[OK] No leftover processes found.'; exit 0 }; $ids=@($all | ForEach-Object { $_.ProcessId }); foreach($p in $all){ if($ids -notcontains $p.ParentProcessId){ Write-Host ('[INFO] Stopping leftover tree, root PID '+$p.ProcessId); taskkill /F /T /PID $p.ProcessId 2>&1 | ForEach-Object { if($_ -match 'denied'){ Write-Host ('[ERROR] ' + $_) } } } }; foreach($p in $all){ if(Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue){ taskkill /F /PID $p.ProcessId 2>&1 | Out-Null } }; Write-Host '[OK] Leftover sweep finished.'"
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $anchor=[regex]::Escape('%SCRIPT_DIR%'); $me=$PID; $all=@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine -match $anchor) -and ($_.ProcessId -ne $me) -and ($_.CommandLine -notmatch 'stop\.bat') -and ((($_.Name -eq 'node.exe') -and ($_.CommandLine -match 'nodemon|vite|server\.js')) -or (($_.Name -eq 'cmd.exe') -and ($_.CommandLine -match 'npm run dev|backend-watchdog'))) }); if($all.Count -eq 0){ Write-Host '[OK] No leftover processes found.'; exit 0 }; $ids=@($all | ForEach-Object { $_.ProcessId }); foreach($p in $all){ if($ids -notcontains $p.ParentProcessId){ Write-Host ('[INFO] Stopping leftover tree, root PID '+$p.ProcessId); taskkill /F /T /PID $p.ProcessId 2>&1 | ForEach-Object { if($_ -match 'denied'){ Write-Host ('[ERROR] ' + $_) } } } }; foreach($p in $all){ if(Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue){ taskkill /F /PID $p.ProcessId 2>&1 | Out-Null } }; Write-Host '[OK] Leftover sweep finished.'"
 exit /b 0
 
 :clear_pid_files

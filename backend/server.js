@@ -12,6 +12,40 @@ const securityConfig = require('./config/security');
 const { socketAuthMiddleware, requireSocketAuth, requireSocketRole } = require('./middleware/socketAuth');
 const { hasAccessSettings } = require('./middleware/auth');
 
+// ---------------------------------------------------------------------------
+// 进程级崩溃兜底
+//
+// 此前 server.js 没有任何 uncaughtException / unhandledRejection 处理：
+// Node 22 默认会因「未处理的 Promise 拒绝」直接以 code 1 退出进程，
+// 外部只看到 nodemon 打一句「app crashed - waiting for file changes」，
+// 端口 5000 随即消失，前端所有请求变成 ECONNREFUSED —— 但日志里连一行堆栈都没有。
+// 现在把这类异常连同堆栈落到 logs/backend-crash.log 再继续运行，保证可用性；
+// 需要「一旦出现未捕获异常就退出」（便于 nodemon 重启）时设 CRASH_EXIT_ON_UNCAUGHT=1。
+// ---------------------------------------------------------------------------
+const CRASH_LOG_PATH = path.join(__dirname, '..', 'logs', 'backend-crash.log');
+
+const writeCrashLog = (kind, error) => {
+  const stack = error && error.stack ? error.stack : String(error);
+  const line = `[${new Date().toISOString()}] ${kind} (pid=${process.pid}) ${stack}\n`;
+  try {
+    fs.mkdirSync(path.dirname(CRASH_LOG_PATH), { recursive: true });
+    fs.appendFileSync(CRASH_LOG_PATH, line, 'utf8');
+  } catch (writeError) {
+    // 落盘失败不能再抛，否则就是异常套异常
+  }
+  console.error(`[crash] ${kind}:`, stack);
+};
+
+const handleCrash = (kind) => (error) => {
+  writeCrashLog(kind, error);
+  if (process.env.CRASH_EXIT_ON_UNCAUGHT === '1') {
+    setTimeout(() => process.exit(1), 100);
+  }
+};
+
+process.on('uncaughtException', handleCrash('uncaughtException'));
+process.on('unhandledRejection', handleCrash('unhandledRejection'));
+
 const app = express();
 
 // 只信任回环代理（本机 Vite 开发代理 / 同机 nginx）。
@@ -245,24 +279,52 @@ const socketRateLimit = (socket, eventName, limit, windowMs) => {
 const TASK_UPDATED_LIMIT = 20;
 const TASK_UPDATED_WINDOW_MS = 10 * 1000;
 
-// 广播「任务数据已变更」：客户端给出变更坐标（designerId/month/year）时，
-// 由服务端从数据库读取最新工时表再广播，其他客户端可直接本地合并，
-// 无需重新拉取整月数据。广播内容取自数据库而非客户端 payload，
-// 避免转发客户端构造的任意内容。坐标缺失/非法或读取失败时退化为
-// 「空信号」，客户端按原逻辑全量刷新。
+// 广播「任务数据已变更」：客户端给出变更坐标时，由服务端从数据库读取最新工时表
+// 再广播，其他客户端可直接本地合并，无需重新拉取整月数据。广播内容取自数据库
+// 而非客户端 payload，避免转发客户端构造的任意内容。坐标缺失/非法或全部读取
+// 失败时退化为「空信号」，客户端按原逻辑全量刷新。
+//
+// 坐标支持两种形态：
+//   { designerId, month, year }                     单表（旧格式，仍兼容）
+//   { targets: [{ designerId, month, year }, ...] } 多表
+// 移动主任务会同时改动「源设计员表」和「目标设计员表」，跨月移动还会落在不同月份，
+// 只广播一张表会让另一端的目标行迟迟不出现，因此这里按多表处理。
+const MAX_BROADCAST_TARGETS = 8;
+
+const resolveBroadcastTargets = (payload) => {
+  const targets = [];
+  const seen = new Set();
+  const push = (designerId, month, year) => {
+    const id = designerId ? String(designerId) : '';
+    const m = Number(month);
+    const y = Number(year);
+    if (!id || !Number.isInteger(m) || !Number.isInteger(y)) return;
+    const key = `${id}::${m}::${y}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push({ designerId: id, month: m, year: y });
+  };
+  if (Array.isArray(payload?.targets)) {
+    payload.targets.slice(0, MAX_BROADCAST_TARGETS).forEach(t => push(t?.designerId, t?.month, t?.year));
+  } else {
+    push(payload?.designerId, payload?.month, payload?.year);
+  }
+  return targets;
+};
+
 const broadcastTaskRefresh = (socket, payload) => {
-  const designerId = payload && payload.designerId ? String(payload.designerId) : '';
-  const month = Number(payload?.month);
-  const year = Number(payload?.year);
-  let sheet = null;
-  if (designerId && Number.isInteger(month) && Number.isInteger(year)) {
+  const targets = resolveBroadcastTargets(payload);
+  const sheets = [];
+  for (const target of targets) {
     try {
-      sheet = taskStore.getSheet(designerId, month, year);
+      const sheet = taskStore.getSheet(target.designerId, target.month, target.year);
+      if (sheet) sheets.push(sheet);
     } catch (e) {
-      console.error('[socket] task_updated 增量读取失败，退化为全量刷新:', e.message);
+      // 单张表读取失败不放弃整批：其余表照常广播，避免一处异常拖累全部客户端
+      console.error('[socket] task_updated 增量读取失败:', e.message);
     }
   }
-  socket.broadcast.emit('task_refreshed', sheet ? { sheets: [sheet] } : undefined);
+  socket.broadcast.emit('task_refreshed', sheets.length > 0 ? { sheets } : undefined);
 };
 
 // 限流命中时记录最后一次变更坐标，并在窗口结束后补发一次，

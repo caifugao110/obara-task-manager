@@ -47,7 +47,8 @@ start.bat
 1. 检查 Node.js 版本，主版本低于 22 直接报错退出。
 2. 检查 5000/5173 端口，被占用时自动结束占用进程并释放端口。
 3. 检查根目录 `node_modules/.bin`，依赖缺失时自动执行 `npm install`（仓库使用 npm workspaces，一条命令安装前后端全部依赖）。
-4. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`）。
+4. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`，进程级未捕获异常的堆栈单独追加到 `logs/backend-crash.log`）。
+5. 后端由 `backend-watchdog.bat` 托管：该进程**意外结束后自动重新拉起**，每次启动/退出/重启都记到 `logs/backend-watchdog.log`（详见下方「后端进程静默退出」）。
 
 > **代码更新流程**：启动脚本不会自动拉取代码（自动 `git pull` 存在「拉取即执行」的供应链风险，已移除）。更新版本时请人工确认后手动执行 `git pull`（本地有修改时自行处理 stash），再运行 `start.bat`。
 
@@ -57,6 +58,7 @@ start.bat
 |------|------|
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口），适合长期运行 |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
+| `backend-watchdog.bat` | 后端守护循环，由 `start.bat` 调用，一般不需要手动执行。后端进程一结束就重新拉起（默认等待 10 秒；连续 3 次「启动即崩」后放宽到 30 秒、5 次后 60 秒），并把每次启动/退出/重启写入 `logs/backend-watchdog.log`。可用 `OBARA_RESTART_DELAY` 调等待秒数、`OBARA_BACKEND_CMD` 换启动命令（如 `node server.js`：只守护、不监听文件变化） |
 | `stop.bat` | 先调用断网备份接口备份数据库，再按端口停止前后端进程：从监听 PID 沿父进程链向上定位进程树顶层后 `taskkill /F /T` 整棵树（只杀监听进程会残留 npm/nodemon/cmd，日志文件仍被占用），再清扫不占端口的残留进程并回检端口。进程若由服务/计划任务在 Session 0 启动，需管理员权限，脚本会自动提权重启自身 |
 
 默认访问地址：
@@ -325,6 +327,7 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `DEFAULT_ADMIN_USERNAME` | `superadmin` | 默认管理员用户名（首次启动时创建，仅当不存在超级管理员时生效） |
 | `DEFAULT_ADMIN_PASSWORD` | 空 | 默认管理员密码；留空时首次启动自动生成随机密码并仅在后端控制台显示一次（隐藏窗口启动时见 `logs/backend.log`），显式设置时首次启动后应立即修改 |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
+| `CRASH_EXIT_ON_UNCAUGHT` | 空（记录但不退出） | 进程级兜底开关。`uncaughtException` / `unhandledRejection` 默认只记录（完整堆栈追加到 `logs/backend-crash.log`）并继续提供服务；设为 `1` 时记录后 `process.exit(1)`。生产环境保持默认，详见「后端进程静默退出」一节 |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入，部署 WeKnora 后设为 `true` |
 | `WEKNORA_BASE_URL` | `http://127.0.0.1:8080/api/v1` | WeKnora API 根地址 |
 | `WEKNORA_API_KEY` | - | 主工作空间 API Key（也用于建库等写操作），仅服务端保存 |
@@ -624,6 +627,27 @@ express-rate-limit 官方导出的 `ipKeyGenerator(req.ip)` 生成 IP 部分（I
 `::ffff:a.b.c.d` 归一为 IPv4，IPv6 收敛到 /56 子网），再拼接用户名或用户 ID。升级到含此
 修复的版本后报错不再出现；**自行改动 `auth.js` 时请保留 `ipKeyGenerator` 包装**。
 
+### 后端进程静默退出（端口 5000 消失、前端全部 ECONNREFUSED）
+
+现象：页面所有请求突然失败（`ECONNREFUSED`，前端显示离线），`logs/backend.log` 末尾只有 nodemon 的 `app crashed - waiting for file changes`、没有堆栈，`netstat -ano | findstr 5000` 也查不到监听。
+
+原因：Node 22 对「未处理的 Promise 拒绝」默认直接以 `code 1` 退出进程。此前 `server.js` 没有 `uncaughtException` / `unhandledRejection` 处理，异常击穿进程后只留下 nodemon 的那句话。共享盘抖动时尤其容易命中——SMB 端口探测的 socket 在 `destroy()` 之后仍可能补发 `ECONNRESET` / `ENOTFOUND`，没有 `'error'` 监听者时该事件会升级成未捕获异常。
+
+现状：`server.js` 顶部已注册两个兜底监听，把完整堆栈（含 pid 与时间戳）追加写入 `logs/backend-crash.log` 并打到控制台，进程默认**不退出**，前端最多看到一次请求失败后自动恢复。
+
+排查与配置：
+
+- 先看 `logs/backend-crash.log`，最后一条 `[时间] uncaughtException / unhandledRejection (pid=…)` 后面的堆栈就是击穿点。
+- 需要「一出现未捕获异常就退出」（本地开发想让 nodemon 重启）时设 `CRASH_EXIT_ON_UNCAUGHT=1`；**生产环境不要开**，否则又回到端口静默消失。
+- 新增涉及共享目录/Socket 的代码时，`destroy()` 之后仍可能收到 `error` 的 socket 必须保留一个空的 `'error'` 监听（参考 `backend/utils/uncShare.js` 的 `probeHost`）；**不要为了「干净」把 `server.js` 顶部的兜底监听删掉**。
+
+崩溃自愈（只解决「起不来」，不解决「为什么崩」）：
+
+- `start.bat` 部署已内置守护：后端由 `backend-watchdog.bat` 托管，进程一旦结束就在 10 秒后重新拉起（连续快速崩溃时退避到 30/60 秒），过程记入 `logs/backend-watchdog.log`。
+- **nodemon 本身不会自愈**：崩溃时它只打印 `app crashed - waiting for file changes` 并原地等待，端口早已没有监听。因此看门狗用 `npm run dev -- --exitcrash` 启动，让 nodemon 在崩溃时真正退出（而不是「活着但装死」），守护循环才能看到退出并重启。改代码自动重启的能力保持不变。
+- 停服不受影响：`stop.bat` 从监听 PID 沿父进程链向上定位到看门狗的 `cmd.exe` 后整棵树 `taskkill /F /T`，不会出现「刚停掉又被看门狗拉起来」。
+- 通过 `control/` 控制台（ObaraServiceController）启动的后端**已经内置自愈**：连续 3 轮探测端口无响应（约 6 秒）且确认进程已退出或处于 `app crashed` 空转状态时，按退避间隔自动重新拉起（默认 15/30/60/120 秒，10 分钟内最多 5 次），动作记录在日志面板的 `自愈` 分类；参数见 `control/App.config` 的 `AutoRestartEnabled` / `AutoRestartMaxAttempts` / `AutoRestartWindowMinutes` / `AutoRestartDelays`。用户主动「停止」后不会自动拉起；`start.bat` 拉起的实例不由控制台接管（避免与 `backend-watchdog.bat` 抢端口）。长期运行仍建议用 PM2（见「PM2 进程管理」）或 Windows 服务，二者在操作系统层面自带 `autorestart`。
+
 ### 端口被占用
 
 后端默认端口为 `5000`，前端默认端口为 `5173`。
@@ -826,7 +850,7 @@ GET /api/system/version
 
 ## 日志查看
 
-`start.bat` 以隐藏窗口方式运行，不会打开命令行窗口；前后端日志分别写入项目根目录的 `logs/backend.log`、`logs/frontend.log`（错误输出为 `logs/backend.err.log`、`logs/frontend.err.log`），启动脚本自身的输出在 `logs/startup.log`，排障时直接查看这些文件即可。
+`start.bat` 以隐藏窗口方式运行，不会打开命令行窗口；前后端日志分别写入项目根目录的 `logs/backend.log`、`logs/frontend.log`（错误输出为 `logs/backend.err.log`、`logs/frontend.err.log`），启动脚本自身的输出在 `logs/startup.log`，进程级未捕获异常（`uncaughtException` / `unhandledRejection`）的完整堆栈追加在 `logs/backend-crash.log`，后端每次自动重启的时间与退出码记在 `logs/backend-watchdog.log`，排障时直接查看这些文件即可。
 
 手动执行 `npm run dev` 时直接查看当前 PowerShell 或 CMD 输出。
 
@@ -947,7 +971,7 @@ backend/
 - 备份文件名：
   - 关闭触发：`offline-backup-shutdown-{YYYYMMDD-HHmmss}.db`
   - 用户触发：`offline-backup-{userId}-{username}-{YYYYMMDD-HHmmss}.db`
-- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发：本机环回地址（localhost）可匿名调用（供 stop.bat 等运维脚本），非环回请求须为超级管理员。
+- 可通过 `POST /api/system/maintenance/offline-backup` 主动触发：`stop.bat` 等本机运维脚本需读取后端启动时生成的 `logs/offline-backup.token`，并通过 `X-Offline-Backup-Token` 请求头传入一次性令牌（校验后立即轮换，同一令牌只能使用一次）；其他请求须为超级管理员。
 - 默认保留 7 天（`offlineBackupRetentionDays`），超过自动清理；断网备份开关、保留天数与目录均可在系统设置「数据库维护」中配置（`PUT /api/system/maintenance`）。
 
 ### 维护配置
@@ -988,7 +1012,7 @@ backend/
 | `/api/system/maintenance` | GET | 超级管理员 | 获取维护状态和配置 |
 | `/api/system/maintenance` | PUT | 超级管理员 | 更新维护配置 |
 | `/api/system/maintenance/backup` | POST | 超级管理员 | 手动创建数据库备份，响应 `backup` 含文件名、路径与大小 |
-| `/api/system/maintenance/offline-backup` | POST | 环回匿名 / 外部超管 | 手动触发断网备份 |
+| `/api/system/maintenance/offline-backup` | POST | 一次性令牌 / 外部超管 | 手动触发断网备份 |
 | `/api/system/maintenance/export-tasks` | POST | 超级管理员 | 手动导出任务数据 |
 | `/api/system/maintenance/export-gun-ledger` | POST | 超级管理员 | 手动导出全部焊枪编号台账为单个 `.zip`（每个分类一个独立 `.xls`） |
 | `/api/system/maintenance/cleanup-backups` | POST | 超级管理员 | 清理过期备份 |

@@ -1,5 +1,13 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+
+// Vite 默认把整个 npm workspace 根目录（含 backend/）作为 /@fs/ 的允许范围。
+// 前端端口对局域网开放时，任何人访问 /@fs/<绝对路径> 就能直接下载
+// backend/data.db、logs/ 等文件。这里把允许范围收窄到前端目录与提升到根目录的依赖，
+// 并显式拒绝数据库、日志、备份和环境变量文件。
+const frontendRoot = fileURLToPath(new URL('.', import.meta.url))
+const workspaceNodeModules = fileURLToPath(new URL('../node_modules', import.meta.url))
 
 export default defineConfig({
   plugins: [react()],
@@ -22,6 +30,21 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
+    fs: {
+      strict: true,
+      allow: [frontendRoot, workspaceNodeModules],
+      deny: [
+        '**/backend/**',
+        '**/logs/**',
+        '**/backups/**',
+        '**/*.db',
+        '**/*.db-*',
+        '**/*.log',
+        '**/.env',
+        '**/.env.*',
+        '**/.git/**'
+      ]
+    },
     // 本项目部署在网络驱动器上（F: 为映射的网络磁盘），Node 的 fs.watch
     // 在这种盘上会抛出 "UNKNOWN: unknown error, watch"（errno -4094），
     // 导致 Vite 的 chokidar 监听器报错并直接终止 dev server。

@@ -18,7 +18,6 @@ if /i not "%~1"=="--hidden" (
 call :ensure_logs
 
 rem Switch to the directory of this script. It is often run from a network
-rem drive / UNC path (e.g. \\192.168.160.10\GUNtools\Task\obara-task-manager).
 rem CMD refuses to use a UNC path as the current directory, so "cd /d" fails
 rem and later commands run from the wrong directory. pushd maps a temporary
 rem drive letter for UNC paths automatically, hence pushd/popd are used here.
@@ -118,12 +117,15 @@ rem When nodemon crashes it enters "waiting for file changes" mode: it stops
 rem listening on the port but keeps the parent cmd.exe (launched by VBS) alive.
 rem That cmd.exe holds a lock on backend.log/frontend.log, so the next start.bat
 rem run cannot write to the log file and the new service silently fails to start.
+rem A leftover backend-watchdog.bat is even worse: it restarts the backend we
+rem are about to stop, so it always wins the race for port 5000 — it must be
+rem killed first (this runs before :release_port on purpose).
 rem Find these orphaned processes by matching the script directory in their
-rem command line and kill the entire process tree.  Only node.exe processes
-rem and cmd.exe processes running "npm run dev" are targeted, so the current
-rem start.bat cmd.exe process is never killed.
+rem command line and kill the entire process tree.  Only node.exe processes,
+rem cmd.exe processes running "npm run dev" and the watchdog are targeted, so
+rem the current start.bat cmd.exe process is never killed.
 echo Cleaning up orphaned processes from previous runs...
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('%SCRIPT_DIR%') -and ($_.Name -eq 'node.exe' -or $_.CommandLine -match 'npm run dev') } | ForEach-Object { taskkill /F /T /PID $_.ProcessId 2>$null }" >nul 2>&1
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('%SCRIPT_DIR%') -and ($_.Name -eq 'node.exe' -or $_.CommandLine -match 'npm run dev' -or $_.CommandLine -match 'backend-watchdog') } | ForEach-Object { taskkill /F /T /PID $_.ProcessId 2>$null }" >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 exit /b 0
 
@@ -185,9 +187,15 @@ set "OBARA_BACKEND_LOG=%LOG_DIR%\backend.log"
 set "OBARA_BACKEND_ERR=%LOG_DIR%\backend.err.log"
 set "OBARA_BACKEND_PID=%LOG_DIR%\backend.pid"
 echo [%date% %time%] Starting backend on port %BACKEND_PORT%...>> "%OBARA_BACKEND_LOG%"
-rem npm run dev = nodemon server.js: backend *.js file changes auto-restart
-rem the service. nodemon resolves from the workspace-root node_modules\.bin.
-wscript.exe //nologo "%SCRIPT_DIR%start-process-hidden.vbs" "%BACKEND_DIR%" "set PORT=%BACKEND_PORT%&& npm run dev" "%OBARA_BACKEND_LOG%" "%OBARA_BACKEND_ERR%" "%OBARA_BACKEND_PID%"
+rem The backend is launched through backend-watchdog.bat, not npm directly.
+rem nodemon alone does not recover from a crash: it prints "app crashed -
+rem waiting for file changes" and sits there while port 5000 has no listener,
+rem so every request fails until someone edits a file by hand. The watchdog
+rem runs npm run dev -- --exitcrash and restarts it whenever it ends; every
+rem restart is logged to logs\backend-watchdog.log.
+rem The command is passed relative to SCRIPT_DIR (the pushd target) so the
+rem path never needs quoting — it may contain spaces or be a UNC path.
+wscript.exe //nologo "%SCRIPT_DIR%start-process-hidden.vbs" "%SCRIPT_DIR%" "set PORT=%BACKEND_PORT%&& call backend-watchdog.bat" "%OBARA_BACKEND_LOG%" "%OBARA_BACKEND_ERR%" "%OBARA_BACKEND_PID%"
 if errorlevel 1 (
     echo [ERROR] Backend service failed to start.
     exit /b 1

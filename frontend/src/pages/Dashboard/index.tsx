@@ -1640,17 +1640,28 @@ const Dashboard = () => {
     if (locateRetryTimerRef.current !== null) window.clearTimeout(locateRetryTimerRef.current);
   }, []);
 
-  const emitTaskUpdated = useCallback((designerId?: string) => {
-    if (!designerId) {
-      socketRef.current?.emit('task_updated');
+  // 广播「任务数据已变更」，支持三种形态：
+  //   emitTaskUpdated()                                  → 空信号，对端全量刷新
+  //   emitTaskUpdated('designerId')                      → 单表增量（按当前视图月份补坐标）
+  //   emitTaskUpdated([{ designerId, month, year }, ...]) → 多表增量
+  // 移动主任务会同时改动源设计员表与目标设计员表（跨月时月份还不同），必须一次把
+  // 两张表的坐标都带上；只发单表会让另一端的目标行迟迟不出现，退化成整月全量刷新。
+  const emitTaskUpdated = useCallback((target?: string | Array<{ designerId: string; month?: number; year?: number }>) => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    if (!target) {
+      socket.emit('task_updated');
       return;
     }
     const d = currentDateRef.current;
-    socketRef.current?.emit('task_updated', {
-      designerId,
-      month: d.getMonth() + 1,
-      year: d.getFullYear()
-    });
+    const targets = typeof target === 'string'
+      ? [{ designerId: target, month: d.getMonth() + 1, year: d.getFullYear() }]
+      : target;
+    if (targets.length === 0) {
+      socket.emit('task_updated');
+      return;
+    }
+    socket.emit('task_updated', { targets });
   }, []);
 
   // 快捷添加「确认图修改」成功后：本地合并最新工时表，并通知其他客户端刷新
@@ -2263,6 +2274,7 @@ const Dashboard = () => {
     setSelectedTasks,
     setSelectedCell,
     socketRef,
+    currentDateRef,
   });
 
   const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);

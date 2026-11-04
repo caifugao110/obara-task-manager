@@ -82,18 +82,28 @@ npm run dev:frontend   :: 只起前端 :5173（Vite）
 
 ```ts
 // 1. 有没有 emit？
-// 2. 带坐标了吗？（designerId / month / year 三者缺一不可）
+// 2. 带坐标了吗？
+//    单表写入：designerId / month / year 三者缺一不可
 getCurrentSocket()?.emit('task_updated', {
   designerId,
   month,
   year
 });
+
+//    一次改动多张表（跨设计员/跨月移动、复制）：用 targets 一次发全，最多 8 张
+getCurrentSocket()?.emit('task_updated', {
+  targets: [
+    { designerId: sourceId, month: sourceMonth, year: sourceYear },
+    { designerId: targetId, month: targetMonth, year: targetYear }
+  ]
+});
 ```
 
 - 漏 emit → 其他客户端永远看不到变更（Dashboard 也没有轮询兜底）。
 - 漏坐标 → 服务端 `broadcastTaskRefresh()` 只能广播空信号，其他客户端整月重拉；只读用户还会叠加 3 秒合并节流。
+- 少发一张表 → 另一端的目标行迟迟不出现（服务端按你给的坐标逐张 `getSheet()`，没给的表不会推送）。
 - **不要重复 emit**：如果写入方已经在弹窗里 emit 了，宿主页面就别再发一次，否则别人会收到两条信号。
-- 坐标要取**目标数据的真实归属**（比如选中日期的年月），不是当前视图的月份。
+- 坐标要取**目标数据的真实归属**（比如选中日期的年月），不是当前视图的月份；接收侧只合并与当前视图同月份的表，本端回显也一样——跨月移动时把别月的表并进来会串月。
 
 广播内容由服务端自己读库组装（`getSheet()`），前端传的 payload 只用于定位，不会转发给其他人——所以别指望通过 emit 传自定义数据。
 
@@ -126,6 +136,8 @@ getCurrentSocket()?.emit('task_updated', {
 - 参数校验用 **Joi**，校验失败返回 400 与具体字段信息。
 - 错误响应统一 `{ message, code? }`；`WeKnoraError` 这类领域错误按 `status`/`code` 映射（见 `routes/designStandards.js` 的 `handleError`）。
 - 注释写**为什么**，不写**是什么**。本仓库的注释密度偏高，且大量记录「为什么不能改成另一种写法」——这类信息请保留，改代码时一并更新。
+- `server.js` 顶部的 `uncaughtException` / `unhandledRejection` 兜底监听是**进程保命线**，不要删：Node 22 遇到未处理的 Promise 拒绝会直接退出进程，端口 5000 静默消失，日志里只剩 nodemon 一句 `app crashed`。兜底会把堆栈写入 `logs/backend-crash.log` 并继续运行（`CRASH_EXIT_ON_UNCAUGHT=1` 才退出）。
+- 老式回调 socket / 流在 `destroy()` 之后仍可能补发 `'error'`（`ECONNRESET`、`ENOTFOUND`），此时若无监听者会升级成未捕获异常击穿进程。这类对象要保留一个空的 `'error'` 监听，参考 `utils/uncShare.js` 的 `probeHost`。
 
 ### 前端
 
@@ -213,6 +225,9 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 改完 `.env` 没生效 | 后端只在启动时读环境变量 | 重启后端 |
 | 别人看不到我的修改 | 写路径没 emit `task_updated` | 见 4.3 |
 | 别人刷新很慢、整月重拉 | emit 没带 `designerId/month/year` | 见 4.3 |
+| 跨设计员移动后，对端要等下一次刷新才出现目标行 | 只广播了源表坐标，没带目标表 | 用 `targets` 一次发全受影响的表，见 4.3 |
+| 跨月移动后对端串月 / 当前视图冒出别月任务 | 把非当前视图月份的 `sheet` 也 `upsertSheet` 了 | 回显与接收侧都只并入 `month/year` 与当前视图一致的表 |
+| 后端莫名消失、端口 5000 没了、日志无堆栈 | 未捕获异常击穿进程（Node 22 对未处理 Promise 拒绝直接退出） | 看 `logs/backend-crash.log`；不要删 `server.js` 顶部兜底监听，见「后端」编码约定 |
 | 晚打开的页面锁状态是空的 | 没监听快照事件/没调 `getSnapshot()` | 见 `socketClient.ts` |
 | 后端一启动就退出 | `JWT_SECRET` 为空 | 填 `backend/.env` |
 | 端口被占用 | 上次进程没退 | `stop.bat`，或按 `DEPLOYMENT.md` 手动释放 |
