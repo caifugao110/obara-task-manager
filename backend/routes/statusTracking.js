@@ -31,6 +31,21 @@ const rowLockConflictMessage = (lock, req) => {
   return null;
 };
 
+// 广播时排除发起者自己的那条连接。
+// 广播的内容是本次请求写入后的服务端快照，对发起者而言永远滞后于它本地最新的输入：
+// 若也回推给它，前端受控 input 的 value 会被改回旧值，中文输入法的合成被强行中断，
+// 表现为「字还没打完就被截断」（浏览器里会残留 fafan'kuaifan'ku 这样的拼音）。
+// 前端会带 x-socket-id，据此精确排除；不带（脚本/旧客户端）时退化为全员广播。
+const emitToOthers = (io, req, event, payload) => {
+  if (!io) return;
+  const requesterSocketId = String(req.get('x-socket-id') || '').trim();
+  if (requesterSocketId && typeof io.except === 'function') {
+    io.except(requesterSocketId).emit(event, payload);
+  } else {
+    io.emit(event, payload);
+  }
+};
+
 const statusTrackingItemSchema = Joi.object({
   id: Joi.string().allow(''),
   factory: Joi.string().allow(''),
@@ -136,7 +151,7 @@ router.post('/items', [authMiddleware, adminMiddleware, accessSettingsMiddleware
   
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_updated', { action: 'add', item: withDynamicDesignDeliveryDays(newItem) });
+    emitToOthers(io, req, 'status_tracking_updated', { action: 'add', item: withDynamicDesignDeliveryDays(newItem) });
   }
   
   res.json(withDynamicDesignDeliveryDays(newItem));
@@ -182,7 +197,7 @@ router.put('/items/:id', [authMiddleware, adminMiddleware, accessSettingsMiddlew
   const dynamicItem = withDynamicDesignDeliveryDays(data.statusTrackingItems[index]);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_updated', { action: 'update', item: dynamicItem });
+    emitToOthers(io, req, 'status_tracking_updated', { action: 'update', item: dynamicItem });
   }
   
   res.json(dynamicItem);
@@ -209,7 +224,7 @@ router.delete('/items/:id', [authMiddleware, adminMiddleware, accessSettingsMidd
   
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_updated', { action: 'delete', itemId: req.params.id });
+    emitToOthers(io, req, 'status_tracking_updated', { action: 'delete', itemId: req.params.id });
   }
   
   res.json({ success: true });

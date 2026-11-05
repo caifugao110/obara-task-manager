@@ -349,11 +349,38 @@ const StatusTracking = () => {
   const startEditingRef = useRef<(itemId: string) => void>(() => {});
   // loadItems 的实时镜像：socket effect 依赖不含 loadItems（避免整条连接重建）
   const loadItemsRef = useRef<() => void>(() => {});
-  // 表格滚动容器 <main> / 「设计纳期」最小有效值那一行的节点，用于进入页面时自动定位
+  // commitItems 的实时镜像：socket 回调同样不能因为依赖变化而重建连接
+  const commitItemsRef = useRef<(items: StatusItem[]) => void>(() => {});
+  // 表格滚动容器 <main> / 「设计纳期」非空第一行的节点，用于进入页面时自动定位
   const tableScrollRef = useRef<HTMLElement | null>(null);
   const targetRowRef = useRef<HTMLTableRowElement | null>(null);
-  // 只在首次拿到数据后自动滚动一次，之后用户自己筛选/排序不再抢滚动位置
-  const hasAutoScrolledRef = useRef(false);
+  // 是否还有一次「待执行」的定位：进页面时置 true，用户每次手动切换筛选也重新置 true。
+  // 数据实时刷新（socket）时不会置 true，避免把正在看的表格滚走。
+  const pendingPositionRef = useRef(true);
+  // 计数器：筛选变化时自增，用于强制 effect 重跑（即使 firstDesignIndex 数值没变）
+  const [positionToken, setPositionToken] = useState(0);
+
+  // ── 输入稳定性（中文输入法「打字被打断」的修复）────────────────────────────
+  // 1) allItems 的可变镜像。连续快速输入时同一帧内会多次 onChange，若每次都基于
+  //    React state 快照计算，后一次会覆盖前一次 → 丢字。
+  const itemsRef = useRef<StatusItem[]>([]);
+  // 2) 待保存快照 / 防抖定时器 / 在飞请求 / 输入法正在合成的记录。
+  //    以前每按一个键就 PUT 一次，请求互相乱序落地，服务器最终存下的可能是
+  //    中间某个快照；合成期间的拼音中间态也会被一起存进库。
+  const pendingSaveRef = useRef<Map<string, StatusItem>>(new Map());
+  const saveTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const savingIdsRef = useRef<Set<string>>(new Set());
+  const composingIdsRef = useRef<Set<string>>(new Set());
+  // 3) 焦点所在行。这段时间内不接受服务器推送覆盖——服务器快照必然滞后于本地输入，
+  //    一旦写回受控 input 的 value，输入法合成会被打断。
+  const activeEditItemIdRef = useRef<string | null>(null);
+  // localStorage 落盘防抖：全表 stringify（几百行）每键一次会明显卡顿
+  const localSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const requestReposition = useCallback(() => {
+    pendingPositionRef.current = true;
+    setPositionToken(token => token + 1);
+  }, []);
 
   const openDatePicker = useCallback((itemId: string) => {
     const input = dateInputRefs.current.get(itemId);
@@ -554,9 +581,26 @@ const StatusTracking = () => {
     }
   };
 
+  // 统一写入入口：先同步可变镜像，再更新 state，最后防抖落 localStorage。
+  // 所有「本地数据变了」的路径都必须走这里，itemsRef 才不会和历史状态脱节。
+  const commitItems = useCallback((next: StatusItem[], persistLocal = true) => {
+    itemsRef.current = next;
+    setAllItems(next);
+    if (!persistLocal) return;
+    if (localSaveTimerRef.current) clearTimeout(localSaveTimerRef.current);
+    localSaveTimerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem('statusTrackingItems', JSON.stringify(itemsRef.current));
+      } catch (e) {
+        console.error('Failed to cache status tracking items:', e);
+      }
+    }, 500);
+  }, []);
+  commitItemsRef.current = commitItems;
+
   const loadItems = useCallback(async () => {
     if (!token) {
-      setAllItems([]);
+      commitItems([], false);
       return;
     }
 
@@ -564,26 +608,31 @@ const StatusTracking = () => {
       const authHeader = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axios.get('/api/status-tracking/items', authHeader);
       if (Array.isArray(res.data)) {
-        setAllItems(res.data);
-        localStorage.setItem('statusTrackingItems', JSON.stringify(res.data));
+        // 拉全量时保留本端正在编辑的那一行：请求返回前的这段时间用户可能已经
+        // 又打了几个字，直接覆盖会把这几个字吞掉。
+        const editingId = activeEditItemIdRef.current;
+        const localEditing = editingId ? itemsRef.current.find(i => i.id === editingId) : null;
+        const merged = localEditing
+          ? res.data.map((i: StatusItem) => (i.id === editingId ? localEditing : i))
+          : res.data;
+        commitItems(merged);
       }
     } catch (err) {
       console.error('Error loading status tracking items:', err);
       const saved = localStorage.getItem('statusTrackingItems');
       if (saved) {
         try {
-          setAllItems(JSON.parse(saved));
+          commitItems(JSON.parse(saved));
         } catch (e) {
           console.error('Failed to parse saved items:', e);
         }
       }
     }
-  }, [token]);
+  }, [token, commitItems]);
 
   const saveItems = useCallback((newItems: StatusItem[]) => {
-    localStorage.setItem('statusTrackingItems', JSON.stringify(newItems));
-    setAllItems(newItems);
-  }, []);
+    commitItems(newItems);
+  }, [commitItems]);
 
   // 写接口带上当前连接 id：服务端据此判断行锁是否属于本窗口，
   // 避免同一账号的另一个窗口绕过前端锁定，改动别人正在编辑的行。
@@ -612,6 +661,76 @@ const StatusTracking = () => {
     loadItems();
   }, [loadItems]);
 
+  // 把某一行的待保存快照真正发出去。三条约束：
+  //   a) 输入法合成中不发（否则把拼音中间态存进库）；
+  //   b) 同一行已有请求在飞时不并发（否则多个快照乱序落地，最终存下的可能是旧值）；
+  //   c) 请求回来发现又有新快照，自动补发一次，保证最后一次输入一定落库。
+  const flushSaveRef = useRef<(id: string) => void>(() => {});
+  const flushSave = useCallback((id: string) => {
+    const timer = saveTimerRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      saveTimerRef.current.delete(id);
+    }
+    const snapshot = pendingSaveRef.current.get(id);
+    if (!snapshot) return;
+    if (composingIdsRef.current.has(id)) return;
+    if (savingIdsRef.current.has(id)) return;
+    pendingSaveRef.current.delete(id);
+    savingIdsRef.current.add(id);
+    updateItemOnServer(snapshot)
+      .catch(handlePersistError)
+      .finally(() => {
+        savingIdsRef.current.delete(id);
+        if (pendingSaveRef.current.has(id)) flushSaveRef.current(id);
+      });
+  }, [updateItemOnServer, handlePersistError]);
+  flushSaveRef.current = flushSave;
+
+  // 输入过程中只排队、不请求：停手 700ms 后再写服务器。
+  // 这样打字再快也只有一个请求，输入法合成也来得及完成。
+  const queueSave = useCallback((item: StatusItem) => {
+    pendingSaveRef.current.set(item.id, item);
+    const prev = saveTimerRef.current.get(item.id);
+    if (prev) clearTimeout(prev);
+    // 合成中先攒着，compositionend 时会立刻补发
+    if (composingIdsRef.current.has(item.id)) {
+      saveTimerRef.current.delete(item.id);
+      return;
+    }
+    saveTimerRef.current.set(item.id, setTimeout(() => flushSaveRef.current(item.id), 700));
+  }, []);
+
+  const handleCompositionStart = useCallback((id: string) => {
+    composingIdsRef.current.add(id);
+  }, []);
+
+  const handleCompositionEnd = useCallback((id: string) => {
+    // 延后一拍：compositionend 之后紧跟的 input 事件还会再更新一次内容，
+    // 让它先落到 pendingSaveRef，再统一提交
+    setTimeout(() => {
+      composingIdsRef.current.delete(id);
+      flushSaveRef.current(id);
+    }, 0);
+  }, []);
+
+  // 单行改写：基于 itemsRef（最新本地快照）计算，而不是渲染时的 allItems 闭包。
+  // 快速连打时同一帧会连续触发多次 onChange，用闭包快照会互相覆盖导致丢字。
+  const applyItemPatch = useCallback((id: string, compute: (item: StatusItem) => StatusItem) => {
+    if (!itemsRef.current.some(item => item.id === id)) return;
+    let changed: StatusItem | null = null;
+    const next = itemsRef.current.map(item => {
+      if (item.id !== id) return item;
+      changed = compute(item);
+      return changed;
+    });
+    const updated = changed as StatusItem | null;
+    if (!updated) return;
+    commitItems(next);
+    // 本地即时更新，服务器写入走防抖队列（详见 queueSave）
+    queueSave(updated);
+  }, [commitItems, queueSave]);
+
   const updateField = useCallback((id: string, field: keyof StatusItem, value: any) => {
     if (!isAdmin) {
       addToast('无权限编辑记录', 'error');
@@ -621,31 +740,21 @@ const StatusTracking = () => {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    let updatedItem: StatusItem | null = null;
-    const updated = allItems.map(item => {
-      if (item.id === id) {
-        const tempItem = { ...item, [field]: value };
-        const confirmedVarieties = tempItem.confirmedVarieties || 0;
-        const drawnVarieties = tempItem.drawnVarieties || 0;
-        const confirmedQuantity = tempItem.confirmedQuantity || 0;
-        const shippedCount = tempItem.shippedCount || 0;
-        const quantity = parseInt(tempItem.quantity || '0', 10) || 0;
-        
-        updatedItem = {
-          ...tempItem,
-          undrawnVarieties: Math.max(0, confirmedVarieties - drawnVarieties),
-          undrawnQuantity: Math.max(0, confirmedQuantity - shippedCount),
-          unconfirmedQuantity: Math.max(0, quantity - confirmedQuantity)
-        };
-        return updatedItem;
-      }
-      return item;
+    applyItemPatch(id, item => {
+      const tempItem = { ...item, [field]: value };
+      const confirmedVarieties = tempItem.confirmedVarieties || 0;
+      const drawnVarieties = tempItem.drawnVarieties || 0;
+      const confirmedQuantity = tempItem.confirmedQuantity || 0;
+      const shippedCount = tempItem.shippedCount || 0;
+      const quantity = parseInt(tempItem.quantity || '0', 10) || 0;
+      return {
+        ...tempItem,
+        undrawnVarieties: Math.max(0, confirmedVarieties - drawnVarieties),
+        undrawnQuantity: Math.max(0, confirmedQuantity - shippedCount),
+        unconfirmedQuantity: Math.max(0, quantity - confirmedQuantity)
+      };
     });
-    saveItems(updated);
-    if (updatedItem) {
-      updateItemOnServer(updatedItem).catch(handlePersistError);
-    }
-  }, [allItems, saveItems, updateItemOnServer, handlePersistError, isOffline, isAdmin]);
+  }, [applyItemPatch, isOffline, isAdmin]);
 
   const updateItem = useCallback((id: string, updates: Partial<StatusItem>) => {
     if (!isAdmin) {
@@ -656,31 +765,21 @@ const StatusTracking = () => {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    let updatedItem: StatusItem | null = null;
-    const updated = allItems.map(item => {
-      if (item.id === id) {
-        const tempItem = { ...item, ...updates };
-        const confirmedVarieties = tempItem.confirmedVarieties || 0;
-        const drawnVarieties = tempItem.drawnVarieties || 0;
-        const confirmedQuantity = tempItem.confirmedQuantity || 0;
-        const shippedCount = tempItem.shippedCount || 0;
-        const quantity = parseInt(tempItem.quantity || '0', 10) || 0;
-        
-        updatedItem = {
-          ...tempItem,
-          undrawnVarieties: Math.max(0, confirmedVarieties - drawnVarieties),
-          undrawnQuantity: Math.max(0, confirmedQuantity - shippedCount),
-          unconfirmedQuantity: Math.max(0, quantity - confirmedQuantity)
-        };
-        return updatedItem;
-      }
-      return item;
+    applyItemPatch(id, item => {
+      const tempItem = { ...item, ...updates };
+      const confirmedVarieties = tempItem.confirmedVarieties || 0;
+      const drawnVarieties = tempItem.drawnVarieties || 0;
+      const confirmedQuantity = tempItem.confirmedQuantity || 0;
+      const shippedCount = tempItem.shippedCount || 0;
+      const quantity = parseInt(tempItem.quantity || '0', 10) || 0;
+      return {
+        ...tempItem,
+        undrawnVarieties: Math.max(0, confirmedVarieties - drawnVarieties),
+        undrawnQuantity: Math.max(0, confirmedQuantity - shippedCount),
+        unconfirmedQuantity: Math.max(0, quantity - confirmedQuantity)
+      };
     });
-    saveItems(updated);
-    if (updatedItem) {
-      updateItemOnServer(updatedItem).catch(handlePersistError);
-    }
-  }, [allItems, saveItems, updateItemOnServer, handlePersistError, isOffline, isAdmin]);
+  }, [applyItemPatch, isOffline, isAdmin]);
 
   const deleteItem = useCallback(async (id: string) => {
     if (!isAdmin) {
@@ -691,7 +790,14 @@ const StatusTracking = () => {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    const updated = allItems.filter(item => item.id !== id);
+    const updated = itemsRef.current.filter(item => item.id !== id);
+    // 该行可能还有没来得及落库的输入，删掉时一并丢弃
+    const timer = saveTimerRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      saveTimerRef.current.delete(id);
+    }
+    pendingSaveRef.current.delete(id);
     saveItems(updated);
     
     if (!token) {
@@ -711,7 +817,7 @@ const StatusTracking = () => {
     }
     
     addToast('记录已删除', 'success');
-  }, [allItems, token, isAdmin, saveItems, isOffline, loadItems, writeAuthHeader]);
+  }, [token, isAdmin, saveItems, isOffline, loadItems, writeAuthHeader]);
 
   const updateItemInfo = useCallback(async (id: string) => {
     if (!isAdmin) {
@@ -722,7 +828,7 @@ const StatusTracking = () => {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    const item = allItems.find(i => i.id === id);
+    const item = itemsRef.current.find(i => i.id === id);
     if (!item || !item.specNumber) {
       addToast('无法更新，缺少仕样号', 'error');
       return;
@@ -755,7 +861,8 @@ const StatusTracking = () => {
       const matchedSchedule = Boolean(specInfo.scheduleMonth);
 
       let updatedItem: StatusItem | null = null;
-      const updated = allItems.map(i => {
+      // 以当前本地镜像为基准：await 期间用户可能又改了别的单元格
+      const updated = itemsRef.current.map(i => {
         if (i.id === id) {
           updatedItem = {
             ...i,
@@ -776,6 +883,14 @@ const StatusTracking = () => {
         return i;
       });
 
+      // 丢弃该行还没落库的旧快照，否则 700ms 后它会把刚刷新的信息覆盖回去
+      const staleTimer = saveTimerRef.current.get(id);
+      if (staleTimer) {
+        clearTimeout(staleTimer);
+        saveTimerRef.current.delete(id);
+      }
+      pendingSaveRef.current.delete(id);
+
       saveItems(updated);
       if (updatedItem) {
         await updateItemOnServer(updatedItem);
@@ -790,7 +905,7 @@ const StatusTracking = () => {
     } finally {
       setUpdatingItemId(null);
     }
-  }, [allItems, token, saveItems, updateItemOnServer, leaderRules, factoryRulesConfig, isOffline, isAdmin]);
+  }, [token, saveItems, updateItemOnServer, leaderRules, factoryRulesConfig, isOffline, isAdmin]);
 
   const startEditing = useCallback((itemId: string) => {
     if (!isAdmin) {
@@ -941,12 +1056,38 @@ const StatusTracking = () => {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setAllItems(prev => prev.map(item => ({
+      // 每分钟只重算派生值，不触碰用户正在输入的文字
+      const next = itemsRef.current.map(item => ({
         ...item,
         designDeliveryDays: item.deliveryDate ? calculateDesignDeliveryDays(item.deliveryDate) : item.designDeliveryDays
-      })));
+      }));
+      itemsRef.current = next;
+      setAllItems(next);
     }, 60000);
     return () => clearInterval(interval);
+  }, []);
+
+  // 离开页面 / 关闭标签页：把还在防抖队列里的输入立刻提交，
+  // 否则最后一个字的保存计时器会随组件卸载一起被清掉。
+  useEffect(() => {
+    const flushAll = () => {
+      pendingSaveRef.current.forEach((_item, id) => flushSaveRef.current(id));
+      try {
+        localStorage.setItem('statusTrackingItems', JSON.stringify(itemsRef.current));
+      } catch (e) {
+        /* 配额或隐私模式下忽略，服务器才是权威数据源 */
+      }
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') flushAll();
+    };
+    window.addEventListener('beforeunload', flushAll);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('beforeunload', flushAll);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      flushAll();
+    };
   }, []);
 
   useEffect(() => {
@@ -1010,31 +1151,29 @@ const StatusTracking = () => {
 
     handle.on('status_tracking_updated', async (data) => {
       if (data.action === 'add') {
-        setAllItems(prev => {
-          const exists = prev.find(i => i.id === data.item.id);
-          if (exists) return prev;
-          const next = [...prev, data.item];
-          localStorage.setItem('statusTrackingItems', JSON.stringify(next));
-          return next;
-        });
+        if (itemsRef.current.some(i => i.id === data.item.id)) return;
+        commitItemsRef.current([...itemsRef.current, data.item]);
       } else if (data.action === 'update') {
-        setAllItems(prev => {
-          const next = prev.map(i => i.id === data.item.id ? data.item : i);
-          localStorage.setItem('statusTrackingItems', JSON.stringify(next));
-          return next;
-        });
+        // 关键：本端正在这一行打字时，绝不把服务器快照写回受控 input。
+        // 服务器快照必然滞后于本地输入，一旦回写 value，中文输入法的合成
+        // 就会被强行中断，已输入的拼音被截成半截（「打字被截断」的真正原因）。
+        if (activeEditItemIdRef.current === data.item.id) return;
+        if (!itemsRef.current.some(i => i.id === data.item.id)) return;
+        commitItemsRef.current(itemsRef.current.map(i => i.id === data.item.id ? data.item : i));
       } else if (data.action === 'delete') {
-        setAllItems(prev => {
-          const next = prev.filter(i => i.id !== data.itemId);
-          localStorage.setItem('statusTrackingItems', JSON.stringify(next));
-          return next;
-        });
+        commitItemsRef.current(itemsRef.current.filter(i => i.id !== data.itemId));
       }
     });
 
     handle.on('status_tracking_bulk', async (dataItems) => {
-      setAllItems(dataItems);
-      localStorage.setItem('statusTrackingItems', JSON.stringify(dataItems));
+      // 整表覆盖时保留本端正在编辑的那一行，避免把这几个字直接冲掉
+      if (!Array.isArray(dataItems)) return;
+      const editingId = activeEditItemIdRef.current;
+      const localEditing = editingId ? itemsRef.current.find(i => i.id === editingId) : null;
+      const merged = localEditing
+        ? dataItems.map((i: StatusItem) => (i.id === editingId ? localEditing : i))
+        : dataItems;
+      commitItemsRef.current(merged);
     });
 
     // 任务数据被批量清理 / 导入 / 年度归档后重新拉取：
@@ -1174,14 +1313,19 @@ const StatusTracking = () => {
     [filteredItems]
   );
 
-  // 进入页面首次拿到数据后，在原有滚动基础上再往下滚一段，
-  // 使「设计纳期」非空的第一行正好成为可视区的第一行（顶在吸顶表头下方）。
-  // 只执行一次：之后用户自己改筛选/排序不再抢滚动位置。
+  // 定位规则：在原有滚动基础上再滚一段，使「设计纳期」非空的第一行成为可视区第一行
+  // （顶在吸顶表头下方）。触发时机：①进入页面首次拿到数据；②用户手动切换六个产品钩子中的
+  // 任意一个（含全部取消）或改纳期月份。数据实时刷新、用户自己滚动时不触发，不抢滚动位置。
   useEffect(() => {
     // 权限设置未加载完时页面还停在骨架屏，表格节点不存在，等加载完再定位
     if (!settingsLoaded) return;
-    if (hasAutoScrolledRef.current) return;
-    if (firstDesignIndex < 0) return;
+    if (!pendingPositionRef.current) return;
+    if (firstDesignIndex < 0) {
+      // 当前筛选下没有「设计纳期」非空的记录，且列表确实已经渲染出来 → 本次定位作废，
+      // 否则会一直挂着，等下次数据刷新时突然滚动
+      if (filteredItems.length > 0) pendingPositionRef.current = false;
+      return;
+    }
 
     let frame1 = 0;
     let frame2 = 0;
@@ -1190,7 +1334,7 @@ const StatusTracking = () => {
       if (!row) return;
       const container = resolveScrollContainer(row, tableScrollRef.current);
       if (!container) return;
-      hasAutoScrolledRef.current = true;
+      pendingPositionRef.current = false;
       // 表头是 sticky 的，直接 scrollIntoView 会把目标行藏到表头下面，这里手动扣掉表头高度
       const thead = container.querySelector('thead');
       const headerHeight = thead ? thead.getBoundingClientRect().height : 0;
@@ -1209,7 +1353,7 @@ const StatusTracking = () => {
       window.cancelAnimationFrame(frame1);
       window.cancelAnimationFrame(frame2);
     };
-  }, [firstDesignIndex, settingsLoaded]);
+  }, [firstDesignIndex, settingsLoaded, positionToken, filteredItems.length]);
 
   const toggleSort = useCallback((key: 'deliveryDate' | 'designDeliveryDays') => {
     setSortConfig(prev => {
@@ -1455,7 +1599,11 @@ const StatusTracking = () => {
                 {isGroupStart && <span className="mx-0.5 h-4 w-[1px] bg-gray-200" />}
                 <button
                   type="button"
-                  onClick={() => setSheetFilter(active ? '' : option.key)}
+                  onClick={() => {
+                    setSheetFilter(active ? '' : option.key);
+                    // 任意勾选/取消都重新定位到「设计纳期」非空的第一行
+                    requestReposition();
+                  }}
                   title={active ? '再次点击取消筛选，显示全部记录' : option.hint}
                   className={`px-3 py-1 text-sm rounded-full border transition ${
                     active
@@ -1478,7 +1626,11 @@ const StatusTracking = () => {
         <div className="relative">
           <select
             value={deliveryMonth}
-            onChange={(e) => setDeliveryMonth(e.target.value)}
+            onChange={(e) => {
+              setDeliveryMonth(e.target.value);
+              // 换月份后同样按规则定位
+              requestReposition();
+            }}
             title="按纳期月份筛选"
             className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
@@ -1493,7 +1645,11 @@ const StatusTracking = () => {
           {sheetFilter && (
             <button
               type="button"
-              onClick={() => setSheetFilter('')}
+              onClick={() => {
+                // 「显示全部」= 六个钩子都不勾，也要重新定位
+                setSheetFilter('');
+                requestReposition();
+              }}
               className="text-blue-600 hover:text-blue-800 hover:underline"
             >
               显示全部
@@ -1518,8 +1674,8 @@ const StatusTracking = () => {
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '45px' }} />
-                <col style={{ width: '110px' }} />
-                <col style={{ width: '130px' }} />
+                <col style={{ width: '200px' }} />
+                <col style={{ width: '240px' }} />
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '45px' }} />
@@ -1662,10 +1818,23 @@ const StatusTracking = () => {
                         // 行级获取/释放编辑锁：startEditing/stopEditing 此前从未被调用，
                         // 编辑锁功能实际上一直不生效。焦点在本行内单元格之间移动时
                         // 不应释放锁，因此只在焦点离开整行时才 stop。
-                        onFocus={() => startEditing(item.id)}
+                        onFocus={() => {
+                          // 标记「这一行正在编辑」：期间不接受服务器推送覆盖，
+                          // 否则输入法的合成会被打断
+                          activeEditItemIdRef.current = item.id;
+                          startEditing(item.id);
+                        }}
                         onBlur={(e) => {
                           const next = e.relatedTarget as Node | null;
-                          if (!next || !e.currentTarget.contains(next)) stopEditing(item.id);
+                          if (!next || !e.currentTarget.contains(next)) {
+                            activeEditItemIdRef.current = null;
+                            // 极端情况：合成事件没正常结束时焦点就跑了，
+                            // 这里强制解封，避免这行的改动一直卡在队列里不落库
+                            composingIdsRef.current.delete(item.id);
+                            // 焦点离开整行时立刻把这行攒的改动落库，不必再等防抖
+                            flushSaveRef.current(item.id);
+                            stopEditing(item.id);
+                          }
                         }}
                       >
                         <td className="px-2 py-2 border-b border-gray-200 text-center overflow-hidden">
@@ -1685,6 +1854,8 @@ const StatusTracking = () => {
                             type="text"
                             value={item.clientName}
                             onChange={(e) => updateField(item.id, 'clientName', e.target.value)}
+                            onCompositionStart={() => handleCompositionStart(item.id)}
+                            onCompositionEnd={() => handleCompositionEnd(item.id)}
                             disabled={isLocked || !isAdmin}
                             className="w-full text-left border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-blue-700 truncate"
                             title={item.clientName}
@@ -1762,9 +1933,12 @@ const StatusTracking = () => {
                             type="text"
                             value={item.feedbackPlan}
                             onChange={(e) => updateField(item.id, 'feedbackPlan', e.target.value)}
+                            onCompositionStart={() => handleCompositionStart(item.id)}
+                            onCompositionEnd={() => handleCompositionEnd(item.id)}
                             disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed truncate"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                             placeholder="反馈计划"
+                            title={item.feedbackPlan || undefined}
                           />
                         </td>
                         <td className="px-2 py-2 border-b border-gray-200 text-center overflow-hidden">
@@ -1772,9 +1946,12 @@ const StatusTracking = () => {
                             type="text"
                             value={item.drawingPlanStatus}
                             onChange={(e) => updateField(item.id, 'drawingPlanStatus', e.target.value)}
+                            onCompositionStart={() => handleCompositionStart(item.id)}
+                            onCompositionEnd={() => handleCompositionEnd(item.id)}
                             disabled={isLocked || !isAdmin}
-                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed truncate"
+                            className="w-full text-center border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                             placeholder="下图计划及状态"
+                            title={item.drawingPlanStatus || undefined}
                           />
                         </td>
                         <td className="px-1 py-2 border-b border-gray-200 text-center overflow-hidden">
