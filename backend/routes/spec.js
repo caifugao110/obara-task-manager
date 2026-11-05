@@ -107,24 +107,72 @@ const fileExists = async (target) => {
   }
 };
 
-// 仕样书共享目录是否可访问：结果缓存 30 秒，避免每次查询都对共享盘做一轮探测。
-// 走异步 API——共享盘不可达时 existsSync 会阻塞整个事件循环（详见 productionSchedule 的同类问题）。
-let shareState = { ok: true, at: 0 };
-const SHARE_CHECK_TTL_MS = 30 * 1000;
+// 仕样书共享目录是否可访问：结果缓存（可用 30 秒 / 不可用 10 秒），
+// 避免每次查询都对共享盘做一轮探测，同时保证共享恢复后能较快重新命中。
+//
+// 探测必须带时限：共享服务器不可达时，Windows 对 UNC 的 stat 等的是 SMB 自己那套超时
+// （30 秒起步），不设上限就谈不上「快速失败」——用户看到的是请求一直转圈，
+// 而前端 15 秒超时后还会把这种「无响应」误判成后端离线。
+// 走异步 API 的原因见 productionSchedule：同步 API 会把整个事件循环占住。
+const SHARE_PROBE_TIMEOUT_MS = 2000;
+const SHARE_OK_TTL_MS = 30 * 1000;
+const SHARE_FAIL_TTL_MS = 10 * 1000;
+let shareState = { ok: true, at: 0, timedOut: false };
 
-async function shareReachable() {
-  const now = Date.now();
-  if (now - shareState.at < SHARE_CHECK_TTL_MS) return shareState.ok;
-  const ok = (await fileExists(SPEC_SHARE_PATH)) || (await fileExists(SPEC_SHARE_PATH_BS));
-  shareState = { ok, at: now };
-  return ok;
+// 给任意 Promise 加时限；超时返回 { timedOut: true }，不抛错，由调用方决定怎么降级。
+// 注意：超时只是「不再等」，被放弃的内部操作仍会跑完（Promise 无法取消），
+// 因此下面每个调用点都必须自己保证不会在后台堆积无意义的共享盘访问。
+function withDeadline(promise, ms) {
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true }), ms);
+  });
+  const settled = Promise.resolve(promise).then(
+    (value) => ({ timedOut: false, value }),
+    (error) => ({ timedOut: false, error })
+  );
+  return Promise.race([settled, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
+
+/**
+ * 探测仕样书共享是否可访问（带缓存与硬性时限）。
+ * @returns {Promise<{ ok: boolean, timedOut: boolean, cached?: boolean, elapsedMs: number }>}
+ */
+async function checkSpecShare() {
+  const startedAt = Date.now();
+  const cachedTtl = shareState.ok ? SHARE_OK_TTL_MS : SHARE_FAIL_TTL_MS;
+  if (shareState.at && Date.now() - shareState.at < cachedTtl) {
+    return { ok: shareState.ok, timedOut: shareState.timedOut, cached: true, elapsedMs: Date.now() - startedAt };
+  }
+
+  const probe = await withDeadline(
+    (async () => (await fileExists(SPEC_SHARE_PATH)) || (await fileExists(SPEC_SHARE_PATH_BS)))(),
+    SHARE_PROBE_TIMEOUT_MS
+  );
+
+  const ok = !probe.timedOut && probe.value === true;
+  shareState = { ok, at: Date.now(), timedOut: probe.timedOut === true };
+  if (!ok) {
+    console.warn(
+      `[spec] 仕样书共享不可访问（${probe.timedOut ? `探测超过 ${SHARE_PROBE_TIMEOUT_MS}ms` : '路径不存在'}）：${securityConfig.spec.sharePath}`
+    );
+  }
+  return { ok, timedOut: shareState.timedOut, elapsedMs: Date.now() - startedAt };
+}
+
+// 共享不通时给用户看的一句话：必须说清是哪个共享，否则「无法访问共享目录」等于没说
+const SPEC_SHARE_UNAVAILABLE_MESSAGE = `无法访问仕样书共享目录（${securityConfig.spec.sharePath}），请检查网络连接或联系管理员`;
+
+// 大日程只服务于状态跟踪页：其他入口（主页面、台账、快速取号）一律只看仕样书共享。
+const SCHEDULE_LOOKUP_TIMEOUT_MS = 3000;
 
 // 取该仕样号的最新版 PDF（58249.08.PDF 优先于 58249.PDF）。
 // 各候选并行探测：串行 10 次网络 access 会叠加成上百毫秒，且期间占着请求。
 async function findLatestSpecPdf(n) {
-  var shareAccessible = await shareReachable();
-  if (!shareAccessible) return null;
+  var share = await checkSpecShare();
+  if (!share.ok) return null;
 
   var candidates = [{ suffix: '.PDF', version: 0 }];
   for (var i = 1; i <= 9; i++) {
@@ -146,6 +194,16 @@ async function findLatestSpecPdf(n) {
     if (hit && (!latest || hit.version > latest.version)) latest = hit;
   }
   return latest ? latest.file : null;
+}
+
+// PDF 未命中时的兜底：大日程里存在、但共享里没有对应 PDF 的仕样号，
+// 客户名/数量/纳期只有表格里才有。回退必须零故障面——所以先看可达性缓存，
+// 只有「70 当前已知可达」才真去读；不知道或已不可达就直接放弃。
+async function lookupScheduleFallback(n) {
+  const hint = productionSchedule.getReachabilityHint();
+  if (!hint.known || !hint.ok) return null;
+  const result = await withDeadline(productionSchedule.findScheduleEntry(n, ''), SCHEDULE_LOOKUP_TIMEOUT_MS);
+  return result.timedOut ? null : (result.value || null);
 }
 
 function isSkipDataLine(line) {
@@ -403,9 +461,9 @@ router.post('/delivery-date', [authMiddleware, adminMiddleware], asyncHandler(as
 
       (async function() {
 
-        var ok = await shareReachable();
+        var share = await checkSpecShare();
 
-        if (!ok) return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
+        if (!share.ok) return {success: false, code: 'SPEC_SHARE_UNREACHABLE', message: SPEC_SHARE_UNAVAILABLE_MESSAGE};
 
         var pdf = await findLatestSpecPdf(n);
 
@@ -447,8 +505,8 @@ router.post('/spec-raw-text', [authMiddleware, adminMiddleware], asyncHandler(as
   const digitCheck = validateSpecNumberDigits(n);
   if (!digitCheck.valid) return res.json({success: false, message: digitCheck.message});
   try {
-    var ok = await shareReachable();
-    if (!ok) return res.json({success: false, message: '无法访问共享目录，请检查网络连接和权限'});
+    var share = await checkSpecShare();
+    if (!share.ok) return res.json({success: false, code: 'SPEC_SHARE_UNREACHABLE', message: SPEC_SHARE_UNAVAILABLE_MESSAGE});
     var pdf = await findLatestSpecPdf(n);
     if (!pdf) return res.json({success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'});
 
@@ -485,9 +543,12 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
   const digitCheck = validateSpecNumberDigits(n);
   if (!digitCheck.valid) return res.json({success: false, message: digitCheck.message});
 
-  // 状态跟踪会传入添加时间月份，用于取「各产品大日程」中对应月份块的数据
+  // 大日程（\\192.168.160.70）只服务于「状态跟踪」页：只有该页会传 includeSchedule
+  // 或添加时间月份。主页面 / 焊枪台账 / 快速取号查仕样号一律只看仕样书共享，
+  // 否则生产大日程那台服务器一挂，这些本不依赖它的入口会被一起拖死。
   var requestedMonth = String(req.body.productionPlanMonth || req.body.month || '').trim();
   var preferredMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : '';
+  var includeSchedule = req.body.includeSchedule === true || preferredMonth !== '';
 
   try {
 
@@ -498,7 +559,31 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
         // 大日程表格优先：命中时数量/纳期/已发图/工厂以表格为准
         // 注意：这里必须 await —— 大日程在共享盘上，同步读取会占住事件循环，
         // 共享服务器不可达时整个后端会被拖住几十秒（所有接口一起变慢）。
-        var scheduleEntry = await productionSchedule.findScheduleEntry(n, preferredMonth);
+        // 即使需要，也必须限时：状态跟踪页没有理由为一条不可达的共享连接干等 40 秒。
+        var scheduleEntry = null;
+        var scheduleUnavailable = false;
+
+        if (includeSchedule) {
+
+          var scheduleLookup = await withDeadline(
+            productionSchedule.findScheduleEntry(n, preferredMonth),
+            SCHEDULE_LOOKUP_TIMEOUT_MS
+          );
+
+          if (scheduleLookup.timedOut) {
+            scheduleUnavailable = true;
+            console.warn(`[spec] 大日程查询超过 ${SCHEDULE_LOOKUP_TIMEOUT_MS}ms（共享不可达），仕样号 ${n} 本次降级为仅解析仕样书`);
+          } else {
+            scheduleEntry = scheduleLookup.value || null;
+            // 未命中要区分两种情况：表里确实没有这个仕样号（lastError 为空），
+            // 还是共享读不到（lastError 有值）。后者必须让状态跟踪页知道
+            // 「这次的数量/纳期来自仕样书」，否则用户会以为同步成功了。
+            if (!scheduleEntry && productionSchedule.getScheduleStatus().lastError) {
+              scheduleUnavailable = true;
+            }
+          }
+
+        }
 
         // PDF 仍尽量解析，用于补充客户名称、营业担当等信息；
         // PDF 不可用时只要表格命中就继续返回表格数据
@@ -507,9 +592,9 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
         try {
 
-          var ok = await shareReachable();
+          var share = await checkSpecShare();
 
-          if (!ok) {
+          if (!share.ok) {
             pdfState = 'share-unavailable';
           } else {
             var pdf = await findLatestSpecPdf(n);
@@ -524,14 +609,30 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
           console.warn('[spec] 解析仕样书失败:', e.message);
         }
 
+        var fallbackTried = false;
+
+        // 普通入口的 PDF 没命中（共享里没有该仕样号的文件，或解析失败）时，
+        // 再问一次大日程：这类仕样号只在表格里有数据。
+        // includeSchedule 的请求上面已经查过了，不重复；共享不通时 lookupScheduleFallback 直接返回 null。
+        if (!includeSchedule && !info && !scheduleEntry && (pdfState === 'missing' || pdfState === 'parse-failed')) {
+          fallbackTried = productionSchedule.getReachabilityHint().ok;
+          scheduleEntry = await lookupScheduleFallback(n);
+          if (scheduleEntry) scheduleUnavailable = false;
+        }
+
         if (!scheduleEntry && !info) {
           if (pdfState === 'share-unavailable') {
-            return {success: false, message: '无法访问共享目录，请检查网络连接和权限'};
+            return {success: false, code: 'SPEC_SHARE_UNREACHABLE', message: SPEC_SHARE_UNAVAILABLE_MESSAGE};
           }
           if (pdfState === 'parse-failed' || pdfState === 'error') {
             return {success: false, message: '解析PDF信息失败'};
           }
-          return {success: false, message: '未找到仕样号 ' + n + ' 的PDF文件'};
+          return {
+            success: false,
+            message: fallbackTried
+              ? '未找到仕样号 ' + n + ' 的仕样书 PDF，大日程中也没有该仕样号'
+              : '未找到仕样号 ' + n + ' 的PDF文件'
+          };
         }
 
         var clientName = '';
@@ -608,13 +709,20 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
           // 已发图取表格；未命中表格时为 null，由前端按原有记录处理
           shippedCount: scheduleEntry ? scheduleEntry.shippedCount : null,
 
-          scheduleMonth: scheduleEntry ? scheduleEntry.month : ''
+          scheduleMonth: scheduleEntry ? scheduleEntry.month : '',
+
+          // 大日程本应参与本次查询却没能取到（共享不可达/超过 3 秒）：
+          // 前端据此提示「本次数据来自仕样书」，而不是把「取不到工厂/已发图」当成数据缺失
+          scheduleUnavailable
 
         };
 
       })(),
 
-      new Promise(function(_, rj) { setTimeout(function() { rj(new Error('T')); }, 15000); })
+      // 12 秒必须短于前端的 15 秒：同样的 15 秒摆在一起就是竞速，
+      // 客户端几乎总是先超时，于是拿到「无响应」而不是下面这条明确提示，
+      // 还会被前端判定为「后端不可达」直接进入离线模式。
+      new Promise(function(_, rj) { setTimeout(function() { rj(new Error('T')); }, 12000); })
 
     ]);
 
@@ -622,7 +730,7 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 
   } catch(e) {
 
-    if (e.message === 'T') return res.json({success: false, message: '获取仕样信息超时(超过15秒)'});
+    if (e.message === 'T') return res.json({success: false, code: 'SPEC_TIMEOUT', message: '获取仕样信息超时(超过12秒)'});
 
     // 不向客户端回传内部错误细节（可能含上游 URL / 文件路径），详细信息仅写服务端日志
     console.warn('[spec] 获取仕样信息失败:', e.message);

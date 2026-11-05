@@ -325,25 +325,39 @@ function countEntries(index) {
 let inflightLoad = null;
 
 // 共享服务器可达性结果缓存：主机彻底不通时不能每次请求都花 2 秒探一遍
-let reachability = { host: '', ok: true, at: 0 };
+let reachability = { host: '', ok: true, at: 0, code: '', port: 0, elapsedMs: 0 };
 const REACHABILITY_TTL_MS = 60 * 1000;
+
+// 这些错误码说明「主机层面就到不了」，后面再 stat / net use 只是把已经确定的结论
+// 重新等一遍（stat 等 SMB 的 30 秒，net use 再等 15 秒）。EACCES / EPERM 不在此列：
+// 那是「探测失败但共享可能仍可用」，必须继续尝试凭据连接（见 getScheduleIndex 注释）。
+const HOST_UNREACHABLE_CODES = new Set(['ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN']);
 
 async function checkReachability(filePath) {
   const host = uncShare.getShareHost(filePath);
   // 本地磁盘路径（非 UNC）不需要探测
-  if (!host) return { ok: true };
+  if (!host) return { ok: true, host: '', code: '', port: 0, elapsedMs: 0 };
 
   const now = Date.now();
   if (reachability.host === host && now - reachability.at < REACHABILITY_TTL_MS) {
-    return { ok: reachability.ok, host, cached: true };
+    // 缓存里必须一并带上 code / elapsedMs：只返回 { ok:false } 会让调用方
+    // 拿不到失败原因，日志里就会出现「失败（ETIMEDOUT，耗时 undefinedms）」
+    return { ...reachability, cached: true };
   }
 
   const probe = await uncShare.probeHost(host, 2000);
-  reachability = { host, ok: probe.ok, at: Date.now() };
+  reachability = {
+    host,
+    ok: probe.ok,
+    at: Date.now(),
+    code: probe.code || '',
+    port: probe.port || 0,
+    elapsedMs: probe.elapsedMs || 0
+  };
   if (!probe.ok) {
     console.warn(`[productionSchedule] 共享服务器 ${host} 不可达（${probe.code}，探测耗时 ${probe.elapsedMs}ms）`);
   }
-  return { ok: probe.ok, host, port: probe.port, code: probe.code };
+  return { ...reachability };
 }
 
 function recordFailure(filePath, nowMs, code, error) {
@@ -404,10 +418,19 @@ async function getScheduleIndex(now = new Date(), options = {}) {
     //   uncShare 的 1219 断开重连 + 凭据连接留一条活路。
     const reach = await checkReachability(filePath);
     if (!reach.ok) {
-      console.warn(`[productionSchedule] 快速探测 ${reach.host} 失败（${reach.code}，耗时 ${reach.elapsedMs}ms），继续尝试凭据连接...`);
+      const hostUnreachable = HOST_UNREACHABLE_CODES.has(reach.code);
+      console.warn(
+        `[productionSchedule] 快速探测 ${reach.host} 失败（${reach.code || 'ETIMEDOUT'}，耗时 ${reach.elapsedMs}ms）` +
+        (hostUnreachable ? '，主机整体不可达，本次跳过共享访问' : '，继续尝试凭据连接...')
+      );
       // 探测结果写入 runtime.lastError 作为诊断信息；真实的失败原因（net use 还是 fs.stat）
-      // 会在 withShareRetryAsync 的 recordFailure 里被覆盖，所以这里只写不 return。
-      recordFailure(filePath, nowMs, reach.code || 'EHOSTUNREACH', new Error(`快速探测 ${reach.host} 失败（${reach.code || 'ETIMEDOUT'}），继续尝试凭据连接`));
+      // 会在 withShareRetryAsync 的 recordFailure 里被覆盖，所以这里只写不 return
+      // ——但「主机整体不可达」是个已经确定的结论，再等 45 秒毫无意义。
+      // 时间戳必须用「现在」而不是本次请求的起始时刻：否则一次耗时超过
+      // FAILURE_RETRY_MS 的失败，写进缓存的 loadedAt 就已经是过期的，
+      // 失败节流永远不生效，每次请求都要重新吃满一轮超时。
+      recordFailure(filePath, Date.now(), reach.code || 'EHOSTUNREACH', new Error(`快速探测 ${reach.host} 失败（${reach.code || 'ETIMEDOUT'}）`));
+      if (hostUnreachable) return null;
     }
 
     const outcome = await uncShare.withShareRetryAsync(filePath, async () => {
@@ -431,7 +454,7 @@ async function getScheduleIndex(now = new Date(), options = {}) {
         ? `已用配置的账号（${process.env.PRODUCTION_SCHEDULE_UNC_USER}）连接共享，但文件访问仍被拒：请确认该账号在 ${uncShare.getShareRoot(filePath) || '共享服务器'} 上具有读权限（共享权限与 NTFS 权限都要给）`
         : `共享连接已建立但文件访问被拒：当前运行账户（${getProcessUser()}）在共享服务器上多半不存在，连接以 guest/匿名身份建立。请在 backend/.env 配置 PRODUCTION_SCHEDULE_UNC_USER 与 PRODUCTION_SCHEDULE_UNC_PASSWORD（服务器上真实存在且有读权限的账号）`;
 
-      recordFailure(filePath, nowMs, code, error);
+      recordFailure(filePath, Date.now(), code, error);
       runtime.lastError.hint = guestSession ? guestHint : hintForError(code);
       runtime.lastError.shortHint = guestSession
         ? (credsRejected
@@ -514,6 +537,27 @@ async function getAllScheduleEntries(options = {}) {
     for (const entry of list) entries.push(entry);
   }
   return entries;
+}
+
+/**
+ * 只读地看一眼共享可达性缓存，不发起任何探测。
+ *
+ * 用途：普通入口（主页面/台账/快速取号）的仕样号查询默认不碰大日程，
+ * 只有「PDF 未命中」时才值得回退问一次表格。但回退绝不能把大日程的故障面
+ * 带回来——所以调用方先用这个函数判断「70 现在是否已知可达」：
+ * 缓存为空（不知道）或已知不可达时，直接放弃回退，零延迟代价。
+ *
+ * @param {string} [filePath] 默认取配置中的大日程路径
+ * @returns {{ known: boolean, ok: boolean, host: string }}
+ */
+function getReachabilityHint(filePath) {
+  const target = filePath || getScheduleFilePath();
+  const host = uncShare.getShareHost(target);
+  // 本地磁盘路径不存在「可达性」问题
+  if (!host) return { known: true, ok: true, host: '' };
+
+  const fresh = reachability.host === host && Date.now() - reachability.at < REACHABILITY_TTL_MS;
+  return { known: fresh, ok: fresh ? reachability.ok : false, host };
 }
 
 function getScheduleStatus() {
@@ -609,6 +653,7 @@ module.exports = {
   findScheduleEntry,
   getAllScheduleEntries,
   getScheduleStatus,
+  getReachabilityHint,
   getUnavailableMessage,
   probeSchedule,
   ensureShareReady,

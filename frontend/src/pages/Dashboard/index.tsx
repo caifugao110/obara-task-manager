@@ -5,13 +5,14 @@ import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap } from 'lucide-react';
+import { LogOut, UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Check, ShieldCheck, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
 import { OFFLINE_SHEETS_CACHE_KEY } from '../../utils/offlineSheetsCache';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
 import { resolveAutoFillHours, GunLocation } from '../../utils/gunHoursRules';
+import { PWD_INPUT_CLASS, PWD_EYE_BTN_CLASS, PWD_STRENGTH_META, scorePassword } from '../../utils/passwordFieldStyles';
 import { copyTaskTableToClipboard } from '../../utils/taskCopy';
 import {
   detectTaskContentType,
@@ -292,6 +293,12 @@ const Dashboard = () => {
   const [changePasswordError, setChangePasswordError] = useState('');
   const [changePasswordSuccess, setChangePasswordSuccess] = useState('');
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
+
+  // 新密码强度（0-4）与两次输入一致性：仅用于界面即时反馈，不参与提交校验
+  const newPasswordStrength = useMemo(() => scorePassword(newPassword), [newPassword]);
+  const passwordStrengthMeta = PWD_STRENGTH_META[newPasswordStrength] ?? PWD_STRENGTH_META[0];
+  const confirmMatched = confirmPassword.length > 0 && confirmPassword === newPassword;
+  const confirmMismatched = confirmPassword.length > 0 && confirmPassword !== newPassword;
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   // 快速取号要写焊枪台账：仅管理员，且需要具备台账访问权限（超管恒可）
@@ -5635,25 +5642,36 @@ const Dashboard = () => {
       )}
 
       {changePasswordOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
-            className="absolute inset-0 bg-black/40"
+            className="pwd-modal-overlay absolute inset-0 bg-slate-900/50 backdrop-blur-[2px]"
             onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
           />
-          <div className="relative w-[480px] max-w-[94vw] bg-white rounded-lg shadow-2xl border-2 border-gray-200 overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 bg-[#217346] text-white">
-              <div className="flex items-center gap-2">
-                <Lock size={18} />
-                <span className="font-bold text-base">修改密码</span>
-              </div>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="change-password-title"
+            className="pwd-modal-card relative w-[440px] max-w-full overflow-hidden rounded-2xl bg-white shadow-[0_24px_64px_-12px_rgba(15,23,42,0.35)] ring-1 ring-slate-900/5"
+          >
+            <div className="relative px-6 pb-5 pt-6">
               <button
                 type="button"
                 onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
                 disabled={changePasswordLoading}
-                className="p-1 hover:bg-red-600 rounded transition disabled:opacity-50"
+                aria-label="关闭"
+                className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 outline-none transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"
               >
                 <X size={18} />
               </button>
+              <div className="flex items-start gap-3.5 pr-8">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#2c8f57] to-[#1a5c38] text-white shadow-lg shadow-[#217346]/25">
+                  <Lock size={20} strokeWidth={2.2} />
+                </div>
+                <div className="min-w-0 pt-0.5">
+                  <h3 id="change-password-title" className="text-[17px] font-bold leading-6 text-slate-900">修改登录密码</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">建议使用字母与数字组合，长度不少于 8 位</p>
+                </div>
+              </div>
             </div>
             <form
               onSubmit={async (e) => {
@@ -5688,123 +5706,162 @@ const Dashboard = () => {
                   setChangePasswordLoading(false);
                 }
               }}
-              className="p-5 space-y-4"
+              className="flex flex-col"
             >
-              {changePasswordError && (
-                <div className="bg-red-50 border border-red-200 text-red-600 p-3 rounded-lg flex items-start gap-2">
-                  <AlertCircle size={18} className="mt-0.5 shrink-0" />
-                  <div className="text-sm font-medium">{changePasswordError}</div>
-                </div>
-              )}
-              {changePasswordSuccess && (
-                <div className="bg-green-50 border border-green-200 text-green-600 p-3 rounded-lg flex items-start gap-2">
-                  <CheckCircle size={18} className="mt-0.5 shrink-0" />
-                  <div className="text-sm font-medium">{changePasswordSuccess}</div>
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">当前密码</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-                    <Lock size={16} />
+              <div className="space-y-4 px-6">
+                {changePasswordError && (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-red-100 bg-red-50 px-3.5 py-3 text-red-600">
+                    <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                    <div className="text-[13px] font-medium leading-5">{changePasswordError}</div>
                   </div>
-                  <input
-                    type={visiblePasswords.old ? 'text' : 'password'}
-                    className="w-full pl-10 pr-11 py-2.5 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
-                    value={oldPassword}
-                    onChange={(e) => setOldPassword(e.target.value)}
-                    placeholder="请输入当前密码"
-                    required
-                    autoFocus
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 outline-none transition"
-                    onClick={() => setVisiblePasswords((c) => ({ ...c, old: !c.old }))}
-                    onMouseDown={(e) => e.preventDefault()}
-                    tabIndex={-1}
-                  >
-                    {visiblePasswords.old ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">新密码</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-                    <Lock size={16} />
+                )}
+                {changePasswordSuccess && (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50 px-3.5 py-3 text-emerald-700">
+                    <CheckCircle size={16} className="mt-0.5 shrink-0" />
+                    <div className="text-[13px] font-medium leading-5">{changePasswordSuccess}</div>
                   </div>
-                  <input
-                    type={visiblePasswords.new ? 'text' : 'password'}
-                    className="w-full pl-10 pr-11 py-2.5 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="请输入新密码"
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 outline-none transition"
-                    onClick={() => setVisiblePasswords((c) => ({ ...c, new: !c.new }))}
-                    onMouseDown={(e) => e.preventDefault()}
-                    tabIndex={-1}
-                  >
-                    {visiblePasswords.new ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
+                )}
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">确认新密码</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-                    <Lock size={16} />
+                <div className="space-y-2">
+                  <label htmlFor="pwd-old" className="block text-[13px] font-semibold text-slate-700">当前密码</label>
+                  <div className="group relative">
+                    <Lock size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-[#217346]" />
+                    <input
+                      id="pwd-old"
+                      type={visiblePasswords.old ? 'text' : 'password'}
+                      className={PWD_INPUT_CLASS}
+                      value={oldPassword}
+                      onChange={(e) => setOldPassword(e.target.value)}
+                      placeholder="请输入当前密码"
+                      autoComplete="current-password"
+                      required
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className={PWD_EYE_BTN_CLASS}
+                      onClick={() => setVisiblePasswords((c) => ({ ...c, old: !c.old }))}
+                      onMouseDown={(e) => e.preventDefault()}
+                      tabIndex={-1}
+                      aria-label={visiblePasswords.old ? '隐藏密码' : '显示密码'}
+                    >
+                      {visiblePasswords.old ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
                   </div>
-                  <input
-                    type={visiblePasswords.confirm ? 'text' : 'password'}
-                    className="w-full pl-10 pr-11 py-2.5 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="请再次输入新密码"
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 outline-none transition"
-                    onClick={() => setVisiblePasswords((c) => ({ ...c, confirm: !c.confirm }))}
-                    onMouseDown={(e) => e.preventDefault()}
-                    tabIndex={-1}
-                  >
-                    {visiblePasswords.confirm ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
                 </div>
-              </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
-                  disabled={changePasswordLoading}
-                  className="px-4 py-2 text-sm font-bold text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-100 transition disabled:opacity-50"
-                >
-                  取消
-                </button>
-                <button
-                  type="submit"
-                  disabled={changePasswordLoading}
-                  className={`px-5 py-2 text-sm font-bold text-white bg-[#217346] rounded-lg hover:bg-[#1a5c38] transition flex items-center gap-2 ${changePasswordLoading ? 'opacity-70 cursor-not-allowed' : ''}`}
-                >
-                  {changePasswordLoading ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>修改中...</span>
-                    </>
-                  ) : (
-                    <span>确认修改</span>
+                <div className="h-px bg-slate-100" />
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="pwd-new" className="block text-[13px] font-semibold text-slate-700">新密码</label>
+                    <span className={`text-[11px] font-semibold ${passwordStrengthMeta.text || 'text-slate-400'}`}>
+                      {passwordStrengthMeta.label || '强度'}
+                    </span>
+                  </div>
+                  <div className="group relative">
+                    <Lock size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-[#217346]" />
+                    <input
+                      id="pwd-new"
+                      type={visiblePasswords.new ? 'text' : 'password'}
+                      className={PWD_INPUT_CLASS}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="请输入新密码"
+                      autoComplete="new-password"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className={PWD_EYE_BTN_CLASS}
+                      onClick={() => setVisiblePasswords((c) => ({ ...c, new: !c.new }))}
+                      onMouseDown={(e) => e.preventDefault()}
+                      tabIndex={-1}
+                      aria-label={visiblePasswords.new ? '隐藏密码' : '显示密码'}
+                    >
+                      {visiblePasswords.new ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  {newPassword.length > 0 && (
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      {[1, 2, 3, 4].map((level) => (
+                        <span
+                          key={level}
+                          className={`pwd-strength-seg h-1 flex-1 rounded-full ${newPasswordStrength >= level ? passwordStrengthMeta.color : 'bg-slate-200'}`}
+                        />
+                      ))}
+                    </div>
                   )}
-                </button>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="pwd-confirm" className="block text-[13px] font-semibold text-slate-700">确认新密码</label>
+                    {confirmMatched && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
+                        <Check size={12} strokeWidth={3} />
+                        两次输入一致
+                      </span>
+                    )}
+                    {confirmMismatched && (
+                      <span className="text-[11px] font-semibold text-red-500">两次输入不一致</span>
+                    )}
+                  </div>
+                  <div className="group relative">
+                    <Lock size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-[#217346]" />
+                    <input
+                      id="pwd-confirm"
+                      type={visiblePasswords.confirm ? 'text' : 'password'}
+                      className={`${PWD_INPUT_CLASS} ${confirmMismatched ? '!border-red-300 !bg-red-50/50' : ''}`}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="请再次输入新密码"
+                      autoComplete="new-password"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className={PWD_EYE_BTN_CLASS}
+                      onClick={() => setVisiblePasswords((c) => ({ ...c, confirm: !c.confirm }))}
+                      onMouseDown={(e) => e.preventDefault()}
+                      tabIndex={-1}
+                      aria-label={visiblePasswords.confirm ? '隐藏密码' : '显示密码'}
+                    >
+                      {visiblePasswords.confirm ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-6 py-4">
+                <span className="hidden items-center gap-1.5 text-[11px] text-slate-400 sm:flex">
+                  <ShieldCheck size={13} />
+                  密码仅用于登录验证
+                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
+                    disabled={changePasswordLoading}
+                    className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 shadow-sm outline-none transition hover:border-slate-300 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={changePasswordLoading}
+                    className="flex h-10 items-center gap-2 rounded-xl bg-[#217346] px-5 text-sm font-bold text-white shadow-lg shadow-[#217346]/20 outline-none transition-all duration-150 hover:bg-[#1a5c38] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+                  >
+                    {changePasswordLoading ? (
+                      <>
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                        <span>修改中...</span>
+                      </>
+                    ) : (
+                      <span>确认修改</span>
+                    )}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

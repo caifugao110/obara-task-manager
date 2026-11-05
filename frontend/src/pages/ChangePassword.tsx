@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Lock, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
+import { Lock, AlertCircle, CheckCircle, Check, ShieldCheck, Eye, EyeOff, WifiOff } from 'lucide-react';
 import { sanitizeRedirect } from '../utils/redirect';
+import { PWD_INPUT_CLASS, PWD_EYE_BTN_CLASS, PWD_PRIMARY_BTN_CLASS, PWD_STRENGTH_META, scorePassword } from '../utils/passwordFieldStyles';
 
 const ChangePassword = () => {
   const [oldPassword, setOldPassword] = useState('');
@@ -42,6 +43,12 @@ const ChangePassword = () => {
     };
   }, []);
 
+  // 强度与一致性提示：仅作即时反馈，提交校验仍以后端为准
+  const strength = useMemo(() => scorePassword(newPassword), [newPassword]);
+  const strengthMeta = PWD_STRENGTH_META[strength] ?? PWD_STRENGTH_META[0];
+  const confirmMatched = confirmPassword.length > 0 && confirmPassword === newPassword;
+  const confirmMismatched = confirmPassword.length > 0 && confirmPassword !== newPassword;
+
   const togglePasswordVisibility = (field: keyof typeof visiblePasswords) => {
     setVisiblePasswords((current) => ({
       ...current,
@@ -50,33 +57,41 @@ const ChangePassword = () => {
   };
 
   const renderPasswordInput = (
+    id: string,
     field: keyof typeof visiblePasswords,
     value: string,
     onChange: (value: string) => void,
-    placeholder: string
+    placeholder: string,
+    autoComplete: string,
+    autoFocus = false,
+    invalid = false
   ) => (
-    <div className="relative">
-      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
-        <Lock size={18} />
-      </div>
+    <div className="group relative">
+      <Lock
+        size={16}
+        className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-[#217346]"
+      />
       <input
+        id={id}
         type={visiblePasswords[field] ? 'text' : 'password'}
-        className="w-full pl-11 pr-12 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#217346] focus:border-[#217346] outline-none text-gray-800 font-medium transition placeholder-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
+        className={`${PWD_INPUT_CLASS} ${invalid ? '!border-red-300 !bg-red-50/50' : ''}`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        autoComplete={autoComplete}
+        autoFocus={autoFocus}
         disabled={isOffline}
         required
       />
       <button
         type="button"
-        className="absolute inset-y-0 right-0 px-4 flex items-center text-gray-400 hover:text-gray-600 focus:text-[#217346] outline-none transition"
+        className={PWD_EYE_BTN_CLASS}
         onClick={() => togglePasswordVisibility(field)}
         onMouseDown={(e) => e.preventDefault()}
         aria-label={visiblePasswords[field] ? '隐藏密码' : '显示密码'}
         title={visiblePasswords[field] ? '隐藏密码' : '显示密码'}
       >
-        {visiblePasswords[field] ? <EyeOff size={18} /> : <Eye size={18} />}
+        {visiblePasswords[field] ? <EyeOff size={16} /> : <Eye size={16} />}
       </button>
     </div>
   );
@@ -108,10 +123,10 @@ const ChangePassword = () => {
         newPassword
       });
 
-      setSuccess('密码修改成功，正在跳转...');
+      setSuccess('密码修改成功，正在进入系统...');
       setForcePasswordChange(false);
       localStorage.removeItem('forcePasswordChange');
-      
+
       setTimeout(() => {
         navigate(redirectTarget, { replace: true });
       }, 1500);
@@ -123,78 +138,123 @@ const ChangePassword = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#f3f3f3]">
-      <div className="flex-1 flex items-center justify-center px-4">
-        <div className="max-w-md w-full">
-          <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-[#217346] rounded-xl shadow-md mb-4">
-              <Lock className="text-white" size={32} />
+    <div className="flex min-h-screen flex-col bg-gradient-to-b from-slate-100 via-[#f3f5f4] to-slate-200/70">
+      <main className="flex flex-1 items-center justify-center px-4 py-10">
+        <div className="w-full max-w-[440px]">
+          <div className="overflow-hidden rounded-2xl bg-white shadow-[0_24px_64px_-16px_rgba(15,23,42,0.22)] ring-1 ring-slate-900/5">
+            <div className="px-7 pb-5 pt-7">
+              <div className="flex items-start gap-3.5">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#2c8f57] to-[#1a5c38] text-white shadow-lg shadow-[#217346]/25">
+                  <Lock size={20} strokeWidth={2.2} />
+                </div>
+                <div className="min-w-0 pt-0.5">
+                  <h1 className="text-[17px] font-bold leading-6 text-slate-900">修改登录密码</h1>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">首次登录请设置新密码，建议字母与数字组合、不少于 8 位</p>
+                </div>
+              </div>
             </div>
-            <h2 className="text-2xl font-bold text-gray-800 tracking-tight">修改密码</h2>
-            <p className="mt-2 text-gray-500 text-sm">首次登录请设置新密码</p>
-          </div>
 
-          <div className="bg-white shadow-sm border border-gray-300 p-8 rounded-lg">
-            {isOffline && (
-              <div className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-lg mb-6 flex items-start gap-3">
-                <AlertCircle size={20} className="mt-0.5 shrink-0" />
-                <div className="text-sm font-bold">当前网络离线，无法修改密码，网络恢复后自动解除限制</div>
-              </div>
-            )}
-
-            {error && (
-              <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-lg mb-6 flex items-start gap-3">
-                <AlertCircle size={20} className="mt-0.5 shrink-0" />
-                <div className="text-sm font-bold">{error}</div>
-              </div>
-            )}
-
-            {success && (
-              <div className="bg-green-50 border border-green-200 text-green-600 p-4 rounded-lg mb-6 flex items-start gap-3">
-                <CheckCircle size={20} className="mt-0.5 shrink-0" />
-                <div className="text-sm font-bold">{success}</div>
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="space-y-5">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">当前密码</label>
-                {renderPasswordInput('old', oldPassword, setOldPassword, '请输入当前密码')}
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">新密码</label>
-                {renderPasswordInput('new', newPassword, setNewPassword, '请输入新密码')}
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">确认新密码</label>
-                {renderPasswordInput('confirm', confirmPassword, setConfirmPassword, '请再次输入新密码')}
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading || isOffline}
-                className={`w-full bg-[#217346] text-white py-3 rounded-lg font-bold text-base hover:bg-[#1a5c38] transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2 ${loading || isOffline ? 'opacity-70 cursor-not-allowed' : ''}`}
-              >
-                {loading ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                    <span>正在修改...</span>
-                  </>
-                ) : (
-                  <span>确认修改</span>
+            <form onSubmit={handleSubmit} className="flex flex-col" noValidate>
+              <div className="space-y-4 px-7">
+                {isOffline && (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-amber-100 bg-amber-50 px-3.5 py-3 text-amber-700">
+                    <WifiOff size={16} className="mt-0.5 shrink-0" />
+                    <div className="text-[13px] font-medium leading-5">
+                      当前网络离线，暂时无法修改密码，网络恢复后自动解除限制
+                    </div>
+                  </div>
                 )}
-              </button>
+
+                {error && (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-red-100 bg-red-50 px-3.5 py-3 text-red-600">
+                    <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                    <div className="text-[13px] font-medium leading-5">{error}</div>
+                  </div>
+                )}
+
+                {success && (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50 px-3.5 py-3 text-emerald-700">
+                    <CheckCircle size={16} className="mt-0.5 shrink-0" />
+                    <div className="text-[13px] font-medium leading-5">{success}</div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <label htmlFor="cp-old" className="block text-[13px] font-semibold text-slate-700">当前密码</label>
+                  {renderPasswordInput('cp-old', 'old', oldPassword, setOldPassword, '请输入当前密码', 'current-password', true)}
+                </div>
+
+                <div className="h-px bg-slate-100" />
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="cp-new" className="block text-[13px] font-semibold text-slate-700">新密码</label>
+                    <span className={`text-[11px] font-semibold ${strengthMeta.text || 'text-slate-400'}`}>
+                      {strengthMeta.label || '强度'}
+                    </span>
+                  </div>
+                  {renderPasswordInput('cp-new', 'new', newPassword, setNewPassword, '请输入新密码', 'new-password')}
+                  {newPassword.length > 0 && (
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      {[1, 2, 3, 4].map((level) => (
+                        <span
+                          key={level}
+                          className={`pwd-strength-seg h-1 flex-1 rounded-full ${strength >= level ? strengthMeta.color : 'bg-slate-200'}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="cp-confirm" className="block text-[13px] font-semibold text-slate-700">确认新密码</label>
+                    {confirmMatched && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
+                        <Check size={12} strokeWidth={3} />
+                        两次输入一致
+                      </span>
+                    )}
+                    {confirmMismatched && <span className="text-[11px] font-semibold text-red-500">两次输入不一致</span>}
+                  </div>
+                  {renderPasswordInput(
+                    'cp-confirm',
+                    'confirm',
+                    confirmPassword,
+                    setConfirmPassword,
+                    '请再次输入新密码',
+                    'new-password',
+                    false,
+                    confirmMismatched
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-6 border-t border-slate-100 bg-slate-50/80 px-7 py-4">
+                <button type="submit" disabled={loading || isOffline} className={`${PWD_PRIMARY_BTN_CLASS} h-11`}>
+                  {loading ? (
+                    <>
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                      <span>正在修改...</span>
+                    </>
+                  ) : (
+                    <span>确认修改</span>
+                  )}
+                </button>
+                <p className="mt-2.5 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
+                  <ShieldCheck size={12} />
+                  修改成功后自动进入系统
+                </p>
+              </div>
             </form>
           </div>
         </div>
-      </div>
+      </main>
 
-      <footer className="py-6 border-t border-gray-300 bg-white">
-        <div className="text-center space-y-2">
-          <p className="text-gray-600 text-sm font-medium">以客户为中心 关怀员工 鼓励创新 纳新去旧</p>
-          <p className="text-gray-500 text-xs">版权所有 © 1994-{new Date().getFullYear()} 小原（南京）机电有限公司</p>
+      <footer className="border-t border-slate-200/70 bg-white/60 py-5">
+        <div className="space-y-1.5 text-center">
+          <p className="text-sm font-medium text-slate-600">以客户为中心 关怀员工 鼓励创新 纳新去旧</p>
+          <p className="text-xs text-slate-400">版权所有 © 1994-{new Date().getFullYear()} 小原（南京）机电有限公司</p>
         </div>
       </footer>
     </div>

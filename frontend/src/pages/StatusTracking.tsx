@@ -837,18 +837,27 @@ const StatusTracking = () => {
     setUpdatingItemId(id);
     try {
       const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
-      // 传入该行的添加时间月份，让后端取「各产品大日程」对应月份块的数据
+      // 传入该行的添加时间月份，让后端取「各产品大日程」对应月份块的数据。
+      // includeSchedule 必须显式声明：大日程（\\192.168.160.70）只有本页需要，
+      // 后端默认不查，否则那台服务器一挂，主页面/台账/快速取号的仕样号查询会被一起拖死
       const planMonths = getItemPlanMonths(item);
       const currentMonthValue = getCurrentMonthValue();
       const preferredMonth = planMonths.includes(currentMonthValue) ? currentMonthValue : (planMonths[0] || '');
       const res = await axios.post('/api/spec/spec-info', {
         specNumber: item.specNumber,
-        productionPlanMonth: preferredMonth
+        productionPlanMonth: preferredMonth,
+        includeSchedule: true
       }, { ...authHeader, timeout: 15000 });
 
       if (!res.data.success) {
         addToast(res.data.message || '获取仕样信息失败', 'error');
         return;
+      }
+
+      // 大日程没取到（共享不可达，后端 3 秒内放弃）：本次数量/纳期来自仕样书，
+      // 工厂与已发图保持原值，必须让用户知道，否则会被当成数据同步失败
+      if (res.data.scheduleUnavailable) {
+        addToast('生产大日程共享暂不可用，本次数量/纳期取自仕样书', 'error');
       }
 
       const specInfo: SpecInfoResponse = res.data;

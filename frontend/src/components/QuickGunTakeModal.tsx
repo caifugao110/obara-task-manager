@@ -169,6 +169,9 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   const [resolvedClient, setResolvedClient] = useState<string | null>(null);
   const [specLoading, setSpecLoading] = useState(false);
   const [specNotFound, setSpecNotFound] = useState(false);
+  // 「查不到客户」有两种完全不同的原因：仕样号确实没有仕样书，和仕样书共享盘不通。
+  // 后端已能区分并返回 message，这里保留下来直接显示，避免一律显示「未查到」误导用户
+  const [specError, setSpecError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [lastTaken, setLastTaken] = useState<LastTakenInfo | null>(null);
   // 取号成功结果用独立模态框展示（不再挤在右栏表单里）；关掉后回到取号弹窗继续取下一批
@@ -436,6 +439,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     if (specTimerRef.current) window.clearTimeout(specTimerRef.current);
     setResolvedClient(null);
     setSpecNotFound(false);
+    setSpecError('');
     const trimmed = raw.trim();
     const digits = Number(specNumberDigits) || 0;
     if (!digits || !new RegExp(`^\\d{${digits}}$`).test(trimmed)) {
@@ -448,11 +452,18 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       try {
         const res = await axiosInstance.post('/spec/spec-info', { specNumber: trimmed }, { timeout: 15000 } as any);
         if (seq !== specSeqRef.current) return;
-        const clientName = String(res.data?.clientName || '').trim();
-        if (clientName) setResolvedClient(clientName);
-        else setSpecNotFound(true);
+        const data = res.data || {};
+        const clientName = String(data.clientName || '').trim();
+        if (clientName) {
+          setResolvedClient(clientName);
+        } else if (data.success === false && data.message) {
+          // 共享不通 / 解析失败等：把后端的原话显示出来（已含具体共享路径）
+          setSpecError(data.message);
+        } else {
+          setSpecNotFound(true);
+        }
       } catch {
-        if (seq === specSeqRef.current) setSpecNotFound(true);
+        if (seq === specSeqRef.current) setSpecError('查询仕样号失败，请稍后重试');
       } finally {
         if (seq === specSeqRef.current) setSpecLoading(false);
       }
@@ -473,6 +484,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       specTimerRef.current = null;
     }
     setSpecLoading(false);
+    setSpecError('');
     setResultOpen(false);
     setLastTaken(null);
   }, [open]);
@@ -1027,7 +1039,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
                       <div className="mt-1 min-h-[16px] text-[11px] leading-tight">
                         {specLoading && <span className="text-gray-400 inline-flex items-center gap-1"><Loader2 size={10} className="animate-spin" />正在查询仕样号…</span>}
                         {!specLoading && resolvedClient && <span className="text-emerald-600 truncate block">客户：{resolvedClient}</span>}
-                        {!specLoading && !resolvedClient && specNotFound && <span className="text-amber-600">未查到该仕样号的客户信息，将按输入内容保存</span>}
+                        {!specLoading && !resolvedClient && specError && <span className="text-red-600 block">{specError}</span>}
+                        {!specLoading && !resolvedClient && !specError && specNotFound && <span className="text-amber-600">未查到该仕样号的客户信息，将按输入内容保存</span>}
                       </div>
                     </div>
 
