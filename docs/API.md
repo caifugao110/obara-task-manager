@@ -1744,23 +1744,22 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| `month` | 否 | 月份，格式 `YYYY-MM`，按添加时间月份字段过滤（与 `deliveryMonth` 二选一） |
-| `deliveryMonth` | 否 | 纳期月份，格式 `YYYY-MM`，按纳期字段过滤（与 `month` 二选一） |
+| `month` | 否 | 已废弃，服务端忽略该参数（状态跟踪页与导出均不再支持按添加时间月份筛选） |
+| `deliveryMonth` | 否 | 纳期月份，格式 `YYYY-MM`，按纳期字段过滤；未开启全表搜索时必填 |
 | `factory` | 否 | 按工厂筛选（`O/NJG`、`O/SHA`） |
 | `sheetName` | 否 | 按记录来自哪张日程表筛选：`南京焊钳`、`上海焊钳`、`南京焊钳修改`、`上海焊钳修改`。可重复传多个（`?sheetName=南京焊钳&sheetName=上海焊钳`）或逗号分隔，按「任一命中」筛选，供前端的合并项「焊钳」「焊钳修改」使用。老记录没有 `sheetName` 时按工厂兜底（`O/NJG`→南京焊钳、`O/SHA`→上海焊钳） |
 | `searchTerm` | 否 | 搜索关键词，匹配客户名、仕样号、营业担当、组长 |
-| `fullTableSearch` | 否 | 是否全表搜索，`true` 时忽略 `month` 和 `deliveryMonth` 参数 |
+| `fullTableSearch` | 否 | 是否全表搜索，`true` 时忽略 `deliveryMonth` 参数 |
 | `showOutdatedDelivery` | 否 | 仅在 `fullTableSearch=true` 时生效。默认 `false`：**剔除设计纳期已过期或缺失的记录**（`designDeliveryDays < 1`，即纳期早于今天或 `deliveryDate` 为空）；传 `true` 才导出全部记录 |
 
 响应：`.xls` 文件流，文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`。
 
 说明：
 
-- 未开启全表搜索时，`month` 和 `deliveryMonth` 必须二选一。
+- 未开启全表搜索时，`deliveryMonth` 必填（缺失或格式不符返回 400）。
 - 全表搜索（`fullTableSearch=true`）默认会静默过滤掉设计纳期已过期或纳期为空的记录，需要全量导出时必须显式带 `showOutdatedDelivery=true`；按月份导出时不做该过滤。
-- `month` 按添加时间月份字段过滤。
 - `deliveryMonth` 按纳期字段 (`deliveryDate`) 以 `YYYY-MM` 开头过滤记录。
-- 导出列包括工厂、客户、数量、纳期、已发图、未确认、总种数、反馈种数、反馈计划、下图计划及状态、确认数量、确认种数、下图种数、未下种数、未下数量、未确认数、设计纳期、营业担当、组长。
+- 导出列包括工厂、客户、数量、纳期、已发图、未确认、总种数、反馈种数、反馈计划、下图计划及状态、确认数量、确认种数、下图种数、未下种数、未下数量、未确认数、设计纳期、营业担当、组长（已移除「添加时间」列）。
 - 纳期字段会从 `YYYY-MM-DD` 转换为 `M/D` 格式。
 
 ### 检查状态跟踪表导入重复项
@@ -3188,7 +3187,7 @@ PUT 请求：
 | `entryCount` / `sheets` / `monthBlocks` | 解析出的条目数、按工作表分布、涉及的月份块 |
 | `elapsedMs` | 本次读取耗时 |
 | `processUser` | 运行后端的 Windows 账户（服务自启时常见为 `SYSTEM` 或 `Administrator`） |
-| `lastError` | 最近一次失败：`code`（`EPERM`/`EBUSY`/`ENOENT`/`EHOSTUNREACH` 等）、`message`、`hint`（处置建议）、`shareEnsure`（自动 `net use` 的结果）。`EHOSTUNREACH` 表示共享服务器 445/139 端口不通（服务器离线或 IP 变更），此时不会有 SMB 级别的错误码 |
+| `lastError` | 最近一次失败：`code`（`EPERM`/`EBUSY`/`ENOENT` 等）、`message`、`hint`（处置建议）、`shareEnsure`（自动 `net use` 的结果）。读取前会先做 2 秒的 445/139 端口探测，但探测失败**只作诊断**（不再直接判失败）：服务自启（Session 0）时探测可能返回 `EACCES`，配了 `PRODUCTION_SCHEDULE_UNC_*` 凭据后仍可能读成功，所以此时会继续尝试凭据连接，最终 `code` 以 `net use`/文件访问的真实错误为准；探测结果见 `raw.host` |
 | `lastSuccessAt` | 最近一次成功读取的时间 |
 | `share` | 共享根、是否配置了凭据（`credentialConfigured`）、最近一次自动 `net use` 的时间/结果/账户（`lastEnsure`）；失败时 `lastEnsure.connections` 会列出本会话到该服务器已有的连接，`errorNo` 为 `net use` 返回码（如 `1219` 表示已存在其他凭据的连接） |
 | `raw` | 裸文件操作结果：`host`（445/139 端口探测结果）、分别试 `stat`、`readFile`、`readdir`；文件级操作全为 `EPERM` 说明共享连接已建立但身份不对（多为 guest/匿名） |

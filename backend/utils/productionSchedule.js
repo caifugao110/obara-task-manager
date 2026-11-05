@@ -395,11 +395,19 @@ async function getScheduleIndex(now = new Date(), options = {}) {
   if (inflightLoad) return inflightLoad;
 
   inflightLoad = (async () => {
-    // 先确认服务器端口通不通：不通就直接失败，不让 SMB 自己耗 30 秒
+    // 快速探测共享服务器 445/139 端口是否可达，结果仅作诊断日志。
+    // 注意：探测失败（EACCES/EPERM/ETIMEDOUT）≠ 共享真的完全不可用——
+    //   后端以计划任务 SYSTEM/Administrator 自启时，访问共享盘会先建立一条
+    //   guest/匿名隐式会话，此时 probeHost 可能返回 EACCES，但 .env 里
+    //   配置的 PRODUCTION_SCHEDULE_UNC_USER/PASSWORD 凭据 net use 之后仍然能
+    //   成功。所以探测失败不能阻断下面的 withShareRetryAsync，必须给
+    //   uncShare 的 1219 断开重连 + 凭据连接留一条活路。
     const reach = await checkReachability(filePath);
     if (!reach.ok) {
-      recordFailure(filePath, nowMs, 'EHOSTUNREACH', new Error(`共享服务器 ${reach.host} 不可达（${reach.code || 'ETIMEDOUT'}）`));
-      return null;
+      console.warn(`[productionSchedule] 快速探测 ${reach.host} 失败（${reach.code}，耗时 ${reach.elapsedMs}ms），继续尝试凭据连接...`);
+      // 探测结果写入 runtime.lastError 作为诊断信息；真实的失败原因（net use 还是 fs.stat）
+      // 会在 withShareRetryAsync 的 recordFailure 里被覆盖，所以这里只写不 return。
+      recordFailure(filePath, nowMs, reach.code || 'EHOSTUNREACH', new Error(`快速探测 ${reach.host} 失败（${reach.code || 'ETIMEDOUT'}），继续尝试凭据连接`));
     }
 
     const outcome = await uncShare.withShareRetryAsync(filePath, async () => {

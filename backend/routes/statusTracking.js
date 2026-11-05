@@ -340,7 +340,7 @@ router.post('/sync-schedule', [authMiddleware, adminMiddleware, scheduleSyncPerm
 }));
 
 router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
-  const { month, deliveryMonth, factory, sheetName, searchTerm, fullTableSearch, showOutdatedDelivery } = req.query;
+  const { deliveryMonth, factory, sheetName, searchTerm, fullTableSearch, showOutdatedDelivery } = req.query;
 
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
@@ -348,19 +348,13 @@ router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware
   let filteredItems = items;
   
   if (fullTableSearch !== 'true') {
-    if (month) {
-      if (!/^\d{4}-\d{2}$/.test(month)) {
-        return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
-      }
-      filteredItems = filteredItems.filter(item => getItemPlanMonths(item).includes(month));
-    } else if (deliveryMonth) {
-      if (!/^\d{4}-\d{2}$/.test(deliveryMonth)) {
-        return res.status(400).json({ message: '请选择纳期月份（格式：YYYY-MM）' });
-      }
-      filteredItems = filteredItems.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
-    } else {
-      return res.status(400).json({ message: '请选择月份（格式：YYYY-MM）' });
+    if (!deliveryMonth) {
+      return res.status(400).json({ message: '请选择纳期月份（格式：YYYY-MM）' });
     }
+    if (!/^\d{4}-\d{2}$/.test(deliveryMonth)) {
+      return res.status(400).json({ message: '请选择纳期月份（格式：YYYY-MM）' });
+    }
+    filteredItems = filteredItems.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
   }
 
   if (fullTableSearch === 'true' && showOutdatedDelivery !== 'true') {
@@ -398,7 +392,6 @@ router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware
   const columns = [
     { key: 'factory', label: '工厂' },
     { key: 'clientName', label: '客户' },
-    { key: 'productionPlanMonth', label: '添加时间' },
     { key: 'quantity', label: '数量' },
     { key: 'deliveryDate', label: '纳期' },
     { key: 'shippedCount', label: '已发图' },
@@ -424,9 +417,6 @@ router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware
       if (col.key === 'deliveryDate' && item.deliveryDate) {
         const [, m, d] = item.deliveryDate.split('-');
         return `${parseInt(m)}/${parseInt(d)}`;
-      }
-      if (col.key === 'productionPlanMonth') {
-        return getItemPlanMonths(item).join(', ');
       }
       if (col.key === 'undrawnVarieties') {
         return Math.max(0, (item.confirmedVarieties || 0) - (item.drawnVarieties || 0));

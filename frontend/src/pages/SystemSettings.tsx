@@ -320,9 +320,7 @@ const SystemSettings = () => {
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
   const [importMonth, setImportMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [importConfirmed, setImportConfirmed] = useState(false);
-  const [stExportMonth, setStExportMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [stExportDeliveryMonth, setStExportDeliveryMonth] = useState(format(new Date(), 'yyyy-MM'));
-  const [stExportMonthMode, setStExportMonthMode] = useState<'production' | 'delivery'>('production');
   const [whExportMonth, setWhExportMonth] = useState(format(new Date(), 'yyyy-MM'));
   const [maintenanceStatus, setMaintenanceStatus] = useState<MaintenanceStatus | null>(null);
   const [maintenanceSettings, setMaintenanceSettings] = useState<MaintenanceSettings>(defaultMaintenanceSettings);
@@ -728,11 +726,7 @@ const SystemSettings = () => {
     setExporting(true);
     try {
       const params = new URLSearchParams();
-      if (stExportMonthMode === 'production') {
-        params.append('month', stExportMonth);
-      } else {
-        params.append('deliveryMonth', stExportDeliveryMonth);
-      }
+      params.append('deliveryMonth', stExportDeliveryMonth);
       const res = await axios.get(`/api/status-tracking/export?${params.toString()}`, {
         ...authHeader,
         responseType: 'blob'
@@ -741,8 +735,7 @@ const SystemSettings = () => {
       const link = document.createElement('a');
       link.href = url;
       const timestamp = format(new Date(), 'yyyyMMddHHmmss');
-      const monthVal = stExportMonthMode === 'production' ? stExportMonth : stExportDeliveryMonth;
-      link.download = `status-tracking-${monthVal}-${timestamp}.xls`;
+      link.download = `status-tracking-${stExportDeliveryMonth}-${timestamp}.xls`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -1714,44 +1707,14 @@ const SystemSettings = () => {
                 <ClipboardList className="mr-2 text-purple-600" size={22} />
                 状态跟踪表
               </h3>
-              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，可以选择按添加时间月份或纳期月份进行筛选导出。</p>
+              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，按纳期月份进行筛选导出。</p>
               <div className="flex flex-wrap gap-4 items-center">
-                <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => setStExportMonthMode('production')}
-                    className={`px-3 py-2 text-sm font-medium transition ${
-                      stExportMonthMode === 'production'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                  >
-                    添加时间月份
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStExportMonthMode('delivery')}
-                    className={`px-3 py-2 text-sm font-medium border-l border-gray-300 transition ${
-                      stExportMonthMode === 'delivery'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                  >
-                    纳期月份
-                  </button>
-                </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-gray-700">选择月份：</span>
+                  <span className="text-sm font-bold text-gray-700">选择纳期月份：</span>
                   <input
                     type="month"
-                    value={stExportMonthMode === 'production' ? stExportMonth : stExportDeliveryMonth}
-                    onChange={(e) => {
-                      if (stExportMonthMode === 'production') {
-                        setStExportMonth(e.target.value);
-                      } else {
-                        setStExportDeliveryMonth(e.target.value);
-                      }
-                    }}
+                    value={stExportDeliveryMonth}
+                    onChange={(e) => setStExportDeliveryMonth(e.target.value)}
                     className="px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
                   />
                 </div>

@@ -22,7 +22,6 @@ import {
   Download,
   Eye,
   RotateCcw,
-  Calendar,
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
@@ -250,37 +249,6 @@ const getItemPlanMonths = (item: StatusItem): string[] => {
   return fallbackMonth ? [fallbackMonth] : [];
 };
 
-const formatPlanMonthsLabel = (item: StatusItem): string => {
-  return getItemPlanMonths(item).join(', ') || '未设置';
-};
-
-const generateMonthOptions = (items: StatusItem[]) => {
-  const monthSet = new Set<string>();
-  
-  items.forEach(item => {
-    getItemPlanMonths(item).forEach(month => monthSet.add(month));
-  });
-  
-  const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const date = new Date(now.getFullYear(), now.getMonth() + i, 1);
-    const year = date.getFullYear();
-    const month = date.getMonth() + 1;
-    monthSet.add(`${year}-${String(month).padStart(2, '0')}`);
-  }
-  
-  const options = Array.from(monthSet).map(month => {
-    return {
-      value: month,
-      label: formatMonthLabel(month)
-    };
-  });
-  
-  options.sort((a, b) => b.value.localeCompare(a.value));
-  
-  return options;
-};
-
 const generateDeliveryMonthOptions = (items: StatusItem[]) => {
   const monthSet = new Set<string>();
 
@@ -312,6 +280,25 @@ const VerticalHeader = ({ text }: { text: string }) => (
   <span className="inline-block writing-vertical text-sm leading-tight">{text}</span>
 );
 
+// 自动定位时用的真实滚动容器：正常情况下就是表格外的 <main>，
+// 但若外层布局把滚动交给了别的祖先（例如某次改动让 <main> 不再出现纵向溢出），
+// 直接往 <main> 上 scrollTo 会静默无效——所以这里往上找到真正能纵向滚动的祖先兜底。
+const resolveScrollContainer = (
+  row: HTMLElement | null,
+  preferred: HTMLElement | null
+): HTMLElement | null => {
+  const canScroll = (el: HTMLElement | null) =>
+    Boolean(el) && (el as HTMLElement).scrollHeight > (el as HTMLElement).clientHeight + 1;
+  if (canScroll(preferred)) return preferred;
+  let node = row?.parentElement ?? null;
+  while (node) {
+    const style = window.getComputedStyle(node);
+    if (/(auto|scroll)/.test(style.overflowY) && canScroll(node)) return node;
+    node = node.parentElement;
+  }
+  return preferred;
+};
+
 const StatusTracking = () => {
   const { user, token, logout } = useAuth();
   const [settings, setSettings] = useState(defaultSettings);
@@ -320,7 +307,6 @@ const StatusTracking = () => {
   const [updatingItemId, setUpdatingItemId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [planMonthEditorItemId, setPlanMonthEditorItemId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [leaderRules, setLeaderRules] = useState<LeaderRule[]>(defaultLeaderRules);
   const [factoryRulesConfig, setFactoryRulesConfig] = useState<FactoryRulesConfig>(defaultFactoryRulesConfig);
@@ -333,11 +319,11 @@ const StatusTracking = () => {
   // 后端 HTTP 可达性（全局心跳广播）：socket 只反映 WebSocket 存活，二者取并集判定离线，
   // 避免 socket 状态滞后时仍发起注定失败的写请求
   const [backendUnreachable, setBackendUnreachable] = useState(false);
-  const [monthFilterMode, setMonthFilterMode] = useState<'production' | 'delivery'>('production');
-  const [currentMonth, setCurrentMonth] = useState(getCurrentMonthValue);
+  // 月份筛选只看「纳期」：业务日常关心的是本月要交的活
   const [deliveryMonth, setDeliveryMonth] = useState(getCurrentMonthValue);
   // 按「来自哪张日程表」筛选，空串表示不过滤（四张表全看）
-  const [sheetFilter, setSheetFilter] = useState<string>('');
+  // 默认停在「焊钳」（南京+上海，不含修改表）：这是最常看的一张表
+  const [sheetFilter, setSheetFilter] = useState<string>('焊钳');
   const [editingSessions, setEditingSessions] = useState<EditingSession[]>([]);
   // editingSessions 的实时镜像：socket effect 的依赖只有 [token, logout]，
   // 卸载清理时需要读取最新锁列表，直接闭包捕获会拿到过期值
@@ -354,7 +340,8 @@ const StatusTracking = () => {
   const [scheduleSyncing, setScheduleSyncing] = useState(false);
   // 预览阶段要读共享盘 + 解析仕样书（首次约十几秒），按钮文案据此区分两种等待
   const [scheduleSyncPhase, setScheduleSyncPhase] = useState<'idle' | 'planning' | 'applying'>('idle');
-  const [sortConfig, setSortConfig] = useState<{ key: 'deliveryDate' | 'designDeliveryDays'; direction: 'asc' | 'desc' } | null>(null);
+  // 默认按「纳期」升序：最紧急的排在最上面。点表头仍可切换升/降/取消排序。
+  const [sortConfig, setSortConfig] = useState<{ key: 'deliveryDate' | 'designDeliveryDays'; direction: 'asc' | 'desc' } | null>({ key: 'deliveryDate', direction: 'asc' });
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dateInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   // startEditing 的实时镜像：socket 重连回调里要重新占用焦点所在行，
@@ -362,6 +349,11 @@ const StatusTracking = () => {
   const startEditingRef = useRef<(itemId: string) => void>(() => {});
   // loadItems 的实时镜像：socket effect 依赖不含 loadItems（避免整条连接重建）
   const loadItemsRef = useRef<() => void>(() => {});
+  // 表格滚动容器 <main> / 「设计纳期」最小有效值那一行的节点，用于进入页面时自动定位
+  const tableScrollRef = useRef<HTMLElement | null>(null);
+  const targetRowRef = useRef<HTMLTableRowElement | null>(null);
+  // 只在首次拿到数据后自动滚动一次，之后用户自己筛选/排序不再抢滚动位置
+  const hasAutoScrolledRef = useRef(false);
 
   const openDatePicker = useCallback((itemId: string) => {
     const input = dateInputRefs.current.get(itemId);
@@ -629,21 +621,6 @@ const StatusTracking = () => {
       addToast('当前离线，禁止编辑', 'error');
       return;
     }
-    if (field === 'productionPlanMonth' || field === 'productionPlanMonths') {
-      const targetItem = allItems.find(item => item.id === id);
-      const targetMonths = Array.isArray(value) ? value : [value];
-      const duplicateItem = targetItem
-        ? allItems.find(item => (
-          item.id !== id &&
-          item.specNumber.toLowerCase() === targetItem.specNumber.toLowerCase() &&
-          getItemPlanMonths(item).some(month => targetMonths.includes(month))
-        ))
-        : null;
-      if (duplicateItem) {
-        addToast('该仕样号已存在于选择的添加时间月份', 'error');
-        return;
-      }
-    }
     let updatedItem: StatusItem | null = null;
     const updated = allItems.map(item => {
       if (item.id === id) {
@@ -669,23 +646,6 @@ const StatusTracking = () => {
       updateItemOnServer(updatedItem).catch(handlePersistError);
     }
   }, [allItems, saveItems, updateItemOnServer, handlePersistError, isOffline, isAdmin]);
-
-  const toggleProductionPlanMonth = useCallback((id: string, month: string) => {
-    const targetItem = allItems.find(item => item.id === id);
-    if (!targetItem) return;
-
-    const currentMonths = getItemPlanMonths(targetItem);
-    const nextMonths = currentMonths.includes(month)
-      ? currentMonths.filter(itemMonth => itemMonth !== month)
-      : [...currentMonths, month].sort();
-
-    if (nextMonths.length === 0) {
-      addToast('至少保留一个添加时间月份', 'error');
-      return;
-    }
-
-    updateField(id, 'productionPlanMonths', nextMonths);
-  }, [allItems, updateField]);
 
   const updateItem = useCallback((id: string, updates: Partial<StatusItem>) => {
     if (!isAdmin) {
@@ -890,11 +850,7 @@ const StatusTracking = () => {
     setExporting(true);
     try {
       const params = new URLSearchParams();
-      if (monthFilterMode === 'production') {
-        params.append('month', currentMonth);
-      } else {
-        params.append('deliveryMonth', deliveryMonth);
-      }
+      params.append('deliveryMonth', deliveryMonth);
       if (sheetFilter) {
         // 合并项（焊钳 / 焊钳修改）会一次传多个 sheetName，后端按「任一命中」筛选
         const sheets = getSheetFilter(sheetFilter)?.sheets || [sheetFilter];
@@ -928,7 +884,7 @@ const StatusTracking = () => {
     } finally {
       setExporting(false);
     }
-  }, [token, monthFilterMode, currentMonth, deliveryMonth, sheetFilter, searchTerm]);
+  }, [token, deliveryMonth, sheetFilter, searchTerm]);
 
   // 同步生产大日程：先从服务端取预览（新增/更新/未变/被锁条数），确认后再落库。
   // 大日程在网络共享盘上，预览还要顺带解析仕样书补全营业担当，
@@ -981,7 +937,7 @@ const StatusTracking = () => {
 
   useEffect(() => {
     loadItems();
-  }, [currentMonth, deliveryMonth]);
+  }, [deliveryMonth]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1172,15 +1128,7 @@ const StatusTracking = () => {
 
   const filteredItems = useMemo(() => {
     let result = allItems;
-    if (monthFilterMode === 'production') {
-      result = result.filter(item => {
-        const planMonths = getItemPlanMonths(item);
-        return planMonths.length === 0 || planMonths.includes(currentMonth);
-      });
-    }
-    if (monthFilterMode === 'delivery') {
-      result = result.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
-    }
+    result = result.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
     if (sheetFilter) {
       const sheets = getSheetFilter(sheetFilter)?.sheets || [sheetFilter];
       result = result.filter(item => sheets.includes(getItemSheetName(item)));
@@ -1214,7 +1162,54 @@ const StatusTracking = () => {
       });
     }
     return result;
-  }, [allItems, searchTerm, sheetFilter, monthFilterMode, currentMonth, deliveryMonth, sortConfig]);
+  }, [allItems, searchTerm, sheetFilter, deliveryMonth, sortConfig]);
+
+  // 「设计纳期」格显示的是纳期距今天数，<=0（无纳期或已过期）时留空。
+  // 列表默认按纳期升序，所以「第一行非空」自然就是纳期最近、设计纳期最小的那一行。
+  // 设计纳期为空的记录仍留在列表里（排序时被放到末尾或靠前位置），不会被过滤掉。
+  const firstDesignIndex = useMemo(
+    () => filteredItems.findIndex(
+      item => Boolean(item.deliveryDate) && calculateDesignDeliveryDays(item.deliveryDate) >= 1
+    ),
+    [filteredItems]
+  );
+
+  // 进入页面首次拿到数据后，在原有滚动基础上再往下滚一段，
+  // 使「设计纳期」非空的第一行正好成为可视区的第一行（顶在吸顶表头下方）。
+  // 只执行一次：之后用户自己改筛选/排序不再抢滚动位置。
+  useEffect(() => {
+    // 权限设置未加载完时页面还停在骨架屏，表格节点不存在，等加载完再定位
+    if (!settingsLoaded) return;
+    if (hasAutoScrolledRef.current) return;
+    if (firstDesignIndex < 0) return;
+
+    let frame1 = 0;
+    let frame2 = 0;
+    const scrollToTarget = () => {
+      const row = targetRowRef.current;
+      if (!row) return;
+      const container = resolveScrollContainer(row, tableScrollRef.current);
+      if (!container) return;
+      hasAutoScrolledRef.current = true;
+      // 表头是 sticky 的，直接 scrollIntoView 会把目标行藏到表头下面，这里手动扣掉表头高度
+      const thead = container.querySelector('thead');
+      const headerHeight = thead ? thead.getBoundingClientRect().height : 0;
+      const containerRect = container.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      // 目标行顶边对齐到「表头下沿」，成为可视区第一行（留 2px 缝隙，避免半像素把上一行露出头发丝）
+      const rowTopInContainer = rowRect.top - containerRect.top;
+      const top = container.scrollTop + rowTopInContainer - headerHeight - 2;
+      container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    };
+    // 等两帧：数据刚渲染完时行高、表头高度可能还没稳定，立刻量会偏
+    frame1 = window.requestAnimationFrame(() => {
+      frame2 = window.requestAnimationFrame(scrollToTarget);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame1);
+      window.cancelAnimationFrame(frame2);
+    };
+  }, [firstDesignIndex, settingsLoaded]);
 
   const toggleSort = useCallback((key: 'deliveryDate' | 'designDeliveryDays') => {
     setSortConfig(prev => {
@@ -1447,9 +1442,8 @@ const StatusTracking = () => {
         </div>
       )}
 
-      {/* 筛选条：产品（四张日程表）单选 + 添加时间/纳期 + 月份。
-          四张表并列而不是下拉，一眼能看到当前在看哪张表；添加时间与纳期共用一个月份选择器，
-          切换左侧模式时选择器同时切换含义和取值。 */}
+      {/* 筛选条：产品（四张日程表）单选 + 纳期月份。
+          四张表并列而不是下拉，一眼能看到当前在看哪张表。 */}
       <div className="shrink-0 bg-white border-b border-gray-200 px-6 py-2 flex flex-wrap items-center gap-3">
         <div className="flex flex-wrap items-center gap-1.5">
           {SHEET_FILTERS.map((option, index) => {
@@ -1480,49 +1474,15 @@ const StatusTracking = () => {
 
         <div className="h-5 w-[1px] bg-gray-200"></div>
 
-        <div className="flex items-center rounded-lg border border-gray-300 overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setMonthFilterMode('production')}
-            className={`px-3 py-1.5 text-sm font-medium transition ${
-              monthFilterMode === 'production'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-600 hover:bg-gray-50'
-            }`}
-          >
-            添加时间
-          </button>
-          <button
-            type="button"
-            onClick={() => setMonthFilterMode('delivery')}
-            className={`px-3 py-1.5 text-sm font-medium border-l border-gray-300 transition ${
-              monthFilterMode === 'delivery'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-600 hover:bg-gray-50'
-            }`}
-          >
-            纳期
-          </button>
-        </div>
-
-        {/* 两种模式共用一个选择器：显示与修改的都是当前模式对应的月份 */}
+        {/* 只按纳期月份筛选 */}
         <div className="relative">
           <select
-            value={monthFilterMode === 'production' ? currentMonth : deliveryMonth}
-            onChange={(e) => {
-              if (monthFilterMode === 'production') {
-                setCurrentMonth(e.target.value);
-              } else {
-                setDeliveryMonth(e.target.value);
-              }
-            }}
-            title={monthFilterMode === 'production' ? '按添加时间月份筛选' : '按纳期月份筛选'}
+            value={deliveryMonth}
+            onChange={(e) => setDeliveryMonth(e.target.value)}
+            title="按纳期月份筛选"
             className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
-            {(monthFilterMode === 'production'
-              ? generateMonthOptions(allItems)
-              : generateDeliveryMonthOptions(allItems)
-            ).map(option => (
+            {generateDeliveryMonthOptions(allItems).map(option => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
@@ -1545,7 +1505,7 @@ const StatusTracking = () => {
         </div>
       </div>
 
-      <main className={`flex-1 px-6 pb-6 overflow-y-auto overflow-x-auto ${offlineWarning ? 'offline-locked' : ''}`}>
+      <main ref={tableScrollRef} className={`flex-1 px-6 pb-6 overflow-y-auto overflow-x-auto ${offlineWarning ? 'offline-locked' : ''}`}>
         <div className="h-6 shrink-0"></div>
         <div className="w-fit min-w-full bg-white rounded-2xl shadow-xl border border-gray-100">
             <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
@@ -1691,9 +1651,11 @@ const StatusTracking = () => {
                     return (
                       <tr
                         key={item.id}
+                        // 「设计纳期」最小的那一行：进页面后自动滚到这里（见上方的滚动 effect）
+                        ref={index === firstDesignIndex ? targetRowRef : undefined}
                         // 供重连后按焦点所在行补占行锁（见 applyConnected）
                         data-item-id={item.id}
-                        className={`${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'} ${isLocked ? 'cursor-not-allowed' : ''}`}
+                        className={`trow-hover trow-hover-blue ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'} ${isLocked ? 'cursor-not-allowed' : ''}`}
                         // 被锁定时整行输入都是 disabled，无法触发 onFocus，
                         // 也就不会有任何提示；用 title 让用户 hover 即知原因
                         title={isLocked ? lockHint : undefined}
@@ -1928,14 +1890,6 @@ const StatusTracking = () => {
                                   <RefreshCw size={16} className={updatingItemId === item.id ? 'animate-spin' : ''} />
                                 </button>
                                 <button
-                                  onClick={() => setPlanMonthEditorItemId(item.id)}
-                                  className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition"
-                                  title={`添加时间月份: ${formatPlanMonthsLabel(item)}`}
-                                  aria-label="修改添加时间月份"
-                                >
-                                  <Calendar size={16} />
-                                </button>
-                                <button
                                   onClick={() => setDeleteConfirmId(item.id)}
                                   className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition"
                                   title="删除"
@@ -2160,61 +2114,6 @@ const StatusTracking = () => {
         );
       })()}
 
-
-      {planMonthEditorItemId && isAdmin && (() => {
-        const editingItem = allItems.find(item => item.id === planMonthEditorItemId);
-        if (!editingItem) return null;
-        const selectedMonths = getItemPlanMonths(editingItem);
-        return (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
-              <div className="flex items-center justify-between mb-5">
-                <h3 className="text-lg font-bold text-gray-800">添加时间月份</h3>
-                <button
-                  onClick={() => setPlanMonthEditorItemId(null)}
-                  className="p-1 text-gray-400 hover:text-gray-600 transition"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              <div className="mb-4 text-sm text-gray-500 truncate" title={editingItem.clientName}>
-                {editingItem.clientName || '未填写客户'}
-              </div>
-              <div className="grid grid-cols-3 gap-2 max-h-72 overflow-auto">
-                {generateMonthOptions(allItems).map(option => {
-                  const checked = selectedMonths.includes(option.value);
-                  return (
-                    <label
-                      key={option.value}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition ${
-                        checked
-                          ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                          : 'border-gray-200 hover:border-gray-300 text-gray-600'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleProductionPlanMonth(editingItem.id, option.value)}
-                        className="w-4 h-4 text-emerald-600 border-gray-300 rounded focus:ring-emerald-500"
-                      />
-                      <span>{option.value}</span>
-                    </label>
-                  );
-                })}
-              </div>
-              <div className="flex justify-end mt-6">
-                <button
-                  onClick={() => setPlanMonthEditorItemId(null)}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition"
-                >
-                  完成
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
 
       {showLeaderRulesModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">

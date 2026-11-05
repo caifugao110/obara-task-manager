@@ -2995,7 +2995,7 @@ const GunLedger: React.FC = () => {
                       // key 使用 serialNumber：占位行首次输入提升为真实行时 DOM 不重建、输入焦点不丢失。
                       // 行顺序始终只按 serialNumber 排序，焊枪名（含英文前缀）改动仅影响当前行，不改变行号与其他行。
                       return (
-                        <tr key={row.serialNumber} className={rowIdx % 2 === 0 ? 'bg-white' : 'bg-[#fafafa]'}>
+                        <tr key={row.serialNumber} className={`trow-hover trow-hover-green ${rowIdx % 2 === 0 ? 'bg-white' : 'bg-[#fafafa]'}`}>
                           <td className="border border-gray-300 px-2 py-1 text-center text-gray-600 font-mono">{row.serialNumber}</td>
                           {EDITABLE_COLS.map((field, colIdx) => {
                             const refKey = `${row.serialNumber}-${field}`;
@@ -3020,7 +3020,7 @@ const GunLedger: React.FC = () => {
                                         onBlur={handleCellBlur}
                                         onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
                                         // appearance-none：不显示下拉按钮，点击整格即弹出完整名单（同状态跟踪页）
-                                        className={`w-full px-2 py-1.5 bg-transparent outline-none appearance-none text-center ${disabled ? 'cursor-not-allowed bg-gray-100' : 'cursor-pointer hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                        className={`w-full px-2 py-1.5 bg-transparent outline-none appearance-none text-center ${disabled ? 'cursor-not-allowed bg-gray-100' : 'cursor-pointer hover:bg-emerald-100 focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
                                       >
                                         <option value="">请选择</option>
                                         {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -3038,7 +3038,7 @@ const GunLedger: React.FC = () => {
                                       onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full px-2 pr-7 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                      className={`w-full px-2 pr-7 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-100 focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
                                     />
                                     {/* 一键获取当前时间：格式与焊枪名自动补时间一致（YYYY.MM.DD）；权限/离线/行锁禁用态与输入框一致 */}
                                     <button
@@ -3065,7 +3065,7 @@ const GunLedger: React.FC = () => {
                                       onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-50 focus:bg-emerald-50'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
+                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-100 focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
                                     />
                                     {/* 已被主任务使用的枪名不显示勾选框（不允许重复分配确认图任务） */}
                                     {assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) && (

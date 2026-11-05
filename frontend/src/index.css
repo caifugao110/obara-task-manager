@@ -103,6 +103,34 @@ input[type="number"] {
   z-index: 40;
 }
 
+/* ==================== 表格行 hover：整行轻微高亮 ==================== */
+/* 指针停在任意一格（含格内输入框、空白处）时整条记录行轻微变底色，
+   方便横向 20 列的数据对齐到同一行。
+   行底色写在 tr 上，优先于 bg-white / bg-[#fafafa] 等斑马纹工具类（0,2,0 > 0,1,0）。 */
+.trow-hover {
+  transition: background-color 120ms ease;
+}
+
+/* 焊枪台账：绿色系（emerald-100），与单元格 hover/focus 的 emerald-100 同色，行与格连成一条色带 */
+.trow-hover-green:hover {
+  background-color: #d1fae5;
+}
+
+/* 状态跟踪：蓝色系（blue-100）。格内 input/select 默认是白底，会把色带切成一块块白框，
+   hover 时临时转透明（仅 hover 态，静置观感不变），让整行连贯 */
+.trow-hover-blue:hover {
+  background-color: #dbeafe;
+}
+.trow-hover-blue input,
+.trow-hover-blue select {
+  transition: background-color 120ms ease;
+}
+/* 带 bg-green-100 的是「已发图 = 数量」的标记格，属于数据语义底色，hover 时保留不转透明 */
+.trow-hover-blue:hover input:not(.bg-green-100),
+.trow-hover-blue:hover select {
+  background-color: transparent;
+}
+
 /* 吸顶表头：border-collapse 下 tr 的下边框会随滚动消失，用内阴影替代分割线 */
 .sticky-thead th {
   box-shadow: inset 0 -1px 0 #e5e7eb;
