@@ -245,6 +245,10 @@ const Dashboard = () => {
   useEffect(() => {
     selectedCellRef.current = selectedCell;
   }, [selectedCell]);
+  // 连按两次空格的快捷动作：选中加号 → 新增任务；选中单条主任务 → 编辑该主任务。
+  // 这里只存一个「当前能不能快捷操作」的回调，真正的判定逻辑在选中状态变化时写入（见下方 effect），
+  // 空格监听本身注册得早，靠 ref 拿最新值，避免闭包读到旧的选中状态。
+  const quickSpaceActionRef = useRef<(() => void) | null>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const handledJumpKeyRef = useRef<string | null>(null);
   const hasShownDisconnectToast = useRef(false);
@@ -697,12 +701,13 @@ const Dashboard = () => {
     };
   }, [isAdmin, isOfflineMode, quickModifyOpen, modalOpen, helpGuideOpen, batchReplaceOpen, changePasswordOpen]);
 
-  // 快速取号：连按两次空格（间隔 400ms 内）呼出「分类 → 表格 → 取号」弹窗，仅管理员且有台账权限时生效
+  // 连按两次空格（间隔 400ms 内）：
+  //   ① 已选中加号 → 直接在那一格新增主任务；已选中单条主任务 → 直接编辑该主任务（见 quickSpaceActionRef）
+  //   ② 没有任何选中目标 → 保持原行为：呼出「分类 → 表格 → 取号」弹窗（仅管理员且有台账权限）
   // 空格是文本录入的高频键，光标在输入框/可编辑区域内一律不参与判定；
   // 判定期间拦掉空格默认行为：主页面根容器为 h-screen overflow-hidden，本就不靠空格滚页，
   // 否则双击必然先滚一屏再弹窗。
   useEffect(() => {
-    if (!canTakeGunNumber) return;
     // 离线模式下整条快捷键停用（不注册监听，连按空格无反应），仅保留 Ctrl×2 定位
     if (isOfflineMode) return;
     const DOUBLE_SPACE_INTERVAL = 400;
@@ -727,12 +732,27 @@ const Dashboard = () => {
         resetTap();
         return;
       }
+      // 弹窗/浮层打开时不接管空格：否则会把弹窗内按钮的空格激活吞掉
+      if (quickGunTakeOpen || modalOpen || quickModifyOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) {
+        resetTap();
+        return;
+      }
+      // 既没有选中目标、也没有取号权限时完全不接管空格，避免影响键盘正常操作按钮
+      if (!quickSpaceActionRef.current && !canTakeGunNumber) {
+        resetTap();
+        return;
+      }
       // 拦掉空格默认行为：既避免双击前先滚一屏，也避免空格「点」到当前聚焦的按钮
       e.preventDefault();
       const now = Date.now();
       if (lastSpaceAt && now - lastSpaceAt <= DOUBLE_SPACE_INTERVAL) {
         resetTap();
-        if (quickGunTakeOpen || modalOpen || quickModifyOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
+        // 选中加号 / 主任务时优先做「新增 / 编辑」；没有选中目标才走快速取号
+        const quickAction = quickSpaceActionRef.current;
+        if (quickAction) {
+          quickAction();
+          return;
+        }
         setQuickGunTakeOpen(true);
       } else {
         lastSpaceAt = now;
@@ -2381,6 +2401,30 @@ const Dashboard = () => {
     });
   };
 
+  // 双击空格的快捷目标（每次选中状态 / 任务数据变化都重算，保证闭包里是最新的锁定判断和任务内容）：
+  //   · 选中加号（单元格）→ 新增任务；· 选中单条主任务 → 编辑该主任务
+  //   多选、没选中、离线或没有编辑权限时不提供快捷动作，空格回到「快速取号」
+  useEffect(() => {
+    if (!canEditTasks) {
+      quickSpaceActionRef.current = null;
+      return;
+    }
+    if (selectedCell) {
+      quickSpaceActionRef.current = () => openModal(selectedCell.designerId, selectedCell.date, true);
+      return;
+    }
+    if (selectedTasks.length === 1) {
+      const selection = selectedTasks[0];
+      const item = getAllItems(selection.designerId, selection.date)
+        .find(task => task.id === selection.itemId);
+      quickSpaceActionRef.current = item
+        ? () => onTaskClick(item, selection.designerId, selection.date, 'task')
+        : null;
+      return;
+    }
+    quickSpaceActionRef.current = null;
+  }, [canEditTasks, selectedCell, selectedTasks, sheetByDesignerId, warnIfCellLocked]);
+
   // 获取考虑 pendingChanges 后的任务字段值
   const getItemFieldWithPendingChanges = (itemId: string, field: string) => {
     const pendingChange = pendingChanges.find(change => change.itemId === itemId && change.field === field);
@@ -3454,7 +3498,7 @@ const Dashboard = () => {
                                                 }
                                               }}
                                               tabIndex={0}
-                                              title="单击选中此单元格（可 Ctrl+V 粘贴），双击新增任务"
+                                              title="单击选中此单元格（双击空格可直接新增任务，可 Ctrl+V 粘贴），双击新增任务"
                                             >
                                               <span
                                                 className={`inline-flex items-center justify-center h-[18px] w-[18px] rounded-full ring-1 shadow-sm transition-colors ${isCellLocked
@@ -3991,7 +4035,7 @@ const Dashboard = () => {
                       <span className="shrink-0 w-[72px]">
                         <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Space×2</kbd>
                       </span>
-                      <div className="text-[13px] text-gray-700">快速取号（1–10 个焊枪名）</div>
+                      <div className="text-[13px] text-gray-700">选中加号 → 新增任务；选中任务 → 编辑<span className="text-gray-400">（无选中时快速取号）</span></div>
                     </li>
                     <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
                       <span className="shrink-0 w-[72px]">

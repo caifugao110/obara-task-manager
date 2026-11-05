@@ -105,7 +105,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       data-task-id={item.id}
       data-designer-id={designerId}
       data-date={date}
-      title={isAdmin ? metadataTitle : undefined}
+      title={isAdmin ? `${metadataTitle}\n单击选中后连按两次空格，可直接编辑本任务（双击任务同样可编辑）` : undefined}
       style={{ ...style }}
       {...attributes}
       {...listeners}

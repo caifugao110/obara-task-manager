@@ -237,6 +237,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | Node 版本报错 | 低于 22 | 升到 22 LTS |
 | 鼠标点过任务行、再按任意键就冒出一圈黑框 | dnd-kit 的行是 `tabIndex=0` 可聚焦元素，按键后浏览器按 `:focus-visible` 画 UA 默认轮廓（Tailwind preflight 不重置） | 可聚焦行/单元格的 className 显式加 `focus:outline-none focus-visible:outline-none`，选中态用自绘边框表达 |
 | 新增的全局 `keydown` 监听把弹窗的 Esc/快捷键抢了 | 主页面有 5 处独立 window 级 Esc 监听、互不 `stopPropagation` | 新语义先判所有弹窗状态并 `return`，按「弹窗 → 页面选中」的顺序串联 |
+| `Space`×2 既想新增/编辑任务、又保留快速取号，两个监听互相抢键 | 一个键位多义，拆成两个监听时两次按键会被各判一次 | 收口在同一个 window `keydown`：弹窗打开 → 不接管空格；`quickSpaceActionRef` 有值（选中加号 / 唯一选中主任务）→ 新增/编辑；否则才取号 |
 
 ## 相关文档
 
