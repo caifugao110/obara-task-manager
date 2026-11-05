@@ -32,6 +32,7 @@ import {
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import QuickConfirmAssignModal, { QuickConfirmGunRow } from '../components/QuickConfirmAssignModal';
+import { useModalDrag } from '../hooks/useModalDrag';
 import { appendDeadlineSuffix, resolveTextDeadlineSuffix } from '../utils/specDeadline';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsContext';
@@ -404,6 +405,13 @@ const GunLedger: React.FC = () => {
   const [assignShowDeadline, setAssignShowDeadline] = useState(true);
   // 分配面板「任务加急」开关：勾选后本次创建的确认图任务全部标记为加急（默认关闭）
   const [assignUrgent, setAssignUrgent] = useState(false);
+
+  // 任务分配面板：按住标题栏可拖动整个弹窗（打开时自动回到居中）
+  const {
+    frameRef: assignPanelRef,
+    dragging: assignPanelDragging,
+    headerProps: assignPanelHeaderProps,
+  } = useModalDrag(showAssignPanel);
 
   // 分配面板的分组过滤：默认落在登录人所属分组，账号未分组时默认「全部人员」
   const assignUserGroup = resolveUserGroup(user?.group);
@@ -2657,7 +2665,7 @@ const GunLedger: React.FC = () => {
                 <UserPlus size={18} /><span>担当人员</span>
               </button>
             )}
-            <span className="text-sm font-bold text-red-500">{user.name}</span>
+            <span className="text-sm font-bold text-amber-300">{user.name}</span>
             <button onClick={logout} className="flex items-center space-x-1.5 text-white hover:text-red-300 text-sm font-semibold transition">
               <LogOut size={18} /><span>退出</span>
             </button>
@@ -2995,7 +3003,7 @@ const GunLedger: React.FC = () => {
                       // key 使用 serialNumber：占位行首次输入提升为真实行时 DOM 不重建、输入焦点不丢失。
                       // 行顺序始终只按 serialNumber 排序，焊枪名（含英文前缀）改动仅影响当前行，不改变行号与其他行。
                       return (
-                        <tr key={row.serialNumber} className={`trow-hover trow-hover-green ${rowIdx % 2 === 0 ? 'bg-white' : 'bg-[#fafafa]'}`}>
+                        <tr key={row.serialNumber} className={`trow-hover trow-hover-sky ${rowIdx % 2 === 0 ? 'bg-white' : 'bg-[#fafafa]'}`}>
                           <td className="border border-gray-300 px-2 py-1 text-center text-gray-600 font-mono">{row.serialNumber}</td>
                           {EDITABLE_COLS.map((field, colIdx) => {
                             const refKey = `${row.serialNumber}-${field}`;
@@ -3020,7 +3028,7 @@ const GunLedger: React.FC = () => {
                                         onBlur={handleCellBlur}
                                         onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
                                         // appearance-none：不显示下拉按钮，点击整格即弹出完整名单（同状态跟踪页）
-                                        className={`w-full px-2 py-1.5 bg-transparent outline-none appearance-none text-center ${disabled ? 'cursor-not-allowed bg-gray-100' : 'cursor-pointer hover:bg-emerald-100 focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                        className={`w-full px-2 py-1.5 bg-transparent outline-none appearance-none text-center ${disabled ? 'cursor-not-allowed bg-gray-100' : 'cursor-pointer focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
                                       >
                                         <option value="">请选择</option>
                                         {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -3038,7 +3046,7 @@ const GunLedger: React.FC = () => {
                                       onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full px-2 pr-7 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-100 focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                      className={`w-full px-2 pr-7 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
                                     />
                                     {/* 一键获取当前时间：格式与焊枪名自动补时间一致（YYYY.MM.DD）；权限/离线/行锁禁用态与输入框一致 */}
                                     <button
@@ -3065,7 +3073,7 @@ const GunLedger: React.FC = () => {
                                       onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'hover:bg-emerald-100 focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
+                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
                                     />
                                     {/* 已被主任务使用的枪名不显示勾选框（不允许重复分配确认图任务） */}
                                     {assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) && (
@@ -3207,9 +3215,16 @@ const GunLedger: React.FC = () => {
         const customerSet = new Set(selectedRows.map(r => String(r.customer || '').trim() || '未命名'));
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !assigning && setShowAssignPanel(false)} />
-            <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] max-h-[92vh] flex flex-col border border-gray-200 overflow-hidden">
-              <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0">
+            <div className="absolute inset-0 bg-black/20" onClick={() => !assigning && setShowAssignPanel(false)} />
+            <div
+              ref={assignPanelRef}
+              style={{ transform: 'translate3d(0px, 0px, 0)' }}
+              className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] max-h-[92vh] flex flex-col border border-gray-200 overflow-hidden"
+            >
+              <div
+                {...assignPanelHeaderProps}
+                className={`px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0 select-none touch-none ${assignPanelDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+              >
                 <div className="flex items-center gap-2 font-bold text-lg">
                   <ClipboardList size={20} />
                   分配确认图任务

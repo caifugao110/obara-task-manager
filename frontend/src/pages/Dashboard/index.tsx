@@ -39,6 +39,7 @@ import DroppableCell from './components/DroppableCell';
 import QuickConfirmModifyModal from './components/QuickConfirmModifyModal';
 import QuickGunTakeModal from '../../components/QuickGunTakeModal';
 import { useEditingSessions } from './hooks/useEditingSessions';
+import { useModalDrag } from '../../hooks/useModalDrag';
 import LoadingScreen from '../../components/LoadingScreen';
 import { useTaskHistory } from './hooks/useTaskHistory';
 import { useGunDragDrop } from './hooks/useGunDragDrop';
@@ -229,6 +230,12 @@ const Dashboard = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalDate, setModalDate] = useState<string | null>(null);
   const [modalDesignerId, setModalDesignerId] = useState<string | null>(null);
+  // 新增/编辑任务弹框：按住顶栏空白处即可拖动整个弹框（打开 / 切换设计员、日期时复位居中）
+  const {
+    frameRef: taskModalRef,
+    dragging: taskModalDragging,
+    headerProps: taskModalHeaderProps,
+  } = useModalDrag(modalOpen, `${modalDesignerId ?? ''}|${modalDate ?? ''}`);
   const [clipboard, setClipboard] = useState<TaskItem[] | null>(null);
   const clipboardRef = useRef<TaskItem[] | null>(null);
   useEffect(() => {
@@ -3200,12 +3207,12 @@ const Dashboard = () => {
                     setChangePasswordOpen(true);
                   }}
                   title="点击可进行密码修改"
-                  className="text-sm font-bold text-red-500 hover:text-red-300 transition cursor-pointer px-1 py-0.5 rounded"
+                  className="text-sm font-bold text-amber-300 hover:text-amber-100 transition cursor-pointer px-1 py-0.5 rounded"
                 >
                   {user.name}
                 </button>
               ) : (
-                <span className="text-sm font-bold text-red-500 px-1 py-0.5 cursor-default select-none">
+                <span className="text-sm font-bold text-amber-300 px-1 py-0.5 cursor-default select-none">
                   {user.name}
                 </span>
               )}
@@ -4058,10 +4065,17 @@ const Dashboard = () => {
 
       {modalOpen && modalDate && modalDesignerId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40" onClick={() => { setModalOpen(false); stopEditingCell(modalDesignerId, modalDate); }} />
-          <div className="relative bg-white rounded-lg shadow-2xl w-[960px] max-w-[96vw] max-h-[90vh] flex flex-col border-2 border-gray-200">
-            <div className="relative flex items-center justify-between px-4 py-3 border-b-2 border-gray-200 bg-[#217346] text-white rounded-t-lg">
-              <div>
+          <div className="absolute inset-0 bg-black/20" onClick={() => { setModalOpen(false); stopEditingCell(modalDesignerId, modalDate); }} />
+          <div
+            ref={taskModalRef}
+            style={{ transform: 'translate3d(0px, 0px, 0)' }}
+            className="relative bg-white rounded-lg shadow-2xl w-[960px] max-w-[96vw] max-h-[90vh] flex flex-col border-2 border-gray-200"
+          >
+            <div
+              {...taskModalHeaderProps}
+              className={`relative flex items-center justify-between px-4 py-3 border-b-2 border-gray-200 bg-[#217346] text-white rounded-t-lg select-none touch-none ${taskModalDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+            >
+              <div className="min-w-0">
                 <div className="font-bold text-lg">{designers.find(d => d.id === modalDesignerId)?.name}</div>
                 <div className="text-xs opacity-80">{modalDate}</div>
               </div>

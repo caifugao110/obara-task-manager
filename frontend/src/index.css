@@ -111,9 +111,10 @@ input[type="number"] {
   transition: background-color 120ms ease;
 }
 
-/* 焊枪台账：绿色系（emerald-100），与单元格 hover/focus 的 emerald-100 同色，行与格连成一条色带 */
-.trow-hover-green:hover {
-  background-color: #d1fae5;
+/* 焊枪台账：行 hover 用浅蓝（sky-100），刻意与「正在编辑的单元格」的绿色（emerald-100）区分开。
+   若两者同色，整行与当前格连成一片，看不出光标停在哪一格。 */
+.trow-hover-sky:hover {
+  background-color: #e0f2fe;
 }
 
 /* 状态跟踪：蓝色系（blue-100）。格内 input/select 默认是白底，会把色带切成一块块白框，

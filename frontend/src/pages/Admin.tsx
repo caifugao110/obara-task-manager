@@ -1564,7 +1564,7 @@ const Admin = () => {
         </div>
 
         <div className="flex items-center space-x-6">
-          <span className="text-sm font-bold text-red-600">{currentUser?.name}</span>
+          <span className="text-sm font-bold text-amber-700">{currentUser?.name}</span>
           <button
             onClick={logout}
             className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition"

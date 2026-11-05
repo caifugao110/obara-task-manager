@@ -31,6 +31,7 @@ import {
   resolveUserGroup,
 } from '../../../utils/groupFilter';
 import type { Designer, TaskItem, TaskSheet } from '../types';
+import { useModalDrag } from '../../../hooks/useModalDrag';
 
 // 枪名归属：该枪名当前被放在哪位设计员的哪一天、哪条任务里
 export interface GunNameOwner {
@@ -143,6 +144,9 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
   onCreated,
 }) => {
   const { settings: systemSettings, specNumberDigits } = useSystemSettings();
+
+  // 按住标题栏可拖动整个弹窗（打开时自动回到居中）
+  const { frameRef, dragging, headerProps } = useModalDrag(open);
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<GunNameSearchResult[]>([]);
@@ -596,10 +600,17 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => !submitting && onClose()} />
-      <div className="relative bg-white rounded-xl shadow-2xl w-[580px] max-w-[94vw] max-h-[90vh] flex flex-col overflow-hidden border border-gray-200">
-        {/* 头部 */}
-        <div className="relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0">
+      <div className="absolute inset-0 bg-black/20" onClick={() => !submitting && onClose()} />
+      <div
+        ref={frameRef}
+        style={{ transform: 'translate3d(0px, 0px, 0)' }}
+        className="relative bg-white rounded-xl shadow-2xl w-[580px] max-w-[94vw] max-h-[90vh] flex flex-col overflow-hidden border border-gray-200"
+      >
+        {/* 头部（按住可拖动窗口） */}
+        <div
+          {...headerProps}
+          className={`relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0 select-none touch-none ${dragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+        >
           <div className="flex items-center gap-2.5">
             <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25">
               <Zap size={17} />

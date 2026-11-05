@@ -1219,7 +1219,7 @@ const SystemSettings = () => {
 
         {user && (
           <div className="flex items-center space-x-4">
-            <span className="text-sm font-bold text-red-600">{user.name}</span>
+            <span className="text-sm font-bold text-amber-700">{user.name}</span>
             <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
               <LogOut size={18} />
               <span>退出</span>

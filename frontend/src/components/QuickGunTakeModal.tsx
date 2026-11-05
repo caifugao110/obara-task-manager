@@ -25,6 +25,7 @@ import { acquireSocket } from '../utils/socketClient';
 import { resolveGunHours } from '../utils/gunHoursRules';
 import type { TaskSheet } from '../types';
 import QuickConfirmAssignModal, { type QuickConfirmGunRow } from './QuickConfirmAssignModal';
+import { useModalDrag } from '../hooks/useModalDrag';
 
 /** 表级编辑锁持有者（lockedBy.self 表示锁由当前登录人自己持有，如另一个标签页开着台账） */
 interface QuickTakeLock {
@@ -145,6 +146,9 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   onTasksCreated,
 }) => {
   const { specNumberDigits, settings: systemSettings } = useSystemSettings();
+
+  // 按住标题栏可拖动整个弹窗（打开时自动回到居中）
+  const { frameRef, dragging, headerProps } = useModalDrag(open);
 
   const [options, setOptions] = useState<QuickTakeOptions | null>(null);
   const [loading, setLoading] = useState(false);
@@ -685,11 +689,20 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
 
   return (
     <>
+    {/* 打开「为今日取号安排确认图」浮层时，本弹窗整体隐藏（关闭浮层后自动恢复） */}
+    {!assignOpen && (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => !submitting && onClose()} />
-      <div className="relative bg-white rounded-xl shadow-2xl w-[880px] max-w-[95vw] max-h-[90vh] flex flex-col overflow-hidden border border-gray-200">
-        {/* 头部 */}
-        <div className="relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1d4ed8] via-[#2563eb] to-[#3b82f6] text-white shrink-0">
+      <div className="absolute inset-0 bg-black/20" onClick={() => !submitting && onClose()} />
+      <div
+        ref={frameRef}
+        style={{ transform: 'translate3d(0px, 0px, 0)' }}
+        className="relative bg-white rounded-xl shadow-2xl w-[880px] max-w-[95vw] max-h-[90vh] flex flex-col overflow-hidden border border-gray-200"
+      >
+        {/* 头部（按住可拖动窗口） */}
+        <div
+          {...headerProps}
+          className={`relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1d4ed8] via-[#2563eb] to-[#3b82f6] text-white shrink-0 select-none touch-none ${dragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+        >
           <div className="flex items-center gap-2.5">
             <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25">
               <Sparkles size={17} />
@@ -1166,11 +1179,12 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
         </div>
       </div>
     </div>
+    )}
 
     {/* 取号结果：独立模态框，叠在取号弹窗之上、确认图浮层之下，不再挤占右栏 */}
-    {lastTaken && resultOpen && (
+    {!assignOpen && lastTaken && resultOpen && (
       <div className="fixed inset-0 z-[55] flex items-center justify-center px-4" role="dialog" aria-modal="true" aria-label="取号成功">
-        <div className="absolute inset-0 bg-black/35 backdrop-blur-[2px]" onClick={closeResult} />
+        <div className="absolute inset-0 bg-black/20" onClick={closeResult} />
         <div className="relative w-[480px] max-w-full max-h-[88vh] flex flex-col overflow-hidden rounded-xl border border-emerald-100 bg-white shadow-2xl">
           {/* 头部：成功语义（绿），与取号弹窗的蓝区分开 */}
           <div className="relative flex items-center gap-2.5 px-4 py-3.5 bg-gradient-to-r from-[#047857] via-[#059669] to-[#10b981] text-white shrink-0">
@@ -1265,10 +1279,13 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       </div>
     )}
 
-    {/* 可选：把取到的号安排确认图任务（浮在取号弹窗之上） */}
+    {/* 可选：把取到的号安排确认图任务（浮层；关闭时连取号弹窗一起关掉，直接回主页面） */}
     <QuickConfirmAssignModal
       open={assignOpen}
-      onClose={() => setAssignOpen(false)}
+      onClose={() => {
+        setAssignOpen(false);
+        onClose();
+      }}
       rows={assignRows}
       designers={designers}
       addToast={addToast}
