@@ -1,17 +1,18 @@
 // 焊枪编号台账导出：将分类数据构建为 SpreadsheetML(.xls) 工作簿。
 // 布局约定：每张表对应一个工作表（sheet 名为表名），整个分类构成一个工作簿。
-// 每个工作表结构：第 0 行列表头（序号/焊枪名/客户/时间/担当/备注），其余为数据行。
+// 每个工作表结构：第 0 行列表头（序号/焊枪名/客户/时间/担当/规格/备注），其余为数据行。
 const XLSX = require('xlsx');
 const { sanitizeAoaRows } = require('./fileUploadSecurity');
 const { createZipBuffer } = require('./simpleZip');
 
-const HEADERS = ['序号', '焊枪名', '客户', '时间', '担当', '备注'];
+const HEADERS = ['序号', '焊枪名', '客户', '时间', '担当', '规格', '备注'];
 const COL_WIDTHS = [
   { wpx: 56 },
   { wpx: 120 },
-  { wpx: 420 },
+  { wpx: 300 },
   { wpx: 96 },
   { wpx: 80 },
+  { wpx: 140 },
   { wpx: 220 }
 ];
 
@@ -74,6 +75,7 @@ const normalizeTableRows = (rows = []) => rows
     customer: String(r?.customer || ''),
     time: String(r?.time || ''),
     responsiblePerson: String(r?.responsiblePerson || ''),
+    spec: String(r?.spec || ''),
     remarks: String(r?.remarks || '')
   }))
   .sort((a, b) => a.serialNumber - b.serialNumber);
@@ -93,7 +95,7 @@ const buildTableLayout = (table) => {
 
   const dataRows = normalizeTableRows(table.rows);
   if (!dataRows.length) {
-    aoaRows.push(['暂无记录', '', '', '', '', '']);
+    aoaRows.push(['暂无记录', '', '', '', '', '', '']);
     for (let col = 0; col < HEADERS.length; col += 1) {
       styleMap.set(cellKey(1, col), 'gnote');
     }
@@ -112,6 +114,7 @@ const buildTableLayout = (table) => {
       data.customer,
       data.time,
       data.responsiblePerson,
+      data.spec,
       data.remarks
     ]);
     styleMap.set(cellKey(row, 0), centerStyle);
@@ -120,6 +123,7 @@ const buildTableLayout = (table) => {
     styleMap.set(cellKey(row, 3), centerStyle);
     styleMap.set(cellKey(row, 4), centerStyle);
     styleMap.set(cellKey(row, 5), leftStyle);
+    styleMap.set(cellKey(row, 6), leftStyle);
     rowHeights.set(row, DATA_HEIGHT);
   });
 
@@ -128,7 +132,7 @@ const buildTableLayout = (table) => {
 
 // 空分类提示工作表的布局（表头 + 单条提示）
 const buildEmptyCategoryLayout = () => {
-  const aoaRows = [HEADERS.slice(), ['该分类下暂无表格', '', '', '', '', '']];
+  const aoaRows = [HEADERS.slice(), ['该分类下暂无表格', '', '', '', '', '', '']];
   const styleMap = new Map();
   const rowHeights = new Map();
   for (let col = 0; col < HEADERS.length; col += 1) {
@@ -385,7 +389,11 @@ const parseImportedWorkbook = (workbook) => {
     const iCustomer = colOf('客户');
     const iTime = colOf('时间');
     const iResp = colOf('担当');
+    const iSpec = colOf('规格');
     const iRemarks = colOf('备注');
+    // 历史模板把规格与备注合并为一列（表头「焊枪规格或备注」），此时「规格」「备注」会命中同一列；
+    // 合并列的内容统一归入备注，避免同一段文字被重复写入两列
+    const specMergedWithRemarks = iSpec !== -1 && iSpec === iRemarks;
 
     if (iGun === -1) {
       warnings.push(`工作表「${sheetName}」表头缺少“焊枪名”列，已跳过`);
@@ -399,9 +407,10 @@ const parseImportedWorkbook = (workbook) => {
       const customer = get(iCustomer);
       const time = get(iTime);
       const responsiblePerson = get(iResp);
+      const spec = specMergedWithRemarks ? '' : get(iSpec);
       const remarks = get(iRemarks);
       // 整行全空则跳过
-      if (!gunName && !customer && !time && !responsiblePerson && !remarks) return;
+      if (!gunName && !customer && !time && !responsiblePerson && !spec && !remarks) return;
       const serialRaw = iSerial >= 0 ? String(rawRow[iSerial] ?? '').trim() : '';
       rows.push({
         serialNumber: /^\d+$/.test(serialRaw) ? parseInt(serialRaw, 10) : null,
@@ -409,6 +418,7 @@ const parseImportedWorkbook = (workbook) => {
         customer,
         time,
         responsiblePerson,
+        spec,
         remarks
       });
     });

@@ -28,6 +28,7 @@ const rowSchema = Joi.object({
   customer: Joi.string().allow(''),
   time: Joi.string().allow(''),
   responsiblePerson: Joi.string().allow(''),
+  spec: Joi.string().allow(''),
   remarks: Joi.string().allow(''),
   createdAt: Joi.string().allow('', null),
   createdBy: userMetaSchema,
@@ -106,36 +107,38 @@ const GUN_NAME_PATTERNS = {
   'X2C': {
     'SRTC':         { prefix: 'SRTC-2C',    start: 15000, pad: 5 },
     'SRTX':         { prefix: 'SRTX-2C',    start: 25000, pad: 5 },
-    'SRTV':         { prefix: 'SRTV-C',     start: 200,   pad: 4 },
-    'SRTC-ALA-DC':  { prefix: 'SRTC-ALDC',  start: 400,   pad: 4 },
-    'SRTX-ALA-DC':  { prefix: 'SRTX-ALDC',  start: 400,   pad: 4 },
+    'SRTV':         { prefix: 'SRTV-C',     start: 150,   pad: 4 },
+    'SRTC-ALA-DC':  { prefix: 'SRTC-ALDC',  start: 350,   pad: 4 },
+    'SRTX-ALA-DC':  { prefix: 'SRTX-ALDC',  start: 300,   pad: 4 },
     'SRTD':         { prefix: 'SRTD-C',     start: 200,   pad: 4 },
-    'SRTS':         { prefix: 'SRTS-C',     start: 100,   pad: 4 },
+    'SRTS':         { prefix: 'SRTS-C',     start: 50,    pad: 4 },
+    'BYD-C':        { prefix: 'BRZC-C',     start: 210,   pad: 4 },
+    'BYD-X':        { prefix: 'BRXC-X',     start: 540,   pad: 4 },
   },
   'X2C-V2': {
     'C': { prefix: 'SDZC-C', start: 3000, pad: 4 },
-    'X': { prefix: 'SDZX-C', start: 5000, pad: 4 },
+    'X': { prefix: 'SDZX-C', start: 4520, pad: 4 },
   },
   'X2C-V3': {
-    'C': { prefix: 'SDZC-3C', start: 30500, pad: 5 },
+    'C': { prefix: 'SDZC-3C', start: 30450, pad: 5 },
     'X': { prefix: 'SDZX-3C', start: 30500, pad: 5 },
   },
   'GLOBAL': {
-    'RBC': { prefix: 'RBC', start: 14000, pad: 5 },
+    'RBC': { prefix: 'RBC', start: 14050, pad: 5 },
   },
   'TOYOTA': {
     'C01': { prefix: 'C01-C', start: 500,  pad: 4 },
-    'C02': { prefix: 'C02-C', start: 120,  pad: 4 },
-    'C03': { prefix: 'C03-C', start: 130,  pad: 4 },
+    'C02': { prefix: 'C02-C', start: 1200, pad: 4 },
+    'C03': { prefix: 'C03-C', start: 1300, pad: 4 },
     'C04': { prefix: 'C04-C', start: 620,  pad: 4 },
     'C05': { prefix: 'C05-C', start: 180,  pad: 4 },
     'C06': { prefix: 'C06-C', start: 50,   pad: 4 },
     'C07': { prefix: 'C07-C', start: 30,   pad: 4 },
     'C08': { prefix: 'C08-C', start: 10,   pad: 4 },
     'C09': { prefix: 'C09-C', start: 10,   pad: 4 },
-    'C10': { prefix: 'C10-C', start: 1,    pad: 4 },
+    'C10': { prefix: 'C10-C', start: 5,    pad: 4 },
     'X01': { prefix: 'X01-C', start: 30,   pad: 4 },
-    'X02': { prefix: 'X02-C', start: 40,   pad: 4 },
+    'X02': { prefix: 'X02-C', start: 240,  pad: 4 },
     'X03': { prefix: 'X03-C', start: 1420, pad: 4 },
     'X04': { prefix: 'X04-C', start: 700,  pad: 4 },
     'X05': { prefix: 'X05-C', start: 380,  pad: 4 },
@@ -144,22 +147,22 @@ const GUN_NAME_PATTERNS = {
     'X08': { prefix: 'X08-C', start: 210,  pad: 4 },
     'X09': { prefix: 'X09-C', start: 120,  pad: 4 },
     'X10': { prefix: 'X10-C', start: 50,   pad: 4 },
-    'X11': { prefix: 'X11-C', start: 1,    pad: 4 },
-    'X12': { prefix: 'X12-C', start: 10,   pad: 4 },
+    'X11': { prefix: 'X11-C', start: 5,    pad: 4 },
+    'X12': { prefix: 'X12-C', start: 5,    pad: 4 },
   },
   'PSW': {
-    'UC':  { prefix: 'UC-C',  start: 12700, pad: 5 },
-    'UX':  { prefix: 'UX-C',  start: 11500, pad: 5 },
-    'UCR': { prefix: 'UCR-C', start: 1050,  pad: 4 },
-    'UXR': { prefix: 'UXR-C', start: 950,   pad: 4 },
-    'NOC': { prefix: 'NOC-C', start: 2130,  pad: 4 },
-    'NOX': { prefix: 'NOX-C', start: 2320,  pad: 4 },
+    'UC':  { prefix: 'UC-C',  start: 12720, pad: 5 },
+    'UX':  { prefix: 'UX-C',  start: 11550, pad: 5 },
+    'UCR': { prefix: 'UCR-C', start: 1100,  pad: 4 },
+    'UXR': { prefix: 'UXR-C', start: 990,   pad: 4 },
+    'NOC': { prefix: 'NOC-C', start: 2170,  pad: 4 },
+    'NOX': { prefix: 'NOX-C', start: 2355,  pad: 4 },
   },
   'IT': {
-    'PTC':     { prefix: 'PTC-C',   start: 3750,  pad: 4 },
-    'PTX':     { prefix: 'PTX-C',   start: 4960,  pad: 4 },
-    'PTC-ALC': { prefix: 'PTC-ALC', start: 30,    pad: 4 },
-    'PTX-ALC': { prefix: 'PTX-ALC', start: 30,    pad: 4 },
+    'PTC':     { prefix: 'PTC-C',   start: 3801,  pad: 4 },
+    'PTX':     { prefix: 'PTX-C',   start: 5001,  pad: 4 },
+    'PTC-ALC': { prefix: 'PTC-ALC', start: 31,    pad: 4 },
+    'PTX-ALC': { prefix: 'PTX-ALC', start: 31,    pad: 4 },
   },
   'ROBOT': {
     'RTC': { prefix: 'RTC-C', start: 2350, pad: 4 },
@@ -170,12 +173,15 @@ const GUN_NAME_PATTERNS = {
   'EQ': {
     'PE1':  { prefix: 'PE1-C',  start: 1550, pad: 4 },
     'PE2':  { prefix: 'PE2-C',  start: 250,  pad: 4 },
-    'R':    { prefix: 'R-C',    start: 260,  pad: 4 },
-    'RR':   { prefix: 'RR-C',   start: 5,    pad: 4 },
+    'R':    { prefix: 'R-C',    start: 270,  pad: 4 },
+    'RR':   { prefix: 'RR-C',   start: 10,   pad: 4 },
     'SEN':  { prefix: 'SEN-C',  start: 150,  pad: 4 },
-    'SEU':  { prefix: 'SEU-C',  start: 6,    pad: 4 },
-    'SET':  { prefix: 'SET-C',  start: 11,   pad: 4 },
-    'STUD': { prefix: 'STUD-C', start: 65,   pad: 4 },
+    'SEU':  { prefix: 'SEU-C',  start: 10,   pad: 4 },
+    'SET':  { prefix: 'SET-C',  start: 15,   pad: 4 },
+    'STUD': { prefix: 'STUD-C', start: 70,   pad: 4 },
+  },
+  'PROJECTION GUN': {
+    'STEEL': { prefix: 'SRTC-AS', start: 30, pad: 4 },
   },
 };
 
@@ -186,6 +192,16 @@ const getEffectiveGunNameRule = (category, table) => {
   }
   const pattern = GUN_NAME_PATTERNS[category]?.[table.name];
   return pattern ? { enabled: true, prefix: pattern.prefix, start: pattern.start, pad: pattern.pad } : null;
+};
+
+// 焊枪名初始化时将表的取号规则一并恢复为内置默认号段（前缀 + 起始编号 + 编号位数）。
+// 仅对有内置默认规则的表生效；无内置默认的表（如用户自建表）保留原规则不动，返回 null。
+const resetRuleToDefault = (category, table) => {
+  const pattern = GUN_NAME_PATTERNS[category]?.[table.name];
+  if (!pattern) return null;
+  const rule = { enabled: true, prefix: pattern.prefix, start: pattern.start, pad: pattern.pad };
+  table.gunNameRule = rule;
+  return rule;
 };
 
 // 根据规则+序号计算焊枪名的编号部分（不含前缀）
@@ -228,7 +244,7 @@ const cleanUserMeta = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? 
 // GET /api/gun-ledger —— 取全部数据
 router.get('/', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+  const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
   res.json(gunLedger);
 }));
 
@@ -370,6 +386,7 @@ router.get('/quick-take/options', [authMiddleware, adminMiddleware, accessSettin
 // 不传则沿用表规则前缀；编号仍由规则决定，保证「前缀可改、编号不可改」。
 const quickTakeSchema = Joi.object({
   customer: Joi.string().trim().min(1).max(500).required(),
+  spec: Joi.string().allow('').max(500),
   remarks: Joi.string().allow('').max(500),
   responsiblePerson: Joi.string().allow('').max(50),
   time: Joi.string().allow('').max(30),
@@ -436,6 +453,7 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
       customer,
       time,
       responsiblePerson,
+      spec: String(value.spec || '').trim(),
       remarks,
       createdAt: now,
       createdBy: meta,
@@ -588,9 +606,9 @@ router.post('/import',
 
     const data = db.readDb();
     if (!data.gunLedger) {
-      data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+      data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
     }
-    if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] };
+    if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] };
 
     const isNewCategory = !Object.prototype.hasOwnProperty.call(data.gunLedger.categories, targetCategory);
     const oldTables = isNewCategory ? [] : (data.gunLedger.categories[targetCategory] || []);
@@ -620,6 +638,7 @@ router.post('/import',
           customer: draft.customer,
           time: draft.time,
           responsiblePerson: draft.responsiblePerson,
+          spec: draft.spec,
           remarks: draft.remarks,
           createdAt: nowIso,
           createdBy: meta,
@@ -677,8 +696,8 @@ router.post('/categories', [authMiddleware, adminMiddleware, accessSettingsMiddl
     return res.status(400).json({ message: '分类名含非法字符' });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
-  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] };
 
   // 分类名唯一（大小写敏感）
   const exists = Object.prototype.hasOwnProperty.call(data.gunLedger.categories, name);
@@ -709,7 +728,7 @@ router.delete('/categories/:category', [authMiddleware, superAdminMiddleware, ac
     return res.status(404).json({ message: '分类未找到' });
   }
   // 默认分类不允许删除
-  if (['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA'].includes(category)) {
+  if (['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA', 'PROJECTION GUN'].includes(category)) {
     return res.status(400).json({ message: '默认分类不允许删除' });
   }
   // 释放该分类下所有表的编辑锁
@@ -738,8 +757,8 @@ router.post('/categories/:category/tables', [authMiddleware, adminMiddleware, ac
     return res.status(400).json({ message: '表名不能为空', details: error.details.map(d => d.message) });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
-  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+  if (!data.gunLedger.categories) data.gunLedger.categories = { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] };
   if (!Array.isArray(data.gunLedger.categories[category])) data.gunLedger.categories[category] = [];
 
   // 同类下表名唯一
@@ -955,6 +974,8 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
       customer: String(r.customer || ''),
       time: String(r.time || ''),
       responsiblePerson: String(r.responsiblePerson || ''),
+      // spec 是后加的列：旧版前端整表覆盖时不带该字段，此时沿用库里已存的规格，避免被清空
+      spec: r.spec === undefined ? String(prev?.spec || '') : String(r.spec || ''),
       remarks: String(r.remarks || ''),
       createdAt: prev?.createdAt || (isNew ? now : (r.createdAt || '')),
       createdBy: cleanUserMeta(prev?.createdBy) || (isNew ? meta : cleanUserMeta(r.createdBy)),
@@ -1054,7 +1075,7 @@ router.put('/default-persons', [authMiddleware, superAdminMiddleware], asyncHand
     return res.status(400).json({ message: '默认担当人员格式不正确', details: error.details.map(d => d.message) });
   }
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: [] };
   const persons = value.map(p => String(p).trim()).filter(Boolean);
   data.gunLedger.defaultResponsiblePersons = persons;
   await db.writeDb(data);
@@ -1068,7 +1089,7 @@ router.put('/default-persons', [authMiddleware, superAdminMiddleware], asyncHand
 // POST /api/gun-ledger/default-persons/reset —— 重置为系统默认担当人员（超管）
 router.post('/default-persons/reset', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   const data = db.readDb();
-  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [] }, defaultResponsiblePersons: [] };
+  if (!data.gunLedger) data.gunLedger = { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: [] };
   data.gunLedger.defaultResponsiblePersons = [...DEFAULT_RESPONSIBLE_PERSONS];
   await db.writeDb(data);
 
@@ -1106,7 +1127,8 @@ router.put('/tables/:tableId/gun-name-rule', [authMiddleware, superAdminMiddlewa
 
 // POST /api/gun-ledger/tables/:tableId/initialize-gun-names —— 焊枪名初始化（台账初始化，超管）
 // 删除该表全部真实行（rows 置空），表恢复为全新状态：前端随后只渲染 10 个预留行，
-// 预留行的焊枪名按生效规则（表级 gunNameRule → 内置默认模式）自动展示为该表的 10 个原始枪名
+// 预留行的焊枪名按生效规则（表级 gunNameRule → 内置默认模式）自动展示为该表的 10 个原始枪名；
+// 同时把取号规则恢复为内置默认号段（无内置默认的表保留原规则）
 router.post('/tables/:tableId/initialize-gun-names', [authMiddleware, superAdminMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   if (!data.gunLedger) return res.status(404).json({ message: '表未找到' });
@@ -1121,12 +1143,16 @@ router.post('/tables/:tableId/initialize-gun-names', [authMiddleware, superAdmin
 
   // 全部原有内容删除：真实行全部丢弃；10 个原始枪名由前端预留行按规则呈现
   found.table.rows = [];
+  const rule = resetRuleToDefault(found.category, found.table);
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: [] });
+  if (io) {
+    io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: [] });
+    if (rule) io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId: req.params.tableId, rule });
+  }
 
-  res.json({ success: true, rows: [] });
+  res.json({ success: true, rows: [], rule });
 }));
 
 // 批量初始化公共逻辑：清空给定表引用的全部真实行（rows 置空），逐表广播 update_rows。
@@ -1148,9 +1174,13 @@ const applyBatchInitialize = async (req, res, data, tableRefs) => {
   }
 
   let clearedRows = 0;
+  const resetRules = [];
   tableRefs.forEach(ref => {
     clearedRows += (ref.table.rows || []).length;
     ref.table.rows = [];
+    // 与单表初始化一致：取号规则一并恢复为内置默认号段（无内置默认的表保留原规则）
+    const rule = resetRuleToDefault(ref.category, ref.table);
+    if (rule) resetRules.push({ tableId: ref.table.id, rule });
   });
   await db.writeDb(data);
 
@@ -1158,12 +1188,16 @@ const applyBatchInitialize = async (req, res, data, tableRefs) => {
   tableRefs.forEach(ref => {
     if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: ref.table.id, rows: [] });
   });
+  resetRules.forEach(({ tableId, rule }) => {
+    if (io) io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId, rule });
+  });
 
   res.json({
     success: true,
     initializedCategories: new Set(tableRefs.map(ref => ref.category)).size,
     initializedTables: tableRefs.length,
-    clearedRows
+    clearedRows,
+    rules: resetRules
   });
   return true;
 };

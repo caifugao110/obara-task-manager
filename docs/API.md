@@ -1908,7 +1908,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 ## 焊枪台账接口
 
-焊枪台账（`/gun-ledger`）采用**分类 → 表 → 行**三级结构。所有接口都受 `accessSettingsMiddleware('gunLedger')` 控制：需先满足 `settings.gunLedger` 权限配置，再满足各接口的角色要求。默认分类为 `X2C`、`X2C-V2`、`X2C-V3`、`GLOBAL`、`PSW`、`IT`、`ROBOT`、`EQ`、`TOYOTA`。
+焊枪台账（`/gun-ledger`）采用**分类 → 表 → 行**三级结构。所有接口都受 `accessSettingsMiddleware('gunLedger')` 控制：需先满足 `settings.gunLedger` 权限配置，再满足各接口的角色要求。默认分类为 `X2C`、`X2C-V2`、`X2C-V3`、`GLOBAL`、`PSW`、`IT`、`ROBOT`、`EQ`、`TOYOTA`、`PROJECTION GUN`（顺序即前端默认排序，`PROJECTION GUN` 排在最后）。
 
 ### 数据结构
 
@@ -1925,7 +1925,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
     "IT": [ ... ],
     "ROBOT": [ ... ],
     "EQ": [ ... ],
-    "TOYOTA": [ ... ]
+    "TOYOTA": [ ... ],
+    "PROJECTION GUN": [ ... ]
   },
   "defaultResponsiblePersons": ["张啸", "张明", "陈青松", "陈大仪", "翟世学", "朱海洋"]
 }
@@ -1950,6 +1951,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `customer` | 客户 |
 | `time` | 时间 |
 | `responsiblePerson` | 担当 |
+| `spec` | 焊枪规格（原「焊枪规格或备注」列拆分，存量数据仍保留在 `remarks`） |
 | `remarks` | 备注 |
 | `createdAt` / `createdBy` | 创建时间 / 创建者 |
 | `updatedAt` / `updatedBy` | 最后修改时间 / 最后修改者 |
@@ -2034,7 +2036,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 每张表对应工作簿中的一个工作表，工作表名为表名（跨分类重名时自动加 `~n` 去重）。
-- 表头列为「序号/焊枪名/客户/时间/担当/备注」，蓝色表头、斑马纹、完整边框。
+- 表头列为「序号/焊枪名/客户/时间/担当/规格/备注」，蓝色表头、斑马纹、完整边框。
 - 分类不存在时返回 `400` 和 `分类不存在：xxx`。
 
 ### 导出全部分类
@@ -2101,7 +2103,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：仅 `superadmin`。
 
-说明：默认分类 `X2C`、`X2C-V2`、`X2C-V3`、`GLOBAL`、`PSW`、`IT`、`ROBOT`、`EQ`、`TOYOTA` 不允许删除。删除会连同其下所有表一并删除，并释放所有表的编辑锁。
+说明：默认分类 `X2C`、`X2C-V2`、`X2C-V3`、`GLOBAL`、`PSW`、`IT`、`ROBOT`、`EQ`、`TOYOTA`、`PROJECTION GUN` 不允许删除。删除会连同其下所有表一并删除，并释放所有表的编辑锁。
 
 ### 分类排序
 
@@ -2266,7 +2268,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `customer` | 是 | 客户名或仕样号（前端会先用 `/api/spec/spec-info` 把纯仕样号解析为客户名） |
 | `count` | 否 | 本次连续取号数量，`1`–`10`，缺省 `1`；从最新未取行号起连续占用 `count` 个序号 |
 | `prefix` | 否 | 本次取号的枪名前缀，缺省用表规则前缀；整批都沿用同一前缀，编号仍按规则递增。不含空白、最长 40 字符。例：传 `SRTC-5C` + `count=3` → `SRTC-5C15023`、`SRTC-5C15024`、`SRTC-5C15025` |
-| `remarks` | 否 | 焊枪规格或备注（主页面弹窗已不再采集，保留字段供其它调用方使用） |
+| `spec` | 否 | 焊枪规格（台账「规格」列，原「焊枪规格或备注」列拆分后新增；主页面弹窗已不再采集，保留字段供其它调用方使用） |
+| `remarks` | 否 | 备注（台账「备注」列；主页面弹窗已不再采集，保留字段供其它调用方使用） |
 | `responsiblePerson` | 否 | 担当，缺省用当前登录人姓名（主页面弹窗不再采集） |
 | `time` | 否 | 台账「时间」列，缺省用服务器当天 `YYYY.MM.DD`（主页面弹窗不再采集） |
 
@@ -2347,15 +2350,18 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 删除该表**全部真实行**（`rows` 置空），表恢复为全新状态。
+- 同时把该表的取号规则（`gunNameRule`）**恢复为内置默认号段**（前缀 + 起始编号 + 补零位数），覆盖超管此前的手工配置；有内置默认规则的表才会重置，用户自建表（无内置默认）保留原规则不动。
 - 初始化后前端只渲染 10 个预留行，预留行的焊枪名按生效规则（表级 `gunNameRule` → 内置默认模式）自动展示，即该表的 **10 个原始焊枪名**；未启用自动取号时预留行枪名为空。
 - 该表正被他人编辑时返回 `409`。
-- 初始化后通过 Socket.IO 广播 `gun_ledger_updated`（`action: 'update_rows'`，`rows: []`）。
+- 初始化后通过 Socket.IO 广播 `gun_ledger_updated`：先广播 `action: 'update_rows'`（`rows: []`）；若规则被重置，再广播一次 `action: 'gun_name_rule'`（附 `tableId` 与 `rule`）。
 
 响应：
 
 ```json
-{ "success": true, "rows": [] }
+{ "success": true, "rows": [], "rule": { "enabled": true, "prefix": "SRTC-2C", "start": 15000, "pad": 5 } }
 ```
+
+`rule` 为重置后的生效规则；无内置默认规则的自建表返回 `null`（此时不额外广播 `gun_name_rule`）。
 
 ### 一键初始化某分类下全部表格
 
@@ -2363,7 +2369,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：仅 `superadmin`。请求体：无（发送 `{}`）。
 
-说明：将该分类下所有表的 `rows` 置空，并逐表广播 `update_rows`（`rows: []`）。任意一张表正被他人编辑时整体返回 `409`（`locked` 数组列出被占用的表与持有人），不做部分初始化。
+说明：将该分类下所有表的 `rows` 置空，并逐表广播 `update_rows`（`rows: []`）；每张有内置默认规则的表同时把取号规则恢复为内置默认号段，并逐表广播 `gun_name_rule`。任意一张表正被他人编辑时整体返回 `409`（`locked` 数组列出被占用的表与持有人），不做部分初始化。
 
 ### 一键初始化全部表格
 
@@ -2371,13 +2377,23 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：仅 `superadmin`。请求体：无（发送 `{}`）。
 
-说明：跨全部分类批量清空所有表的真实行，语义与按分类初始化一致；任一张表被他人编辑即整体拒绝（`409`）。
+说明：跨全部分类批量清空所有表的真实行，语义与按分类初始化一致（含取号规则恢复内置默认号段）；任一张表被他人编辑即整体拒绝（`409`）。
 
 响应（成功）：
 
 ```json
-{ "success": true, "initializedCategories": 3, "initializedTables": 11, "clearedRows": 0 }
+{
+  "success": true,
+  "initializedCategories": 3,
+  "initializedTables": 11,
+  "clearedRows": 0,
+  "rules": [
+    { "tableId": "gun-tbl-xxx", "rule": { "enabled": true, "prefix": "SRTC-2C", "start": 15000, "pad": 5 } }
+  ]
+}
 ```
+
+`rules` 只包含本次规则实际被重置的表；自建表不在其中。
 
 ### 获取默认担当人员
 

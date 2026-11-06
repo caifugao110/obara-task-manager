@@ -349,7 +349,7 @@ const buildDefaultGunLedger = () => {
   const tables = (names, offset) => names.map((n, i) => ({ id: makeId(offset + i), name: n, rows: [] }));
   return {
     categories: {
-      'X2C': tables(['SRTC', 'SRTX', 'SRTV', 'SRTC-ALA-DC', 'SRTX-ALA-DC', 'SRTD', 'SRTS'], 0),
+      'X2C': tables(['SRTC', 'SRTX', 'SRTV', 'SRTC-ALA-DC', 'SRTX-ALA-DC', 'SRTD', 'SRTS', 'BYD-C', 'BYD-X'], 0),
       'X2C-V2': tables(['C', 'X'], 100),
       'X2C-V3': tables(['C', 'X'], 200),
       'GLOBAL': tables(['RBC'], 250),
@@ -361,13 +361,14 @@ const buildDefaultGunLedger = () => {
         ['C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
          'X01', 'X02', 'X03', 'X04', 'X05', 'X06', 'X07', 'X08', 'X09', 'X10', 'X11', 'X12'],
         300
-      )
+      ),
+      'PROJECTION GUN': tables(['STEEL'], 800)
     },
     defaultResponsiblePersons: ['张啸', '张明', '陈青松', '陈大仪', '翟世学', '朱海洋']
   };
 };
 
-const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA'];
+const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA', 'PROJECTION GUN'];
 
 // 各默认分类的内置默认表名顺序（供「恢复默认排序」使用；分类间顺序与 DEFAULT_CATEGORIES 一致）
 const DEFAULT_GUN_TABLES = (() => {
@@ -411,6 +412,7 @@ const normalizeTableList = (list) => {
       customer: String(r.customer || ''),
       time: String(r.time || ''),
       responsiblePerson: String(r.responsiblePerson || ''),
+      spec: String(r.spec || ''),
       remarks: String(r.remarks || ''),
       createdAt: r.createdAt || '',
       createdBy: sanitizeUserMeta(r.createdBy),

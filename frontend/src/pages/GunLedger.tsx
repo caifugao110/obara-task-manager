@@ -74,6 +74,8 @@ interface GunRow {
   customer: string;
   time: string;
   responsiblePerson: string;
+  /** 焊枪规格（原「焊枪规格或备注」列拆分后的规格列） */
+  spec: string;
   remarks: string;
   createdAt?: string;
   createdBy?: UserMeta | null;
@@ -138,7 +140,7 @@ interface TableLockSession {
 }
 
 // 默认分类（用于排序与删除保护）
-const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA'];
+const DEFAULT_CATEGORIES = ['X2C', 'X2C-V2', 'X2C-V3', 'GLOBAL', 'PSW', 'IT', 'ROBOT', 'EQ', 'TOYOTA', 'PROJECTION GUN'];
 
 const defaultAccessSettings = { enabled: true, allowAdmins: true, allowViewers: false };
 const PLACEHOLDER_COUNT = 10;
@@ -150,36 +152,38 @@ const GUN_NAME_PATTERNS: Record<string, Record<string, { prefix: string; start: 
   'X2C': {
     'SRTC':         { prefix: 'SRTC-2C',    start: 15000, pad: 5 },
     'SRTX':         { prefix: 'SRTX-2C',    start: 25000, pad: 5 },
-    'SRTV':         { prefix: 'SRTV-C',     start: 200,   pad: 4 },
-    'SRTC-ALA-DC':  { prefix: 'SRTC-ALDC',  start: 400,   pad: 4 },
-    'SRTX-ALA-DC':  { prefix: 'SRTX-ALDC',  start: 400,   pad: 4 },
+    'SRTV':         { prefix: 'SRTV-C',     start: 150,   pad: 4 },
+    'SRTC-ALA-DC':  { prefix: 'SRTC-ALDC',  start: 350,   pad: 4 },
+    'SRTX-ALA-DC':  { prefix: 'SRTX-ALDC',  start: 300,   pad: 4 },
     'SRTD':         { prefix: 'SRTD-C',     start: 200,   pad: 4 },
-    'SRTS':         { prefix: 'SRTS-C',     start: 100,   pad: 4 },
+    'SRTS':         { prefix: 'SRTS-C',     start: 50,    pad: 4 },
+    'BYD-C':        { prefix: 'BRZC-C',     start: 210,   pad: 4 },
+    'BYD-X':        { prefix: 'BRXC-X',     start: 540,   pad: 4 },
   },
   'X2C-V2': {
     'C': { prefix: 'SDZC-C', start: 3000, pad: 4 },
-    'X': { prefix: 'SDZX-C', start: 5000, pad: 4 },
+    'X': { prefix: 'SDZX-C', start: 4520, pad: 4 },
   },
   'X2C-V3': {
-    'C': { prefix: 'SDZC-3C', start: 30500, pad: 5 },
+    'C': { prefix: 'SDZC-3C', start: 30450, pad: 5 },
     'X': { prefix: 'SDZX-3C', start: 30500, pad: 5 },
   },
   'GLOBAL': {
-    'RBC': { prefix: 'RBC', start: 14000, pad: 5 },
+    'RBC': { prefix: 'RBC', start: 14050, pad: 5 },
   },
   'TOYOTA': {
     'C01': { prefix: 'C01-C', start: 500,  pad: 4 },
-    'C02': { prefix: 'C02-C', start: 120,  pad: 4 },
-    'C03': { prefix: 'C03-C', start: 130,  pad: 4 },
+    'C02': { prefix: 'C02-C', start: 1200, pad: 4 },
+    'C03': { prefix: 'C03-C', start: 1300, pad: 4 },
     'C04': { prefix: 'C04-C', start: 620,  pad: 4 },
     'C05': { prefix: 'C05-C', start: 180,  pad: 4 },
     'C06': { prefix: 'C06-C', start: 50,   pad: 4 },
     'C07': { prefix: 'C07-C', start: 30,   pad: 4 },
     'C08': { prefix: 'C08-C', start: 10,   pad: 4 },
     'C09': { prefix: 'C09-C', start: 10,   pad: 4 },
-    'C10': { prefix: 'C10-C', start: 1,    pad: 4 },
+    'C10': { prefix: 'C10-C', start: 5,    pad: 4 },
     'X01': { prefix: 'X01-C', start: 30,   pad: 4 },
-    'X02': { prefix: 'X02-C', start: 40,   pad: 4 },
+    'X02': { prefix: 'X02-C', start: 240,  pad: 4 },
     'X03': { prefix: 'X03-C', start: 1420, pad: 4 },
     'X04': { prefix: 'X04-C', start: 700,  pad: 4 },
     'X05': { prefix: 'X05-C', start: 380,  pad: 4 },
@@ -188,22 +192,22 @@ const GUN_NAME_PATTERNS: Record<string, Record<string, { prefix: string; start: 
     'X08': { prefix: 'X08-C', start: 210,  pad: 4 },
     'X09': { prefix: 'X09-C', start: 120,  pad: 4 },
     'X10': { prefix: 'X10-C', start: 50,   pad: 4 },
-    'X11': { prefix: 'X11-C', start: 1,    pad: 4 },
-    'X12': { prefix: 'X12-C', start: 10,   pad: 4 },
+    'X11': { prefix: 'X11-C', start: 5,    pad: 4 },
+    'X12': { prefix: 'X12-C', start: 5,    pad: 4 },
   },
   'PSW': {
-    'UC':  { prefix: 'UC-C',  start: 12700, pad: 5 },
-    'UX':  { prefix: 'UX-C',  start: 11500, pad: 5 },
-    'UCR': { prefix: 'UCR-C', start: 1050,  pad: 4 },
-    'UXR': { prefix: 'UXR-C', start: 950,   pad: 4 },
-    'NOC': { prefix: 'NOC-C', start: 2130,  pad: 4 },
-    'NOX': { prefix: 'NOX-C', start: 2320,  pad: 4 },
+    'UC':  { prefix: 'UC-C',  start: 12720, pad: 5 },
+    'UX':  { prefix: 'UX-C',  start: 11550, pad: 5 },
+    'UCR': { prefix: 'UCR-C', start: 1100,  pad: 4 },
+    'UXR': { prefix: 'UXR-C', start: 990,   pad: 4 },
+    'NOC': { prefix: 'NOC-C', start: 2170,  pad: 4 },
+    'NOX': { prefix: 'NOX-C', start: 2355,  pad: 4 },
   },
   'IT': {
-    'PTC':     { prefix: 'PTC-C',   start: 3750,  pad: 4 },
-    'PTX':     { prefix: 'PTX-C',   start: 4960,  pad: 4 },
-    'PTC-ALC': { prefix: 'PTC-ALC', start: 30,    pad: 4 },
-    'PTX-ALC': { prefix: 'PTX-ALC', start: 30,    pad: 4 },
+    'PTC':     { prefix: 'PTC-C',   start: 3801,  pad: 4 },
+    'PTX':     { prefix: 'PTX-C',   start: 5001,  pad: 4 },
+    'PTC-ALC': { prefix: 'PTC-ALC', start: 31,    pad: 4 },
+    'PTX-ALC': { prefix: 'PTX-ALC', start: 31,    pad: 4 },
   },
   'ROBOT': {
     'RTC': { prefix: 'RTC-C', start: 2350, pad: 4 },
@@ -214,12 +218,15 @@ const GUN_NAME_PATTERNS: Record<string, Record<string, { prefix: string; start: 
   'EQ': {
     'PE1':  { prefix: 'PE1-C',  start: 1550, pad: 4 },
     'PE2':  { prefix: 'PE2-C',  start: 250,  pad: 4 },
-    'R':    { prefix: 'R-C',    start: 260,  pad: 4 },
-    'RR':   { prefix: 'RR-C',   start: 5,    pad: 4 },
+    'R':    { prefix: 'R-C',    start: 270,  pad: 4 },
+    'RR':   { prefix: 'RR-C',   start: 10,   pad: 4 },
     'SEN':  { prefix: 'SEN-C',  start: 150,  pad: 4 },
-    'SEU':  { prefix: 'SEU-C',  start: 6,    pad: 4 },
-    'SET':  { prefix: 'SET-C',  start: 11,   pad: 4 },
-    'STUD': { prefix: 'STUD-C', start: 65,   pad: 4 },
+    'SEU':  { prefix: 'SEU-C',  start: 10,   pad: 4 },
+    'SET':  { prefix: 'SET-C',  start: 15,   pad: 4 },
+    'STUD': { prefix: 'STUD-C', start: 70,   pad: 4 },
+  },
+  'PROJECTION GUN': {
+    'STEEL': { prefix: 'SRTC-AS', start: 30, pad: 4 },
   },
 };
 
@@ -313,13 +320,14 @@ const todayStr = () => {
 const COLUMNS: { key: keyof GunRow | 'serialNumber' | 'clear'; label: string; width: string }[] = [
   { key: 'serialNumber', label: '序号', width: 'w-16 min-w-[4rem]' },
   { key: 'gunName', label: '焊枪名', width: 'w-28 min-w-[7rem]' },
-  { key: 'customer', label: '客户', width: 'w-96 min-w-[24rem]' },
-  { key: 'time', label: '时间', width: 'w-24 min-w-[6rem]' },
+  { key: 'customer', label: '客户', width: 'w-[17rem] min-w-[17rem]' },
+  { key: 'time', label: '时间', width: 'w-16 min-w-[5rem]' },
   { key: 'responsiblePerson', label: '担当', width: 'w-24 min-w-[6rem]' },
-  { key: 'remarks', label: '焊枪规格或备注', width: 'w-64 min-w-[16rem]' },
-  { key: 'clear', label: '操作', width: 'w-24 min-w-[6rem]' },
+  { key: 'spec', label: '规格', width: 'w-36 min-w-[9rem]' },
+  { key: 'remarks', label: '备注', width: 'w-[18rem] min-w-[18rem]' },
+  { key: 'clear', label: '操作', width: 'w-20 min-w-[5rem]' },
 ];
-const EDITABLE_COLS = ['gunName', 'customer', 'time', 'responsiblePerson', 'remarks'] as const;
+const EDITABLE_COLS = ['gunName', 'customer', 'time', 'responsiblePerson', 'spec', 'remarks'] as const;
 
 const GunLedger: React.FC = () => {
   const { user, token, logout } = useAuth();
@@ -674,6 +682,7 @@ const GunLedger: React.FC = () => {
         customer: '',
         time: '',
         responsiblePerson: '',
+        spec: '',
         remarks: '',
       };
     }) as GunRow[];
@@ -1243,6 +1252,7 @@ const GunLedger: React.FC = () => {
           customer: '',
           time: '',
           responsiblePerson: '',
+          spec: '',
           remarks: '',
           createdAt: new Date().toISOString(),
           createdBy: user ? { id: user.id, username: user.username, name: user.name } : null,
@@ -1295,12 +1305,12 @@ const GunLedger: React.FC = () => {
     scheduleStop();
   }, [isAdmin, scheduleStop]);
 
-  // 清除行内容：保留焊枪名与序号，清空客户/时间/担当/备注（占位行无内容可清，按钮不渲染）
+  // 清除行内容：保留焊枪名与序号，清空客户/时间/担当/规格/备注（占位行无内容可清，按钮不渲染）
   const handleClearRow = useCallback((row: GunRow) => {
     if (!activeTable || !isAdmin || !online || activeTableReadOnly) return;
     if (String(row.id).startsWith('__placeholder__')) return;
     patchTableRows(activeTable.id, rows => rows.map(r => r.id === row.id
-      ? { ...r, customer: '', time: '', responsiblePerson: '', remarks: '', updatedAt: new Date().toISOString(), updatedBy: user ? { id: user.id, username: user.username, name: user.name } : null }
+      ? { ...r, customer: '', time: '', responsiblePerson: '', spec: '', remarks: '', updatedAt: new Date().toISOString(), updatedBy: user ? { id: user.id, username: user.username, name: user.name } : null }
       : r));
     dirtyRowIdsRef.current.add(row.id);
     setSaving(true);
@@ -1362,6 +1372,7 @@ const GunLedger: React.FC = () => {
             customer: srcCustomer,
             time: nowTime,
             responsiblePerson: currentPerson,
+            spec: '',
             remarks: '',
             createdAt: nowIso,
             createdBy: userMeta,
@@ -1636,13 +1647,16 @@ const GunLedger: React.FC = () => {
   }, [ruleDrafts, ledger, authHeader, patchTable, addToast, warnIfOffline]);
 
   // 焊枪名初始化：删除该表全部真实行，表恢复为全新状态——页面只显示 10 个预留行，
-  // 预留行按生效规则（表级规则 → 内置默认模式）展示该表的 10 个原始焊枪名
+  // 预留行按生效规则（表级规则 → 内置默认模式）展示该表的 10 个原始焊枪名；
+  // 同时后端会把取号规则恢复为内置默认号段并随响应返回，这里同步更新弹窗中的规则草稿
   const initGunNames = useCallback(async (tableId: string) => {
     if (warnIfOffline()) return;
     setClearingTableId(tableId);
     try {
       // 请求体必须发送 {} 而非 null：后端 body-parser 严格模式会将 "null" 视为非法 JSON 拒绝（400）
-      await axiosInstance.post(`/gun-ledger/tables/${tableId}/initialize-gun-names`);
+      const res = await axiosInstance.post(`/gun-ledger/tables/${tableId}/initialize-gun-names`);
+      const rule = res.data?.rule as GunNameRule | undefined;
+      if (rule) setRuleDrafts(prev => (prev[tableId] ? { ...prev, [tableId]: rule } : prev));
       addToast('已初始化：该表已恢复为 10 个原始焊枪名', 'success');
       setConfirmClearId(null);
       // update_rows 广播会刷新所有客户端的行数据
@@ -1671,6 +1685,15 @@ const GunLedger: React.FC = () => {
       const info = res.data || {};
       const tableCount = Number(info.initializedTables) || 0;
       const rowCount = Number(info.clearedRows) || 0;
+      // 批量初始化同样会把各表取号规则恢复为内置默认号段：同步更新弹窗中的规则草稿
+      const resetRules = Array.isArray(info.rules) ? info.rules as { tableId: string; rule: GunNameRule }[] : [];
+      if (resetRules.length) {
+        setRuleDrafts(prev => {
+          const next = { ...prev };
+          resetRules.forEach(({ tableId, rule }) => { if (next[tableId]) next[tableId] = rule; });
+          return next;
+        });
+      }
       addToast(
         target.scope === 'all'
           ? `已一键初始化全部表格（${tableCount} 张表，清除 ${rowCount} 行内容）`
@@ -2480,7 +2503,7 @@ const GunLedger: React.FC = () => {
               <button
                 onClick={() => setConfirmClearId(t.id)}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-red-600 hover:text-white bg-red-50 hover:bg-red-500 border border-red-200 hover:border-red-500 rounded transition"
-                title="删除全部内容，重置为序号 1-10 的 10 个原始焊枪名"
+                title="删除全部内容、取号规则恢复为内置默认起始号段，重置为序号 1-10 的 10 个原始焊枪名"
               >
                 <Eraser size={13} />焊枪名初始化
               </button>
@@ -3046,7 +3069,7 @@ const GunLedger: React.FC = () => {
                                       onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full px-2 pr-7 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                      className={`w-full pl-1 pr-5 py-1.5 text-[12px] bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
                                     />
                                     {/* 一键获取当前时间：格式与焊枪名自动补时间一致（YYYY.MM.DD）；权限/离线/行锁禁用态与输入框一致 */}
                                     <button
@@ -3056,9 +3079,9 @@ const GunLedger: React.FC = () => {
                                       title="一键填入当前日期"
                                       onMouseDown={e => e.preventDefault()}
                                       onClick={() => handleCellChange(row, 'time', todayStr())}
-                                      className={`absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded transition ${disabled ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-100'}`}
+                                      className={`absolute right-0.5 top-1/2 -translate-y-1/2 p-0.5 rounded transition ${disabled ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-100'}`}
                                     >
-                                      <Clock size={13} />
+                                      <Clock size={12} />
                                     </button>
                                   </>
                                 ) : (
@@ -3099,8 +3122,8 @@ const GunLedger: React.FC = () => {
                             );
                           })}
                           {/* 操作列：[复制数量][向下复制][清除] —— 数字为向下复制的行数，填 3 则本行下方 3 行；时间填当前日期、担当填当前操作者；焊枪名继承当前行前缀/后缀，仅编号按目标行规则变化；复制完成后数字自动归 1 */}
-                          <td className="border border-gray-300 px-1 py-1">
-                            <div className="flex items-center justify-center gap-1">
+                          <td className="border border-gray-300 px-0.5 py-1">
+                            <div className="flex items-center justify-center gap-0.5">
                               <input
                                 ref={el => { countInputRefs.current[row.id] = el; }}
                                 type="number"
@@ -3125,13 +3148,13 @@ const GunLedger: React.FC = () => {
                                   if (!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()) return;
                                   handleCopyDown(row);
                                 }}
-                                className="w-10 px-1 py-0.5 text-center text-xs border border-gray-300 rounded outline-none focus:border-emerald-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                                className="w-8 px-0.5 py-0.5 text-center text-xs border border-gray-300 rounded outline-none focus:border-emerald-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                               />
                               <button
                                 onClick={() => handleCopyDown(row)}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim()}
                                 title="向下复制：数字为复制行数，填 3 则把本行客户名复制到下方 3 行空行（时间填当前日期、担当填当前操作者，下方行焊枪名继承本行前缀/后缀、仅编号不同）；在左侧数字框中按回车也可执行；复制后数字自动归 1"
-                                className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
+                                className={`p-0.5 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) || !row.customer.trim() ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-50'}`}
                               >
                                 <Plus size={14} />
                               </button>
@@ -3139,7 +3162,7 @@ const GunLedger: React.FC = () => {
                                 onClick={() => handleClearRow(row)}
                                 disabled={!isAdmin || !online || activeTableReadOnly || Boolean(blocking)}
                                 title="清除该行除焊枪名外的所有内容"
-                                className={`p-1 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
+                                className={`p-0.5 rounded ${!isAdmin || !online || activeTableReadOnly || Boolean(blocking) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
                               >
                                 <Eraser size={14} />
                               </button>
@@ -3774,7 +3797,7 @@ const GunLedger: React.FC = () => {
       {/* 台账初始化弹窗：先选分类，再进入该分类逐表设置；分类选择界面支持一键初始化全部表格 */}
       {showInitPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!batchInitializing) setShowInitPanel(false); }} />
+          <div className="absolute inset-0 bg-black/40" onClick={() => { if (!batchInitializing) setShowInitPanel(false); }} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[840px] max-w-[94vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2 font-bold text-lg min-w-0">
@@ -3800,7 +3823,7 @@ const GunLedger: React.FC = () => {
               /* ===== 分类选择界面 ===== */
               <div className="p-5 overflow-auto">
                 <p className="text-xs text-gray-400 leading-relaxed mb-4">
-                  按分类进入后逐表配置焊枪名自动生成规则（前缀 + 起始编号 + 编号位数）并初始化；也可直接一键初始化全部表格。「初始化」会删除范围内所有表的已取号行及客户、时间、担当、备注数据，各表恢复为全新状态，仅显示按规则生成的 10 个原始焊枪名预留行，操作不可恢复。
+                  按分类进入后逐表配置焊枪名自动生成规则（前缀 + 起始编号 + 编号位数）并初始化；也可直接一键初始化全部表格。「初始化」会删除范围内所有表的已取号行及客户、时间、担当、规格、备注数据，各表恢复为全新状态，仅显示按规则生成的 10 个原始焊枪名预留行，操作不可恢复。
                 </p>
 
                 {/* 一键初始化全部表格 */}
@@ -3876,7 +3899,7 @@ const GunLedger: React.FC = () => {
                   </button>
                 </div>
                 <p className="text-xs text-gray-400 leading-relaxed mb-4">
-                  配置预留行的焊枪名自动生成规则（前缀 + 起始编号 + 编号位数），初始化前请先「保存设置」使最新规则生效；表中焊枪名的编号由规则自动决定、不可修改，前缀与编号之后的后缀（如 L、-EL、L-WL）可自由编辑；「焊枪名初始化」删除该表所有原有内容，表恢复为仅显示 10 个原始焊枪名预留行的全新状态。
+                  配置预留行的焊枪名自动生成规则（前缀 + 起始编号 + 编号位数），初始化前请先「保存设置」使最新规则生效；表中焊枪名的编号由规则自动决定、不可修改，前缀与编号之后的后缀（如 L、-EL、L-WL）可自由编辑；「焊枪名初始化」删除该表所有原有内容，并把取号规则恢复为内置默认起始号段，表恢复为仅显示 10 个原始焊枪名预留行的全新状态。
                 </p>
                 {initDetailTables.length === 0 && <div className="text-xs text-gray-400 py-4 text-center">该分类下暂无表格</div>}
                 <div className="space-y-2">
@@ -4212,7 +4235,7 @@ const GunLedger: React.FC = () => {
                     <div>
                       即将清空 <span className="font-bold text-gray-900">{initCategoryNames.length}</span> 个分类下共
                       <span className="font-bold text-red-600"> {initTotalTables} </span>张表的全部已取号内容（合计
-                      <span className="font-bold text-red-600"> {initTotalRows} </span>行客户、时间、担当、备注数据）。
+                      <span className="font-bold text-red-600"> {initTotalRows} </span>行客户、时间、担当、规格、备注数据）。
                     </div>
                   ) : (
                     <div>
