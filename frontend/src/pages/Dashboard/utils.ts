@@ -31,13 +31,11 @@ export const syncGunsWithTaskColor = (guns: GunItem[] | undefined, color: string
 
 // Extract spec number (仕样号) from task name
 // Patterns: S57157, M55478, S-53969, or standalone digits like 56363
+// 从左到右取第一个命中：避免「58645>湖北卡玛_四川江淮-G2621」这类任务名中
+// 尾部的项目代码（G2621）抢在开头真正的仕样号前面被提取
 export const extractSpecNumber = (taskName: string): string | null => {
-  // Priority 1: letter prefix + optional hyphen + 4-6 digits (e.g., S57157, M55478, S-53969)
-  const letterMatch = taskName.match(/\b[A-Za-z]-?(\d{4,6})\b/);
-  if (letterMatch) return letterMatch[1];
-  // Priority 2: standalone 4-6 digits (e.g., 56363)
-  const digitsMatch = taskName.match(/\b(\d{4,6})\b/);
-  return digitsMatch ? digitsMatch[1] : null;
+  const match = taskName.match(/\b(?:[A-Za-z]-?)?(\d{4,6})\b/);
+  return match ? match[1] : null;
 };
 
 export const splitDesignTaskName = (taskName: string) => {

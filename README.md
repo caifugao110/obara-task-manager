@@ -872,7 +872,7 @@ obara-task-manager/
 │   │   ├── smoke-relational.js   # 关系表存储（taskStore/独立日志表）冒烟测试
 │   │   ├── color-sync-relational.js # 主任务改色子枪名联动测试
 │   │   ├── gun-search-relational.js # 枪名搜索（含归属）与确认图修改快速添加测试
-│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / auditScope / uploadSecurity / workday / scheduleSync / specInfoLookup
+│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / auditScope / uploadSecurity / workday / scheduleSync / specInfoLookup / pdfTextPool / uncShare
 │   ├── utils/
 │   │   ├── auditLogDisplay.js
 │   │   ├── dbMaintenance.js
@@ -883,6 +883,7 @@ obara-task-manager/
 │   │   ├── gunTableLocks.js
 │   │   ├── ipBlacklist.js        # IP 黑名单规则解析/匹配/拦截中间件
 │   │   ├── leaderRules.js        # 组长规则默认值与匹配（营业担当 → 组长，未命中返回空串不兜底）
+│   │   ├── offlineBackupToken.js # 断网备份接口的一次性令牌（启动写入 logs/offline-backup.token，校验后轮换，供 stop.bat 调用）
 │   │   ├── pdfText.js            # PDF 文本提取（带 Node 垫片），供 specInfoLookup 复用
 │   │   ├── pdfTextPool.js        # PDF 解析线程池（worker_threads），把 CPU 密集的 getText 移出主线程
 │   │   ├── pdfTextWorker.js      # 线程池的 worker 入口：文件路径 → 全文文本
@@ -980,6 +981,7 @@ obara-task-manager/
 │           ├── axios.ts
 │           ├── debounce.ts
 │           ├── documentTitle.ts   # 浏览器标签页标题映射（主页面系统全称，其余 OTM-<页面功能>）
+│           ├── groupFilter.ts     # 「分组」下拉公共定义（本组优先、未分组回落「全部人员」），分配类弹窗与台账/工时页共用
 │           ├── gunHoursRules.ts   # 默认工时解析（表级专用 → 机型 C/X → 兜底）与内置规则镜像
 │           ├── loginLogs.ts
 │           ├── offlineSheetsCache.ts  # 主页面工时表离线缓存 key 收口（清理任务数据时同步作废，避免离线渲染已删数据）
