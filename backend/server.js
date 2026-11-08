@@ -33,7 +33,15 @@ const writeCrashLog = (kind, error) => {
   } catch (writeError) {
     // 落盘失败不能再抛，否则就是异常套异常
   }
-  console.error(`[crash] ${kind}:`, stack);
+  // 这里必须自己也兜住：stdout/stderr 是管道时，读端一消失 console.error 就抛
+  // EPIPE。它发生在 uncaughtException 处理器内部，Node 不会再次派发事件而是
+  // 直接静默退出（无日志、无堆栈），崩溃就变成了「查不到原因的退出」。
+  // logs/backend-crash.log 里那份 248MB 的 EPIPE 自激记录就是这么来的。
+  try {
+    console.error(`[crash] ${kind}:`, stack);
+  } catch (writeError) {
+    // 输出通道已断，放弃打印；上面的 appendFileSync 已经落盘
+  }
 };
 
 const handleCrash = (kind) => (error) => {
@@ -45,6 +53,61 @@ const handleCrash = (kind) => (error) => {
 
 process.on('uncaughtException', handleCrash('uncaughtException'));
 process.on('unhandledRejection', handleCrash('unhandledRejection'));
+
+// ---------------------------------------------------------------------------
+// 退出取证
+//
+// 现象：2026-11-08 19:31 与 20:17 两次后端消失，nodemon 只打一句 "app crashed"，
+// 而 uncaughtException 兜底没有新记录、Windows 事件日志里也没有 Application
+// Error / WER 报告。这两点合起来说明退出既不经过 JS 异常，也不是原生崩溃
+// （原生崩溃（访问冲突等）一定会留 Application Error 事件与 dump）。
+// 剩下两种可能，只能靠 exit 事件区分：
+//   有这条记录 → 进程自己退的，code 就是真实退出码；
+//   没有记录   → 被外部 TerminateProcess 强杀，exit 事件根本不会触发。
+// 记录里带上内存与活跃句柄数，顺便能排除「句柄泄漏拖死事件循环」这类猜测。
+// ---------------------------------------------------------------------------
+const EXIT_LOG_PATH = path.join(__dirname, '..', 'logs', 'backend-exit.log');
+
+const writeExitLog = (code, reason) => {
+  const mem = process.memoryUsage();
+  const countOf = (fn) => {
+    try {
+      return typeof fn === 'function' ? fn().length : -1;
+    } catch (error) {
+      return -1;
+    }
+  };
+  const line = [
+    `[${new Date().toISOString()}]`,
+    `exit code=${code}`,
+    `reason=${reason}`,
+    `pid=${process.pid}`,
+    `uptime=${Math.round(process.uptime())}s`,
+    `rss=${Math.round(mem.rss / 1048576)}MB`,
+    `heapUsed=${Math.round(mem.heapUsed / 1048576)}MB`,
+    `handles=${countOf(process._getActiveHandles)}`,
+    `requests=${countOf(process._getActiveRequests)}`
+  ].join(' ');
+  try {
+    fs.mkdirSync(path.dirname(EXIT_LOG_PATH), { recursive: true });
+    fs.appendFileSync(EXIT_LOG_PATH, line + '\n', 'utf8');
+  } catch (writeError) {
+    // 退出路径上不允许再抛
+  }
+  try {
+    console.error(line);
+  } catch (writeError) {
+    // 同上，输出通道可能已断
+  }
+};
+
+// exit 在 process.exit()、事件循环耗尽、未捕获信号处理后都会触发；
+// 被 TerminateProcess 强杀或原生崩溃时不会触发，因此「没有记录」本身就是结论。
+process.on('exit', (code) => writeExitLog(code, 'exit-event'));
+
+// 事件循环自然清空（没有任何待处理任务）时会先触发 beforeExit 再走 exit。
+// 正常服务有监听句柄，不该走到这里；一旦出现，说明有人 close 了 server。
+process.on('beforeExit', (code) => writeExitLog(code, 'beforeExit-loop-drained'));
 
 const app = express();
 

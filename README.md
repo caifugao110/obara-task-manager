@@ -12,7 +12,8 @@ Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管�
 | 本文档 | 维护者、想了解全貌的人 | 功能概览、快速启动、页面说明、权限模型、数据结构和常用命令 |
 | [开发者指南](docs/DEVELOPMENT.md) | 开发者 | 开发环境、代码归属、五类改动的 checklist、编码约定、测试与发版 |
 | [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
-| [Windows 部署指南](DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
+| [Windows 部署指南](docs/DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
+| [运维工具说明](docs/TOOLS.md) | 运维、排障人员 | 后端断开分析工具 `tools/backend-report.bat` 的用法与报告判读 |
 | [WeKnora 知识库部署指南](weknora/README.md) | 部署和维护人员 | 设计规范知识库（WeKnora）的 Docker 部署、初始化与故障处理 |
 
 > 文档分工：**USER-GUIDE 讲「怎么用」，README 讲「有什么、为什么这么设计」，DEVELOPMENT 讲「怎么改」，API 讲「接口长什么样」，DEPLOYMENT 讲「怎么部署和救火」**。改动代码时按 [开发者指南的文档同步表](docs/DEVELOPMENT.md#注释与文档同步) 更新对应文档。
@@ -75,7 +76,7 @@ start.bat
 - 后端：http://localhost:5000
 
 > `start.bat` 强制要求 Node.js 22+（better-sqlite3 13、joi 18、pdf-parse 2.4 在更低版本上无法运行），版本过低时会直接报错退出。
-> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。未设置 `DEFAULT_ADMIN_PASSWORD` 时，首次启动会自动生成随机密码并**仅在后端控制台输出一次**（`start.bat` 隐藏窗口运行时输出在 `logs/backend.log`，丢失后可按 [DEPLOYMENT.md](DEPLOYMENT.md) 的「忘记超级管理员密码」FAQ 处理），请立即记录并登录修改（该账号同时被标记为需强制修改密码）。
+> 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。未设置 `DEFAULT_ADMIN_PASSWORD` 时，首次启动会自动生成随机密码并**仅在后端控制台输出一次**（`start.bat` 隐藏窗口运行时输出在 `logs/backend.log`，丢失后可按 [DEPLOYMENT.md](docs/DEPLOYMENT.md) 的「忘记超级管理员密码」FAQ 处理），请立即记录并登录修改（该账号同时被标记为需强制修改密码）。
 
 ### 首次部署检查清单
 
@@ -428,7 +429,7 @@ npm run dev
 - 保存后后端在该知识库所属工作空间创建/更新一个绑定 KnowledgeQA 模型的**自定义智能体**，问答由该智能体承载，提示词完全替换 WeKnora 默认提示词；引用出处仍由系统单独渲染，不受影响。
 - 一次问答选中多个知识库时，取所选范围内第一个已配置提示词的库生效；清空提示词会同步删除对应智能体；未配置提示词的知识库保持默认行为。
 
-查看权限与工时管理页面一致（`settings.designStandards`），超级管理员可在页面底部配置一般管理员/普通用户的访问权限。WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`），前端统一经 `/api/design-standards/*` 代理访问。部署物料与文档全部内置在仓库 `weknora/` 目录（详见 [weknora/README.md](weknora/README.md) 与 DEPLOYMENT.md）。
+查看权限与工时管理页面一致（`settings.designStandards`），超级管理员可在页面底部配置一般管理员/普通用户的访问权限。WeKnora 的地址与 API Key 仅保存在后端 `backend/.env`（`WEKNORA_*`），前端统一经 `/api/design-standards/*` 代理访问。部署物料与文档全部内置在仓库 `weknora/` 目录（详见 [weknora/README.md](weknora/README.md) 与 [部署指南](docs/DEPLOYMENT.md)）。
 
 ### 系统设置
 
@@ -458,7 +459,7 @@ npm run dev
 
 - 可配置多设备同时在线、「允许登录用户修改本人设计计划完成状态」与「允许用户自主改密」三个开关。该完成状态标记开关默认开启；开启后，普通登录用户可在本人同名设计员的设计计划任务上标记任务完成/未完成。
 - 「允许用户自主改密」（`allowUserChangePassword`）默认**关闭**：关闭时所有用户调用 `POST /api/auth/change-password` 均返回 `403`（「系统已禁用自主修改密码，请联系管理员」），主页面右上角的用户姓名改密入口也不显示，需要改密时由超级管理员在管理后台重置；开启后登录用户可点击右上角用户姓名自行修改密码（仍需输入当前密码，5 次/15 分钟限流）。
-- **IP 黑名单**：拦截异常来源访问。支持精确 IP（`192.168.1.100`）、CIDR 网段（`10.0.0.0/24`）和 IPv4 通配符（`192.168.*.*`）三种规则格式，可一次粘贴多条（逗号/空白分隔，单次最多 50 条，总量上限 500 条），可附备注；界面会列出最近登录失败的 IP（排除已封禁的）供快捷填入。启用后命中规则的 IP 访问任何接口都会收到 403，其登录尝试会以「IP 已被列入黑名单」记录在登录日志中；本机回环地址（localhost）永不拦截，规则修改后立即生效。
+- **IP 黑名单**：拦截异常来源访问。支持精确 IP（`192.168.1.100`）、CIDR 网段（`10.0.0.0/24`）和 IPv4 通配符（`192.168.*.*`）三种规则格式，可一次粘贴多条（`backend/routes/system.js` 按 `[\s,;，；]+` 切分，即逗号、分号、空白均可，全角标点同样识别；单次最多 50 条，总量上限 500 条），可附备注；界面会列出最近登录失败的 IP（排除已封禁的）供快捷填入。启用后命中规则的 IP 访问任何接口都会收到 403，其登录尝试会以「IP 已被列入黑名单」记录在登录日志中；本机回环地址（localhost）永不拦截，规则修改后立即生效。
 
 #### 日志管理（仅超级管理员）
 
@@ -687,6 +688,7 @@ node --check backend\routes\tasks.js
 | `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 | `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
+| `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先覆盖 `SQLITE_DB_PATH`，让测试写入数据库副本而非生产库；`npm test`（`backend/tests/run-all.js`）会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
 
 > 修改 `.env` 后必须重启后端服务才能生效。
 
@@ -829,7 +831,7 @@ node --check backend\routes\tasks.js
 - **Excel 依赖本地化**：Excel 解析使用随仓库分发的 SheetJS `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，以 `file:` 协议安装），修复旧版 0.18.5 的原型污染（CVE-2023-30533）与正则拒绝服务（CVE-2024-22363）漏洞，且内网安装无需再从 npm 拉取该包。
 - **Socket.IO 认证与角色校验**：WebSocket 连接建立时强制验证 JWT Token，支持从 `socket.handshake.auth.token` 或 `Authorization` 请求头获取令牌，验证失败则拒绝连接。焊枪台账的表级锁申请（`gun_ledger_lock_table`）、行取号（`gun_ledger_start_edit`）与锁心跳（`gun_ledger_table_heartbeat`）事件额外要求 `admin`/`superadmin` 角色，防止普通用户构造客户端抢占编辑锁阻断管理员。同时支持单设备登录限制，当 `allowMultiDevice=false` 时，已登录用户在其他设备登录会使旧连接失效。
 
-详细的环境变量配置、版本检查机制和安全加固建议，请参考 [Windows 部署指南](DEPLOYMENT.md)。
+详细的环境变量配置、版本检查机制和安全加固建议，请参考 [Windows 部署指南](docs/DEPLOYMENT.md)。
 
 ## 项目结构
 
@@ -922,7 +924,10 @@ obara-task-manager/
 │       └── ThemeColors.cs
 ├── docs/
 │   ├── API.md                    # REST 接口与 Socket.IO 事件全量参考
-│   └── DEVELOPMENT.md            # 开发环境、编码约定、改动 checklist
+│   ├── DEPLOYMENT.md             # Windows 部署、环境变量、备份恢复、升级与排障
+│   ├── DEVELOPMENT.md            # 开发环境、编码约定、改动 checklist
+│   ├── TOOLS.md                  # 运维诊断工具（backend-report）的用法与报告判读
+│   └── USER-GUIDE.md             # 最终用户逐步操作手册（判定规则、提示语速查）
 ├── frontend/
 │   ├── .eslintrc.cjs             # ESLint 8 配置（规则按「当前代码库可过」裁剪，见「核心模块说明」）
 │   ├── index.html
@@ -1004,10 +1009,12 @@ obara-task-manager/
 │   ├── docker-compose.yml
 │   ├── start.bat
 │   └── start.sh
-├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log；进程级未捕获异常堆栈在 backend-crash.log；后端自动重启记录在 backend-watchdog.log）
+├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log；进程级未捕获异常堆栈在 backend-crash.log；后端每次退出的退出码与内存/句柄快照在 backend-exit.log；后端自动重启记录在 backend-watchdog.log）
+├── tools/                       # 运维诊断工具（启动项目用不到，随时可跑）
+│   ├── backend-report.bat       # 双击运行：按你输入的时长生成后端断开分析报告
+│   └── backend-report.ps1       # 报告逻辑：端口采样 + 看门狗/退出/崩溃日志交叉核对
 ├── .gitignore
 ├── .npmrc                       # ignore-scripts=true：跳过 install 脚本，免安装 VS C++ 生成工具
-├── DEPLOYMENT.md
 ├── LICENSE
 ├── README.md
 ├── package.json
@@ -1163,6 +1170,7 @@ obara-task-manager/
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
   "dailyGunLedgerExportEnabled": true,
+  "dailyScheduleSyncEnabled": true,
   "offlineBackupEnabled": true,
   "backupRetentionDays": 30,
   "taskExportRetentionDays": 30,
@@ -1197,7 +1205,7 @@ obara-task-manager/
 | 数据库备份 | `POST /api/system/maintenance/backup` | 立即创建数据库备份 |
 | 断网备份 | `POST /api/system/maintenance/offline-backup` | 立即创建断网备份（本机脚本用一次性令牌；其他请求需超级管理员） |
 | 任务导出 | `POST /api/system/maintenance/export-tasks` | 立即导出任务数据 |
-| 编号台账导出 | `POST /api/system/maintenance/export-gun-ledger` | 立即导出全部焊枪编号台账为单个 `.xls` |
+| 编号台账导出 | `POST /api/system/maintenance/export-gun-ledger` | 立即导出全部焊枪编号台账：打包为单个 `.zip`，其中每个分类一个独立 `.xls`（文件名 `gun-ledger-all-YYYYMMDD-HHmmss.zip`） |
 | 清理过期备份 | `POST /api/system/maintenance/cleanup-backups` | 清理超过保留天数的备份 |
 | 年度清理 | `POST /api/system/maintenance/yearly-cleanup` | 执行年度任务清理，请求体传 `{"force": true}` 可跳过时间检查强制执行 |
 | 清空所有日志 | `POST /api/system/maintenance/clear-logs` | 同时清空登录日志和操作日志 |
@@ -1341,6 +1349,8 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 | 推送到 `main` | `vYYYY.MM.DD-beta-N` | `v2026.08.19-beta-1` |
 
 > 推送到 `main` 时若当日多次提交，`N` 会自动递增，避免 tag 冲突。
+>
+> **注意区分两套版本号**：本节是**控制台 EXE / GitHub Release** 的版本号；系统页面里显示的、以及 `GET /api/system/version` 返回的**系统版本**是另一套 `YY-MM-DD[-VN]` 格式（由最后一次 Git 提交日期生成），规则见[部署指南「版本检查」](docs/DEPLOYMENT.md#版本检查)。
 
 ## License
 
@@ -1348,4 +1358,4 @@ MIT License
 
 ---
 
-最后更新：2026-11-02
+最后更新：2026-11-08

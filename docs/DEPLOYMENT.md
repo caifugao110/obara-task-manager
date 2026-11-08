@@ -2,7 +2,7 @@
 
 本文档说明 Obara 任务管理系统在 Windows 环境下的启动、部署、备份和排障方式。
 
-> 其他文档：[README](README.md)（功能与使用） · [开发者指南](docs/DEVELOPMENT.md) · [API 文档](docs/API.md) · [WeKnora 部署指南](weknora/README.md)
+> 其他文档：[README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md) · [API 文档](API.md) · [使用手册](USER-GUIDE.md) · [WeKnora 部署指南](../weknora/README.md)
 
 ## 目录
 
@@ -47,7 +47,7 @@ start.bat
 1. 检查 Node.js 版本，主版本低于 22 直接报错退出。
 2. 检查 5000/5173 端口，被占用时自动结束占用进程并释放端口。
 3. 检查根目录 `node_modules/.bin`，依赖缺失时自动执行 `npm install`（仓库使用 npm workspaces，一条命令安装前后端全部依赖）。
-4. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`，进程级未捕获异常的堆栈单独追加到 `logs/backend-crash.log`）。
+4. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`，进程级未捕获异常的堆栈单独追加到 `logs/backend-crash.log`，进程每次自己退出的退出码与内存/句柄快照追加到 `logs/backend-exit.log`）。
 5. 后端由 `backend-watchdog.bat` 托管：该进程**意外结束后自动重新拉起**，每次启动/退出/重启都记到 `logs/backend-watchdog.log`（详见下方「后端进程静默退出」）。
 
 > **代码更新流程**：启动脚本不会自动拉取代码（自动 `git pull` 存在「拉取即执行」的供应链风险，已移除）。更新版本时请人工确认后手动执行 `git pull`（本地有修改时自行处理 stash），再运行 `start.bat`。
@@ -334,6 +334,7 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `WEKNORA_EXTRA_API_KEYS` | - | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 | `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
+| `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；`npm test` 会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
 
 ## 设计规范知识库（WeKnora）
 
@@ -346,9 +347,9 @@ cd weknora
 start.bat
 ```
 
-详细步骤、迁移方法、踩坑记录见 **[weknora/README.md](weknora/README.md)**。注意：`backend/.env` 中 `WEKNORA_*` 变更后需重启后端才生效——`start.bat` 启动的后端虽经 nodemon 运行，但 nodemon 仅监听 `.js` 文件（`backend/nodemon.json`），`.env` 变更不会自动重载；`npm start` / `node server.js` 直启则完全无热重载。
+详细步骤、迁移方法、踩坑记录见 **[weknora/README.md](../weknora/README.md)**。注意：`backend/.env` 中 `WEKNORA_*` 变更后需重启后端才生效——`start.bat` 启动的后端虽经 nodemon 运行，但 nodemon 仅监听 `.js` 文件（`backend/nodemon.json`），`.env` 变更不会自动重载；`npm start` / `node server.js` 直启则完全无热重载。
 
-> **已有部署升级到 v0.8.3 请注意**：v0.8.3 的向量/关系库镜像由 `paradedb:v0.22.6-pg17` 升到 `v0.25.11-pg17`，只执行 `docker compose pull` 换镜像会让 PostgreSQL 因扩展版本不匹配崩溃——换镜像后必须补执行 `ALTER EXTENSION pg_search UPDATE;`（`vector` 同步更新到 0.8.4）。完整步骤见 [weknora/README.md](weknora/README.md) 第 6.2 节；数据卷可直接复用，不需要重新导入知识库。
+> **已有部署升级到 v0.8.3 请注意**：v0.8.3 的向量/关系库镜像由 `paradedb:v0.22.6-pg17` 升到 `v0.25.11-pg17`，只执行 `docker compose pull` 换镜像会让 PostgreSQL 因扩展版本不匹配崩溃——换镜像后必须补执行 `ALTER EXTENSION pg_search UPDATE;`（`vector` 同步更新到 0.8.4）。完整步骤见 [weknora/README.md](../weknora/README.md) 第 6.2 节；数据卷可直接复用，不需要重新导入知识库。
 
 安全默认值（v2026-10-15 起）：WeKnora 不再内置任何默认管理员口令——`setup.js` 未取到 `--password` / `WEKNORA_ADMIN_PASSWORD` 时会交互询问或随机生成 20 位强口令（仅显示一次并回写 `weknora/.env`）；控制台/API 端口默认只绑定 `127.0.0.1`（`BIND_ADDRESS` 可改），开放注册默认关闭（`DISABLE_REGISTRATION=true`）。因此初始化完成前，局域网其他机器无法直连控制台。
 
@@ -467,7 +468,7 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
-| `settings.system` | 系统设置：多设备登录（`allowMultiDevice`）、允许登录用户修改本人设计计划完成状态（`allowUserDesignPlanColorMark`，兼容字段 `allowUserEditOwnTaskColor`）、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、操作日志保留条数（`auditLogMaxRows`，100~100000，默认 5000）、任务内容配色（`taskColorConfig`，10 个状态各自的**底色 hex**：7 个常规 + 3 个加急，文字色固定为普通黑色 `#000000` / 加急红色 `#dc2626`，不可配置）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，`taskColorConfig` 缺失或含非法色值时逐项回退默认配色（深紫 `#d8b4fe` / 淡绿 `#bbf7d0` / 浅黄 `#fef9c3` / 浅蓝 `#bae6fd` / 橙红 `#fdba74` / 粉 `#fbcfe8` / 暂停取消纯红 `#ff0000` + 加急三项亮黄 `#ffff00`；已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被忽略，历史 `{ bg, text }` 结构只取 `bg`），默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
+| `settings.system` | 系统设置：多设备登录（`allowMultiDevice`）、允许登录用户修改本人设计计划完成状态（`allowUserDesignPlanColorMark`，兼容字段 `allowUserEditOwnTaskColor`）、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、操作日志保留条数（`auditLogMaxRows`，100~100000，默认 5000）、任务内容配色（`taskColorConfig`，10 个状态各自的**底色 hex**：7 个常规 + 3 个加急，文字色固定为普通黑色 `#000000` / 加急红色 `#dc2626`，不可配置）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值；`extraTaskHours`（`designChange` / `drawingReview`）为「设计变更」「既制审图」两项固定工时，默认 1.5h / 0.5h，不区分机型也不套用表规则）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，`taskColorConfig` 缺失或含非法色值时逐项回退默认配色（深紫 `#d8b4fe` / 淡绿 `#bbf7d0` / 浅黄 `#fef9c3` / 浅蓝 `#bae6fd` / 橙红 `#fdba74` / 粉 `#fbcfe8` / 暂停取消纯红 `#ff0000` + 加急三项亮黄 `#ffff00`；已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被忽略，历史 `{ bg, text }` 结构只取 `bg`），默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
 除上述键值集合外，三类高写入量数据存放在独立的关系表中：
@@ -567,7 +568,7 @@ copy backend\data.db backups\db-before-upgrade-20260705.db
 - 共享路径通过 `SPEC_SHARE_PATH` 配置（如 `\\server\仕样书$`）；未配置时代码回退到内置地址 `\\192.168.160.6\仕样书$`
 - 需要服务器或运行后端的主机能够访问该共享目录
 - 权限要求：需要有读取共享目录文件的权限
-- 超时时间：纳期获取 9 秒，完整信息获取 15 秒
+- 超时时间：后端纳期获取 9 秒、完整信息获取 12 秒（`backend/routes/spec.js`），前端请求超时为 15 秒
 - 仕样号位数：由系统设置 `specNumberDigits` 控制（5 或 6 位，默认 5），可在系统设置「计划管理」标签页修改
 
 配置说明：
@@ -635,9 +636,22 @@ express-rate-limit 官方导出的 `ipKeyGenerator(req.ip)` 生成 IP 部分（I
 
 现状：`server.js` 顶部已注册两个兜底监听，把完整堆栈（含 pid 与时间戳）追加写入 `logs/backend-crash.log` 并打到控制台，进程默认**不退出**，前端最多看到一次请求失败后自动恢复。
 
+但兜底只能接住「经过 JS 异常」的退出。2026-11-08 的两次静默消失既没有 `backend-crash.log` 新记录、Windows 事件日志里也没有 `Application Error` / WER 报告——说明既不是未捕获异常，也不是原生崩溃（原生崩溃一定会留事件与 dump）。为此 `server.js` 另注册了 `exit` / `beforeExit` 钩子，把每次**自己退出**的 `exit code`、`reason`、`pid`、`uptime`、`rss`、`heapUsed`、活跃 `handles` / `requests` 数追加写入 `logs/backend-exit.log`。
+
+判定逻辑就一条：
+
+| `logs/backend-exit.log` | 结论 |
+|------|------|
+| 有该时刻的记录 | 进程**自己退出**的，`exit code` 就是真实退出码（看门狗日志里的 `exit code 1` 来自 nodemon 的 `--exitcrash`，不是后端真实退出码） |
+| 没有该时刻的记录 | `exit` 事件根本没触发 → 被**外部 `TerminateProcess` 强杀**（安全软件静默终止、任务管理器结束进程、`taskkill /F`） |
+
+注意这张表的前提是**该次运行已加载新钩子**：钩子之前的运行不会有这个文件，缺文件不能倒推为「被强杀」。
+
 排查与配置：
 
 - 先看 `logs/backend-crash.log`，最后一条 `[时间] uncaughtException / unhandledRejection (pid=…)` 后面的堆栈就是击穿点。
+- 没有崩溃堆栈时看 `logs/backend-exit.log` 和 `logs/backend-watchdog.log`，按上表区分「自己退出」与「被强杀」。
+- 需要一次性把四个日志源（看门狗、exit、崩溃、Windows 事件）+ 实时端口采样交叉核对时，双击 `tools\backend-report.bat` 直接出报告，用法见 [运维工具说明](TOOLS.md)。
 - 需要「一出现未捕获异常就退出」（本地开发想让 nodemon 重启）时设 `CRASH_EXIT_ON_UNCAUGHT=1`；**生产环境不要开**，否则又回到端口静默消失。
 - 新增涉及共享目录/Socket 的代码时，`destroy()` 之后仍可能收到 `error` 的 socket 必须保留一个空的 `'error'` 监听（参考 `backend/utils/uncShare.js` 的 `probeHost`）；**不要为了「干净」把 `server.js` 顶部的兜底监听删掉**。
 
@@ -661,7 +675,7 @@ taskkill /PID <PID> /F
 也可以修改：
 
 - 后端端口：`backend/.env` 中的 `PORT`
-- 前端端口：`frontend/vite.config.ts` 中的 `server.port`
+- 前端端口：`frontend/vite.config.ts` 目前只配置了 `server.host` / `fs` / `watch` / `proxy`，**没有** `server.port`（未配置时用 Vite 默认的 `5173`）。需要改端口时在 `server` 里自行补一行 `port: 5174`，或启动时用 `npm run dev:frontend -- --port 5174`
 
 
 ### 后端断开后页面无离线提示
@@ -843,14 +857,15 @@ GET /api/system/version
 
 说明：
 - 需要配置 Gitee API Token 和仓库信息（见上方"Gitee 版本检查"章节）
-- 通过 Gitee API 获取远程最新提交，无需在服务器安装 Git
+- **远端**最新版本通过 Gitee API 获取，服务器不需要执行 `git fetch`/`git pull`
+- **本地**当前版本仍由 `git log` 计算（`computeLocalVersion()` 读最后一次提交日期 + 当日提交数），因此服务器仍需安装 Git，且项目目录必须是 Git 仓库
 - 如果未配置 Gitee 或无法访问 API，`hasUpdate` 返回 `false`，`latestVersion` 返回 `null`
 - API 调用超时时间为 5 秒，超时后自动降级为无更新状态
-- 当前版本由 Git 提交信息生成，需要服务器安装 Git 并确保项目目录是 Git 仓库
+- ⚠️ 未安装 Git 或目录不是 Git 仓库时，`currentVersion` 返回「未知」，而版本比较会把「未知」解析成 `0`——**此时只要 Gitee 可访问就会一直提示「有更新」**，不是误报逻辑出错，先确认服务器上有 `git` 命令且 `.git` 目录存在
 
 ## 日志查看
 
-`start.bat` 以隐藏窗口方式运行，不会打开命令行窗口；前后端日志分别写入项目根目录的 `logs/backend.log`、`logs/frontend.log`（错误输出为 `logs/backend.err.log`、`logs/frontend.err.log`），启动脚本自身的输出在 `logs/startup.log`，进程级未捕获异常（`uncaughtException` / `unhandledRejection`）的完整堆栈追加在 `logs/backend-crash.log`，后端每次自动重启的时间与退出码记在 `logs/backend-watchdog.log`，排障时直接查看这些文件即可。
+`start.bat` 以隐藏窗口方式运行，不会打开命令行窗口；前后端日志分别写入项目根目录的 `logs/backend.log`、`logs/frontend.log`（错误输出为 `logs/backend.err.log`、`logs/frontend.err.log`），启动脚本自身的输出在 `logs/startup.log`，进程级未捕获异常（`uncaughtException` / `unhandledRejection`）的完整堆栈追加在 `logs/backend-crash.log`，后端进程每次自己退出时的退出码与内存/句柄快照追加在 `logs/backend-exit.log`，后端每次自动重启的时间与退出码记在 `logs/backend-watchdog.log`，排障时直接查看这些文件即可。
 
 手动执行 `npm run dev` 时直接查看当前 PowerShell 或 CMD 输出。
 
@@ -946,6 +961,7 @@ node --check backend\routes\settings.js
 | 数据库备份 | 使用 SQLite 在线备份 API 生成 `.db` 一致性快照，只写入配置的备份目录（不再双写网络共享第二地址，见「备份与恢复」） | 启用 |
 | 任务数据导出 | 导出渲染后的任务表为 `.xls` 文件（`task-export-YYYYMMDD-HHmmss.xls`） | 启用 |
 | 编号台账导出 | 将全部焊枪编号台账分类打包为一个 `.zip`（每个分类一个独立 `.xls`），文件名 `gun-ledger-all-YYYYMMDD-HHmmss.zip` | 启用 |
+| 状态跟踪同步 | 读取「各产品大日程.xls」四张工作表的有效仕样号写入状态跟踪（工厂/客户/数量/纳期/已发图），并用仕样书 PDF 补全营业担当、按组长规则补全组长；只填空字段，不覆盖人工维护的值（对应 `dailyScheduleSyncEnabled`） | 启用 |
 | 过期备份清理 | 删除超过保留天数的旧备份（数据库备份/任务导出/编号台账导出按各自保留天数，断网备份按断网保留天数） | 自动执行 |
 | 年度任务清理 | 在指定月份自动清理超过保留年限的旧任务数据 | 启用 |
 
@@ -984,6 +1000,7 @@ backend/
   "dailyBackupEnabled": true,
   "dailyTaskExportEnabled": true,
   "dailyGunLedgerExportEnabled": true,
+  "dailyScheduleSyncEnabled": true,
   "offlineBackupEnabled": true,
   "backupRetentionDays": 30,
   "taskExportRetentionDays": 30,
@@ -1056,4 +1073,4 @@ backend/
 6. **检查备份目录可写性**：确认服务账号对 `backups/database/`、`backups/task-exports/`、`backups/offline/` 等维护目录有写权限，并关注磁盘剩余空间；备份失败会写入后端日志
 7. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-11-02
+最后更新：2026-11-08

@@ -57,8 +57,10 @@ goto :end
 
 :trigger_backup
 echo [INFO] Creating offline backup before shutdown...
-rem 后端启动时会在 logs\offline-backup.token 写入一次性令牌（校验后立即轮换），
-rem 这里读取后作为请求头传入；令牌缺失或已失效时仅告警并跳过，不影响停服流程。
+rem On startup the backend writes a one-time token to logs\offline-backup.token
+rem (rotated as soon as it has been validated). It is read here and sent as a
+rem request header; when the token is missing or already expired we only warn
+rem and skip the backup, so the shutdown flow itself is never blocked by it.
 powershell -NoProfile -Command "$ErrorActionPreference='Stop'; try { $tokenFile = Join-Path '%LOG_DIR%' 'offline-backup.token'; if (-not (Test-Path -LiteralPath $tokenFile)) { throw 'token file not found' }; $token = (Get-Content -LiteralPath $tokenFile -Raw).Trim(); if (-not $token) { throw 'token file is empty' }; $r = Invoke-RestMethod -Uri 'http://localhost:%BACKEND_PORT%/api/system/maintenance/offline-backup' -Method POST -Headers @{ 'X-Offline-Backup-Token' = $token } -TimeoutSec 30; Write-Host ('[OK] Offline backup API returned: ' + $r.message + ' / ' + $r.reason) } catch { Write-Host ('[WARN] Failed to trigger backup via API, will skip. (' + $_.Exception.Message + ')') }"
 
 exit /b 0

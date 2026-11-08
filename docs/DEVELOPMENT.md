@@ -4,7 +4,7 @@
 
 - 系统怎么分层、模块在哪：看 [README 项目结构](../README.md#项目结构) 与 [核心模块说明](../README.md#核心模块说明)
 - 某个接口的字段和错误码：看 [API 文档](API.md)
-- 部署与排障：看 [Windows 部署指南](../DEPLOYMENT.md)
+- 部署与排障：看 [Windows 部署指南](DEPLOYMENT.md)
 
 ---
 
@@ -137,6 +137,7 @@ getCurrentSocket()?.emit('task_updated', {
 - 错误响应统一 `{ message, code? }`；`WeKnoraError` 这类领域错误按 `status`/`code` 映射（见 `routes/designStandards.js` 的 `handleError`）。
 - 注释写**为什么**，不写**是什么**。本仓库的注释密度偏高，且大量记录「为什么不能改成另一种写法」——这类信息请保留，改代码时一并更新。
 - `server.js` 顶部的 `uncaughtException` / `unhandledRejection` 兜底监听是**进程保命线**，不要删：Node 22 遇到未处理的 Promise 拒绝会直接退出进程，端口 5000 静默消失，日志里只剩 nodemon 一句 `app crashed`。兜底会把堆栈写入 `logs/backend-crash.log` 并继续运行（`CRASH_EXIT_ON_UNCAUGHT=1` 才退出）。
+- `server.js` 的 `exit` / `beforeExit` 钩子（写 `logs/backend-exit.log`）是**退出取证**，也不要删：它记录退出码、`reason`、内存与活跃句柄数。它的价值在于「没有记录」本身就是结论——被 `TerminateProcess` 强杀不触发 `exit` 事件，据此可把「自己退的」和「被外部干掉的」分开。钩子内部全部包了 `try/catch`，因为 `stdout/stderr` 管道断开时 `console.error` 会抛 `EPIPE`，在异常处理器里再抛会让 Node 静默退出、堆栈彻底丢失。
 - 老式回调 socket / 流在 `destroy()` 之后仍可能补发 `'error'`（`ECONNRESET`、`ENOTFOUND`），此时若无监听者会升级成未捕获异常击穿进程。这类对象要保留一个空的 `'error'` 监听，参考 `utils/uncShare.js` 的 `probeHost`。
 
 ### 前端
@@ -202,7 +203,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 
 ### 版本号
 
-系统版本不是手工写的：`GET /api/system/version` 每次请求动态计算（30 秒 TTL 缓存），取 **最后一次 Git 提交的日期** + **当日提交计数** 组成 `YY-MM-DD[-VN]`，所以 `git pull` 后不重启也能反映新 HEAD。因此**本地未提交的改动不会影响版本号**——版本号跟随的是提交历史。完整规则见 [DEPLOYMENT.md 版本检查](../DEPLOYMENT.md#版本检查)。
+系统版本不是手工写的：`GET /api/system/version` 每次请求动态计算（30 秒 TTL 缓存），取 **最后一次 Git 提交的日期** + **当日提交计数** 组成 `YY-MM-DD[-VN]`，所以 `git pull` 后不重启也能反映新 HEAD。因此**本地未提交的改动不会影响版本号**——版本号跟随的是提交历史。完整规则见 [DEPLOYMENT.md 版本检查](DEPLOYMENT.md#版本检查)。
 
 控制台 EXE 的版本由 MSBuild 在构建时按日期生成到 `control/Properties/GeneratedVersion.cs`，这个文件**不要手工编辑**。
 
@@ -227,7 +228,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 别人刷新很慢、整月重拉 | emit 没带 `designerId/month/year` | 见 4.3 |
 | 跨设计员移动后，对端要等下一次刷新才出现目标行 | 只广播了源表坐标，没带目标表 | 用 `targets` 一次发全受影响的表，见 4.3 |
 | 跨月移动后对端串月 / 当前视图冒出别月任务 | 把非当前视图月份的 `sheet` 也 `upsertSheet` 了 | 回显与接收侧都只并入 `month/year` 与当前视图一致的表 |
-| 后端莫名消失、端口 5000 没了、日志无堆栈 | 未捕获异常击穿进程（Node 22 对未处理 Promise 拒绝直接退出） | 看 `logs/backend-crash.log`；不要删 `server.js` 顶部兜底监听，见「后端」编码约定 |
+| 后端莫名消失、端口 5000 没了、日志无堆栈 | 未捕获异常击穿进程（Node 22 对未处理 Promise 拒绝直接退出）；或进程被外部强杀 | 看 `logs/backend-crash.log`；没有崩溃堆栈就看 `logs/backend-exit.log`——有记录是自己退的，没记录是被 `TerminateProcess` 强杀；不要删 `server.js` 顶部兜底与 `exit` 钩子，见「后端」编码约定 |
 | 晚打开的页面锁状态是空的 | 没监听快照事件/没调 `getSnapshot()` | 见 `socketClient.ts` |
 | 后端一启动就退出 | `JWT_SECRET` 为空 | 填 `backend/.env` |
 | 端口被占用 | 上次进程没退 | `stop.bat`，或按 `DEPLOYMENT.md` 手动释放 |
@@ -247,5 +248,6 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | [使用手册](USER-GUIDE.md) | 面向使用者的操作说明、判定规则与提示语速查 |
 | [API 文档](API.md) | REST 接口与 Socket.IO 事件全量参考 |
 | [README](../README.md) | 功能、权限、数据结构、项目结构、命令 |
-| [Windows 部署指南](../DEPLOYMENT.md) | 部署、备份、排障 |
+| [Windows 部署指南](DEPLOYMENT.md) | 部署、备份、排障 |
+| [运维工具说明](TOOLS.md) | `tools/backend-report.bat` 后端断开分析报告的用法与判读 |
 | [WeKnora 部署指南](../weknora/README.md) | 知识库服务的 Docker 部署与运维 |

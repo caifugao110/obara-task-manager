@@ -12,7 +12,7 @@ http://localhost:5000/api
 Authorization: Bearer <token>
 ```
 
-> 其他文档：[README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md)（新增接口的约定） · [Windows 部署指南](../DEPLOYMENT.md)
+> 其他文档：[README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md)（新增接口的约定） · [Windows 部署指南](DEPLOYMENT.md)
 
 ## 目录
 
@@ -42,7 +42,7 @@ Authorization: Bearer <token>
 
 - 大多数接口直接返回 JSON 对象或数组，不统一包裹 `success/data`。
 - 错误响应通常包含 `message`，部分接口包含 `code` 或 `details`。
-- 所有业务接口均需登录（有效 JWT），未提供游客/匿名访问；唯一无需登录的查询类接口是 `GET /api/auth/session-policy`（会话有效期政策，供登录页展示提示）。另有一个人为设计的例外：`POST /api/system/maintenance/offline-backup` 允许携带后端启动时生成的**一次性令牌**（`logs/offline-backup.token` → `X-Offline-Backup-Token` 请求头，供 `stop.bat` 等运维脚本在停止服务前触发备份；令牌校验后立即轮换，其他请求仍须超级管理员），详见维护章节。
+- 除 `POST /api/auth/login`（登录本身）与 `GET /api/auth/session-policy`（会话有效期政策，供登录页展示提示）外，所有业务接口均需登录（有效 JWT），未提供游客/匿名访问。另有一个人为设计的例外：`POST /api/system/maintenance/offline-backup` 允许携带后端启动时生成的**一次性令牌**（`logs/offline-backup.token` → `X-Offline-Backup-Token` 请求头，供 `stop.bat` 等运维脚本在停止服务前触发备份；令牌校验后立即轮换，其他请求仍须超级管理员），详见维护章节。
 - 请求体默认使用 `application/json`；文件导入接口使用 `multipart/form-data`。
 - 日期字段通常使用 `YYYY-MM-DD`，月份字段通常使用 `YYYY-MM`，任务查询中的 `month` 使用数字 `1-12`。
 - 后端会通过 Joi 或路由逻辑丢弃未知字段或返回 `400`，调用方不要依赖未声明字段被保存。
@@ -4509,4 +4509,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `schedule.filePath` | 各产品大日程 Excel 路径（`PRODUCTION_SCHEDULE_PATH`；未配置时代码回退到内置地址 `\\192.168.160.70\各产品大日程\各产品大日程.xls`） |
 | `schedule.cacheMs` | 大日程解析结果缓存时长（`PRODUCTION_SCHEDULE_CACHE_MS`，默认 `300000`） |
 
-最后更新：2026-11-02
+最后更新：2026-11-08

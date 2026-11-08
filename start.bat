@@ -118,7 +118,7 @@ rem listening on the port but keeps the parent cmd.exe (launched by VBS) alive.
 rem That cmd.exe holds a lock on backend.log/frontend.log, so the next start.bat
 rem run cannot write to the log file and the new service silently fails to start.
 rem A leftover backend-watchdog.bat is even worse: it restarts the backend we
-rem are about to stop, so it always wins the race for port 5000 — it must be
+rem are about to stop, so it always wins the race for port 5000 - it must be
 rem killed first (this runs before :release_port on purpose).
 rem Find these orphaned processes by matching the script directory in their
 rem command line and kill the entire process tree.  Only node.exe processes,
@@ -194,7 +194,7 @@ rem so every request fails until someone edits a file by hand. The watchdog
 rem runs npm run dev -- --exitcrash and restarts it whenever it ends; every
 rem restart is logged to logs\backend-watchdog.log.
 rem The command is passed relative to SCRIPT_DIR (the pushd target) so the
-rem path never needs quoting — it may contain spaces or be a UNC path.
+rem path never needs quoting - it may contain spaces or be a UNC path.
 wscript.exe //nologo "%SCRIPT_DIR%start-process-hidden.vbs" "%SCRIPT_DIR%" "set PORT=%BACKEND_PORT%&& call backend-watchdog.bat" "%OBARA_BACKEND_LOG%" "%OBARA_BACKEND_ERR%" "%OBARA_BACKEND_PID%"
 if errorlevel 1 (
     echo [ERROR] Backend service failed to start.
