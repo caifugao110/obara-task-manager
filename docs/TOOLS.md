@@ -4,6 +4,8 @@
 
 本目录（仓库根目录的 `tools/`，不在 `docs/` 下）放的是**启动项目不需要**的运维诊断工具。启动/停止请用仓库根目录的 `start.bat` / `stop.bat`。
 
+> 根目录的 `backend-watchdog.bat` 与 `backend-health-probe.bat` 不是手动工具，而是 `start.bat` 启动的运行时守护：前者负责「进程退出了就拉起来」，后者负责「进程还在但不再响应」。它们的日志判读见本文第二节。
+
 ---
 
 ## backend-report：后端断开分析
@@ -76,3 +78,59 @@ tools\backend-report.bat -NoPrompt -WatchMinutes 60
 $t = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
 [System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding($true)))
 ```
+
+---
+
+## 看门狗与假死探针：后端「活着但不响应」
+
+`backend-report` 解决的是「后端断过没有」。它抓不到另一种故障：**进程还在、端口还在 `LISTENING`，但所有 HTTP 请求都没有响应**。这种状态下进程不会退出，`backend-exit.log` 没有记录，看门狗的退出码判断也看不到，只能靠人工重启——2026-11 的生产故障就是如此（共享盘 SMB 会话失效，UNC 调用挂死在 Windows 内核里，占满 Node 的 libuv 线程池）。
+
+现在由两个常驻脚本兜住，均随 `start.bat` 自动启动，**不需要手动运行**：
+
+| 脚本 | 职责 | 判据 |
+|------|------|------|
+| `backend-watchdog.bat` | 进程退出后重新拉起（含退避） | 后端进程结束 → 等 10/30/60 秒再起 |
+| `backend-health-probe.bat` | 进程未退出但不再响应时杀掉进程树 | 每 30 秒发一次 HTTP，连续 3 次拿不到**任何响应**即判定假死 |
+
+探针每轮先读 `logs/backend-health-probe.gen` 里的实例代号：代号与启动时传入的不一致说明后端已经换代（正常重启、改文件热重载），本实例立即退出——**旧探针不会误杀新后端**。
+
+### 日志里长什么样
+
+两类记录都写在同一个文件 `logs/backend-watchdog.log`，探针行带 `[probe]` 前缀：
+
+```text
+[2026-11-09 13:18:14.58] [probe] health probe started (gen 1, port 5000, every 30s, timeout 5s)
+[2026-11-09 13:18:16.91] [probe] health probe failed (1/3) on port 5000 (round 1)
+[2026-11-09 13:20:20.03] [probe] [FATAL] backend unresponsive 3 consecutive probes on port 5000 (PID 12345) - killing process tree
+[2026-11-09 13:20:20.71] [probe] health probe: killed PID 12345, waiting for watchdog to restart
+[2026-11-09 13:20:31.02] spawn #2 (PORT=5000): npm run dev -- --exitcrash
+```
+
+| 看到什么 | 含义 | 要不要处理 |
+|---|---|---|
+| 只有 `health probe started` / `health probe gen N retired` | 探针正常随后端换代轮换 | 不用 |
+| 偶尔一条 `failed (1/3)` 后没有下文 | 单次探测超时（后端在跑大任务或长 GC），下一轮自动归零 | 不用 |
+| 连续 `failed (1/3) (2/3) (3/3)` + `[FATAL] ... killing` | 确实假死过，已被自动处理 | 查共享盘（见下） |
+| `[WARN] health probe: port 5000 has no listener, nothing to kill` | 探测失败时端口上本来就没有监听（后端正在启动或已退出），探针重置计数 | 不用，看门狗会负责拉起 |
+| 完全没有 `[probe]` 行 | 不是用 `start.bat` 启动的（如 PM2 / 控制台 / 手动 `npm run dev`），没有探针 | 自行保证存活探测 |
+
+### 假死之后先查共享盘
+
+探针只负责「把它救活」，不解决根因。紧接着要确认共享盘：
+
+1. 浏览器或 `curl` 调 `GET /api/system/schedule-probe`（需超级管理员），看 `readable`、`lastError.code`、`raw`；
+2. `logs/backend.log` / `backend.err.log` 搜 `[productionSchedule]`：出现「熔断中（连续失败 N 次…），跳过共享盘访问」说明熔断已开启，冷却期内不再访问共享盘；
+3. 在资源管理器打开 `PRODUCTION_SCHEDULE_PATH` 验证账号权限；Session 0 自启的按 `DEPLOYMENT.md` 配置 `PRODUCTION_SCHEDULE_UNC_*` 凭据；
+4. 共享恢复后调一次 `schedule-probe` 即可清除熔断计数，无需重启后端。
+
+### 调参
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `OBARA_PROBE_INTERVAL` | `30`（秒） | 探测间隔 |
+| `OBARA_PROBE_TIMEOUT` | `5`（秒） | 单次 HTTP 超时；后端正常时应在几十毫秒内返回 |
+| `OBARA_PROBE_FAILS` | `3` | 连续失败阈值；调小更快自愈，但过低会把长任务误判为假死 |
+| `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS` | `20000`（毫秒） | 共享盘读取子进程硬超时，超时即杀子进程 |
+| `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD` / `_COOLDOWN_MS` | `3` / `3600000` | 熔断阈值与冷却时长 |
+
+探针只按 `PORT` 找监听进程，任何 HTTP 响应（包括 401/404）都算健康；它不会碰前端、数据库或其它 node 进程。

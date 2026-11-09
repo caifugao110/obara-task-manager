@@ -30,11 +30,21 @@ rem                          "node server.js"   no file watching, restart only
 rem                        mainly used by automated tests
 rem
 rem Log: logs\backend-watchdog.log (one line per start / exit / restart)
+rem
+rem Hang detection (方案 3)
+rem -----------------------
+rem A process that is alive but no longer answers HTTP never "ends", so neither
+rem --exitcrash nor the exit-code check below can see it. Every spawn also
+rem starts backend-health-probe.bat: it probes the local port over HTTP and
+rem kills the listening process tree after N consecutive failures. The spawn
+rem number is written to logs\backend-health-probe.gen so a probe from an old
+rem instance retires as soon as a new backend instance is spawned.
 rem =====================================================================
 
 set "SCRIPT_DIR=%~dp0"
 set "LOG_DIR=%SCRIPT_DIR%logs"
 set "WATCHDOG_LOG=%LOG_DIR%\backend-watchdog.log"
+set "PROBE_GEN_FILE=%LOG_DIR%\backend-health-probe.gen"
 set "BACKEND_DIR=%SCRIPT_DIR%backend"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
@@ -56,6 +66,11 @@ set /a FAILS=0
 
 :loop
 set /a SPAWN+=1
+
+rem 让上一代的探测器退休（它每轮比对代号，不一致即退出），再启动本代的探测器。
+rem 必须在启动后端之前写代号：旧探测器醒来先读代号再探测，不会误杀新实例。
+>"%PROBE_GEN_FILE%" echo %SPAWN%
+start "obara-health-probe" /b "%~dp0backend-health-probe.bat" %SPAWN%
 
 set "START_EPOCH="
 call :epoch

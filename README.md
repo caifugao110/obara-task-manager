@@ -13,7 +13,7 @@ Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管�
 | [开发者指南](docs/DEVELOPMENT.md) | 开发者 | 开发环境、代码归属、五类改动的 checklist、编码约定、测试与发版 |
 | [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
 | [Windows 部署指南](docs/DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
-| [运维工具说明](docs/TOOLS.md) | 运维、排障人员 | 后端断开分析工具 `tools/backend-report.bat` 的用法与报告判读 |
+| [运维工具说明](docs/TOOLS.md) | 运维、排障人员 | `tools/backend-report.bat` 断开分析报告，以及看门狗 / 假死探针日志的判读 |
 | [WeKnora 知识库部署指南](weknora/README.md) | 部署和维护人员 | 设计规范知识库（WeKnora）的 Docker 部署、初始化与故障处理 |
 
 > 文档分工：**USER-GUIDE 讲「怎么用」，README 讲「有什么、为什么这么设计」，DEVELOPMENT 讲「怎么改」，API 讲「接口长什么样」，DEPLOYMENT 讲「怎么部署和救火」**。改动代码时按 [开发者指南的文档同步表](docs/DEVELOPMENT.md#注释与文档同步) 更新对应文档。
@@ -68,7 +68,7 @@ Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管�
 start.bat
 ```
 
-`start.bat` 会隐藏窗口运行（不打开浏览器），依次执行：检查 Node.js 版本 → 检查并释放 5000/5173 端口 → 按需安装依赖 → 后台启动前后端，日志输出到 `logs/` 目录。**启动脚本不会自动拉取代码**：自动 `git pull` 存在供应链风险（拉取即执行），已移除；代码更新请人工确认后手动执行 `git pull`，再运行本脚本。
+`start.bat` 会隐藏窗口运行（不打开浏览器），依次执行：检查 Node.js 版本 → 检查并释放 5000/5173 端口 → 按需安装依赖 → 后台启动前后端，日志输出到 `logs/` 目录。**启动脚本不会自动拉取代码**：自动 `git pull` 存在供应链风险（拉取即执行），已移除；代码更新请人工确认后手动执行 `git pull`，再运行本脚本。后端同时由两层守护兜住：崩溃退出会被 `backend-watchdog.bat` 拉起，进程活着但不响应 HTTP 会被 `backend-health-probe.bat` 杀掉重启（判读见 [运维工具说明](docs/TOOLS.md)）。
 
 启动后访问：
 
@@ -296,6 +296,7 @@ npm run dev
 - 组长列按营业担当自动匹配规则填充（组长规则）；工厂字段优先取「各产品大日程」命中的工作表（`南京*` → `O/NJG`，`上海*` → `O/SHA`），未命中时再按营业担当的工厂规则填充。
 - **「同步生产大日程」一键同步**（`PRODUCTION_SCHEDULE_PATH` 配置的 Excel，见「仕样信息搜索」）：读取南京焊钳、上海焊钳、南京焊钳修改、上海焊钳修改四张工作表的全部月份块，把**有效仕样号**（位数与系统配置一致、数量大于 0）按所属月份写入状态跟踪。已存在的记录用表格值覆盖**工厂、客户、数量、纳期、已发图**，并记录该行来自哪张工作表（`sheetName`，供按表筛选）；营业担当、组长与确认数量等人工维护字段保留（营业担当/组长只在原值为空时补全，见下条）；表格里客户或纳期为空时不清空原值。点击后先弹预览框（将新增/将更新/已一致、有效条数、月份分布、将补全的营业担当/组长条数、被他人编辑中会跳过的条数），确认后才落库，重复执行幂等。表格中同一仕样号拆成多行时，数量与已发图累加、纳期取最早一天；行内刷新按钮仍按同一规则重取该行数据，命中表格会覆盖已发图，未命中则保留原值。「已发图」与「数量」相等时输入框标绿，便于识别已发完。
 - **营业担当 / 组长自动补全**：「各产品大日程.xls」里没有营业担当列，因此同步时按仕样号到 `SPEC_SHARE_PATH` 指向的共享目录找最新版仕样书 PDF（`58249.08.PDF` 优先于 `58249.PDF`），用分类规则解析签核区的营业担当，再按「组长规则」（`settings.leaderRules`）推出组长。目录索引缓存 10 分钟、解析结果按「文件 + 大小 + 修改时间」缓存 12 小时，所以首次同步约十几秒、之后只需数秒。只补空字段，人工改过的营业担当/组长不会被覆盖；仕样书缺失或解析不到时留空并在预览里提示，不猜测。共享目录不可访问时同步照常进行，只是不补营业担当。
+- **共享盘读取的稳定性**：解析结果按文件 mtime + `PRODUCTION_SCHEDULE_CACHE_MS` 复用，读取失败后 30 秒内不重复访问；共享盘连续失败（默认 3 次）会熔断 1 小时，期间同步直接提示不可用、普通查询返回最后一次成功缓存，不再制造挂起的共享连接；共享盘 I/O 与 XLSX 解析放在独立子进程（硬超时 20 秒），避免共享盘挂死把后端的线程池占满。管理员可用 `GET /api/system/schedule-probe` 绕过熔断强制读一次确认共享是否恢复，成功后熔断自动解除。
 - 管理员可「导出显示结果」为 `.xls`（按当前筛选条件导出），文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`；开启「全表搜索」导出时会默认过滤掉设计纳期已过期（含纳期为空）的记录，按月份导出则不过滤。超级管理员可批量导入状态追踪数据，导入前支持「仕样号 + 添加时间月」组合重复检查，可选择覆盖导入。
 - 支持按纳期月或添加时间月清理历史状态追踪记录（仅超级管理员，在系统设置「数据库维护」中操作）。
 - 实时同步：数据变更通过 Socket.IO 广播通知所有客户端；编辑占用按行获取：点击/聚焦某一行即申请该行编辑锁，焦点移出整行（或页面卸载、断开连接）时释放，他人锁定期间整行输入框禁用。行锁由**服务端仲裁**：同一行已被他人占用时 `status_tracking_start_edit` 被拒绝并回发 `status_tracking_edit_blocked`（提示「AAA 正在编辑此记录，请稍后再试」），不会出现静默抢锁；同一连接同时只持有一行锁，切换到别的行会自动释放旧行；新连接的客户端会先收到 `status_tracking_editing_state` 快照，直接看到他人已占用的行。
@@ -631,7 +632,8 @@ node tests\gun-search-relational.js
 | `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器）；启动前自动检查 Node.js 22+、检查并释放端口、按需安装依赖。**不会自动执行 `git pull`**（供应链风险已移除），代码更新需人工确认后手动拉取。后端由 `backend-watchdog.bat` 托管，**崩溃后自动拉起** |
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
-| `backend-watchdog.bat` | 后端守护循环，由 `start.bat` 调用。后端进程一旦结束就重新拉起（默认 10 秒，连续快速崩溃退避到 30/60 秒），把每次启动/退出/重启写入 `logs/backend-watchdog.log`；以 `npm run dev -- --exitcrash` 启动，使 nodemon 在崩溃时真正退出而不是停在 `app crashed` 空转。`OBARA_RESTART_DELAY` 调等待秒数，`OBARA_BACKEND_CMD` 可换成 `node server.js`（只守护、不监听文件变化） |
+| `backend-watchdog.bat` | 后端守护循环，由 `start.bat` 调用。后端进程一旦结束就重新拉起（默认 10 秒，连续快速崩溃退避到 30/60 秒），把每次启动/退出/重启写入 `logs/backend-watchdog.log`；以 `npm run dev -- --exitcrash` 启动，使 nodemon 在崩溃时真正退出而不是停在 `app crashed` 空转。`OBARA_RESTART_DELAY` 调等待秒数，`OBARA_BACKEND_CMD` 可换成 `node server.js`（只守护、不监听文件变化）。每次拉起后端时同时启动一个假死探测器（见下一行） |
+| `backend-health-probe.bat` | 后端假死探测器，由 `backend-watchdog.bat` 每次拉起后端时自动启动，不需要手动执行。每 30 秒向本机后端发一次 HTTP 请求（5 秒超时），连续 3 次**完全拿不到响应**即判定「进程活着但不干活」（典型原因：共享盘 UNC 调用在 Windows 内核里挂死、占满 libuv 线程池），找到监听端口的 PID 后 `taskkill /F /T`，让 nodemon 退出、看门狗照常重新拉起。任何 HTTP 响应（包括 401/404）都算健康。`OBARA_PROBE_INTERVAL` / `OBARA_PROBE_TIMEOUT` / `OBARA_PROBE_FAILS` 可调间隔、单次超时与失败阈值；日志写入 `logs/backend-watchdog.log`（`[probe]` 前缀），实例代号写入 `logs/backend-health-probe.gen`，后端换代后旧探测器自动退休，不会误杀新实例 |
 | `stop.bat` | 停止前后端进程；停止前先调用断网备份接口备份数据库。停止时**从监听端口的 PID 沿父进程链向上找到进程树顶层**（`cmd.exe` 由 VBS 启动 → `node.exe` npm → `cmd.exe` 子 shell → `node.exe` nodemon/vite → `node.exe` 服务本体），再 `taskkill /F /T` 整棵树，避免只杀掉监听进程、残留 npm/nodemon/cmd 继续占着日志文件或改文件后自动重启；随后按命令行路径清扫已不监听端口的残留进程、清理 `logs/*.pid`，并逐一回检端口给出真实结论（不再无条件打印成功）。若进程由服务/计划任务在 Session 0 启动，普通权限无法结束时会自动以管理员身份重启自身 |
 | `control/ObaraServiceController.csproj` | 使用 MSBuild 构建 Windows 服务控制台 EXE，详见「Windows 服务控制台」章节 |
 
@@ -673,9 +675,12 @@ node --check backend\routes\tasks.js
 | `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录（如 `\\server\仕样书$`）；未在 `backend/.env` 中显式配置时，代码回退到该内置地址（`backend/config/security.js`），指向其他共享目录必须显式配置并重启后端 |
 | `PRODUCTION_SCHEDULE_PATH` | 内置回退值 `\\192.168.160.70\各产品大日程\各产品大日程.xls` | 各产品大日程 Excel 文件路径。状态追踪页的「数量」「纳期」「已发图」与工厂优先取此表（解析工作表「南京焊钳」「上海焊钳」「南京焊钳修改」「上海焊钳修改」）；读取不到时回退到 PDF / 已存数据。仓库内 `backend/templates/production-schedule/` 放了一份参考文件，仅用于离线查看排查，实际解析路径以此变量为准 |
 | `PRODUCTION_SCHEDULE_CACHE_MS` | `300000`（5 分钟） | 大日程解析结果缓存时长（毫秒）。文件位于网络共享，解析结果按 mtime 复用；共享文件更新后最多滞后该时长生效。读取失败后 30 秒内不重复访问共享目录，避免拖慢状态追踪请求 |
+| `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS` | `20000`（20 秒） | 共享盘读取子进程的硬超时（毫秒，最小 5000）。`stat` / `readFile` / `readdir` 与 XLSX 解析都在 `backend/utils/productionScheduleWorker.js` 子进程里执行，主进程只等 IPC 结果；超时立即杀掉子进程并计一次失败。SMB 会话失效时 UNC 调用会在内核里挂住不返回，有了这层隔离，挂起只损失一次等待，不会把主进程的 libuv 线程池占满（否则后端「活着但不响应」，看门狗也察觉不到） |
+| `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD` | `3` | 熔断阈值：连续失败达到该次数后暂停访问共享盘（按 10 分钟窗口内的连续失败计数，最小 1）。熔断期间普通查询返回**最后一次成功解析**的缓存，不再向共享盘发起调用，避免故障期间反复制造挂起连接 |
+| `PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS` | `3600000`（1 小时） | 熔断冷却时长（毫秒，最小 60000）。冷却到期后下一次查询做半开探测：成功则恢复并清空计数，失败则重新计时。熔断期间「同步生产大日程」会直接失败（提醒共享暂不可用），管理员可用 `GET /api/system/schedule-probe` 强制读一次确认是否已恢复 |
 | `PRODUCTION_SCHEDULE_UNC_USER` | 空 | 读取大日程共享目录所用账号。后端以服务/计划任务**开机自启**时运行在 Session 0，没有登录用户的共享认证（读共享文件报 `EPERM`）；配置该项后读取失败会自动 `net use` 再重试。不配也可，前提是给运行后端的账户在共享服务器上授了读权限 |
 | `PRODUCTION_SCHEDULE_UNC_PASSWORD` | 空 | 与 `PRODUCTION_SCHEDULE_UNC_USER` 配套的密码；只用于建立共享连接，不写入日志 |
-| `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号分隔（如双备份第二地址） |
+| `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号或换行分隔。后端以服务/计划任务自启（Session 0）读共享文件报 `EPERM` 时，按文件路径匹配到对应共享后自动 `net use` 再重试；用于生产大日程等 UNC 共享的读取兜底。数据库备份只写本地备份目录，不使用该凭据 |
 | `CORS_ORIGIN` | 开发环境默认 `*`；**生产环境必填** | 允许的前端地址，多个用逗号分隔；开发环境未配置时允许任意来源且不启用 CORS credentials；**生产环境未配置将导致服务启动失败（`process.exit(1)`），必须设置显式白名单** |
 | `GITEE_TOKEN` | 空 | Gitee 个人访问令牌，用于版本检查 |
 | `GITEE_REPO_OWNER` | 空（`.env.example` 提供示例值 `caifugao110`） | Gitee 仓库所有者；未配置时版本检查返回「未知」 |
@@ -889,7 +894,8 @@ obara-task-manager/
 │   │   ├── pdfText.js            # PDF 文本提取（带 Node 垫片），供 specInfoLookup 复用
 │   │   ├── pdfTextPool.js        # PDF 解析线程池（worker_threads），把 CPU 密集的 getText 移出主线程
 │   │   ├── pdfTextWorker.js      # 线程池的 worker 入口：文件路径 → 全文文本
-│   │   ├── productionSchedule.js # 各产品大日程解析（四张工作表 → 仕样号索引，带缓存与失败退避）
+│   │   ├── productionSchedule.js # 各产品大日程解析（四张工作表 → 仕样号索引，带缓存、失败退避与熔断）
+│   │   ├── productionScheduleWorker.js # 大日程共享读取子进程（stat/readFile/XLSX 解析隔离，父进程硬超时兜底）
 │   │   ├── scheduleSync.js       # 「同步生产大日程」纯比对逻辑（只算变更不读写库，有单测）
 │   │   ├── scheduleSyncService.js # 同步服务层：buildSyncPlan 算变更 / applySyncPlan 落库，按钮与定时任务共用
 │   │   ├── simpleZip.js
@@ -1009,7 +1015,7 @@ obara-task-manager/
 │   ├── docker-compose.yml
 │   ├── start.bat
 │   └── start.sh
-├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log；进程级未捕获异常堆栈在 backend-crash.log；后端每次退出的退出码与内存/句柄快照在 backend-exit.log；后端自动重启记录在 backend-watchdog.log）
+├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log；进程级未捕获异常堆栈在 backend-crash.log；后端每次退出的退出码与内存/句柄快照在 backend-exit.log；后端自动重启与假死探测记录在 backend-watchdog.log，探测器实例代号在 backend-health-probe.gen；断网备份一次性令牌在 offline-backup.token）
 ├── tools/                       # 运维诊断工具（启动项目用不到，随时可跑）
 │   ├── backend-report.bat       # 双击运行：按你输入的时长生成后端断开分析报告
 │   └── backend-report.ps1       # 报告逻辑：端口采样 + 看门狗/退出/崩溃日志交叉核对
@@ -1023,6 +1029,7 @@ obara-task-manager/
 ├── start-hidden.vbs
 ├── start-process-hidden.vbs
 ├── backend-watchdog.bat
+├── backend-health-probe.bat      # 后端假死探测（watchdog 每次拉起后端时启动，连续无 HTTP 响应即杀掉进程树）
 └── stop.bat
 ```
 
@@ -1047,7 +1054,8 @@ obara-task-manager/
 | 焊枪台账导出 | `backend/utils/gunLedgerExport.js` | 焊枪编号台账按分类/全部分类导出为 Excel（含样式、斑马纹、边框） |
 | 焊枪台账表锁 | `backend/utils/gunTableLocks.js` | 表级独占编辑锁的内存态管理（申请/释放/心跳/僵死锁清理） |
 | 状态追踪行锁 | `backend/utils/statusTrackingLocks.js` | 状态追踪行锁的进程内单例：Socket 事件（占用/释放/断开清理）与 `routes/statusTracking.js` 的 HTTP 写接口（`PUT`/`DELETE` 前的行锁校验）读写同一份锁状态，广播逻辑仍留在 `server.js` |
-| 各产品大日程解析 | `backend/utils/productionSchedule.js` | 解析 `PRODUCTION_SCHEDULE_PATH` 指向的 Excel，把四张工作表按月份块拆成「仕样号 → 数量/纳期/已发图/工厂/客户原文」索引，`findScheduleEntry(specNumber, preferredMonth)` 供 `POST /api/spec/spec-info` 兜底取值。解析结果按文件 mtime + `PRODUCTION_SCHEDULE_CACHE_MS` 缓存（网络共享不宜每次请求都读），读取失败后 30 秒内不重试并节流告警，接口在失败时静默回退到 PDF。服务自启（Session 0）拿不到共享认证时，可配 `PRODUCTION_SCHEDULE_UNC_*` 让 `backend/utils/uncShare.js` 自动 `net use` 后重试；`GET /api/system/schedule-probe` 可直接看运行账户与真实错误码 |
+| 各产品大日程解析 | `backend/utils/productionSchedule.js` | 解析 `PRODUCTION_SCHEDULE_PATH` 指向的 Excel，把四张工作表按月份块拆成「仕样号 → 数量/纳期/已发图/工厂/客户原文」索引，`findScheduleEntry(specNumber, preferredMonth)` 供 `POST /api/spec/spec-info` 兜底取值。解析结果按文件 mtime + `PRODUCTION_SCHEDULE_CACHE_MS` 缓存（网络共享不宜每次请求都读），读取失败后 30 秒内不重试并节流告警。共享盘读取全部交给 `productionScheduleWorker.js` 子进程（硬超时 `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS`），并带熔断：连续失败达到 `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD` 后冷却 `PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS`，期间普通查询直接返回最后一次成功缓存，不再向挂死的共享连接发请求。服务自启（Session 0）拿不到共享认证时，可配 `PRODUCTION_SCHEDULE_UNC_*` 让 `backend/utils/uncShare.js` 自动 `net use` 后重试；`GET /api/system/schedule-probe` 可绕过熔断强制读一次，直接看运行账户与真实错误码 |
+| 大日程读取子进程 | `backend/utils/productionScheduleWorker.js` | 由 `productionSchedule.js` 用 `child_process.fork` 启动，把共享盘的 `stat` / `readFile` / `readdir` 与 `XLSX.read` 放在主进程之外执行，回一条 IPC 消息后退出。SMB 会话失效时 UNC 调用会挂在内核里不返回，主进程 20 秒硬超时后杀子进程即可脱身，libuv 线程池不被占满（否则后端「活着但不响应 HTTP」，watchdog 只看退出码发现不了）。协议见文件头注释：`load` / `probeFs` 两种任务 |
 | 压缩打包 | `backend/utils/simpleZip.js` | 多分类导出时将多个 `.xls` 打包为 `.zip` |
 | 工作日工具 | `backend/utils/workday.js` | 工作日覆盖规则、周末判断等工具函数 |
 | 安全配置 | `backend/config/security.js` | JWT、CORS、Gitee API、数据库路径等安全配置 |
@@ -1235,6 +1243,7 @@ obara-task-manager/
 - 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
 - 监控数据库大小：`db-stats` 中 10MB/50MB 仅为提示性警告而非 SQLite 限制（SQLite 单库上限约 281TB，1GB 以内均可稳定运行），可结合任务月份数决定是否清理旧数据。注意 SQLite 删除数据后文件不会自动变小，磁盘占用不下降属正常现象；需要真正腾出空间时用「系统设置 → 数据库维护 → 压缩数据库」（即 `VACUUM` + WAL 截断），清理任务数据的各入口也会自动压缩一次。
 - 建议启用自动维护，并根据业务需求调整备份保留天数和数据保留年限。
+- **长期无人值守时保留 `start.bat` 的守护链**：`backend-watchdog.bat` 负责「进程退出了就拉起来」，`backend-health-probe.bat` 负责「进程还在但不再响应」——每 30 秒探一次 HTTP，连续 3 次无响应就杀掉进程树交给看门狗重启。共享盘故障是这套机制的主要目标场景：SMB 会话失效后 UNC 调用会挂死在 Windows 内核里，后端不崩溃、端口也还在监听，但请求全部超时。若改用 PM2 / Windows 服务部署，需要自行提供等价的存活探测（PM2 的 `max_memory_restart` 与 `autorestart` 只能覆盖「进程退出」这一类）。
 
 ## Windows 服务控制台
 
@@ -1358,4 +1367,4 @@ MIT License
 
 ---
 
-最后更新：2026-11-08
+最后更新：2026-11-09

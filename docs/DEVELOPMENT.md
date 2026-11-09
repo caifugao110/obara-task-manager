@@ -48,6 +48,7 @@ npm run dev:frontend   :: 只起前端 :5173（Vite）
 | 某个接口的校验/权限/组装响应 | `backend/routes/<模块>.js` |
 | 读写 SQLite | 只允许 `backend/db.js`、`backend/taskStore.js`；路由里**不要**直接 `prepare()` |
 | 无状态工具（解析/导出/加锁） | `backend/utils/*.js` |
+| 可能阻塞的共享盘 I/O | `backend/utils/productionScheduleWorker.js`（子进程），不要直接在主进程 `fs.stat` / `readFile` UNC 路径 |
 | 全局状态（登录态、系统设置） | `frontend/src/context/*.tsx` |
 | HTTP 请求 | 一律 `services/api.ts` 导出的 `axiosInstance` + 路径字符串，不新增 `xxxAPI` 分组封装 |
 | Socket 连接 | 一律 `utils/socketClient.ts` 的 `acquireSocket()`，不自己 `io()` |
@@ -139,6 +140,8 @@ getCurrentSocket()?.emit('task_updated', {
 - `server.js` 顶部的 `uncaughtException` / `unhandledRejection` 兜底监听是**进程保命线**，不要删：Node 22 遇到未处理的 Promise 拒绝会直接退出进程，端口 5000 静默消失，日志里只剩 nodemon 一句 `app crashed`。兜底会把堆栈写入 `logs/backend-crash.log` 并继续运行（`CRASH_EXIT_ON_UNCAUGHT=1` 才退出）。
 - `server.js` 的 `exit` / `beforeExit` 钩子（写 `logs/backend-exit.log`）是**退出取证**，也不要删：它记录退出码、`reason`、内存与活跃句柄数。它的价值在于「没有记录」本身就是结论——被 `TerminateProcess` 强杀不触发 `exit` 事件，据此可把「自己退的」和「被外部干掉的」分开。钩子内部全部包了 `try/catch`，因为 `stdout/stderr` 管道断开时 `console.error` 会抛 `EPIPE`，在异常处理器里再抛会让 Node 静默退出、堆栈彻底丢失。
 - 老式回调 socket / 流在 `destroy()` 之后仍可能补发 `'error'`（`ECONNRESET`、`ENOTFOUND`），此时若无监听者会升级成未捕获异常击穿进程。这类对象要保留一个空的 `'error'` 监听，参考 `utils/uncShare.js` 的 `probeHost`。
+- **共享盘调用一律走子进程**：SMB 会话失效时 UNC 调用会在 Windows 内核里挂住不返回，主进程直接 `await fs.promises.*` 会把 libuv 线程池（默认 4 线程）占满，表现为「进程活着、端口在监听、所有 HTTP 超时」。`utils/productionSchedule.js` 的做法是 fork `productionScheduleWorker.js`、父进程只等 IPC 并带硬超时；新增共享盘读取时照抄这个模式，并给熔断器计一次失败（`recordFailure`），不要在路由层直接读 UNC。
+- **不要删除/绕过三层防护**：子进程隔离（`productionScheduleWorker.js`）、熔断（`BREAKER_*`）、外部假死探针（`backend-health-probe.bat`）分别对应「单次挂死」「持续故障」「已经卡死」三种情况，缺一层就会回到 2026-11 的人工重启。改这块时同步 `TOOLS.md` 与 `DEPLOYMENT.md` 的判读说明。
 
 ### 前端
 
@@ -159,6 +162,7 @@ getCurrentSocket()?.emit('task_updated', {
 | 环境变量增删 | `README.md`、`DEPLOYMENT.md`、`docs/API.md`、`backend/.env.example` |
 | 权限开关、角色规则 | `README.md` 权限模型 + `docs/API.md` 权限速查 |
 | 部署方式、启动脚本 | `DEPLOYMENT.md` |
+| 守护/自愈机制、探针、日志判读 | `README.md`（脚本与维护建议）、`docs/DEPLOYMENT.md`（排障）、`docs/TOOLS.md`（日志怎么读） |
 | 数据结构、模块划分 | `README.md` 数据存储 / 项目结构 |
 
 ## 6. 提交前的检查
@@ -229,6 +233,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 跨设计员移动后，对端要等下一次刷新才出现目标行 | 只广播了源表坐标，没带目标表 | 用 `targets` 一次发全受影响的表，见 4.3 |
 | 跨月移动后对端串月 / 当前视图冒出别月任务 | 把非当前视图月份的 `sheet` 也 `upsertSheet` 了 | 回显与接收侧都只并入 `month/year` 与当前视图一致的表 |
 | 后端莫名消失、端口 5000 没了、日志无堆栈 | 未捕获异常击穿进程（Node 22 对未处理 Promise 拒绝直接退出）；或进程被外部强杀 | 看 `logs/backend-crash.log`；没有崩溃堆栈就看 `logs/backend-exit.log`——有记录是自己退的，没记录是被 `TerminateProcess` 强杀；不要删 `server.js` 顶部兜底与 `exit` 钩子，见「后端」编码约定 |
+| 端口 5000 还在监听，但所有请求一直转圈 / 超时，进程没退出 | 共享盘 SMB 会话失效，UNC 调用挂死在内核，占满 libuv 线程池（后端「活着但不响应」） | 看 `logs/backend-watchdog.log` 的 `[probe]` 行：连续 `health probe failed` 后应有 `[FATAL] ... killing`；共享盘侧用 `GET /api/system/schedule-probe` 看错误码。不要在主进程直接读 UNC，新增逻辑走 `productionScheduleWorker.js` + 熔断，见「后端」编码约定 |
 | 晚打开的页面锁状态是空的 | 没监听快照事件/没调 `getSnapshot()` | 见 `socketClient.ts` |
 | 后端一启动就退出 | `JWT_SECRET` 为空 | 填 `backend/.env` |
 | 端口被占用 | 上次进程没退 | `stop.bat`，或按 `DEPLOYMENT.md` 手动释放 |
@@ -249,5 +254,5 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | [API 文档](API.md) | REST 接口与 Socket.IO 事件全量参考 |
 | [README](../README.md) | 功能、权限、数据结构、项目结构、命令 |
 | [Windows 部署指南](DEPLOYMENT.md) | 部署、备份、排障 |
-| [运维工具说明](TOOLS.md) | `tools/backend-report.bat` 后端断开分析报告的用法与判读 |
+| [运维工具说明](TOOLS.md) | `tools/backend-report.bat` 断开分析报告，以及看门狗 / 假死探针日志的判读 |
 | [WeKnora 部署指南](../weknora/README.md) | 知识库服务的 Docker 部署与运维 |

@@ -2980,11 +2980,11 @@ PUT 请求：
 
 | 类型 | 检测示例 |
 |------|----------|
-| 命令执行 | `=CMD|/C DIR`、`=POWERSHELL` |
+| 命令执行 | `=CMD\|/C DIR`、`=POWERSHELL` |
 | 网络请求 | `=HYPERLINK("http://...")`、`=WEBSERVICE(...)` |
 | 脚本注入 | `=SCRIPT:`、`=JAVASCRIPT:` |
 | 文件操作 | `=EXEC("rm -rf /")`、`=SYSTEM("del")` |
-| 管道命令 | `=A1||CMD`、`=A1&&BASH` |
+| 管道命令 | `=A1\|\|CMD`、`=A1&&BASH` |
 | COM 对象 | `=CREATEOBJECT("WScript.Shell")` |
 
 #### 内容清理
@@ -3194,7 +3194,7 @@ PUT 请求：
 
 权限：仅 `superadmin`
 
-强制重读一次共享盘上的「各产品大日程.xls」（绕过 5 分钟缓存，不写库），用于排查状态追踪「同步生产大日程」读不到文件的问题。返回结构：
+强制重读一次共享盘上的「各产品大日程.xls」（绕过 5 分钟缓存**与熔断器**，不写库），用于排查状态追踪「同步生产大日程」读不到文件的问题。读取在独立子进程内执行，即使共享连接挂死也不会拖住本接口所在的主进程（最多等 `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS`）。读取成功会顺带清除熔断计数、恢复实时读取。返回结构：
 
 | 字段 | 说明 |
 |------|------|
@@ -3206,7 +3206,7 @@ PUT 请求：
 | `lastError` | 最近一次失败：`code`（`EPERM`/`EBUSY`/`ENOENT` 等）、`message`、`hint`（处置建议）、`shareEnsure`（自动 `net use` 的结果）。读取前会先做 2 秒的 445/139 端口探测，但探测失败**只作诊断**（不再直接判失败）：服务自启（Session 0）时探测可能返回 `EACCES`，配了 `PRODUCTION_SCHEDULE_UNC_*` 凭据后仍可能读成功，所以此时会继续尝试凭据连接，最终 `code` 以 `net use`/文件访问的真实错误为准；探测结果见 `raw.host` |
 | `lastSuccessAt` | 最近一次成功读取的时间 |
 | `share` | 共享根、是否配置了凭据（`credentialConfigured`）、最近一次自动 `net use` 的时间/结果/账户（`lastEnsure`）；失败时 `lastEnsure.connections` 会列出本会话到该服务器已有的连接，`errorNo` 为 `net use` 返回码（如 `1219` 表示已存在其他凭据的连接） |
-| `raw` | 裸文件操作结果：`host`（445/139 端口探测结果）、分别试 `stat`、`readFile`、`readdir`；文件级操作全为 `EPERM` 说明共享连接已建立但身份不对（多为 guest/匿名） |
+| `raw` | 裸文件操作结果：`host`（445/139 端口探测结果）、分别试 `stat`、`readFile`、`readdir`；文件级操作全为 `EPERM` 说明共享连接已建立但身份不对（多为 guest/匿名）。子进程整体超时或崩溃时，这些字段为空并带 `workerError`（`code`、`message`、`timedOut: true`），可直接判定为「共享调用挂死」而非权限问题 |
 
 ### 获取维护状态
 
@@ -4454,9 +4454,12 @@ socket.emit('task_updated', {
 | `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`）；未显式配置时代码回退到该内置地址（`backend/config/security.js`） |
 | `PRODUCTION_SCHEDULE_PATH` | 内置回退值 `\\192.168.160.70\各产品大日程\各产品大日程.xls` | 各产品大日程 Excel 路径。`POST /api/spec/spec-info` 优先从此表取数量/纳期/已发图/工厂；不可读时静默回退 PDF，不阻断接口 |
 | `PRODUCTION_SCHEDULE_CACHE_MS` | `300000` | 大日程解析缓存时长（毫秒）。按文件 mtime 复用解析结果；读取失败后 30 秒内不重复访问共享目录 |
+| `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS` | `20000` | 共享盘读取子进程硬超时（毫秒，最小 5000）。`stat` / `readFile` / `readdir` 与 XLSX 解析由 `utils/productionScheduleWorker.js` 子进程执行，父进程超时即杀子进程；避免 SMB 调用挂死占满 libuv 线程池导致整个后端不响应 |
+| `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD` | `3` | 熔断阈值（最小 1）：10 分钟内连续失败达到该次数即暂停访问共享盘。熔断期间 `getAllScheduleEntries()` 直接返回最后一次成功解析的索引（`forceReload` 请求返回 `null`），不发 UNC 调用 |
+| `PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS` | `3600000` | 熔断冷却时长（毫秒，最小 60000）。到期后下一次查询做半开探测，成功即清空计数并恢复实时读取；`GET /api/system/schedule-probe` 通过 `bypassBreaker` 随时可强制探测 |
 | `PRODUCTION_SCHEDULE_UNC_USER` | 空 | 访问大日程共享目录的账号。后端以服务/计划任务开机自启时运行在 Session 0，没有登录用户的共享认证；配置后读取失败会自动 `net use` 再重试 |
 | `PRODUCTION_SCHEDULE_UNC_PASSWORD` | 空 | 与 `PRODUCTION_SCHEDULE_UNC_USER` 配套的密码；仅用于建立共享连接，不写入日志 |
-| `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号分隔；用于双备份第二地址等其他共享 |
+| `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号或换行分隔；用于生产大日程等 UNC 共享读取的凭据兜底（Session 0 下自动 `net use` 后重试）。数据库备份只写本地备份目录，不使用该凭据 |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `CRASH_EXIT_ON_UNCAUGHT` | 空（记录但不退出） | 进程级兜底开关。`uncaughtException` / `unhandledRejection` 默认**只记录不退出**：完整堆栈追加到 `logs/backend-crash.log` 并打到控制台，进程继续提供服务（代价是可能有请求卡在半途）；设为 `1` 时记录后 `process.exit(1)`，便于 nodemon 之类按崩溃重启。生产环境保持默认——直接退出会让 5000 端口消失、前端所有请求变成 `ECONNREFUSED`，而日志里只剩 nodemon 的一句 `app crashed` |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
@@ -4509,4 +4512,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `schedule.filePath` | 各产品大日程 Excel 路径（`PRODUCTION_SCHEDULE_PATH`；未配置时代码回退到内置地址 `\\192.168.160.70\各产品大日程\各产品大日程.xls`） |
 | `schedule.cacheMs` | 大日程解析结果缓存时长（`PRODUCTION_SCHEDULE_CACHE_MS`，默认 `300000`） |
 
-最后更新：2026-11-08
+最后更新：2026-11-09

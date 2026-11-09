@@ -2,7 +2,7 @@
 
 本文档说明 Obara 任务管理系统在 Windows 环境下的启动、部署、备份和排障方式。
 
-> 其他文档：[README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md) · [API 文档](API.md) · [使用手册](USER-GUIDE.md) · [WeKnora 部署指南](../weknora/README.md)
+> 其他文档：[README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md) · [API 文档](API.md) · [使用手册](USER-GUIDE.md) · [运维工具说明](TOOLS.md) · [WeKnora 部署指南](../weknora/README.md)
 
 ## 目录
 
@@ -48,7 +48,7 @@ start.bat
 2. 检查 5000/5173 端口，被占用时自动结束占用进程并释放端口。
 3. 检查根目录 `node_modules/.bin`，依赖缺失时自动执行 `npm install`（仓库使用 npm workspaces，一条命令安装前后端全部依赖）。
 4. 后台隐藏启动后端和前端，日志分别写入 `logs/backend.log`、`logs/frontend.log`（错误日志为 `*.err.log`，PID 记录在 `*.pid`，进程级未捕获异常的堆栈单独追加到 `logs/backend-crash.log`，进程每次自己退出的退出码与内存/句柄快照追加到 `logs/backend-exit.log`）。
-5. 后端由 `backend-watchdog.bat` 托管：该进程**意外结束后自动重新拉起**，每次启动/退出/重启都记到 `logs/backend-watchdog.log`（详见下方「后端进程静默退出」）。
+5. 后端由 `backend-watchdog.bat` 托管：该进程**意外结束后自动重新拉起**，每次启动/退出/重启都记到 `logs/backend-watchdog.log`（详见下方「后端进程静默退出」）。每次拉起后端时还会启动 `backend-health-probe.bat`，专门处理「进程没退出、但不再响应 HTTP」的假死（详见「后端假死」）。
 
 > **代码更新流程**：启动脚本不会自动拉取代码（自动 `git pull` 存在「拉取即执行」的供应链风险，已移除）。更新版本时请人工确认后手动执行 `git pull`（本地有修改时自行处理 stash），再运行 `start.bat`。
 
@@ -59,6 +59,7 @@ start.bat
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口），适合长期运行 |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
 | `backend-watchdog.bat` | 后端守护循环，由 `start.bat` 调用，一般不需要手动执行。后端进程一结束就重新拉起（默认等待 10 秒；连续 3 次「启动即崩」后放宽到 30 秒、5 次后 60 秒），并把每次启动/退出/重启写入 `logs/backend-watchdog.log`。可用 `OBARA_RESTART_DELAY` 调等待秒数、`OBARA_BACKEND_CMD` 换启动命令（如 `node server.js`：只守护、不监听文件变化） |
+| `backend-health-probe.bat` | 后端假死探测器，由 `backend-watchdog.bat` 每次拉起后端时自动启动，不要手动运行（手动跑会多一个探测器，虽不会误杀，但日志会重复）。每 30 秒向 `http://127.0.0.1:<PORT>/` 发一次请求（单次 5 秒超时），连续 3 次拿不到**任何 HTTP 响应**就判定假死：找到监听端口的 PID 并 `taskkill /F /T`，nodemon 因 `--exitcrash` 退出，看门狗随后重新拉起。可用 `OBARA_PROBE_INTERVAL`（秒，默认 30）、`OBARA_PROBE_TIMEOUT`（秒，默认 5）、`OBARA_PROBE_FAILS`（默认 3）调整；日志写入 `logs/backend-watchdog.log`（`[probe]` 前缀） |
 | `stop.bat` | 先调用断网备份接口备份数据库，再按端口停止前后端进程：从监听 PID 沿父进程链向上定位进程树顶层后 `taskkill /F /T` 整棵树（只杀监听进程会残留 npm/nodemon/cmd，日志文件仍被占用），再清扫不占端口的残留进程并回检端口。进程若由服务/计划任务在 Session 0 启动，需管理员权限，脚本会自动提权重启自身 |
 
 默认访问地址：
@@ -228,6 +229,7 @@ nssm remove ObaraTaskManager
 8. 前端能打开并完成登录、主页面加载、任务保存、导出文件下载等关键流程。
 9. 如果使用仕样 PDF 搜索，运行后端的 Windows 用户能访问 `SPEC_SHARE_PATH` 配置的共享目录。
 10. 如果启用「各产品大日程」取值（状态追踪的数量/纳期/已发图），运行后端的 Windows 用户能读取 `PRODUCTION_SCHEDULE_PATH` 指向的 Excel；文件不可读时接口会自动回退 PDF，不报错但表格数据不生效——可在后端日志中搜 `[productionSchedule]` 确认是否读取失败。
+11. 长期无人值守部署确认守护链生效：用 `start.bat` 启动后，`logs/backend-watchdog.log` 应出现 `[probe] health probe started (gen …)`，说明假死探针已就位；若改用 PM2 / Windows 服务，需自行提供「进程未退出但不再响应」的存活探测（见「后端假死」）。
 
 ### 健康检查
 
@@ -242,6 +244,7 @@ GET http://localhost:5000/api/system/version    # 需要登录，匿名返回 40
 
 - 只要能返回任意 HTTP 响应体为 JSON（包括 `401`），即说明 Express 服务可用；连接被拒绝（无响应）才是服务未启动。带有效登录 Token 请求 `/api/system/version` 应返回 `200`。
 - 也可以只检测 5000 端口是否处于监听状态，或访问 Socket.IO 轮询握手地址 `http://localhost:5000/socket.io/?EIO=4&transport=polling`（应返回 `0{...}` 开头的 Engine.IO 报文）。
+- **端口在监听不代表服务可用**：共享盘调用挂死会把 Node 的线程池占满，进程活着但所有 HTTP 都不响应。`start.bat` 部署自带 `backend-health-probe.bat` 处理这种假死（判据与日志见「后端假死」）；自建探活时请以「能否在数秒内拿到任意 HTTP 响应」为准，不要只看端口或进程。
 - 前端页脚显示“就绪”，说明前端能连接后端和 Socket.IO。
 - Socket 断开时前端会显示离线横幅，后端恢复后会自动重新连接并刷新数据。
 
@@ -290,6 +293,11 @@ SPEC_SHARE_PATH=\\<server>\仕样书$
 PRODUCTION_SCHEDULE_PATH=\\<server>\各产品大日程\各产品大日程.xls
 # 大日程解析缓存时长（毫秒），默认 5 分钟；共享文件更新后最多滞后该时长生效
 # PRODUCTION_SCHEDULE_CACHE_MS=300000
+# 共享盘读取子进程硬超时（毫秒，默认 20000，最小 5000）；超时即杀子进程并计一次失败
+# PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS=20000
+# 熔断：连续失败 3 次后停止访问共享盘 1 小时；期间普通查询返回最后一次成功缓存
+# PRODUCTION_SCHEDULE_BREAKER_THRESHOLD=3
+# PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS=3600000
 # 共享目录访问凭据：后端以服务/计划任务开机自启时运行在 Session 0，拿不到登录用户的
 # 共享认证；配置后读取失败会自动 net use 再重试（详见「常见问题 → 同步生产大日程读数失败」）
 # PRODUCTION_SCHEDULE_UNC_USER=
@@ -320,6 +328,9 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `SPEC_SHARE_PATH` | 内置回退值 `\\192.168.160.6\仕样书$` | 仕样书 PDF 共享目录路径（如 `\\server\仕样书$`）；未显式配置时代码回退到该内置地址（`backend/config/security.js`） |
 | `PRODUCTION_SCHEDULE_PATH` | 内置回退值 `\\192.168.160.70\各产品大日程\各产品大日程.xls` | 各产品大日程 Excel 文件路径（`.xls`/`.xlsx`）。状态追踪页的「数量」「纳期」「已发图」与工厂优先取此表：解析「南京焊钳」「上海焊钳」「南京焊钳修改」「上海焊钳修改」四张工作表，`南京*` 对应 `O/NJG`、`上海*` 对应 `O/SHA`；读不到时回退 PDF 与已存数据，不会阻断接口。运行后端的 Windows 用户需要有该共享文件的读取权限 |
 | `PRODUCTION_SCHEDULE_CACHE_MS` | `300000` | 大日程解析结果缓存时长（毫秒）。解析结果按文件 mtime 复用，共享文件更新后最多滞后该时长生效；读取失败后 30 秒内不重复访问共享目录（避免每次状态追踪请求都卡在不可达的网络路径上） |
+| `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS` | `20000` | 共享盘读取子进程的硬超时（毫秒，最小 5000）。共享盘的 `stat` / `readFile` / `readdir` 与 XLSX 解析都在 `backend/utils/productionScheduleWorker.js` 子进程执行，超时立即杀掉子进程并计一次失败——挂死的内核调用随子进程消失，主进程的线程池与事件循环不受影响。共享盘长期很慢时可适当调大，但越大单次坏请求占用越久 |
+| `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD` | `3` | 熔断阈值（最小 1）：10 分钟窗口内连续失败达到该次数后暂停访问共享盘。熔断期间普通查询返回最后一次成功解析的缓存（没有缓存才返回「不可用」），不再向共享盘发起新调用 |
+| `PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS` | `3600000` | 熔断冷却时长（毫秒，最小 60000）。冷却到期后下一次查询做半开探测：成功则清空计数并恢复实时读取，失败则重新计时。熔断中可用 `GET /api/system/schedule-probe` 强制读一次确认是否恢复，恢复后无需重启后端 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；登录/改密独立限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被独立限流器使用 |
 | `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流阈值：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
@@ -662,6 +673,35 @@ express-rate-limit 官方导出的 `ipKeyGenerator(req.ip)` 生成 IP 部分（I
 - 停服不受影响：`stop.bat` 从监听 PID 沿父进程链向上定位到看门狗的 `cmd.exe` 后整棵树 `taskkill /F /T`，不会出现「刚停掉又被看门狗拉起来」。
 - 通过 `control/` 控制台（ObaraServiceController）启动的后端**已经内置自愈**：连续 3 轮探测端口无响应（约 6 秒）且确认进程已退出或处于 `app crashed` 空转状态时，按退避间隔自动重新拉起（默认 15/30/60/120 秒，10 分钟内最多 5 次），动作记录在日志面板的 `自愈` 分类；参数见 `control/App.config` 的 `AutoRestartEnabled` / `AutoRestartMaxAttempts` / `AutoRestartWindowMinutes` / `AutoRestartDelays`。用户主动「停止」后不会自动拉起；`start.bat` 拉起的实例不由控制台接管（避免与 `backend-watchdog.bat` 抢端口）。长期运行仍建议用 PM2（见「PM2 进程管理」）或 Windows 服务，二者在操作系统层面自带 `autorestart`。
 
+### 后端假死（端口 5000 仍在监听、所有请求一直转圈）
+
+现象：页面不报错而是一直转圈或请求超时；`netstat -ano | findstr 5000` 能看到 `LISTENING`，任务管理器里 `node.exe` 也活着；`logs/backend-exit.log` 没有该时刻的记录，`backend-crash.log` 也没有新堆栈。这正是 2026-11 生产故障的形态。
+
+原因：Windows 访问 SMB 共享（`\\192.168.160.70\...`）时，如果会话被服务端断开（闲置十余小时、网络闪断、账号改密），后续 UNC 调用**不一定会立刻返回错误**，而是在内核里挂住不返回。Node 的 libuv 线程池默认只有 4 个线程，几个挂死的 `fs` 调用就能占满，之后所有依赖线程池的操作（文件读写、DNS、crypto 等）全部排队——进程活着、端口在监听，但不响应任何 HTTP 请求。因为进程没有退出，nodemon 的 `--exitcrash` 与看门狗的退出码判断都发现不了。
+
+现在有三层防护，均无需人工干预：
+
+| 层 | 机制 | 触发后的表现 |
+|---|---|---|
+| 1. 子进程隔离 | `productionSchedule.js` 把共享盘的 `stat` / `readFile` / `readdir` 与 XLSX 解析 fork 到 `productionScheduleWorker.js`，父进程最多等 `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS`（默认 20 秒） | 共享盘挂死只损失一次请求等待，主进程线程池保持干净；超时即杀子进程并计一次失败 |
+| 2. 熔断 | 10 分钟窗口内连续失败 `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD`（默认 3）次后停止访问共享盘，冷却 `PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS`（默认 1 小时） | 普通查询直接返回最后一次成功缓存，不再制造新的挂起连接；`GET /api/system/schedule-probe` 可绕过熔断强制读一次 |
+| 3. 假死探测 | `backend-health-probe.bat` 每 30 秒探一次 HTTP（5 秒超时），连续 3 次无响应即杀掉监听该端口的进程树 | nodemon 退出 → 看门狗 10 秒后重新拉起；日志依次出现 `[probe] health probe failed (n/3)` 与 `[FATAL] backend unresponsive ... killing process tree` |
+
+排查顺序：
+
+1. `logs/backend-watchdog.log` 搜 `[probe]`：出现连续 `health probe failed` 说明确实发生过假死；随后应有 `killed PID` 与看门狗的重新拉起记录。
+2. 没有 `[probe]` 记录但请求确实很慢，说明是「慢」而不是「假死」（大 PDF 解析、同步生产大日程、共享盘抖动），看页面提示与后端日志即可，不要急着重启。
+3. `logs/backend.log` / `logs/backend.err.log` 搜 `[productionSchedule]`：出现「熔断中（连续失败 N 次…），跳过共享盘访问」说明熔断已开启。先按后文「同步生产大日程报无法读取…」修共享，再用 `GET /api/system/schedule-probe` 确认可读——探针成功会自动清空熔断计数，无需重启后端。
+4. 确认共享本身可用：在资源管理器打开 `PRODUCTION_SCHEDULE_PATH`；打不开就按后文「同步生产大日程报无法读取…」逐项排查。
+
+调参（一般不需要）：
+
+- 共享盘单次读取稳定超过 20 秒 → 调大 `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS`，否则每次都会超时并被计为失败。
+- 希望更快自愈 → 调小 `OBARA_PROBE_INTERVAL`（默认 30 秒）或 `OBARA_PROBE_FAILS`（默认 3）；阈值过低会把一次长 GC / 大文件解析误判成假死。
+- 希望缩短熔断时间 → 调小 `PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS`；不建议低于 5 分钟，共享没修好时只会反复冲击。
+
+注意：探测器只判断「有没有 HTTP 响应」，401/404 也算健康；它按 `PORT` 找监听进程，不会误杀前端或其它服务。
+
 ### 端口被占用
 
 后端默认端口为 `5000`，前端默认端口为 `5173`。
@@ -767,6 +807,8 @@ GET /api/system/schedule-probe
 
 补充：`/api/system/schedule-probe` 的 `raw.readdir` 也能确认目录里是否还叫「各产品大日程.xls」；`logs/backend.err.log` 里搜 `[productionSchedule]` 可看到错误码与运行账户，搜 `[uncShare]` 可看到每次自动连接的结果。凭据不会写入日志。
 
+如果接口本身也超时、或 `raw.workerError.timedOut` 为 `true`，说明**共享调用在系统内核里挂住了**（不是权限问题）：读取已放在独立子进程里，接口最多等 `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS`（默认 20 秒）就会返回。连续失败还会触发熔断，冷却期内不再访问共享盘——此时页面上的数量/纳期会使用最后一次成功的缓存或回退到 PDF，属预期降级。详见「后端假死」一节。
+
 ### 数据库文件损坏
 
 SQLite 采用 WAL 模式和事务写入，正常情况下不会因进程崩溃而损坏。如果 `backend/data.db` 文件损坏：
@@ -865,7 +907,7 @@ GET /api/system/version
 
 ## 日志查看
 
-`start.bat` 以隐藏窗口方式运行，不会打开命令行窗口；前后端日志分别写入项目根目录的 `logs/backend.log`、`logs/frontend.log`（错误输出为 `logs/backend.err.log`、`logs/frontend.err.log`），启动脚本自身的输出在 `logs/startup.log`，进程级未捕获异常（`uncaughtException` / `unhandledRejection`）的完整堆栈追加在 `logs/backend-crash.log`，后端进程每次自己退出时的退出码与内存/句柄快照追加在 `logs/backend-exit.log`，后端每次自动重启的时间与退出码记在 `logs/backend-watchdog.log`，排障时直接查看这些文件即可。
+`start.bat` 以隐藏窗口方式运行，不会打开命令行窗口；前后端日志分别写入项目根目录的 `logs/backend.log`、`logs/frontend.log`（错误输出为 `logs/backend.err.log`、`logs/frontend.err.log`），启动脚本自身的输出在 `logs/startup.log`，进程级未捕获异常（`uncaughtException` / `unhandledRejection`）的完整堆栈追加在 `logs/backend-crash.log`，后端进程每次自己退出时的退出码与内存/句柄快照追加在 `logs/backend-exit.log`，后端每次自动重启的时间与退出码、假死探测的失败计数与强杀记录（`[probe]` 前缀）都在 `logs/backend-watchdog.log`，排障时直接查看这些文件即可。
 
 手动执行 `npm run dev` 时直接查看当前 PowerShell 或 CMD 输出。
 
@@ -1073,4 +1115,4 @@ backend/
 6. **检查备份目录可写性**：确认服务账号对 `backups/database/`、`backups/task-exports/`、`backups/offline/` 等维护目录有写权限，并关注磁盘剩余空间；备份失败会写入后端日志
 7. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-11-08
+最后更新：2026-11-09

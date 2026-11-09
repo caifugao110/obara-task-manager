@@ -125,7 +125,7 @@ rem command line and kill the entire process tree.  Only node.exe processes,
 rem cmd.exe processes running "npm run dev" and the watchdog are targeted, so
 rem the current start.bat cmd.exe process is never killed.
 echo Cleaning up orphaned processes from previous runs...
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('%SCRIPT_DIR%') -and ($_.Name -eq 'node.exe' -or $_.CommandLine -match 'npm run dev' -or $_.CommandLine -match 'backend-watchdog') } | ForEach-Object { taskkill /F /T /PID $_.ProcessId 2>$null }" >nul 2>&1
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('%SCRIPT_DIR%') -and ($_.Name -eq 'node.exe' -or $_.CommandLine -match 'npm run dev' -or $_.CommandLine -match 'backend-watchdog' -or $_.CommandLine -match 'backend-health-probe') } | ForEach-Object { taskkill /F /T /PID $_.ProcessId 2>$null }" >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 exit /b 0
 

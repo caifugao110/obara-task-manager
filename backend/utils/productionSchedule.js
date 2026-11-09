@@ -1,6 +1,5 @@
 'use strict';
 
-const fs = require('fs');
 const XLSX = require('xlsx');
 const securityConfig = require('../config/security');
 const uncShare = require('./uncShare');
@@ -18,6 +17,22 @@ const DEFAULT_CACHE_MS = 5 * 60 * 1000;
 const FAILURE_RETRY_MS = 30 * 1000;
 const WARN_INTERVAL_MS = 10 * 60 * 1000;
 
+// 熔断器（方案 1B）：共享盘连续读取失败后，停止访问一段时间。
+// 实测故障里 160.70 的 SMB 会话失效后，UNC 调用会在内核里挂住不返回；
+// 如果每次缓存到期（5 分钟）、每轮失败重试（30 秒）都继续往里冲，
+// 只会不断制造新的挂起调用，把线程池彻底占死。连续失败 N 次即熔断，
+// 熔断窗口内完全不发 UNC 调用（普通查询返回最近一次成功缓存）。
+const BREAKER_FAILURE_THRESHOLD = Math.max(1, Number(process.env.PRODUCTION_SCHEDULE_BREAKER_THRESHOLD) || 3);
+const BREAKER_COOLDOWN_MS = Math.max(60 * 1000, Number(process.env.PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS) || 60 * 60 * 1000);
+const BREAKER_FAILURE_WINDOW_MS = 10 * 60 * 1000;
+
+// 子进程隔离（方案 2）：对共享盘的 stat / readFile / readdir 与 XLSX 解析
+// 全部放到 productionScheduleWorker.js 执行，主进程只等结果。
+// 共享盘调用挂死时由这里的硬超时终止子进程——挂起的内核调用随子进程消失，
+// 主进程的 libuv 线程池不会被占满，HTTP 请求也就不会整体排队。
+const WORKER_PATH = require('path').join(__dirname, 'productionScheduleWorker.js');
+const WORKER_TIMEOUT_MS = Math.max(5000, Number(process.env.PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS) || 20000);
+
 // 大日程文件位于网络共享目录，读取一次约几百 KB；缓存解析结果，
 // 避免每次状态跟踪请求都去访问共享盘。
 let cache = {
@@ -28,6 +43,18 @@ let cache = {
   index: null
 };
 let lastWarnAt = 0;
+
+// 最近一次成功解析的缓存。读取失败时 cache 会被清成空壳（让失败节流生效），
+// 但熔断期间普通查询仍应返回这份「最后一次成功的数据」，保证前端可用。
+let lastGoodCache = null;
+
+// 熔断器状态：failures 是窗口期内的连续失败次数，openedAt 是熔断开启时刻。
+let breaker = {
+  failures: 0,
+  openedAt: 0,
+  lastFailureAt: 0,
+  lastReason: ''
+};
 
 // 读取失败的详细信息：前端只显示一句「请确认共享目录可访问」会掩盖真实原因
 // （Session 0 的服务进程读不到共享 vs 文件被 Excel 独占，处理方式完全不同），
@@ -370,6 +397,7 @@ function recordFailure(filePath, nowMs, code, error) {
     shareEnsure: null
   };
   warnThrottled(`[productionSchedule] 无法读取大日程文件 ${filePath}（${code}，运行账户 ${getProcessUser()}）:`, error);
+  breakerRecordFailure(code);
   cache = {
     filePath,
     loadedAt: nowMs,
@@ -378,6 +406,117 @@ function recordFailure(filePath, nowMs, code, error) {
     index: null
   };
 }
+
+function isBreakerOpen(now = Date.now()) {
+  return breaker.failures >= BREAKER_FAILURE_THRESHOLD
+    && breaker.openedAt > 0
+    && now - breaker.openedAt < BREAKER_COOLDOWN_MS;
+}
+
+function breakerRecordFailure(code) {
+  const now = Date.now();
+  // 隔了很久的失败不算「连续」：前一天偶发一次失败不应推动熔断
+  if (now - breaker.lastFailureAt > BREAKER_FAILURE_WINDOW_MS) breaker.failures = 0;
+  breaker.failures += 1;
+  breaker.lastFailureAt = now;
+  breaker.lastReason = code || '';
+  if (breaker.failures >= BREAKER_FAILURE_THRESHOLD) {
+    // 冷却期内不会再有新的尝试；冷却到期后的半开探测若再次失败，重新计时
+    const stillOpen = breaker.openedAt > 0 && now - breaker.openedAt < BREAKER_COOLDOWN_MS;
+    if (!stillOpen) {
+      console.warn(
+        `[productionSchedule] 熔断开启：连续 ${breaker.failures} 次读取失败（${breaker.lastReason}），`
+        + `${Math.round(BREAKER_COOLDOWN_MS / 60000)} 分钟内不再访问共享盘，普通查询改用最近一次成功缓存`
+      );
+      breaker.openedAt = now;
+    }
+  }
+}
+
+function breakerRecordSuccess() {
+  if (!breaker.failures && !breaker.openedAt) return;
+  if (breaker.failures >= BREAKER_FAILURE_THRESHOLD) {
+    console.log('[productionSchedule] 熔断恢复：共享盘重新可读，恢复实时读取');
+  }
+  breaker.failures = 0;
+  breaker.openedAt = 0;
+}
+
+/**
+ * 在子进程里执行一次共享盘任务，主进程用硬超时兜底。
+ * 子进程内的调用即使在内核里挂死，也只是这个子进程不返回；
+ * 超时后 kill 掉它，主进程的线程池保持干净。
+ * @param {object} job
+ * @returns {Promise<object>} 子进程回传的消息；超时/异常返回 { ok: false, error, timedOut? }
+ */
+function runScheduleWorker(job) {
+  return new Promise((resolve) => {
+    let child = null;
+    let timer = null;
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (child) {
+        try { child.kill(); } catch (error) { /* 已退出时忽略 */ }
+      }
+      resolve(result);
+    };
+
+    try {
+      child = require('child_process').fork(WORKER_PATH, [], {
+        // stdout/stderr 直接继承：子进程里的告警（工作表解析失败等）落在后端日志里
+        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        windowsHide: true,
+        env: process.env
+      });
+    } catch (error) {
+      finish({ ok: false, error: { code: error.code || 'WORKER_SPAWN_FAILED', message: error.message } });
+      return;
+    }
+
+    timer = setTimeout(() => {
+      finish({
+        timedOut: true,
+        ok: false,
+        error: {
+          code: 'ETIMEDOUT',
+          message: `读取大日程子进程超过 ${WORKER_TIMEOUT_MS}ms 未返回（共享盘调用疑似挂死），已强制终止`
+        }
+      });
+    }, WORKER_TIMEOUT_MS);
+
+    child.on('message', (message) => finish(message || { ok: false, error: { code: 'WORKER_EMPTY', message: '子进程返回空结果' } }));
+    child.on('error', (error) => {
+      finish({ ok: false, error: { code: error.code || 'WORKER_ERROR', message: error.message } });
+    });
+    child.on('exit', (code, signal) => {
+      finish({ ok: false, error: { code: 'WORKER_EXITED', message: `大日程子进程提前退出（code=${code}, signal=${signal}）` } });
+    });
+
+    try {
+      child.send(job);
+    } catch (error) {
+      finish({ ok: false, error: { code: 'WORKER_SEND_FAILED', message: error.message } });
+    }
+  });
+}
+
+function buildIndexFromEntries(entries) {
+  const index = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    let list = index.get(entry.specNumber);
+    if (!list) {
+      list = [];
+      index.set(entry.specNumber, list);
+    }
+    list.push(entry);
+  }
+  return index;
+}
+
 
 /**
  * 读取并解析大日程（异步）。
@@ -399,6 +538,25 @@ async function getScheduleIndex(now = new Date(), options = {}) {
 
   if (!forceReload && cache.filePath === filePath && cache.index && nowMs - cache.loadedAt < cacheMs) {
     return cache.index;
+  }
+
+  // 熔断期间（方案 1B）：完全不发 UNC 调用。
+  //   - 后台/手动「同步生产大日程」这类强制刷新：返回失败，宁可报不可用，
+  //     也不拿可能过期的数据去落库；
+  //   - 普通查询：返回最近一次成功缓存（可能已过期），页面继续可用；
+  //   - 管理员诊断（probeSchedule）用 bypassBreaker 做一次半开探测。
+  // 必须放在「失败节流」之前：否则熔断刚开启的 30 秒内普通查询仍会被
+  // 失败节流挡成 null，而不是拿到上一次成功的数据。
+  if (!options.bypassBreaker && isBreakerOpen(nowMs)) {
+    warnThrottled(
+      `[productionSchedule] 熔断中（连续失败 ${breaker.failures} 次，最后错误 ${breaker.lastReason}），跳过共享盘访问`,
+      ''
+    );
+    if (forceReload) return null;
+    if (lastGoodCache && lastGoodCache.filePath === filePath && lastGoodCache.index) {
+      return lastGoodCache.index;
+    }
+    return null;
   }
 
   // 读取失败后短时间内不重复访问网络共享目录，避免拖慢每个请求
@@ -433,23 +591,23 @@ async function getScheduleIndex(now = new Date(), options = {}) {
       if (hostUnreachable) return null;
     }
 
-    const outcome = await uncShare.withShareRetryAsync(filePath, async () => {
-      const stat = await fs.promises.stat(filePath);
-      if (cache.filePath === filePath && cache.index && cache.mtimeMs === stat.mtimeMs) {
-        return { stat, index: cache.index, entryCount: cache.entryCount, reused: true };
-      }
-      const buffer = await fs.promises.readFile(filePath);
-      const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
-      const index = buildIndex(workbook, now);
-      return { stat, index, entryCount: countEntries(index), reused: false };
-    }, getShareCredentials());
+    // 实际触达共享盘的 stat / readFile / XLSX 解析都在子进程里完成（方案 2）。
+    // 这里只等 IPC 结果，最长等 WORKER_TIMEOUT_MS；超时即杀子进程并计为一次失败。
+    const outcome = await runScheduleWorker({
+      type: 'load',
+      filePath,
+      nowMs,
+      expectedMtimeMs: cache.filePath === filePath && cache.index ? cache.mtimeMs : 0,
+      credentials: getShareCredentials()
+    });
 
     if (!outcome.ok) {
       const error = outcome.error || {};
       const code = error.code || 'ERROR';
-      const guestSession = Boolean(outcome.ensure && outcome.ensure.ok
+      const ensure = outcome.ensure || null;
+      const guestSession = Boolean(ensure && ensure.ok
         && (code === 'EPERM' || code === 'EACCES'));
-      const credsRejected = Boolean(guestSession && outcome.ensure.credsConfigured);
+      const credsRejected = Boolean(guestSession && ensure.credsConfigured);
       const guestHint = credsRejected
         ? `已用配置的账号（${process.env.PRODUCTION_SCHEDULE_UNC_USER}）连接共享，但文件访问仍被拒：请确认该账号在 ${uncShare.getShareRoot(filePath) || '共享服务器'} 上具有读权限（共享权限与 NTFS 权限都要给）`
         : `共享连接已建立但文件访问被拒：当前运行账户（${getProcessUser()}）在共享服务器上多半不存在，连接以 guest/匿名身份建立。请在 backend/.env 配置 PRODUCTION_SCHEDULE_UNC_USER 与 PRODUCTION_SCHEDULE_UNC_PASSWORD（服务器上真实存在且有读权限的账号）`;
@@ -461,22 +619,38 @@ async function getScheduleIndex(now = new Date(), options = {}) {
           ? '共享账号无读权限，请给该账号授予共享与 NTFS 读权限'
           : '共享连接以 guest 身份建立，文件访问被拒；请在 backend/.env 配置共享账号')
         : shortHintForError(code);
-      runtime.lastError.shareEnsure = outcome.ensure
-        ? { attempted: outcome.ensure.attempted, ok: outcome.ensure.ok, message: outcome.ensure.message }
+      runtime.lastError.timedOut = Boolean(outcome.timedOut) || code === 'ETIMEDOUT';
+      runtime.lastError.shareEnsure = ensure
+        ? { attempted: ensure.attempted, ok: ensure.ok, message: ensure.message }
         : null;
       return null;
     }
 
-    const { stat, index, entryCount } = outcome.value;
+    const value = outcome.value || {};
+    let index;
+    let entryCount;
+    if (value.reused) {
+      // 文件 mtime 未变：复用父进程里已解析的缓存，不再整本读取
+      if (!(cache.filePath === filePath && cache.index)) return null;
+      index = cache.index;
+      entryCount = cache.entryCount;
+    } else {
+      index = buildIndexFromEntries(value.entries);
+      entryCount = Number(value.entryCount) || countEntries(index);
+    }
+
     runtime.lastError = null;
     runtime.lastSuccessAt = new Date(nowMs).toISOString();
     cache = {
       filePath,
       loadedAt: nowMs,
-      mtimeMs: stat.mtimeMs,
+      mtimeMs: Number(value.mtimeMs) || 0,
       entryCount,
       index
     };
+    // 熔断期间普通查询靠这份快照继续服务；成功后熔断器归零
+    lastGoodCache = cache;
+    breakerRecordSuccess();
     return index;
   })();
 
@@ -528,7 +702,9 @@ async function findScheduleEntry(specNumber, preferredMonth) {
 // 文件不可读时返回 null，由调用方给出提示。
 async function getAllScheduleEntries(options = {}) {
   const index = await getScheduleIndex(options.now || new Date(), {
-    forceReload: options.forceReload === true
+    forceReload: options.forceReload === true,
+    // 管理员诊断（probeSchedule）需要绕过熔断做一次真正的半开探测
+    bypassBreaker: options.bypassBreaker === true
   });
   if (!index) return null;
 
@@ -569,6 +745,15 @@ function getScheduleStatus() {
     entryCount: cache.entryCount || 0,
     lastSuccessAt: runtime.lastSuccessAt,
     lastError: runtime.lastError,
+    breaker: {
+      open: isBreakerOpen(),
+      failures: breaker.failures,
+      threshold: BREAKER_FAILURE_THRESHOLD,
+      openedAt: breaker.openedAt ? new Date(breaker.openedAt).toISOString() : '',
+      cooldownMs: BREAKER_COOLDOWN_MS,
+      lastReason: breaker.lastReason,
+      workerTimeoutMs: WORKER_TIMEOUT_MS
+    },
     share: uncShare.getShareStatus(filePath, getShareCredentials())
   };
 }
@@ -596,37 +781,36 @@ function getUnavailableMessage() {
 
 // 裸文件系统探针：绕过 XLSX 解析，分别试 stat / readFile / readdir，
 // 用于区分「共享根本连不上」「只有 stat 失败」「文件被独占」这几种情况。
-// 同样走异步 API，避免管理员点一次排障就把整个后端卡住。
+// 与读取路径一样放进子进程执行：管理员点一次排障也不能把后端卡死。
 async function probeFileSystem(filePath) {
-  const result = { stat: { ok: false }, read: { ok: false }, readdir: { ok: false } };
   const host = uncShare.getShareHost(filePath);
-  result.host = host ? await uncShare.probeHost(host, 2000) : { ok: true, port: 0, elapsedMs: 0, code: '' };
-  try {
-    const stat = await fs.promises.stat(filePath);
-    result.stat = { ok: true, size: stat.size, mtime: new Date(stat.mtimeMs).toISOString(), isFile: stat.isFile() };
-  } catch (error) {
-    result.stat = { ok: false, code: error.code || '', message: error.message };
+  const probe = await runScheduleWorker({ type: 'probeFs', filePath });
+  if (!probe.ok) {
+    const error = probe.error || {};
+    return {
+      host: host ? await uncShare.probeHost(host, 2000) : { ok: true, port: 0, elapsedMs: 0, code: '' },
+      stat: { ok: false },
+      read: { ok: false },
+      readdir: { ok: false },
+      workerError: {
+        code: error.code || 'ERROR',
+        message: error.message || '',
+        timedOut: Boolean(probe.timedOut)
+      }
+    };
   }
-  try {
-    const buffer = await fs.promises.readFile(filePath);
-    result.read = { ok: true, bytes: buffer.length };
-  } catch (error) {
-    result.read = { ok: false, code: error.code || '', message: error.message };
-  }
-  try {
-    const dir = require('path').dirname(filePath);
-    const files = await fs.promises.readdir(dir);
-    result.readdir = { ok: true, dir, count: files.length, files: files.slice(0, 10) };
-  } catch (error) {
-    result.readdir = { ok: false, code: error.code || '', message: error.message };
-  }
-  return result;
+  return {
+    host: host ? await uncShare.probeHost(host, 2000) : { ok: true, port: 0, elapsedMs: 0, code: '' },
+    ...(probe.value || {})
+  };
 }
 
 // 管理员排查用：强制重读一次，返回能直接判断成败的信息（不写库、不改缓存之外的状态）
 async function probeSchedule() {
   const startedAt = Date.now();
-  const entries = await getAllScheduleEntries({ forceReload: true });
+  // bypassBreaker：熔断期间管理员手动诊断仍应真的去读一次（半开探测），
+  // 成功则熔断自动恢复，失败则重新计时
+  const entries = await getAllScheduleEntries({ forceReload: true, bypassBreaker: true });
   const status = getScheduleStatus();
   const sheets = {};
   const months = new Set();
