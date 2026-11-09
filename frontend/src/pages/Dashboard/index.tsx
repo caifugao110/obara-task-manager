@@ -115,9 +115,10 @@ const GunLookupTag = ({ text }: { text: string }) => (
 /**
  * 实测某条主任务在页面上「任务名文本」真正可用的宽度（px），口径统一为**普通用户看到的样子**。
  *
- * 为什么不能直接用列宽 18rem：主任务行里除了任务名，前面还固定有一个「完成状态标记」按钮
+ * 为什么不能直接用列宽：任务内容列的宽度是随视口反算的（见 VISIBLE_DAY_COLUMNS 附近），
+ * 主任务行里除了任务名，前面还固定有一个「完成状态标记」按钮
  * （完成 / 未完成二选一，hover 才显形，平时 opacity-0 但照样占 18px + 4px 间距），
- * 所以文字实际可用宽度是 288 - 8 - 6 - 1 - 22 ≈ 251px，比 288 窄。
+ * 所以文字实际可用宽度比列宽窄（列宽 288 时约 251px）。
  * 管理员还会额外多出「上移 / 下移」按钮（普通用户没有），这里**不把它们算回去**，
  * 保证不管谁复制，粘出来的表格都按「普通用户看到的宽度」断行。
  */
@@ -174,6 +175,18 @@ const pickNameContentWidth = (items: TaskItem[]): number | undefined => {
   });
   return best;
 };
+
+/* ---------- 主表格列宽 ---------- */
+// 一天在横向上占两列：「任务内容」+「工时」。
+// 主页面要求横向只显示 4 天，所以「任务内容」列的宽度由视口宽度反算（见表格列宽那个 effect 的注释），
+// 工时列固定 3rem(48px) 不随视口变化；设计员列与月总工时列各固定 w-24(96px)。
+const VISIBLE_DAY_COLUMNS = 4;
+const DAY_HOURS_COL_WIDTH = 48;
+const FIXED_COL_WIDTH = 96;
+// 任务内容列的兜底下限与首帧默认值（18rem，与原固定列宽一致）：
+// 下限只在极窄窗口（< 1350px）才碰到，此时 4 天已放不下，宁可保持可读宽度、由横向滚动条补齐。
+const MIN_TASK_COL_WIDTH = 240;
+const DEFAULT_TASK_COL_WIDTH = 288;
 
 const Dashboard = () => {
   const { user, token, logout } = useAuth();
@@ -258,6 +271,12 @@ const Dashboard = () => {
   // 空格监听本身注册得早，靠 ref 拿最新值，避免闭包读到旧的选中状态。
   const quickSpaceActionRef = useRef<(() => void) | null>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+  // 表格内部真正滚动的那一层：只有它的 clientWidth 扣掉了纵向滚动条，用来反算列宽
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  // 任务内容列宽（px）：随视口自适应，保证横向正好放 4 天；工时列固定 48px 不变
+  const [taskColWidth, setTaskColWidth] = useState(DEFAULT_TASK_COL_WIDTH);
+  // 一天的整列宽度 = 任务内容 + 工时，表头/单元格/行内网格都按它对齐
+  const dayColWidth = taskColWidth + DAY_HOURS_COL_WIDTH;
   const handledJumpKeyRef = useRef<string | null>(null);
   const hasShownDisconnectToast = useRef(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -283,6 +302,8 @@ const Dashboard = () => {
   // 点击"定位"后模态框临时半透明，方便透过模态框查看底部表格中的目标任务
   const [batchLocateDimmed, setBatchLocateDimmed] = useState(false);
   const batchLocateRestoreTimerRef = useRef<number | null>(null);
+  // 删除枪名的二次确认目标：点删除按钮只记录目标，确认后才真正删除（枪名删掉只能靠撤销找回）
+  const [gunDeleteTarget, setGunDeleteTarget] = useState<{ item: TaskItem; designerId: string; date: string; gunIndex: number } | null>(null);
 
   // 修改密码模态框
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
@@ -458,6 +479,29 @@ const Dashboard = () => {
       dayName: format(date, 'EEE')
     };
   }), [daysInMonth, firstDayOfMonth, workdayOverrides]);
+
+  // 主表格列宽：横向只放 4 天（VISIBLE_DAY_COLUMNS）。
+  // 做法是「视口宽度 ÷ 4 = 一天的整列宽度」，再扣掉固定 48px 的工时列，剩下的全给任务内容列——
+  // 工时列宽度不动，只是任务内容列变宽，任务名折行更少，横向要滚动的距离也更短。
+  // 用 ResizeObserver 跟着窗口/全屏/F12 缩放一起变；表格按 100% 宽度渲染，
+  // 所以列宽合计贴近视口宽度，行内网格与表头才对得齐。
+  // 依赖里带上加载态：加载骨架屏期间表格还没挂载，等它渲染出来再量一次，否则会一直用默认列宽。
+  useEffect(() => {
+    const el = tableScrollRef.current;
+    if (!el) return;
+    const compute = () => {
+      const dayWidth = (el.clientWidth - FIXED_COL_WIDTH * 2) / VISIBLE_DAY_COLUMNS;
+      // 向下取整：宁可每列少 1px，也保证第 4 天是完整的一列，不会被切掉一小条
+      const next = Math.max(MIN_TASK_COL_WIDTH, Math.floor(dayWidth - DAY_HOURS_COL_WIDTH));
+      // 差 2px 以内不更新：列宽变了行高可能跟着变（换行不同 → 纵向滚动条出现/消失 → clientWidth 变），
+      // 这种微小抖动没必要重排整张表，也避免 ResizeObserver 来回触发
+      setTaskColWidth(prev => (Math.abs(prev - next) <= 2 ? prev : next));
+    };
+    compute();
+    const observer = new ResizeObserver(compute);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loading, systemSettingsLoaded]);
 
   const handleWorkdayOverrideChange = async (date: string, naturalIsWeekend: boolean, checked: boolean) => {
     if (!isAdmin || !token) return;
@@ -1283,8 +1327,21 @@ const Dashboard = () => {
     });
   };
 
-  // 删除枪名并记录操作以便撤销
+  // 删除枪名：先弹二次确认（点删除按钮不直接生效），确认后再记历史并提交
   const onDeleteGun = (item: TaskItem, designerId: string, date: string, gunIndex: number) => {
+    if (!canEditTasks) {
+      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
+      return;
+    }
+    if (warnIfCellLocked(designerId, date, item.id)) return;
+    setGunDeleteTarget({ item, designerId, date, gunIndex });
+  };
+
+  // 二次确认里的「确认删除」：真正删除枪名并记录操作以便撤销
+  const confirmDeleteGun = () => {
+    if (!gunDeleteTarget) return;
+    const { item, designerId, date, gunIndex } = gunDeleteTarget;
+    setGunDeleteTarget(null);
     if (!canEditTasks) {
       if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
       return;
@@ -3272,13 +3329,13 @@ const Dashboard = () => {
 
         <main className="flex-1 min-h-0 overflow-hidden p-0">
           <div className="h-full bg-white shadow-sm border border-b-0 border-gray-300 overflow-hidden" ref={tableContainerRef}>
-            <div className="h-full overflow-auto">
+            <div className="h-full overflow-auto" ref={tableScrollRef}>
               <table className="border-collapse text-[12px] w-full">
               <thead className="text-xs">
                 <tr className="bg-[#f8f9fa] text-gray-600 h-16 table-header-row">
                   <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 w-24 min-w-[6rem] font-bold text-center shadow-[1px_0_0_0_#d1d5db] z-50">设计员</th>
                   {days.map(d => (
-                    <th key={d.fullDate} data-date={d.fullDate} colSpan={2} className={`group/date sticky top-0 border border-gray-300 min-w-[336px] text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
+                    <th key={d.fullDate} data-date={d.fullDate} colSpan={2} style={{ minWidth: dayColWidth }} className={`group/date sticky top-0 border border-gray-300 text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
                       <div className="text-[10px] opacity-60">{d.dayName}</div>
                       <div>{d.dayNum}</div>
                       {isAdmin && (
@@ -3301,8 +3358,8 @@ const Dashboard = () => {
                   <th className="sticky left-0 top-16 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[1px_0_0_0_#d1d5db] z-40"></th>
                   {days.map(d => (
                     <React.Fragment key={`sub-${d.fullDate}`}>
-                      <th className={`sticky top-16 border border-gray-300 w-[18rem] z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>任务内容</th>
-                      <th className={`sticky top-16 border border-gray-300 w-12 z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>工时</th>
+                      <th style={{ width: taskColWidth, minWidth: taskColWidth }} className={`sticky top-16 border border-gray-300 z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>任务内容</th>
+                      <th style={{ width: DAY_HOURS_COL_WIDTH, minWidth: DAY_HOURS_COL_WIDTH }} className={`sticky top-16 border border-gray-300 z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>工时</th>
                     </React.Fragment>
                   ))}
                   <th className="sticky right-0 top-16 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db] z-40"></th>
@@ -3402,7 +3459,8 @@ const Dashboard = () => {
                                       designerId={d.id}
                                       date={day.fullDate}
                                       colSpan={2}
-                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] min-w-[21rem] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
+                                      style={{ minWidth: dayColWidth }}
+                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
                                       onClick={(e: React.MouseEvent) => {
                                         if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
                                           setSelectedTasks([]);
@@ -3431,6 +3489,7 @@ const Dashboard = () => {
                                                 item={item}
                                                 designerId={d.id}
                                                 date={day.fullDate}
+                                                taskColWidth={taskColWidth}
                                                 isAdmin={canEditTasks}
                                                 canMarkColor={canMarkColor}
                                                 canMoveUp={canEditTasks && items.length > 1 && itemIndex > 0}
@@ -3599,7 +3658,7 @@ const Dashboard = () => {
               )}
               {/* 等比复刻整个主任务：主任务行 + 全部枪名行（枪名格+工时格） */}
               <div className={`flex border ${taskDropDuplicate ? 'border-red-400' : 'border-blue-400'} shadow-2xl rounded opacity-90 scale-105 bg-white overflow-hidden pointer-events-none`}>
-                <div className="w-[18rem] border-r border-gray-200 flex flex-col bg-white">
+                <div className="border-r border-gray-200 flex flex-col bg-white" style={{ width: taskColWidth }}>
                   <div
                     className="px-1.5 py-1.5 min-h-[28px] flex items-center break-all leading-relaxed text-[11px] font-medium"
                     style={(() => {
@@ -5482,6 +5541,70 @@ const Dashboard = () => {
           </div>
         </div>
       )}
+
+      {/* 删除枪名二次确认：枪名删掉只能靠撤销找回，悬停按钮误点代价大，这里拦一道 */}
+      {gunDeleteTarget && (() => {
+        const targetGun = (gunDeleteTarget.item.guns || [])[gunDeleteTarget.gunIndex];
+        const designerName = designers.find(d => d.id === gunDeleteTarget.designerId)?.name || '—';
+        const gunName = (targetGun?.name || '').trim();
+        const taskName = (gunDeleteTarget.item.taskName || '').trim();
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setGunDeleteTarget(null)} />
+            <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
+              <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2 font-bold text-lg">
+                  <Trash2 size={18} />
+                  删除枪名
+                </div>
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-white/20 transition"
+                  onClick={() => setGunDeleteTarget(null)}
+                  title="关闭"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="p-5 space-y-3">
+                <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <AlertCircle size={20} className="text-red-500 shrink-0 mt-0.5" />
+                  <div className="text-sm text-gray-700 leading-relaxed">
+                    <div className="font-bold text-red-700 mb-1">
+                      确定要删除枪名
+                      <span className="mx-1 px-1.5 py-0.5 rounded bg-white border border-red-200 text-gray-900">{gunName || '未命名'}</span>
+                      吗？
+                    </div>
+                    <div>该枪名对应的工时也会一并去掉（删除后仍可撤销）。</div>
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500 leading-relaxed space-y-1">
+                  <div>设计员：<span className="font-bold text-gray-700">{designerName}</span></div>
+                  <div>日期：<span className="font-bold text-gray-700">{gunDeleteTarget.date}</span></div>
+                  <div>主任务：<span className="font-bold text-gray-700">{taskName || '无'}</span></div>
+                </div>
+              </div>
+              <div className="px-5 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition"
+                  onClick={() => setGunDeleteTarget(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="px-5 py-2 rounded-lg bg-red-600 text-white font-bold hover:bg-red-700 transition flex items-center gap-1.5"
+                  onClick={confirmDeleteGun}
+                >
+                  <Trash2 size={14} />
+                  确认删除
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {batchReplaceOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">

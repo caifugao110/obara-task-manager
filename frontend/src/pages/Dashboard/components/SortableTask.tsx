@@ -16,7 +16,7 @@ const formatHoursCell = (value: number | string | null | undefined) => {
   return Number.isFinite(numeric) && numeric > 0 ? value : '';
 };
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null, showTopSeparator = false, locateFlash = false }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null, showTopSeparator?: boolean, locateFlash?: boolean }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, taskColWidth = 288, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null, showTopSeparator = false, locateFlash = false }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, taskColWidth?: number, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null, showTopSeparator?: boolean, locateFlash?: boolean }) => {
   const { settings } = useSystemSettings();
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
@@ -57,7 +57,14 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
     color: rowTextColor,
     opacity: isDragging ? 0.3 : 1,
     border: isSelected ? '2px solid #3b82f6' : '1px solid transparent',
+    // 行与行之间的分隔线：inline 的 border 会盖掉 className 里的 border-b，
+    // 所以这条底线必须写进 inline style 才看得见（选中态由 2px 蓝框整圈接管）。
+    // 颜色用 gray-400(#9ca3af) 而不是原来的 gray-300，行间距更清楚。
+    borderBottom: isSelected ? '2px solid #3b82f6' : '1px solid #9ca3af',
     borderRadius: isSelected ? '4px' : '0',
+    // 列宽随视口变化（任务内容列由主页面反算后传进来，工时列固定 3rem 不变），
+    // 必须和表头的任务内容/工时两列严格对齐，所以用内联值而不是写死的 grid-cols
+    gridTemplateColumns: `${taskColWidth}px 3rem`,
   };
 
   const typeLabel = (() => {
@@ -145,19 +152,19 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
         }
       }}
       tabIndex={isAdmin ? 0 : -1}
-      className={`task-row relative group/task grid grid-cols-[18rem_3rem] border-b border-gray-300 last:border-0 cursor-grab active:cursor-grabbing hover:bg-black/5 focus:outline-none focus-visible:outline-none ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
+      className={`task-row relative group/task grid cursor-grab active:cursor-grabbing hover:bg-black/5 focus:outline-none focus-visible:outline-none ${isLeaveType ? 'opacity-90' : ''} ${isSelected ? 'bg-blue-50/30' : ''}`}
     >
       {/* 同一设计人员同一天有多个主任务时，第 2 条起在顶部画一条分界线：
-          主任务之间是 1px 深灰线（#6b7280），主任务与它自己的枪名行之间是 1px 浅灰线（#e5e7eb），
-          粗细一样、只靠深浅拉开层级，避免两条同色主任务（尤其都是「设计」浅黄）糊成一片。
-          top:-1 让它正好压住上一条任务的 border-b（1px #d1d5db），接缝处只剩一条深灰线，不会出现双线。
+          主任务之间是 2px 深灰线（#6b7280），主任务与它自己的枪名行之间是 1px 灰线（#9ca3af），
+          靠粗细 + 深浅拉开层级，避免两条同色主任务（尤其都是「设计」浅黄）糊成一片。
+          top:-2 / height:2：正好盖住上一条任务的 1px 底线，接缝处只剩一条深灰线，不会出现双线。
           用绝对定位而不是 border-top：外层 div 已用 inline style 写了 border（选中态 2px 蓝框），
           inline 会盖掉 className 里的边框；绝对定位也让它不占布局高度，拖拽/行高实测不受影响。
           该主任务被选中时隐藏本线：蓝色 2px 选中框本身就画在这一圈，叠在一起会显得边框发脏。 */}
       {showTopSeparator && !isSelected && (
         <div
           className="absolute left-0 right-0 pointer-events-none z-[5]"
-          style={{ top: -1, height: 1, backgroundColor: '#6b7280' }}
+          style={{ top: -2, height: 2, backgroundColor: '#6b7280' }}
         />
       )}
       {/* 定位高亮：安排/添加成功后滚到本行，用一圈绿色脉冲标出「就是这一条」，
@@ -307,7 +314,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
         <React.Fragment key={gun.id}>
           <div
             data-gun-index={index}
-            className="gun-row border-r border-gray-200 px-2 py-1.5 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
+            className="gun-row border-r border-gray-200 px-2 py-1.5 min-h-[24px] flex items-center text-[11px] font-medium border-t border-gray-400 hover:bg-blue-50/50 transition cursor-pointer group/gun-row"
             style={{ backgroundColor: gunIsWhite ? '#ffffff' : rowBackground }}
           >
             {/* Gun mark buttons before gun name */}
@@ -399,7 +406,7 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
             </div>
           <div
             data-gun-index={index}
-            className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold border-t border-gray-200/50 hover:bg-blue-50/50 transition cursor-pointer"
+            className="px-1 py-1 min-h-[24px] flex items-center justify-center font-mono font-bold border-t border-gray-400 hover:bg-blue-50/50 transition cursor-pointer"
             style={{ backgroundColor: gunIsWhite ? '#ffffff' : rowBackground, color: rowTextColor }}
           >
             {formatHoursCell(gun.hours)}
