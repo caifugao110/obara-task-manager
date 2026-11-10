@@ -474,9 +474,10 @@ const Dashboard = () => {
     return {
       fullDate,
       dayNum: i + 1,
+      monthNum: date.getMonth() + 1,
       naturalIsWeekend,
       isWeekend: getEffectiveIsWeekend(fullDate, naturalIsWeekend, workdayOverrides),
-      dayName: format(date, 'EEE')
+      dayName: `星期${'日一二三四五六'[date.getDay()]}`
     };
   }), [daysInMonth, firstDayOfMonth, workdayOverrides]);
 
@@ -3332,12 +3333,11 @@ const Dashboard = () => {
             <div className="h-full overflow-auto" ref={tableScrollRef}>
               <table className="border-collapse text-[12px] w-full">
               <thead className="text-xs">
-                <tr className="bg-[#f8f9fa] text-gray-600 h-16 table-header-row">
+                <tr className="bg-[#f8f9fa] text-gray-600 h-10 table-header-row">
                   <th className="sticky left-0 bg-[#f8f9fa] border border-gray-300 w-24 min-w-[6rem] font-bold text-center shadow-[1px_0_0_0_#d1d5db] z-50">设计员</th>
                   {days.map(d => (
-                    <th key={d.fullDate} data-date={d.fullDate} colSpan={2} style={{ minWidth: dayColWidth }} className={`group/date sticky top-0 border border-gray-300 text-center font-bold z-40 ${d.isWeekend ? 'bg-[#fff2cc]' : ''}`}>
-                      <div className="text-[10px] opacity-60">{d.dayName}</div>
-                      <div>{d.dayNum}</div>
+                    <th key={d.fullDate} data-date={d.fullDate} colSpan={2} style={{ minWidth: dayColWidth }} className={`group/date sticky top-0 border border-gray-300 text-center font-bold z-40 ${d.isWeekend ? 'bg-indigo-50' : ''}`}>
+                      <div className="whitespace-nowrap">{d.monthNum}月{d.dayNum}日&nbsp;&nbsp;&nbsp;{d.dayName}</div>
                       {isAdmin && (
                         <label className="mt-1 hidden items-center justify-center gap-1 text-[10px] font-semibold text-gray-600 leading-none cursor-pointer select-none group-hover/date:flex group-focus-within/date:flex">
                           <input
@@ -3355,14 +3355,14 @@ const Dashboard = () => {
                   <th className="sticky right-0 bg-[#f8f9fa] border border-gray-300 w-24 min-w-[6rem] font-bold text-center shadow-[-1px_0_0_0_#d1d5db] z-50">月总工时</th>
                 </tr>
                 <tr className="bg-[#f8f9fa] text-gray-500 text-[10px] h-6 table-header-row-secondary">
-                  <th className="sticky left-0 top-16 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[1px_0_0_0_#d1d5db] z-40"></th>
+                  <th className="sticky left-0 top-10 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[1px_0_0_0_#d1d5db] z-40"></th>
                   {days.map(d => (
                     <React.Fragment key={`sub-${d.fullDate}`}>
-                      <th style={{ width: taskColWidth, minWidth: taskColWidth }} className={`sticky top-16 border border-gray-300 z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>任务内容</th>
-                      <th style={{ width: DAY_HOURS_COL_WIDTH, minWidth: DAY_HOURS_COL_WIDTH }} className={`sticky top-16 border border-gray-300 z-30 ${d.isWeekend ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'}`}>工时</th>
+                      <th style={{ width: taskColWidth, minWidth: taskColWidth }} className={`sticky top-10 border border-gray-300 z-30 ${d.isWeekend ? 'bg-indigo-50' : 'bg-[#f8f9fa]'}`}>任务内容</th>
+                      <th style={{ width: DAY_HOURS_COL_WIDTH, minWidth: DAY_HOURS_COL_WIDTH }} className={`sticky top-10 border border-gray-300 z-30 ${d.isWeekend ? 'bg-indigo-50' : 'bg-[#f8f9fa]'}`}>工时</th>
                     </React.Fragment>
                   ))}
-                  <th className="sticky right-0 top-16 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db] z-40"></th>
+                  <th className="sticky right-0 top-10 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db] z-40"></th>
                 </tr>
               </thead>
               {sortedGroups.map(group => (
@@ -3370,7 +3370,7 @@ const Dashboard = () => {
                   <tbody>
                     <tr className="group/grp cursor-pointer transition-colors bg-gray-200 group-hover/grp:bg-gray-300" onClick={() => toggleGroup(group)}>
                       {/* td1: 固定列 + 固定分组名，高 z-index 让溢出内容盖在 td2 上 */}
-                      <td className="sticky left-0 top-[88px] z-[30] relative overflow-visible p-0 border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300 shadow-[1px_0_0_0_#d1d5db]">
+                      <td className="sticky left-0 top-[64px] z-[30] relative overflow-visible p-0 border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300 shadow-[1px_0_0_0_#d1d5db]">
                         {/* 占位：撑出 td 高度，不参与列宽 */}
                         <div style={{ height: 29 }} />
                         {/* 实际内容：绝对定位，不撑宽 td1，允许溢出到右边 */}
@@ -3381,7 +3381,7 @@ const Dashboard = () => {
                         </div>
                       </td>
                       {/* td2: 剩余列，z-[25] 高于月总工时列(z-20)使其被分组行覆盖，但低于 td1(z-[30])不遮挡分组名溢出 */}
-                      <td colSpan={days.length * 2 + 1} className="sticky top-[88px] z-[25] border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300"></td>
+                      <td colSpan={days.length * 2 + 1} className="sticky top-[64px] z-[25] border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300"></td>
                     </tr>
                   </tbody>
 
@@ -3460,7 +3460,7 @@ const Dashboard = () => {
                                       date={day.fullDate}
                                       colSpan={2}
                                       style={{ minWidth: dayColWidth }}
-                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend ? 'bg-[#fff2cc]/10' : ''} min-h-[40px] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
+                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend && items.length === 0 ? 'bg-indigo-50' : ''} min-h-[40px] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
                                       onClick={(e: React.MouseEvent) => {
                                         if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
                                           setSelectedTasks([]);
@@ -3600,20 +3600,28 @@ const Dashboard = () => {
                                     </DroppableCell>
                                   );
                                 })}
-                                <td className="sticky right-0 z-20 bg-[#f8f9fa] border border-gray-300 px-2 py-3 min-w-[6rem] font-bold text-center text-green-700 shadow-[-1px_0_0_0_#d1d5db] group-hover/row:bg-green-50">
+                                {/* 月总工时：字号与「当日合计」一档（14px）；
+                                    行的 align-top 只管任务格，这一格单独 align-middle 让数字在整行高度里上下居中 */}
+                                <td className="sticky right-0 z-20 bg-[#f8f9fa] border border-gray-300 px-2 py-2 min-w-[6rem] text-[14px] font-bold text-center align-middle tabular-nums text-green-700 shadow-[-1px_0_0_0_#d1d5db] group-hover/row:bg-green-50">
                                   {calculateMonthlyTotal(d.id).toFixed(1)}
                                 </td>
                               </tr>
-                              <tr className="bg-blue-50/10 text-[10px]">
-                                <td className="sticky left-0 z-20 bg-blue-50 border border-gray-300 px-2 py-0.5 min-w-[6rem] font-bold text-gray-500 text-center whitespace-nowrap shadow-[1px_0_0_0_#d1d5db]">
+                              {/* 当日合计行：行高对齐上方枪名行（枪名行 = 内容 11px×1.5 + py-1.5 + 1px 上边框 ≈ 29.5px）。
+                                  这里不再靠 padding + 行高凑数，而是给单元格写死高度 27.5px（表格单元格的 height 即最小高度）
+                                  + 上下各 1px 边框 = 29.5px，与枪名行严格等高；这样数字想放多大都不会把行撑高。
+                                  数值 14px 特粗 + 深蓝 + 等宽数字，与「月总工时」同字号但更重、更醒目 */}
+                              <tr className="bg-pink-50">
+                                <td className="sticky left-0 z-20 bg-pink-50 border border-gray-300 h-[27.5px] px-2 py-0 min-w-[6rem] text-[11px] font-bold text-gray-500 text-center align-middle whitespace-nowrap shadow-[1px_0_0_0_#d1d5db]">
                                   当日合计
                                 </td>
                                 {days.map(day => (
-                                  <td key={`total-${d.id}-${day.fullDate}`} colSpan={2} className={`border border-gray-300 px-1 py-0.5 text-center font-bold text-blue-600 ${day.isWeekend ? 'bg-[#fff2cc]/20' : ''}`}>
-                                    {calculateDailyTotal(d.id, day.fullDate)}
+                                  <td key={`total-${d.id}-${day.fullDate}`} colSpan={2} className={`border border-gray-300 h-[27.5px] px-1 py-0 text-center align-middle ${day.isWeekend ? 'bg-pink-100' : 'bg-pink-50'}`}>
+                                    <span className="inline-block text-[14px] leading-none font-extrabold tabular-nums tracking-tight text-blue-700">
+                                      {calculateDailyTotal(d.id, day.fullDate)}
+                                    </span>
                                   </td>
                                 ))}
-                                <td className="sticky right-0 z-20 bg-blue-50 border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db]"></td>
+                                <td className="sticky right-0 z-20 bg-pink-50 border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db]"></td>
                               </tr>
                         </tbody>
                       );

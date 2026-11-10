@@ -158,7 +158,7 @@ input[type="number"] {
 
 .table-header-row-secondary {
   position: sticky;
-  top: 64px;
+  top: 40px;
   z-index: 30;
 }
 
