@@ -139,7 +139,23 @@ function Invoke-Sampling([int]$watchMin, [int]$interval, [string]$csvPath) {
         }
         $rows.Add($row) | Out-Null
         $line = ($now.ToString('yyyy-MM-dd HH:mm:ss') + ',' + $listening + ',' + $listenPid + ',' + $probeMs + ',' + $mem + ',' + $cpu)
-        Add-Content -LiteralPath $csvPath -Value $line -Encoding UTF8
+        # 写盘失败不能让整轮监控崩掉。Add-Content 在被别的进程瞬时占用时会抛
+        # IOException（杀毒扫描、备份代理、另一个工具刚好在读这个 CSV 都会触发），
+        # 而这里一抛异常整个 Invoke-Sampling 就退出：2026-11-10 那轮 643 分钟的监控
+        # 就是这样在第 350 分钟彻底中断的，前面积累的采样只剩下半截。
+        # 所以最多重试 3 次，仍然失败就跳过这一个采样点继续跑——少一个点远好过整轮作废。
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Add-Content -LiteralPath $csvPath -Value $line -Encoding UTF8
+                break
+            } catch {
+                if ($attempt -eq 3) {
+                    Write-Host ("  [WARN] 采样点写入失败，已跳过：" + $now.ToString('HH:mm:ss')) -ForegroundColor Yellow
+                } else {
+                    Start-Sleep -Milliseconds 400
+                }
+            }
+        }
 
         if ($sw.Elapsed.TotalSeconds -ge $nextReportAt) {
             $doneMin = [int]$sw.Elapsed.TotalMinutes

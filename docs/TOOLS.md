@@ -1,14 +1,37 @@
 # 运维工具说明
 
-> 其他文档：[README](../README.md)（功能与使用） · [使用手册](USER-GUIDE.md) · [开发者指南](DEVELOPMENT.md) · [API 文档](API.md) · [部署指南](DEPLOYMENT.md)
+> 其他文档：[文档中心](README.md) · [README](../README.md)（功能与使用） · [使用手册](USER-GUIDE.md) · [开发者指南](DEVELOPMENT.md) · [API 文档](API.md) · [部署指南](DEPLOYMENT.md)
 
-本目录（仓库根目录的 `tools/`，不在 `docs/` 下）放的是**启动项目不需要**的运维诊断工具。启动/停止请用仓库根目录的 `start.bat` / `stop.bat`。
+本文档覆盖两类东西：仓库根目录 `tools/` 下**启动项目不需要**的运维诊断工具，以及根目录那些「不是给人手动运行」的守护脚本。日常启动/停止只需要 `start.bat` / `stop.bat`。
 
-> 根目录的 `backend-watchdog.bat` 与 `backend-health-probe.bat` 不是手动工具，而是 `start.bat` 启动的运行时守护：前者负责「进程退出了就拉起来」，后者负责「进程还在但不再响应」。它们的日志判读见本文第二节。
+> 根目录的 `backend-watchdog.bat` 与 `backend-health-probe.bat` 不是手动工具，而是 `start.bat` 启动的运行时守护：前者负责「进程退出了就拉起来」，后者负责「进程还在但不再响应」。它们的日志判读见本文第三节。
 
 ---
 
-## backend-report：后端断开分析
+## 一、工具总览
+
+先分清「谁来启动」——**手动运行常驻守护会造成重复探测或互相抢进程**，这是本节最重要的信息。
+
+| 脚本 | 谁启动 | 干什么 | 什么时候需要管 |
+|------|--------|--------|---------------|
+| `start.bat` | 人工双击 | 检查 Node 版本 → 释放 5000/5173 端口 → 按需装依赖 → 隐藏窗口启动前后端（后端经看门狗托管） | 日常启动 |
+| `start-hidden.vbs` | `start.bat` 自己调用 | 把 `start.bat --hidden` 以无窗口方式拉起，输出重定向到 `logs/startup.log` / `logs/startup.err.log` | 一般不用管；隐藏模式下排查启动失败看这两个日志 |
+| `start-process-hidden.vbs` | `start.bat` | 通用的「无窗口 + 输出重定向 + 写 PID」启动器，后端与前端各用一次 | 一般不用管；`logs/*.pid` 由它写 |
+| `backend-watchdog.bat` | `start.bat` | 后端守护循环：进程结束就重新拉起（连续崩溃按 10→30→60 秒退避），每次拉起同时启动假死探针 | **不要手动跑**；调参用 `OBARA_RESTART_DELAY`、换启动命令用 `OBARA_BACKEND_CMD` |
+| `backend-health-probe.bat` | `backend-watchdog.bat` | 每 30 秒探一次 HTTP，连续 3 次无任何响应就杀掉后端进程树，交给看门狗重启 | **不要手动跑**（会多一个探测器，日志重复）；调参见第三节 |
+| `stop.bat` | 人工双击 | 先调用离线备份接口备份数据库，再按端口停进程树、清扫残留、回检端口；需要时自动提权重启自身 | 停止服务；**停止前会自动备份**，所以不要在维护窗口外随手执行 |
+| `tools/backend-report.bat` | 人工双击 | 交叉核对看门狗日志、退出日志、Windows 事件日志与实时采样，出「断没断、几点断、为什么断」的结论 | 怀疑后端断过 / 假死过时（见第二节） |
+| `tools/docs-check.js` | 人工 / CI（`npm run docs:check`） | 校验文档与代码是否一致：链接与锚点、接口清单、环境变量、页面路由、引用路径 | 改完代码或文档后（见第四节） |
+| `weknora/start.bat`、`weknora/start.sh` | 人工 | 知识库服务的一键部署：生成 `.env` → `docker compose up -d` → 初始化脚本 | 首次部署或重建知识库环境，见 [WeKnora 部署指南](../weknora/README.md) |
+| `weknora/scripts/gen-env.js` | `weknora/start.*` | 从 `.env.example` 生成 `.env`，自动填随机 `JWT_SECRET` / `SYSTEM_AES_KEY`；已存在则跳过 | 需要重置 `.env` 时手动跑（`--force` 覆盖） |
+| `weknora/scripts/setup.js` | `weknora/start.*` | 幂等初始化：建管理员 → 配 DeepSeek/智谱模型 → 建 API Key → 把 `WEKNORA_*` 写进 `backend/.env` | 更换模型 Key、迁移服务器时 |
+| `control/`（EXE） | 人工 | Windows 服务控制台：以桌面 GUI 启停与查看服务状态 | 不想用批处理、要给非技术同事用的场景，见 [README · Windows 服务控制台](../README.md#windows-服务控制台) |
+
+> 串起来看：`start.bat` 拉起 `backend-watchdog.bat`，看门狗再拉起 `nodemon → node server.js`，并在每次拉起后端时同时启动 `backend-health-probe.bat`。所以「后端活着」这件事有**两层**兜底（退出重启、假死重启），但根因（共享盘 SMB 挂死）不会被自动修复，只保证服务恢复——排查根因见第三节末尾。
+
+---
+
+## 二、backend-report：后端断开分析
 
 ### 它解决什么问题
 
@@ -81,7 +104,7 @@ $t = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
 
 ---
 
-## 看门狗与假死探针：后端「活着但不响应」
+## 三、看门狗与假死探针：后端「活着但不响应」
 
 `backend-report` 解决的是「后端断过没有」。它抓不到另一种故障：**进程还在、端口还在 `LISTENING`，但所有 HTTP 请求都没有响应**。这种状态下进程不会退出，`backend-exit.log` 没有记录，看门狗的退出码判断也看不到，只能靠人工重启——2026-11 的生产故障就是如此（共享盘 SMB 会话失效，UNC 调用挂死在 Windows 内核里，占满 Node 的 libuv 线程池）。
 
@@ -134,3 +157,40 @@ $t = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
 | `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD` / `_COOLDOWN_MS` | `3` / `3600000` | 熔断阈值与冷却时长 |
 
 探针只按 `PORT` 找监听进程，任何 HTTP 响应（包括 401/404）都算健康；它不会碰前端、数据库或其它 node 进程。
+
+---
+
+## 四、docs-check：文档一致性自检
+
+文档最容易烂在「代码改了、文档没跟上」。这个脚本零依赖，用 Node 直接跑，不需要装任何包：
+
+```bat
+node tools/docs-check.js            :: 全部检查
+node tools/docs-check.js links      :: 只查链接与锚点
+node tools/docs-check.js api        :: 只查接口清单
+node tools/docs-check.js env        :: 只查环境变量
+node tools/docs-check.js pages      :: 只查页面路由
+node tools/docs-check.js paths      :: 只查引用的仓库路径
+```
+
+| 检查项 | 比什么 | 判定 |
+|--------|--------|------|
+| `links` | 9 份文档里的相对链接与 `#锚点` | 文件不存在、锚点对不上标题（按 GitHub 的 slug 规则，中文标题也能校验）即失败 |
+| `api` | `backend/routes/*.js` 的真实路由 ↔ `docs/API.md` 记录的端点 | **双向**比对：代码里有但文档没写、文档写了但代码里没有，都会报 |
+| `env` | 后端代码读取的 `process.env.*` ↔ 文档全文 | 代码读取但任何文档都没提到的变量即失败；`NODE_ENV`、`PORT`、`USERNAME`、`USERDOMAIN` 属运行时注入，跳过 |
+| `pages` | `frontend/src/App.tsx` 的路由 ↔ `README.md` 的「主要页面」表 | 路由没写进表里即失败 |
+| `paths` | 文档中用反引号标注的仓库路径（`backend/…`、`frontend/…`、`tools/…` 等） ↔ 磁盘实际文件 | 文件不存在即失败；`logs/` 下的运行时日志与示例路径不校验 |
+
+输出末行是结论，退出码 0 通过、1 有差异，可直接串在提交前检查里。它**查不出**字段含义写错、示例值过期、判定规则描述过时——这些仍要看代码人工确认。
+
+> 改脚本本身时注意：`docs/API.md` 里 `GET /api/settings/*` 这类**通配**写法表示「整个前缀适用」，脚本会跳过；代码块与行内反引号里的 `[text](url)` 是示例，也不会被当成链接。
+
+---
+
+## 相关文档
+
+| 文档 | 内容 |
+|---|---|
+| [文档中心](README.md) | 全部文档的索引与阅读路径 |
+| [Windows 部署指南](DEPLOYMENT.md) | 启动方式、环境变量、备份恢复、故障排查 |
+| [README](../README.md) | 功能、权限、脚本与维护建议 |

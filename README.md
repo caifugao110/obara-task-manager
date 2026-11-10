@@ -8,15 +8,17 @@ Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管�
 
 | 文档 | 适用对象 | 内容 |
 |------|----------|------|
+| [**文档中心**](docs/README.md) | **所有人** | **文档索引、按角色的阅读路径、一致性自检命令（`node tools/docs-check.js`）、新增文档的约定** |
 | [**使用手册**](docs/USER-GUIDE.md) | **日常使用者**（设计员、班组长、管理员） | **逐步操作说明、判定规则、拦截原因与提示语速查；不含技术细节** |
 | 本文档 | 维护者、想了解全貌的人 | 功能概览、快速启动、页面说明、权限模型、数据结构和常用命令 |
 | [开发者指南](docs/DEVELOPMENT.md) | 开发者 | 开发环境、代码归属、五类改动的 checklist、编码约定、测试与发版 |
 | [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
 | [Windows 部署指南](docs/DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
-| [运维工具说明](docs/TOOLS.md) | 运维、排障人员 | `tools/backend-report.bat` 断开分析报告，以及看门狗 / 假死探针日志的判读 |
+| [运维工具说明](docs/TOOLS.md) | 运维、排障人员 | 全部运维/守护脚本的分工，`tools/backend-report.bat` 断开分析报告，以及看门狗 / 假死探针日志的判读 |
 | [WeKnora 知识库部署指南](weknora/README.md) | 部署和维护人员 | 设计规范知识库（WeKnora）的 Docker 部署、初始化与故障处理 |
+| [变更记录](CHANGELOG.md) | 所有人 | 按日期汇总的提交历史，用于回答「哪天改的、改了什么」 |
 
-> 文档分工：**USER-GUIDE 讲「怎么用」，README 讲「有什么、为什么这么设计」，DEVELOPMENT 讲「怎么改」，API 讲「接口长什么样」，DEPLOYMENT 讲「怎么部署和救火」**。改动代码时按 [开发者指南的文档同步表](docs/DEVELOPMENT.md#注释与文档同步) 更新对应文档。
+> 文档分工：**USER-GUIDE 讲「怎么用」，README 讲「有什么、为什么这么设计」，DEVELOPMENT 讲「怎么改」，API 讲「接口长什么样」，DEPLOYMENT 讲「怎么部署和救火」，TOOLS 讲「挂了怎么取证」**。改动代码时按 [开发者指南的文档同步表](docs/DEVELOPMENT.md#注释与文档同步) 更新对应文档，并用 `node tools/docs-check.js` 验证链接、接口、环境变量与页面清单是否仍然一致。
 
 ## 目录
 
@@ -549,6 +551,8 @@ npm run dev
 | `login_logs` | 登录日志独立表，最多保留 2000 条（超限自动清理最旧记录） |
 | `audit_logs` | 操作日志独立表，默认最多保留 5000 条（超限自动清理最旧记录；保留条数可在系统设置 → 日志管理中调整） |
 
+物理层面共 4 张表（`backend/db.js` 启动时按需建表）：上面三张关系表 + `kv_store`。**上表列出的所有「集合」都存放在 `kv_store` 里**（`key` 为集合名、`value` 为整份 JSON 快照、`updated_at` 为写入时间），所以新增一个键值集合不需要改表结构；代价是写入要序列化整份快照——这也是 `task_sheets` / `login_logs` / `audit_logs` 被拆成独立表的直接原因（写放大）。
+
 建议定期通过 `POST /api/system/maintenance/backup` 备份数据库，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
 
 ## 常用命令
@@ -569,6 +573,7 @@ npm run lint
 npm run lint:frontend
 npm test
 npm run test:backend
+npm run docs:check
 ```
 
 | 命令 | 说明 |
@@ -588,6 +593,7 @@ npm run test:backend
 | `npm run lint:frontend` | 对 `frontend` 目录下的 `ts/tsx` 文件运行 ESLint（脚本为 `eslint . --ext ts,tsx`，作用范围为 frontend 整个目录而非仅 `src`），配置见 `frontend/.eslintrc.cjs`，未使用变量等告警阈值为 0 |
 | `npm test` | 后端测试总入口（等同 `test:backend`，调用 `backend/tests/run-all.js`） |
 | `npm run test:backend` | 后端测试总入口，依次执行单元测试与三段快照冒烟测试（关系表存储 / 主任务改色联动 / 枪名搜索） |
+| `npm run docs:check` | 文档一致性自检（等同 `node tools/docs-check.js`）：校验链接与锚点、接口清单、环境变量、页面路由是否与代码一致；只查一项可加参数，如 `node tools/docs-check.js api`，详见 [运维工具说明](docs/TOOLS.md#四docs-check文档一致性自检) |
 
 后端测试的细分命令（需在 `backend` 目录下执行）：
 
@@ -1243,6 +1249,7 @@ obara-task-manager/
 - 排障时优先查看后端控制台、浏览器 DevTools 网络请求、系统设置中的登录日志和操作日志。
 - 监控数据库大小：`db-stats` 中 10MB/50MB 仅为提示性警告而非 SQLite 限制（SQLite 单库上限约 281TB，1GB 以内均可稳定运行），可结合任务月份数决定是否清理旧数据。注意 SQLite 删除数据后文件不会自动变小，磁盘占用不下降属正常现象；需要真正腾出空间时用「系统设置 → 数据库维护 → 压缩数据库」（即 `VACUUM` + WAL 截断），清理任务数据的各入口也会自动压缩一次。
 - 建议启用自动维护，并根据业务需求调整备份保留天数和数据保留年限。
+- **改完代码顺手跑一次 `npm run docs:check`**：校验文档里的链接与锚点、接口清单、环境变量、页面路由、文件路径是否仍与代码一致，不一致时以非 0 退出码报出具体条目。它只覆盖「结构性一致」，字段含义与判定规则仍需人工确认，同步规则见[开发者指南的文档同步表](docs/DEVELOPMENT.md#注释与文档同步)。
 - **长期无人值守时保留 `start.bat` 的守护链**：`backend-watchdog.bat` 负责「进程退出了就拉起来」，`backend-health-probe.bat` 负责「进程还在但不再响应」——每 30 秒探一次 HTTP，连续 3 次无响应就杀掉进程树交给看门狗重启。共享盘故障是这套机制的主要目标场景：SMB 会话失效后 UNC 调用会挂死在 Windows 内核里，后端不崩溃、端口也还在监听，但请求全部超时。若改用 PM2 / Windows 服务部署，需要自行提供等价的存活探测（PM2 的 `max_memory_restart` 与 `autorestart` 只能覆盖「进程退出」这一类）。
 
 ## Windows 服务控制台

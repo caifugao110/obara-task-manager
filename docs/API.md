@@ -12,7 +12,9 @@ http://localhost:5000/api
 Authorization: Bearer <token>
 ```
 
-> 其他文档：[README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md)（新增接口的约定） · [Windows 部署指南](DEPLOYMENT.md)
+> 其他文档：[文档中心](README.md) · [README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md)（新增接口的约定） · [Windows 部署指南](DEPLOYMENT.md) · [运维工具说明](TOOLS.md)
+
+> 改完接口请跑 `node tools/docs-check.js api`：它会把 `backend/routes/*.js` 的真实路由与本文件记录的端点做双向比对，漏写或多写都会报出来。
 
 ## 目录
 

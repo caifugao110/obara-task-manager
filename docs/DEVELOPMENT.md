@@ -164,6 +164,9 @@ getCurrentSocket()?.emit('task_updated', {
 | 部署方式、启动脚本 | `DEPLOYMENT.md` |
 | 守护/自愈机制、探针、日志判读 | `README.md`（脚本与维护建议）、`docs/DEPLOYMENT.md`（排障）、`docs/TOOLS.md`（日志怎么读） |
 | 数据结构、模块划分 | `README.md` 数据存储 / 项目结构 |
+| 文档增删或读者定位变化 | `docs/README.md` 的文档清单 + `README.md` 的「文档导航」表（两处都要） |
+
+> 上面这些「靠人记」的同步项里，有五类已经自动化：链接与锚点、接口清单、环境变量、页面路由、引用路径。提交前跑 `node tools/docs-check.js`（只查一项用 `node tools/docs-check.js api`），它会以非 0 退出码报告不一致；**它查不出的**是字段含义、示例值、判定规则这类语义错误，仍需按上表人工确认。
 
 ## 6. 提交前的检查
 
@@ -172,6 +175,7 @@ cd frontend && npx tsc --noEmit      :: 类型检查
 cd frontend && npm run lint          :: ESLint（--max-warnings 0）
 npm test                             :: 后端测试：单元 + 三段冒烟
 npm run build                        :: 前端构建
+node tools/docs-check.js             :: 文档与代码一致性（链接/接口/环境变量/页面清单）
 ```
 
 `npm test` 的细节：
@@ -250,9 +254,11 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 
 | 文档 | 内容 |
 |---|---|
+| [文档中心](README.md) | 文档索引、按角色的阅读路径、一致性自检与编写约定 |
 | [使用手册](USER-GUIDE.md) | 面向使用者的操作说明、判定规则与提示语速查 |
 | [API 文档](API.md) | REST 接口与 Socket.IO 事件全量参考 |
 | [README](../README.md) | 功能、权限、数据结构、项目结构、命令 |
 | [Windows 部署指南](DEPLOYMENT.md) | 部署、备份、排障 |
-| [运维工具说明](TOOLS.md) | `tools/backend-report.bat` 断开分析报告，以及看门狗 / 假死探针日志的判读 |
+| [运维工具说明](TOOLS.md) | 运维/守护脚本的分工，`tools/backend-report.bat` 断开分析报告，以及看门狗 / 假死探针日志的判读 |
 | [WeKnora 部署指南](../weknora/README.md) | 知识库服务的 Docker 部署与运维 |
+| [变更记录](../CHANGELOG.md) | 按日期汇总的提交历史（由 `git log` 生成，不手工维护） |

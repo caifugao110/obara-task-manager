@@ -5,7 +5,7 @@
 
 底层引擎：[Tencent/WeKnora](https://github.com/Tencent/WeKnora) v0.8.3（使用官方预构建镜像）。
 
-> 其他文档：[README](../README.md)（功能与使用） · [开发者指南](../docs/DEVELOPMENT.md) · [API 文档](../docs/API.md) · [Windows 部署指南](../docs/DEPLOYMENT.md)
+> 其他文档：[文档中心](../docs/README.md) · [README](../README.md)（功能与使用） · [开发者指南](../docs/DEVELOPMENT.md) · [API 文档](../docs/API.md) · [Windows 部署指南](../docs/DEPLOYMENT.md) · [运维工具说明](../docs/TOOLS.md)
 
 ---
 

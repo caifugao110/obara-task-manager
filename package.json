@@ -30,6 +30,7 @@
     "install:frontend": "cd frontend && npm install",
     "lint": "npm run lint:frontend",
     "lint:frontend": "cd frontend && npm run lint",
+    "docs:check": "node tools/docs-check.js",
     "test": "npm run test:backend",
     "test:backend": "cd backend && npm run test",
     "start": "npm run start:backend",
