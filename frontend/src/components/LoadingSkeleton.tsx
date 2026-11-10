@@ -121,7 +121,7 @@ export function DashboardSkeleton() {
             <div
               key={i}
               className={`h-14 border-r border-b border-gray-300 flex flex-col items-center justify-center gap-1.5 ${
-                WEEKEND_COLS.includes(i) ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'
+                WEEKEND_COLS.includes(i) ? 'bg-indigo-50' : 'bg-[#f8f9fa]'
               }`}
             >
               <Bar className="h-2 w-6 opacity-80" />
@@ -135,7 +135,7 @@ export function DashboardSkeleton() {
             <div
               key={`sub-${i}`}
               className={`h-6 border-r border-b border-gray-300 flex items-center justify-center ${
-                WEEKEND_COLS.includes(i) ? 'bg-[#fff2cc]' : 'bg-[#f8f9fa]'
+                WEEKEND_COLS.includes(i) ? 'bg-indigo-50' : 'bg-[#f8f9fa]'
               }`}
             >
               <Bar className="h-1.5 w-8 opacity-80" />
