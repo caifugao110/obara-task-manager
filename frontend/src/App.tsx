@@ -15,7 +15,6 @@ const Leaderboard = lazy(() => import('./pages/Leaderboard'));
 const WorkHours = lazy(() => import('./pages/WorkHours'));
 const StatusTracking = lazy(() => import('./pages/StatusTracking'));
 const SystemSettings = lazy(() => import('./pages/SystemSettings'));
-const SystemLogs = lazy(() => import('./pages/SystemLogs'));
 const DesignStandards = lazy(() => import('./pages/DesignStandards'));
 const GunLedger = lazy(() => import('./pages/GunLedger'));
 
@@ -160,14 +159,6 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute>
             <GunLedger />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/system-logs"
-        element={
-          <ProtectedRoute superAdminOnly>
-            <SystemLogs />
           </ProtectedRoute>
         }
       />

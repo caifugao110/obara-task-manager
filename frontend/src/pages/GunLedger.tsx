@@ -303,6 +303,12 @@ const renumberRows = (rows: GunRow[]): GunRow[] =>
     .sort((a, b) => a.serialNumber - b.serialNumber)
     .map((r, i) => ({ ...r, serialNumber: i + 1 }));
 
+// 序号即行位置：不做排序，只把「行在数组里的位置」写回序号（1..N）。
+// 焊枪名里的编号由序号决定，所以只要序号不漂移，编号就不会被别的行"顶"走；
+// 任何本地改动（新增行、编辑、复制）之后都调用一次，session 内绝不出现序号空洞。
+const applyContiguousSerials = (rows: GunRow[]): GunRow[] =>
+  rows.map((r, i) => (r.serialNumber === i + 1 ? r : { ...r, serialNumber: i + 1 }));
+
 // 归一化整份台账：所有表的行序号连续
 const normalizeLedgerSerials = (data: GunLedgerData): GunLedgerData => {
   const categories: GunLedgerData['categories'] = {};
@@ -732,6 +738,10 @@ const GunLedger: React.FC = () => {
     return dup;
   }, [activeTable]);
 
+  // 未取号行的可取号序号：紧接在已有行之后。
+  // 序号与焊枪名编号强绑定，所以只有这一行允许「输入即取号」，其余未取号行仅作后续编号预览。
+  const nextSerial = (activeTable?.rows || []).length + 1;
+
   // 行锁控制
   const stopRowLock = useCallback(() => {
     if (stopTimeoutRef.current) { clearTimeout(stopTimeoutRef.current); stopTimeoutRef.current = null; }
@@ -1110,9 +1120,9 @@ const GunLedger: React.FC = () => {
     });
   }, []);
 
-  // 更新本地某表的行
+  // 更新本地某表的行：序号随位置压实（序号=编号锚点，任何时候都不允许出现空洞/漂移）
   const patchTableRows = useCallback((tableId: string, updater: (rows: GunRow[]) => GunRow[]) => {
-    patchTable(tableId, t => ({ ...t, rows: updater(t.rows || []) }));
+    patchTable(tableId, t => ({ ...t, rows: applyContiguousSerials(updater(t.rows || [])) }));
   }, [patchTable]);
 
   // 保存某表行（debounce）
@@ -1136,9 +1146,19 @@ const GunLedger: React.FC = () => {
 
       axiosInstance.put(`/gun-ledger/tables/${tableId}/rows`, rowsToSave, {
         headers: { Authorization: `Bearer ${token}` },
-      }).then(() => {
+      }).then((res: any) => {
         dirtyRowIdsRef.current.clear();
         setSaving(false);
+        // 服务端按序号校正了历史错位编号时，用返回的权威行覆盖本地（避免界面继续显示错位名称）
+        const payload = res?.data;
+        if (payload && Array.isArray(payload.rows) && Array.isArray(payload.renamed) && payload.renamed.length) {
+          patchTableRows(tableId, () => payload.rows);
+          const detail = payload.renamed
+            .slice(0, 3)
+            .map((r: { from: string; to: string }) => `${r.from}→${r.to}`)
+            .join('、');
+          addToast(`已按序号校正 ${payload.renamed.length} 个焊枪名编号：${detail}${payload.renamed.length > 3 ? ' 等' : ''}`, 'success');
+        }
       }).catch((err: any) => {
         setSaving(false);
         const status = err?.response?.status;
@@ -1166,7 +1186,7 @@ const GunLedger: React.FC = () => {
       });
       return prev;
     });
-  }, [token, addToast, fetchLedger]);
+  }, [token, addToast, fetchLedger, patchTableRows]);
 
   // 前端版 findDuplicateGunNames（与后端逻辑一致，空值不计入）
   const findDuplicateGunNamesClientSide = (rows: GunRow[]) => {
@@ -1216,11 +1236,21 @@ const GunLedger: React.FC = () => {
     }, 600);
   }, [specNumberDigits, fetchSpecInfo, patchTableRows, addToast, debouncedSave]);
 
-  // 单元格变更
-  const handleCellChange = useCallback((row: GunRow, field: keyof GunRow, value: string) => {
-    if (!activeTable || !isAdmin || !online) return;
+  // 单元格变更；返回该单元格最终生效的值（焊枪名会按序号校正编号，调用方据此回填输入框，
+  // 避免出现「界面显示删掉了编号、实际状态没变」的错觉）
+  const handleCellChange = useCallback((row: GunRow, field: keyof GunRow, value: string): string | undefined => {
+    if (!activeTable || !isAdmin || !online) return undefined;
     const { id, serialNumber } = row;
     const isPlaceholder = String(id).startsWith('__placeholder__');
+    // 未取号行（占位行）只是「下一个编号的预览」：只有紧接在已有行之后的那一行可以取号。
+    // 序号与焊枪名编号强绑定——若允许直接编辑第 5 个未取号行，行内序号会变成 6，
+    // 展示层按位置重排后，上面几行的编号就会整体后移（看起来像"上一行被强制改名"），
+    // 同表随之出现重号，主页面快速取号也会因"编号已存在"而失败。
+    const promotableSerial = (activeTable.rows || []).length + 1;
+    if (isPlaceholder && serialNumber !== promotableSerial) {
+      addToast(`请按顺序取号：下一可选序号为 ${promotableSerial}`, 'error');
+      return undefined;
+    }
 
     // 焊枪名编号不可编辑 + 前缀可编辑 + 编号之后可追加后缀 + 同表不可重复
     if (field === 'gunName') {
@@ -1229,6 +1259,9 @@ const GunLedger: React.FC = () => {
         // 编号自动校正为规则值；前缀与编号之后的后缀（L / -EL / L-WL 等）原样保留
         value = normalizeGunNameNumber(rule, serialNumber, value);
       }
+      // 值没变（例如在未取号名称后按退格，编号被自动补回）：不写库、不取号，
+      // 绝不因为一次无效编辑去动序号或别人的焊枪名
+      if (value === (isPlaceholder ? row.gunName : String(row.gunName || ''))) return value;
       // 同表内焊枪名不可重复（空值不计入）
       const trimmedNewName = value.trim();
       if (trimmedNewName) {
@@ -1239,15 +1272,18 @@ const GunLedger: React.FC = () => {
           addToast(`焊枪名「${trimmedNewName}」已被序号 ${dup.serialNumber} 使用，请修改`, 'error');
         }
       }
+    } else if (isPlaceholder && value === '') {
+      // 未取号行其它列清空：仍是占位行，不做任何变更
+      return undefined;
     }
 
     patchTableRows(activeTable.id, rows => {
-      // 占位行：仅在输入非空值时升级为真行
+      // 占位行：仅在输入非空值时升级为真行（序号固定为 promotableSerial，不允许跳号）
       if (isPlaceholder) {
         if (value.trim() === '') return rows; // 仍是占位，不存
         const promoted: GunRow = {
           id: newRowId(),
-          serialNumber,
+          serialNumber: promotableSerial,
           gunName: row.gunName,
           customer: '',
           time: '',
@@ -1288,10 +1324,11 @@ const GunLedger: React.FC = () => {
     setSaving(true);
     debouncedSave(activeTable.id);
 
-    // 客户列输入仕样号时自动查询客户名
+    // 客户列输入仕样号时自动查询客户名（占位行提升后序号即 nextSerial）
     if (field === 'customer') {
-      scheduleCustomerSpecLookup(activeTable.id, serialNumber, value);
+      scheduleCustomerSpecLookup(activeTable.id, isPlaceholder ? promotableSerial : serialNumber, value);
     }
+    return value;
   }, [activeTable, activeCategory, isAdmin, online, addToast, patchTableRows, user, debouncedSave, scheduleCustomerSpecLookup]);
 
   // 单元格聚焦：取行锁
@@ -1636,15 +1673,23 @@ const GunLedger: React.FC = () => {
     }
     setRuleSavingId(tableId);
     try {
-      await axiosInstance.put(`/gun-ledger/tables/${tableId}/gun-name-rule`, rule);
+      const res = await axiosInstance.put(`/gun-ledger/tables/${tableId}/gun-name-rule`, rule);
       patchTable(tableId, t => ({ ...t, gunNameRule: rule }));
-      addToast(`表「${tableName}」初始化设置已保存`, 'success');
+      // 规则变更后后端会按新规则重整存量行的编号（序号不变、编号跟着序号走），
+      // 有变化时同步本地行并提示，避免界面与库里不一致
+      const renamed = Array.isArray(res.data?.renamed) ? res.data.renamed : [];
+      if (renamed.length) {
+        fetchLedger();
+        addToast(`表「${tableName}」初始化设置已保存，并按新规则校正了 ${renamed.length} 个焊枪名编号`, 'success');
+      } else {
+        addToast(`表「${tableName}」初始化设置已保存`, 'success');
+      }
     } catch (err: any) {
       addToast(err?.response?.data?.message || '初始化设置保存失败', 'error');
     } finally {
       setRuleSavingId(null);
     }
-  }, [ruleDrafts, ledger, authHeader, patchTable, addToast, warnIfOffline]);
+  }, [ruleDrafts, ledger, authHeader, patchTable, addToast, warnIfOffline, fetchLedger]);
 
   // 焊枪名初始化：删除该表全部真实行，表恢复为全新状态——页面只显示 10 个预留行，
   // 预留行按生效规则（表级规则 → 内置默认模式）展示该表的 10 个原始焊枪名；
@@ -3023,6 +3068,9 @@ const GunLedger: React.FC = () => {
                     {displayRows.map((row, rowIdx) => {
                       const blocking = activeTable ? getBlockingSession(activeTable.id, row.serialNumber) : null;
                       const isPlaceholder = String(row.id).startsWith('__placeholder__');
+                      // 未取号行的可取号序号：紧接在已有行之后。其余未取号行只是「后续编号预览」，
+                      // 只读展示，避免跳跃取号把序号与焊枪名编号解绑（重号 / 取号冲突的根源）。
+                      const isPendingPreview = isPlaceholder && row.serialNumber > nextSerial;
                       // key 使用 serialNumber：占位行首次输入提升为真实行时 DOM 不重建、输入焦点不丢失。
                       // 行顺序始终只按 serialNumber 排序，焊枪名（含英文前缀）改动仅影响当前行，不改变行号与其他行。
                       return (
@@ -3033,6 +3081,10 @@ const GunLedger: React.FC = () => {
                             const isResponsible = field === 'responsiblePerson';
                             const value = isPlaceholder ? (field === 'gunName' ? row.gunName : '') : (row[field] as string || '');
                             const disabled = !isAdmin || !online || activeTableReadOnly || Boolean(blocking);
+                            // 预览行只读：可聚焦查看，但不可编辑（点击时给出按顺序取号的提示）
+                            const previewOnly = isPendingPreview && !disabled;
+                            const readOnly = disabled || previewOnly;
+                            const previewTitle = `未取号（预览）：请先按顺序取 ${nextSerial} 号，或使用主页面「快速取号」`;
                             return (
                               <td key={field} className={`border border-gray-300 p-0 relative ${field === 'gunName' ? 'min-w-[7rem]' : ''}`}>
                                 {isResponsible ? (
@@ -3045,13 +3097,14 @@ const GunLedger: React.FC = () => {
                                       <select
                                         ref={el => { inputRefs.current[refKey] = el; }}
                                         value={value}
-                                        disabled={disabled}
+                                        disabled={readOnly}
+                                        title={previewOnly ? previewTitle : undefined}
                                         onChange={e => handleCellChange(row, field, e.target.value)}
-                                        onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
+                                        onFocus={() => { if (previewOnly) { addToast(previewTitle, 'error'); return; } handleCellFocus(activeTable.id, row.serialNumber); }}
                                         onBlur={handleCellBlur}
                                         onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
                                         // appearance-none：不显示下拉按钮，点击整格即弹出完整名单（同状态跟踪页）
-                                        className={`w-full px-2 py-1.5 bg-transparent outline-none appearance-none text-center ${disabled ? 'cursor-not-allowed bg-gray-100' : 'cursor-pointer focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                        className={`w-full px-2 py-1.5 bg-transparent outline-none appearance-none text-center ${readOnly ? 'cursor-not-allowed bg-gray-100' : 'cursor-pointer focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
                                       >
                                         <option value="">请选择</option>
                                         {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -3065,21 +3118,22 @@ const GunLedger: React.FC = () => {
                                       type="text"
                                       value={value}
                                       disabled={disabled}
+                                      readOnly={previewOnly}
                                       onChange={e => handleCellChange(row, field, e.target.value)}
-                                      onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
+                                      onFocus={() => { if (previewOnly) { addToast(previewTitle, 'error'); return; } handleCellFocus(activeTable.id, row.serialNumber); }}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full pl-1 pr-5 py-1.5 text-[12px] bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
+                                      className={`w-full pl-1 pr-5 py-1.5 text-[12px] bg-transparent outline-none ${readOnly ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'}`}
                                     />
                                     {/* 一键获取当前时间：格式与焊枪名自动补时间一致（YYYY.MM.DD）；权限/离线/行锁禁用态与输入框一致 */}
                                     <button
                                       type="button"
                                       tabIndex={-1}
-                                      disabled={disabled}
+                                      disabled={readOnly}
                                       title="一键填入当前日期"
                                       onMouseDown={e => e.preventDefault()}
                                       onClick={() => handleCellChange(row, 'time', todayStr())}
-                                      className={`absolute right-0.5 top-1/2 -translate-y-1/2 p-0.5 rounded transition ${disabled ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-100'}`}
+                                      className={`absolute right-0.5 top-1/2 -translate-y-1/2 p-0.5 rounded transition ${readOnly ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-700 hover:bg-emerald-100'}`}
                                     >
                                       <Clock size={12} />
                                     </button>
@@ -3091,12 +3145,19 @@ const GunLedger: React.FC = () => {
                                       type="text"
                                       value={value}
                                       disabled={disabled}
+                                      readOnly={previewOnly}
+                                      title={previewOnly ? previewTitle : undefined}
                                       placeholder={field === 'gunName' ? (isPlaceholder ? '取号...' : '') : field === 'customer' ? '手动填写客户名或输入仕样号自动获取客户名' : ''}
-                                      onChange={e => handleCellChange(row, field, e.target.value)}
-                                      onFocus={() => handleCellFocus(activeTable.id, row.serialNumber)}
+                                      onChange={e => {
+                                        // 焊枪名编号由序号决定：校正后的值可能与被删掉的输入不同，
+                                        // 直接回填输入框，避免"界面删掉了编号、实际状态没变"的错觉
+                                        const applied = handleCellChange(row, field, e.target.value);
+                                        if (applied !== undefined && applied !== e.target.value) e.target.value = applied;
+                                      }}
+                                      onFocus={() => { if (previewOnly) { addToast(previewTitle, 'error'); return; } handleCellFocus(activeTable.id, row.serialNumber); }}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${disabled ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
+                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${readOnly ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${previewOnly ? 'text-gray-400' : value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && !previewOnly && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && !previewOnly && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
                                     />
                                     {/* 已被主任务使用的枪名不显示勾选框（不允许重复分配确认图任务） */}
                                     {assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) && (

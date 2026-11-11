@@ -96,6 +96,7 @@ const routeActionDisplays = {
   'POST system/maintenance/cleanup-backups': { label: '清理过期备份', description: '清理过期的数据库备份文件' },
   'POST system/maintenance/yearly-cleanup': { label: '执行年度清理', description: '执行年度任务数据清理检测' },
   'POST system/maintenance/clear-logs': { label: '清空日志', description: '清空登录日志和操作日志' },
+  'POST system/log-files/trim': { label: '清理日志文件', description: '截断超限的磁盘日志文件' },
   'POST system/maintenance/cleanup-tasks': { label: '清理任务数据', description: '清理指定月份的任务数据' },
   'POST system/maintenance/compact': { label: '压缩数据库', description: '压缩数据库文件并回收空闲空间' },
   'GET system/db-stats': { label: '查看数据库统计', description: '查看数据库大小和数据统计' },

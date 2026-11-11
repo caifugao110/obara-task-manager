@@ -586,20 +586,43 @@ export function GunLedgerSkeleton() {
 
 /* ==================== 系统设置 ==================== */
 
-/** 设置页的一张表单卡 */
-function SettingsCard({ fields = 2, columns = 2 }: { fields?: number; columns?: number }) {
+type SettingsTone = 'green' | 'blue' | 'red' | 'orange' | 'purple' | 'emerald' | 'gray';
+
+/** 按钮/图标底色，与真实页面各大按钮的主色对应 */
+const TONE_BG: Record<SettingsTone, string> = {
+  green: 'bg-green-100/90',
+  blue: 'bg-blue-100/90',
+  red: 'bg-red-100/90',
+  orange: 'bg-orange-100/90',
+  purple: 'bg-purple-100/90',
+  emerald: 'bg-emerald-100/90',
+  gray: 'bg-gray-100/90',
+};
+
+/** 数据管理 tab 的动作卡：图标 + 标题 + 说明 + 底部按钮组（真实页右侧按钮贴底） */
+function ActionCard({
+  icon,
+  descLines = 2,
+  buttons,
+}: {
+  icon: SettingsTone;
+  descLines?: number;
+  buttons: Array<[SettingsTone, number]>;
+}) {
   return (
-    <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-      <div className="flex items-center gap-2 mb-5">
-        <Bar className="h-4 w-4 rounded" />
-        <Bar className="h-4 w-32" />
+    <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 flex flex-col">
+      <div className="flex items-center gap-2 mb-3">
+        <Bar className={`h-5 w-5 rounded ${TONE_BG[icon]}`} />
+        <Bar className="h-4 w-24" />
       </div>
-      <div className={`grid gap-4 ${columns === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
-        {Array.from({ length: fields }).map((_, i) => (
-          <div key={i} className="space-y-2">
-            <Bar className="h-2.5 w-20" />
-            <Bar className="h-10 w-full rounded-lg bg-gray-50 border border-gray-100" />
-          </div>
+      <div className="mb-6 space-y-2">
+        {Array.from({ length: descLines }).map((_, i) => (
+          <Bar key={i} className="h-2.5" style={{ width: `${88 - i * 26}%` }} />
+        ))}
+      </div>
+      <div className="mt-auto flex flex-wrap items-center gap-3">
+        {buttons.map(([tone, w], i) => (
+          <Bar key={i} className={`h-11 rounded-xl ${TONE_BG[tone]}`} style={{ width: w }} />
         ))}
       </div>
     </div>
@@ -608,35 +631,94 @@ function SettingsCard({ fields = 2, columns = 2 }: { fields?: number; columns?: 
 
 export function SystemSettingsSkeleton() {
   return (
-    <div className="flex-1 min-h-0 flex flex-col" aria-hidden="true">
+    <div
+      className="flex-1 min-h-0 flex flex-col bg-gradient-to-br from-slate-50 to-blue-50"
+      aria-hidden="true"
+    >
       <PageHeader />
 
-      {/* 标签栏 */}
+      {/* 标签栏：超级管理员可见 7 个 tab，普通管理员只有「数据管理」 */}
       <div className="shrink-0 bg-white border-b border-gray-200">
-        <div className="max-w-5xl mx-auto px-8 flex space-x-1">
-          {[96, 112, 96, 88].map((w, i) => (
+        <div className="max-w-7xl mx-auto px-8 flex space-x-1 overflow-hidden">
+          {[128, 132, 120, 152, 120, 120, 124].map((w, i) => (
             <div
               key={i}
               className={`flex items-center gap-2 px-6 py-3 ${
                 i === 0 ? 'border-b-2 border-blue-600' : ''
               }`}
             >
-              <Bar className="h-4 w-4 rounded" />
-              <Bar className="h-3.5" style={{ width: w - 40 }} />
+              <Bar className="h-[18px] w-[18px] rounded" />
+              <Bar className="h-3.5" style={{ width: w - 66 }} />
             </div>
           ))}
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden bg-gray-50">
-        <div className="max-w-5xl mx-auto w-full p-8 space-y-8">
-          <SettingsCard fields={4} />
-          <SettingsCard fields={3} columns={3} />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <SettingsCard fields={2} columns={1} />
-            <SettingsCard fields={2} columns={1} />
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="max-w-7xl mx-auto w-full p-8 space-y-6">
+          {/* 三张动作卡 + 通栏的焊枪编号台账 */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3 items-stretch">
+            <ActionCard
+              icon="green"
+              buttons={[
+                ['green', 116],
+                ['blue', 116],
+                ['red', 132],
+              ]}
+            />
+            <ActionCard icon="orange" descLines={3} buttons={[['gray', 150], ['orange', 152]]} />
+            <ActionCard icon="purple" buttons={[['gray', 150], ['purple', 152], ['red', 112]]} />
+
+            {/* 焊枪编号台账：独占一行，分类 chip + 导出/导入按钮 */}
+            <div className="lg:col-span-2 xl:col-span-3 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Bar className="h-5 w-5 rounded bg-emerald-100/90" />
+                <Bar className="h-4 w-28" />
+              </div>
+              <div className="mb-5 space-y-2">
+                <Bar className="h-2.5 w-[92%]" />
+                <Bar className="h-2.5 w-[74%]" />
+              </div>
+              <div className="flex flex-wrap gap-2 mb-5">
+                {[112, 96, 128, 104, 88].map((w, i) => (
+                  <Bar
+                    key={i}
+                    className={`h-9 rounded-xl ${
+                      i === 0 ? 'bg-emerald-50/90 border border-emerald-100' : 'bg-gray-100/90'
+                    }`}
+                    style={{ width: w }}
+                  />
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-4">
+                <Bar className="h-3 w-14" />
+                <Bar className="h-11 w-44 rounded-xl bg-emerald-100/90" />
+                <Bar className="h-11 w-40 rounded-xl bg-blue-100/90" />
+              </div>
+            </div>
           </div>
-          <SettingsCard fields={6} columns={3} />
+
+          {/* 系统设置查看权限设置：两个开关行 */}
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+            <div className="flex items-center gap-2 mb-6">
+              <Bar className="h-5 w-5 rounded bg-purple-100/90" />
+              <Bar className="h-4 w-48" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {[0, 1].map((i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between p-5 bg-gray-50 rounded-xl border border-gray-100"
+                >
+                  <div className="space-y-2">
+                    <Bar className="h-3.5 w-28" />
+                    <Bar className="h-2 w-20 opacity-70" />
+                  </div>
+                  <Bar className="h-6 w-12 rounded-full bg-gray-200/90" />
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

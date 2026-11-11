@@ -666,6 +666,159 @@ const compactDatabase = () => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// 主文件体积构成
+//
+// 只给一个「主文件 1.59 MB」没法回答「到底是谁占的」：同样体积，可能全是审计
+// 日志，也可能全是任务数据，处理方式完全不同。这里借 dbstat 虚拟表取出每张表
+// （索引归并到所属表）的真实页占用，再按业务类型归组，各项之和等于主文件体积。
+// 注意：dbstat 不统计 freelist（空闲页），所以空闲页要单独补一项。
+// ---------------------------------------------------------------------------
+const DB_BREAKDOWN_GROUPS = [
+  { key: 'audit', label: '审计日志', note: '账号与数据变更留痕', tables: ['audit_logs'] },
+  { key: 'kv', label: '业务数据', note: '用户、设置、编号台账、状态跟踪等集合', tables: ['kv_store'] },
+  { key: 'tasks', label: '任务数据', note: '工作表与任务条目', tables: ['task_sheets', 'task_entries'] },
+  { key: 'monitor', label: '运行监测', note: '心跳样本、流量聚合、生命周期事件', prefixes: ['monitor_'] },
+  { key: 'login', label: '登录日志', note: '登录成功与失败记录', tables: ['login_logs'] },
+  { key: 'schema', label: '库结构', note: '表定义、自增序列等系统目录', tables: ['sqlite_schema', 'sqlite_sequence'] }
+];
+
+// kv_store 里各集合的展示名，新增集合未登记时直接显示原始 key，不隐藏
+const KV_KEY_LABELS = {
+  statusTrackingItems: '状态跟踪数据',
+  gunLedger: '编号台账',
+  users: '用户账号',
+  settings: '系统设置',
+  designers: '设计人员'
+};
+
+/**
+ * 按表汇总 dbstat 页占用，索引体积归并到所属表（否则索引会单独成行，看不出归属）。
+ * dbstat 未启用时返回 null，前端降级为只显示主文件体积，不编造数字。
+ */
+const readTableBytes = (raw) => {
+  let rows;
+  try {
+    rows = raw.prepare('SELECT name, SUM(pgsize) AS bytes FROM dbstat GROUP BY name').all();
+  } catch {
+    return null;
+  }
+  let indexRows = [];
+  try {
+    indexRows = raw.prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IS NOT NULL").all();
+  } catch {
+    indexRows = [];
+  }
+  const tableOfObject = new Map(indexRows.map((row) => [String(row.name), String(row.tbl_name)]));
+  const sizes = new Map();
+  for (const row of rows) {
+    const objectName = String(row.name);
+    const table = tableOfObject.get(objectName) || objectName;
+    sizes.set(table, (sizes.get(table) || 0) + (Number(row.bytes) || 0));
+  }
+  return sizes;
+};
+
+const safeCount = (raw, table) => {
+  try {
+    return Number(raw.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get().c) || 0;
+  } catch {
+    return null;
+  }
+};
+
+/** kv_store 各集合的内容体积（字节）：说明「业务数据」里到底装了什么 */
+const readKvKeyDetails = (raw) => {
+  let rows;
+  try {
+    rows = raw.prepare('SELECT key, length(CAST(value AS BLOB)) AS bytes FROM kv_store ORDER BY bytes DESC').all();
+  } catch {
+    return [];
+  }
+  return rows
+    .map((row) => ({ label: KV_KEY_LABELS[String(row.key)] || String(row.key), bytes: Number(row.bytes) || 0 }))
+    .filter((item) => item.bytes > 0);
+};
+
+const buildDbBreakdown = (raw, { dbFileSize, freelistBytes, pageSize, pageCount, tasksCount, taskItemsCount }) => {
+  const sizes = readTableBytes(raw);
+  if (!sizes) return null;
+
+  const grouped = new Map();
+  DB_BREAKDOWN_GROUPS.forEach((group) => grouped.set(group.key, { ...group, bytes: 0, tables: [], rows: 0 }));
+  const others = [];
+
+  for (const [table, bytes] of sizes) {
+    const group = DB_BREAKDOWN_GROUPS.find(
+      (item) => (item.tables || []).includes(table) || (item.prefixes || []).some((prefix) => table.startsWith(prefix))
+    );
+    if (group) {
+      const bucket = grouped.get(group.key);
+      bucket.bytes += bytes;
+      bucket.tables.push(table);
+      if (group.key !== 'schema') {
+        const count = safeCount(raw, table);
+        if (count !== null) bucket.rows += count;
+      }
+    } else {
+      others.push({ key: `other:${table}`, label: table, note: '未分类对象', bytes, tables: [table], rows: null });
+    }
+  }
+
+  const items = [...grouped.values()].filter((item) => item.bytes > 0);
+
+  // 任务数与 kv 明细挂到对应分组，避免前端再拼接口
+  for (const item of items) {
+    if (item.key === 'tasks') {
+      item.note = `${tasksCount} 个工作表，${taskItemsCount} 条任务记录`;
+      item.details = null;
+    } else if (item.key === 'kv') {
+      item.details = readKvKeyDetails(raw);
+    } else if (item.key === 'login') {
+      item.note = `${item.rows} 条记录`;
+    } else if (item.key === 'audit') {
+      item.note = `${item.rows} 条记录`;
+    } else if (item.key === 'monitor') {
+      item.note = `${item.rows} 行样本与聚合`;
+    }
+  }
+
+  // 统计基数是「数据页总量」而不是文件字节数：WAL 模式下已提交但尚未落盘的页
+  // 还在 -wal 里，dbstat 能读到它们，但文件本身还没长到那么大。用页数做基数，
+  // 各项才有确定的分母；与文件的差额单独用 pendingBytes 交代。
+  const logicalBytes = pageSize > 0 && pageCount > 0 ? pageSize * pageCount : dbFileSize;
+
+  // 兜底：页账对不上时把差额显式列出来，而不是让各项之和莫名其妙小于总数
+  const accounted = items.reduce((sum, item) => sum + item.bytes, 0)
+    + others.reduce((sum, item) => sum + item.bytes, 0)
+    + (freelistBytes || 0);
+  const residual = logicalBytes - accounted;
+  if (residual > 1024) {
+    others.push({ key: 'other:residual', label: '其他开销', note: '文件头、页对齐与统计差额', bytes: residual, tables: [], rows: null });
+  }
+
+  const sorted = [...items, ...others].sort((a, b) => b.bytes - a.bytes);
+
+  return {
+    // 统计口径：数据页实际占用，已把索引算进所属表
+    basis: 'physical',
+    totalBytes: sorted.reduce((sum, item) => sum + item.bytes, 0) + (freelistBytes || 0),
+    fileBytes: dbFileSize,
+    // 已提交但还在 WAL 里、尚未写回主文件的页（checkpoint 后主文件才会长到这个数）
+    pendingBytes: Math.max(0, logicalBytes - dbFileSize),
+    items: sorted.map((item) => ({
+      key: item.key,
+      label: item.label,
+      note: item.note || null,
+      bytes: item.bytes,
+      rows: item.rows === undefined ? null : item.rows,
+      tables: item.tables || [],
+      details: item.details || null
+    })),
+    freeBytes: freelistBytes || 0
+  };
+};
+
 const getMaintenanceStatus = () => {
   const { settings } = getMaintenanceSettings();
 
@@ -686,13 +839,24 @@ const getMaintenanceStatus = () => {
   // 空闲页体积：删除数据后仍留在文件里、需要 VACUUM 才能真正回收的部分。
   // 前端据此提示「可回收 xx MB」，避免把物理占用不变误读成没清干净。
   let freelistBytes = 0;
+  let dbBreakdown = null;
   try {
     const raw = db.getRawDb();
     const pageSize = Number(raw.pragma('page_size', { simple: true })) || 0;
+    const pageCount = Number(raw.pragma('page_count', { simple: true })) || 0;
     const freelistCount = Number(raw.pragma('freelist_count', { simple: true })) || 0;
     freelistBytes = pageSize * freelistCount;
+    dbBreakdown = buildDbBreakdown(raw, {
+      dbFileSize,
+      freelistBytes,
+      pageSize,
+      pageCount,
+      tasksCount,
+      taskItemsCount
+    });
   } catch {
     freelistBytes = 0;
+    dbBreakdown = null;
   }
 
   const nextRunAtIso = lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTimes).toISOString();
@@ -717,7 +881,9 @@ const getMaintenanceStatus = () => {
       reclaimableBytes: freelistBytes,
       tasksJsonSize,
       tasksCount,
-      taskItemsCount
+      taskItemsCount,
+      // 主文件体积构成（按数据类型拆解，各项之和等于 dbFileSize）
+      breakdown: dbBreakdown
     },
     files: {
       backups: listManagedFiles(resolveManagedDir(settings.backupDir), file => !/\.db-(shm|wal)$/i.test(file.name)).slice(0, 5),

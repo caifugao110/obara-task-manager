@@ -235,6 +235,54 @@ const normalizeGunNameNumber = (rule, serialNumber, rawName) => {
   return anchored ? prefix + expected + value.slice(prefix.length) : value + expected;
 };
 
+// 序号 ↔ 编号强绑定（唯一权威实现）：
+// 行序号永远等于该行在表中的位置 + 1（连续 1..N，不允许跳号/乱序/被改写），
+// 焊枪名里的编号永远等于规则(序号)，改序号就等于改编号，任何入口都不允许。
+// 旧版「占位行按任意序号提升」曾写出错位数据（如序号 4 的行挂着序号 6 的编号），
+// 表现为同表重号、主页面快速取号算出已存在的编号而 409 冲突，此处一并自愈。
+// 校正时只替换编号数字段，前缀与编号之后的后缀（L / -EL / L-WL 等）原样保留；
+// 若校正后的名字会被其它行占用，则保留原名——宁可留下历史错位，也绝不制造新的重号。
+const enforceSerialNumberBinding = (rule, rows) => {
+  const list = Array.isArray(rows) ? rows : [];
+  const nameCount = new Map();
+  list.forEach(r => {
+    const name = String(r?.gunName || '').trim();
+    if (name) nameCount.set(name, (nameCount.get(name) || 0) + 1);
+  });
+  const renamed = [];
+  const bound = list.map((row, index) => {
+    const serialNumber = index + 1;
+    const gunName = String(row?.gunName || '');
+    let fixedName = gunName;
+    if (rule && rule.enabled && gunName.trim()) {
+      const normalized = normalizeGunNameNumber(rule, serialNumber, gunName);
+      const target = normalized.trim();
+      // 目标名字被别的行占着（含历史重号）：不校正，避免把一个错位换成一场重号
+      const takenByOther = target !== gunName.trim() && (nameCount.get(target) || 0) > 0;
+      if (!takenByOther) fixedName = normalized;
+    }
+    if (fixedName !== gunName) renamed.push({ serialNumber, from: gunName, to: fixedName });
+    return row && typeof row === 'object'
+      ? { ...row, serialNumber, gunName: fixedName }
+      : { serialNumber, gunName: fixedName };
+  });
+  return { rows: bound, renamed };
+};
+
+// 按「提交顺序（= 台账页展示顺序）」重排序号后再做绑定校正：
+// 先按提交上来的序号升序排序（兼容把新行夹在中间提交的老客户端），再压实为 1..N。
+const bindRowsToSerials = (rule, rows) => {
+  const ordered = [...(Array.isArray(rows) ? rows : [])]
+    .map((row, i) => ({ row, i, serial: Number(row?.serialNumber) }))
+    .sort((a, b) => {
+      const sa = Number.isFinite(a.serial) ? a.serial : Number.MAX_SAFE_INTEGER;
+      const sb = Number.isFinite(b.serial) ? b.serial : Number.MAX_SAFE_INTEGER;
+      return sa === sb ? a.i - b.i : sa - sb;
+    })
+    .map(item => item.row);
+  return enforceSerialNumberBinding(rule, ordered);
+};
+
 // 用户的可序列化信息
 const userMeta = (req) => req.user ? { id: req.user.id, username: req.user.username, name: req.user.name } : null;
 
@@ -242,9 +290,39 @@ const userMeta = (req) => req.user ? { id: req.user.id, username: req.user.usern
 const cleanUserMeta = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 
 // GET /api/gun-ledger —— 取全部数据
+// 读取时顺带自愈历史错位数据（序号跳号 / 名字编号与序号不符）：仅在有变化时落库，
+// 保证台账页打开即看到「序号与编号严格一致」的数据，占位行不会与真实行撞号。
 router.get('/', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+
+  const healedTables = [];
+  Object.keys(gunLedger.categories || {}).forEach(category => {
+    (Array.isArray(gunLedger.categories[category]) ? gunLedger.categories[category] : []).forEach(table => {
+      const rule = getEffectiveGunNameRule(category, table);
+      if (!rule) return;
+      const result = bindRowsToSerials(rule, table.rows || []);
+      if (result.renamed.length) {
+        table.rows = result.rows;
+        healedTables.push({ category, tableId: table.id, tableName: table.name, renamed: result.renamed });
+      }
+    });
+  });
+
+  if (healedTables.length) {
+    await db.writeDb(data);
+    healedTables.forEach(t => {
+      console.log(`[gun-ledger] 已按序号校正焊枪名编号：${t.category}/${t.tableName} ${t.renamed.map(r => `${r.from}→${r.to}`).join('、')}`);
+    });
+    const io = req.app.get('io');
+    if (io) {
+      healedTables.forEach(t => {
+        const table = (gunLedger.categories[t.category] || []).find(x => x && x.id === t.tableId);
+        io.emit('gun_ledger_updated', { action: 'update_rows', tableId: t.tableId, rows: table ? table.rows : [] });
+      });
+    }
+  }
+
   res.json(gunLedger);
 }));
 
@@ -423,7 +501,13 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
     return res.status(400).json({ message: `表「${found.table.name}」未配置焊枪名规则，无法自动取号，请先在台账「台账初始化」中配置` });
   }
 
-  const serialNumber = rows.length + 1;
+  // 取号前先自愈：序号压实为 1..N、名字编号校正到对应序号。
+  // 否则历史错位行（例如序号 1 却挂着 0201）会让「下一个未取号」算出同一个编号，永远 409。
+  const healed = bindRowsToSerials(rule, rows);
+  found.table.rows = healed.rows;
+  const healedRows = healed.rows;
+
+  const serialNumber = healedRows.length + 1;
   const count = Number(value.count) || 1;
   // 自定义前缀：前端把首号改写后的前缀传上来，本批全部沿用；不传则用表规则前缀
   const effectivePrefix = value.prefix === undefined ? String(rule.prefix || '') : String(value.prefix);
@@ -436,7 +520,7 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
 
   // 连续占用 count 个序号：逐个按规则生成枪名，任何一个与存量重名都整体拒绝，
   // 避免出现「前几个成功、后面的失败」这种半截状态
-  const takenNames = new Set(rows.map(r => String(r.gunName || '').trim()));
+  const takenNames = new Set(healedRows.map(r => String(r.gunName || '').trim()));
   const createdRows = [];
   for (let i = 0; i < count; i += 1) {
     const serial = serialNumber + i;
@@ -462,11 +546,11 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
     });
   }
 
-  found.table.rows = [...rows, ...createdRows];
+  found.table.rows = [...healedRows, ...createdRows];
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: found.table.rows });
+  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: found.table.rows, renamed: healed.renamed });
 
   res.json({
     success: true,
@@ -481,7 +565,9 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
     lastGunName: createdRows[createdRows.length - 1].gunName,
     category: found.category,
     tableName: found.table.name,
-    nextSerial: serialNumber + count
+    nextSerial: serialNumber + count,
+    // 取号顺带自愈了历史错位数据时回传，前端据此提示「已按序号校正编号」
+    renamed: healed.renamed
   });
 }));
 
@@ -929,41 +1015,14 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
     return res.status(409).json({ message: `该表正由「${holder.name || holder.username}」编辑，请等待其完成后再保存` });
   }
 
-  // 焊枪名唯一性校验：同表内不允许重复
-  const duplicates = findDuplicateGunNames(value);
-  if (duplicates.length) {
-    const detail = duplicates.map(d => `「${d.gunName}」（序号 ${d.serialNumbers.join('、')}）`).join('；');
-    return res.status(409).json({
-      message: `焊枪名不可重复：${detail}`,
-      duplicates
-    });
-  }
-
-  // 焊枪名编号校验：有生效规则时，非空焊枪名的编号必须与规则计算的一致
-  // 编号不可编辑；前缀可编辑；编号之后可追加任意后缀（L / -EL / L-WL 等）
+  // 表的生效取号规则：有规则时，行序号决定焊枪名里的编号，二者强绑定
   const rule = getEffectiveGunNameRule(found.category, found.table);
-  if (rule) {
-    const invalidNumbers = value.filter(r => {
-      const name = String(r.gunName || '').trim();
-      if (!name) return false;
-      return normalizeGunNameNumber(rule, Number(r.serialNumber), name) !== name;
-    });
-    if (invalidNumbers.length) {
-      const detail = invalidNumbers.map(r => {
-        const expected = buildGunNumber(rule, Number(r.serialNumber));
-        return `序号 ${r.serialNumber}（编号应为 ${expected}，可在编号后追加后缀）`;
-      }).join('、');
-      return res.status(400).json({
-        message: `焊枪名编号不可修改：${detail}`,
-      });
-    }
-  }
 
   const meta = userMeta(req);
   const now = new Date().toISOString();
   // 保留已存在的行的 createdAt/createdBy，新行（无 id 或 id 不存在）补全
   const existingById = new Map((found.table.rows || []).map(r => [r.id, r]));
-  const nextRows = value.map(r => {
+  const drafts = value.map(r => {
     const id = r.id || newId('gun-row');
     const prev = existingById.get(id);
     const isNew = !prev && String(r.gunName || '').trim() !== '';
@@ -983,16 +1042,32 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
       updatedBy: meta
     };
   });
-  // 序号严格按自然顺序连续排列：按序号升序重排为 1..N，杜绝跳号（如 1 直接到 11）
-  nextRows.sort((a, b) => a.serialNumber - b.serialNumber);
-  nextRows.forEach((r, i) => { r.serialNumber = i + 1; });
+
+  // 序号 ↔ 编号强绑定：先把序号按提交顺序压实为 1..N（杜绝跳号/乱序），
+  // 再把每行名字里的编号校正到该序号对应的规则值（前缀/后缀保留）。
+  // 旧版行为是「编号不符就 400 拒绝保存」，会让一张已被写错位的表永远存不进去，
+  // 用户只能看着重号与取号冲突；改为按序号校正后自愈，correct 结果通过响应回传。
+  const bound = bindRowsToSerials(rule, drafts);
+  const nextRows = bound.rows;
+
+  // 焊枪名唯一性校验：同表内不允许重复（编号由序号决定后，这里只是兜底防御）
+  const duplicates = findDuplicateGunNames(nextRows);
+  if (duplicates.length) {
+    const detail = duplicates.map(d => `「${d.gunName}」（序号 ${d.serialNumbers.join('、')}）`).join('；');
+    return res.status(409).json({
+      message: `焊枪名不可重复：${detail}`,
+      duplicates
+    });
+  }
+
   found.table.rows = nextRows;
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: nextRows });
+  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: nextRows, renamed: bound.renamed });
 
-  res.json(nextRows);
+  // 行数据 + 本次按序号校正掉的编号（为空表示数据本来就是一致的）
+  res.json({ rows: nextRows, renamed: bound.renamed });
 }));
 
 // PATCH /api/gun-ledger/categories/order —— 重排分类顺序
@@ -1117,12 +1192,21 @@ router.put('/tables/:tableId/gun-name-rule', [authMiddleware, superAdminMiddlewa
     pad: value.pad
   };
   found.table.gunNameRule = rule;
+  // 规则一改，序号→编号的映射随之改变：立刻按新规则重新绑定存量行，
+  // 避免库里留下一批「编号与序号不符」的行（那会让占位行列表继续撞号）。
+  const bound = bindRowsToSerials(rule.enabled ? rule : null, found.table.rows || []);
+  found.table.rows = bound.rows;
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId: req.params.tableId, rule });
+  if (io) {
+    io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId: req.params.tableId, rule });
+    if (bound.renamed.length) {
+      io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: bound.rows, renamed: bound.renamed });
+    }
+  }
 
-  res.json(rule);
+  res.json({ ...rule, renamed: bound.renamed });
 }));
 
 // POST /api/gun-ledger/tables/:tableId/initialize-gun-names —— 焊枪名初始化（台账初始化，超管）
@@ -1241,5 +1325,8 @@ router.post('/initialize-all', [authMiddleware, superAdminMiddleware, accessSett
 
   await applyBatchInitialize(req, res, data, tableRefs);
 }));
+
+// 供单元测试直接引用「序号 ↔ 编号强绑定」的纯函数（不参与路由，不影响运行时行为）
+router.__testables = { enforceSerialNumberBinding, bindRowsToSerials, normalizeGunNameNumber, buildGunNumber };
 
 module.exports = router;

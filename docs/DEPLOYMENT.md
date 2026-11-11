@@ -479,16 +479,23 @@ GITEE_REPO_NAME=obara-task-manager
 | `settings.workdayOverrides` | 工作日覆盖规则，键为 `YYYY-MM-DD`，值为 `workday` 或 `weekend`，用于覆盖自然周六/周日判断 |
 | `settings.leaderRules` | 组长规则配置 |
 | `settings.factoryRules` | 工厂规则配置（营业担当→工厂 `O/NJG`/`O/SHA` 映射与默认工厂） |
-| `settings.system` | 系统设置：多设备登录（`allowMultiDevice`）、允许登录用户修改本人设计计划完成状态（`allowUserDesignPlanColorMark`，兼容字段 `allowUserEditOwnTaskColor`）、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、操作日志保留条数（`auditLogMaxRows`，100~100000，默认 5000）、任务内容配色（`taskColorConfig`，10 个状态各自的**底色 hex**：7 个常规 + 3 个加急，文字色固定为普通黑色 `#000000` / 加急红色 `#dc2626`，不可配置）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值；`extraTaskHours`（`designChange` / `drawingReview`）为「设计变更」「既制审图」两项固定工时，默认 1.5h / 0.5h，不区分机型也不套用表规则）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，`taskColorConfig` 缺失或含非法色值时逐项回退默认配色（深紫 `#d8b4fe` / 淡绿 `#bbf7d0` / 浅黄 `#fef9c3` / 浅蓝 `#bae6fd` / 橙红 `#fdba74` / 粉 `#fbcfe8` / 暂停取消纯红 `#ff0000` + 加急三项亮黄 `#ffff00`；已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被忽略，历史 `{ bg, text }` 结构只取 `bg`），默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
+| `settings.system` | 系统设置：多设备登录（`allowMultiDevice`）、允许登录用户修改本人设计计划完成状态（`allowUserDesignPlanColorMark`，兼容字段 `allowUserEditOwnTaskColor`）、允许用户自主改密（`allowUserChangePassword`，默认 `false`，关闭时 `/api/auth/change-password` 返回 403）、仕样号位数（`specNumberDigits`，5 或 6）、操作日志保留条数（`auditLogMaxRows`，100~100000，默认 5000）、磁盘日志自动截断（`logAutoTrimEnabled` 默认 `true`，`logMaxSizeMb` 5~2048 默认 50，超阈值时就地截断 `logs/*.log`）、任务内容配色（`taskColorConfig`，10 个状态各自的**底色 hex**：7 个常规 + 3 个加急，文字色固定为普通黑色 `#000000` / 加急红色 `#dc2626`，不可配置）、默认工时规则（`defaultGunHours` 为确认/确认修改/设计三类工时的机型 C/X 回退值；`tableGunHours` 为按焊枪编号台账「分类 → 表」配置的三类工时专用覆盖值；`extraTaskHours`（`designChange` / `drawingReview`）为「设计变更」「既制审图」两项固定工时，默认 1.5h / 0.5h，不区分机型也不套用表规则）；完成状态标记开关缺失时默认开启，自主改密开关缺失时默认关闭，仕样号位数缺失时默认 5，`taskColorConfig` 缺失或含非法色值时逐项回退默认配色（深紫 `#d8b4fe` / 淡绿 `#bbf7d0` / 浅黄 `#fef9c3` / 浅蓝 `#bae6fd` / 橙红 `#fdba74` / 粉 `#fbcfe8` / 暂停取消纯红 `#ff0000` + 加急三项亮黄 `#ffff00`；已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被忽略，历史 `{ bg, text }` 结构只取 `bg`），默认工时规则缺失时按内置默认值补齐（保存时 `tableGunHours` 以内置表规则为底与超管配置、用户自建表配置合并，非法单元格回退内置值、无内置值则丢弃） |
 | `settings.ipBlacklist` | IP 黑名单（仅超级管理员可改）：`{ enabled, entries: [{ id, ip, note, createdAt, createdBy }] }` |
 
-除上述键值集合外，三类高写入量数据存放在独立的关系表中：
+除上述键值集合外，业务与监测数据存放在独立的关系表中：
 
 | 表 | 说明 |
 |----|------|
 | `task_sheets` / `task_entries` | 任务工时表：每张工时表一行（`designer_id + year + month` 唯一索引），任务条目按行存放；写入只重写受影响的单张表，对外接口数据形状不变 |
 | `login_logs` | 登录日志独立表（含 IP、浏览器信息、登录结果），最多保留 2000 条 |
-| `audit_logs` | 操作日志独立表，默认最多保留 5000 条（保留条数可在系统设置 → 日志管理中调整） |
+| `audit_logs` | 操作日志独立表，默认最多保留 5000 条（保留条数可在系统设置 → 操作日志中调整） |
+| `monitor_samples` / `monitor_samples_hour` | 状态监测心跳样本（30 秒一条）与小时汇总，保留 200 天 |
+| `monitor_traffic_min` / `monitor_traffic_hour` | 前端流量分钟明细（保留 35 天）与小时汇总（保留 200 天） |
+| `monitor_traffic_path` | 接口路径聚合（小时 × 路径），监测表里通常最大的一张 |
+| `monitor_events` | 进程生命周期事件（`boot` / `graceful_stop` / `exit`），长期保留，用于追溯历史断开 |
+| `monitor_meta` | 监测元信息（采集起始时间等），用于区分「未采集」与「采了但为 0」 |
+
+`monitor_*` 七张表由 `backend/utils/systemMonitor.js` 在首次调用监测接口时自建（`CREATE TABLE IF NOT EXISTS`），不属于 `backend/db.js` 的业务建表流程；它们与业务数据同库同文件，因此备份 `data.db` 会把监测数据一并带走。监测数据可单独清理（系统设置 → 状态监测 → 存储占用与清理），不影响业务表。
 
 首次启动或旧版本升级时，`backend/db.js` 会自动补齐缺失的默认配置。
 
@@ -730,7 +737,7 @@ taskkill /PID <PID> /F
 - 断线时页脚显示红色/琥珀色圆点 + "离线"，页面顶部显示橙色横幅「当前处于离线模式，此页面禁止编辑」，所有写操作被拦截。
 - 页脚还有一种琥珀色「需手动刷新获取最新状态」，表示未登录/无 token（无实时连接），**不是离线**，不要误判。
 - 主页面若此前已加载过数据，会自动显示 localStorage 缓存内容，不会归零。
-- 管理后台、任务报表、工时管理、系统设置、操作日志在离线期间每 5 秒轻量探测 `/api/auth/validate`，后端恢复后自动重新加载最新数据；主页面/状态追踪/焊枪台账/设计规范知识库由全局心跳与 Socket 重连触发恢复刷新。
+- 管理后台、任务报表、工时管理、系统设置（含其中的操作日志）在离线期间每 5 秒轻量探测 `/api/auth/validate`，后端恢复后自动重新加载最新数据；主页面/状态追踪/焊枪台账/设计规范知识库由全局心跳与 Socket 重连触发恢复刷新。
 - 若确认后端进程存活却仍提示离线，依次检查：后端端口是否被占用或改过（`backend/.env` 的 `PORT`）、浏览器 Token 是否过期（重新登录）、前端 `vite.config.ts` 中 `/api`、`/socket.io` 代理是否正确。
 
 ### 前端请求后端失败
@@ -806,6 +813,8 @@ GET /api/system/schedule-probe
    那些共享下次被访问时会自动重建，属可接受的瞬时影响。
 
 补充：`/api/system/schedule-probe` 的 `raw.readdir` 也能确认目录里是否还叫「各产品大日程.xls」；`logs/backend.err.log` 里搜 `[productionSchedule]` 可看到错误码与运行账户，搜 `[uncShare]` 可看到每次自动连接的结果。凭据不会写入日志。
+
+启动时如果配了凭据，还会先做一次「共享预热」（`[productionSchedule] 共享预热成功/失败`）。它是**异步发起、不阻塞启动**的：`net use` 最长要等 15 秒超时，若同步执行，端口虽已 `listen`，事件循环却被整段占满——健康探测 5 秒超时会把后端判成「假死」，看门狗连续 3 次失败后会强杀进程树重启。因此预热结果比 `Server running` 晚十几秒才出现属于正常现象；预热失败也不影响启动，真正读取大日程时还有一次自动重连兜底。
 
 如果接口本身也超时、或 `raw.workerError.timedOut` 为 `true`，说明**共享调用在系统内核里挂住了**（不是权限问题）：读取已放在独立子进程里，接口最多等 `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS`（默认 20 秒）就会返回。连续失败还会触发熔断，冷却期内不再访问共享盘——此时页面上的数量/纳期会使用最后一次成功的缓存或回退到 PDF，属预期降级。详见「后端假死」一节。
 
@@ -913,8 +922,13 @@ GET /api/system/version
 
 超级管理员也可以在页面中查看登录和操作日志：
 
-- “系统设置”日志管理模块主页显示最新 10 条管理员登录信息。
-- “操作日志”页面（`/system-logs`）显示所有用户的**数据变更与敏感操作**记录（写操作全记；读取只记导出与数据库统计；页面初始化读接口与心跳不记录），支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
+- “系统设置 → 操作日志”标签页的「管理员登录信息」卡片（可折叠）显示最新 10 条管理员登录信息。
+- “系统设置 → 日志文件管理”标签页的「日志文件占用」卡片会列出上表各文件的大小、最后写入时间与清理建议（`GET /api/system/log-files`，只 `stat` 不读内容）。
+- **磁盘日志现在会自动截断**：默认开启、单文件阈值 50MB（`settings.system.logAutoTrimEnabled` / `logMaxSizeMb`，可在页面改成 5 ~ 2048 或整体关闭），后端每 30 分钟检查一次 `logs/` 下的 `*.log`，超过阈值即保留末尾（阈值的 10%，64KB ~ 512KB）并清掉前面内容，首行写入 `[log-trim]` 说明，日志里可搜 `[logFiles]` 查到每次截断结果。
+- **被重定向占用的日志只能在启动前轮转**：`backend.log` / `backend.err.log` / `frontend.log` / `frontend.err.log` 在服务运行期间由隐藏 cmd 窗口持有句柄，Windows 上其它进程写入会得到 `EBUSY`，所以后端自身的截断清不掉它们（页面标「运行中占用」）。`start.bat` 在结束上一轮进程之后、拉起服务之前调用 `node tools/trim-logs.js`，按同一份阈值配置把这些文件轮转掉；脚本输出 `[trim-logs] ...` 会写入 `logs/startup.log`，支持 `--max-mb N`、`--all`、`--dry-run`。
+- 手动清理走 `POST /api/system/log-files/trim`（`mode=oversized` 只清超限文件、`mode=all` 清空全部日志并保留一行说明），占用中的文件会被跳过并在结果里说明。**不要手工删除** `.pid`（`stop.bat` 依赖它结束进程）、`.token` 与 `backend-health-probe.gen`（关机备份校验与假死探活依赖它们，删除后对应脚本会静默失效，需重启后端重建）。
+- 数据库内的操作/登录日志仍按保留条数自动清理，与磁盘日志互不影响。
+- “系统设置 → 操作日志”标签页的「所有操作记录」显示所有用户的**数据变更与敏感操作**记录（写操作全记；读取只记导出与数据库统计；页面初始化读接口与心跳不记录），支持按用户名、操作类型、HTTP 方法、IP、日期范围筛选，并支持导出 `.xls`。
 - 操作类型和描述均为中文，例如「用户登录」「添加任务」「更新任务」「删除任务」「移动任务」「重新排序设计员」「批量替换任务」等。
 - 浏览器信息存储浏览器名称和版本号、操作系统和版本号、设备类型，但页面和导出表格中仅显示浏览器名称（如「Chrome」）。
 - “登录日志”接口（`GET /api/system/login-logs`）仍可用于查看所有登录用户的登录明细，支持按账号/姓名、角色、结果、IP、浏览器、日期和显示条数筛选。
@@ -984,7 +998,7 @@ node --check backend\routes\settings.js
 
 1. **SQLite WAL 模式**：数据库启用 WAL（Write-Ahead Logging）模式，支持并发读取，写入通过事务持久化，单库上限 281 TB
 2. **内存缓存 + 关系表存储**：键值集合（用户、设计人员、设置等）加载到内存缓存并做脏检查，仅变更的集合落库；任务工时表拆分为 `task_sheets`/`task_entries` 关系表，查询走索引按需装配，写入只重写受影响的单张表，避免整库 JSON 反复序列化
-3. **数据库文件大小**：`loginLogs` 最多保留 2000 条、`auditLogs` 默认最多保留 5000 条（保留条数可在系统设置 → 日志管理中调整）记录，自动清理旧日志
+3. **数据库文件大小**：`loginLogs` 最多保留 2000 条、`auditLogs` 默认最多保留 5000 条（保留条数可在系统设置 → 操作日志中调整）记录，自动清理旧日志；状态监测的 `monitor_*` 表趋势数据保留 200 天、分钟明细 35 天，每 6 小时自动清理，清理后 `wal_checkpoint(TRUNCATE)` 收缩 WAL，需要立即归还磁盘空间时在状态监测页点「压缩数据库」（`VACUUM`）
 4. **并发写入保护**：数据库写入采用队列机制，避免并发冲突
 5. **前端防抖**：任务字段变更采用 500ms 防抖保存，减少网络请求
 6. **离线缓存**：后端断开时自动切换到 localStorage 缓存数据

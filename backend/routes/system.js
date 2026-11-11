@@ -18,6 +18,7 @@ const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDis
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const maintenance = require('../utils/dbMaintenance');
+const logFiles = require('../utils/logFiles');
 const offlineBackupToken = require('../utils/offlineBackupToken');
 const productionSchedule = require('../utils/productionSchedule');
 const {
@@ -106,6 +107,9 @@ const defaultSystemSettings = {
   specNumberDigits: 5,
   // 操作日志保留条数（超限自动清理最旧记录）
   auditLogMaxRows: 5000,
+  // 磁盘日志超过阈值自动截断（日志管理）：默认开启，单文件 50MB
+  logAutoTrimEnabled: logFiles.DEFAULT_TRIM_SETTINGS.enabled,
+  logMaxSizeMb: logFiles.DEFAULT_TRIM_SETTINGS.maxSizeMb,
   // 任务内容 → 单元格配色体系（与前端 utils/taskColors.ts 默认值保持一致）
   taskColorConfig: DEFAULT_TASK_COLOR_CONFIG,
   defaultGunHours: {
@@ -186,6 +190,8 @@ const systemSettingsSchema = Joi.object({
   allowUserChangePassword: Joi.boolean().optional(),
   specNumberDigits: Joi.number().integer().valid(5, 6).optional(),
   auditLogMaxRows: Joi.number().integer().min(100).max(100000).optional(),
+  logAutoTrimEnabled: Joi.boolean().optional(),
+  logMaxSizeMb: Joi.number().integer().min(logFiles.MAX_SIZE_MB_MIN).max(logFiles.MAX_SIZE_MB_MAX).optional(),
   taskColorConfig: taskColorConfigSchema.optional(),
   defaultGunHours: Joi.object({
     confirm: gunHoursTypeSchema.required(),
@@ -300,10 +306,19 @@ const normalizeSystemSettings = (settings = {}) => {
   const auditLogMaxRows = Number.isInteger(rawAuditLogMaxRows) && rawAuditLogMaxRows >= 100 && rawAuditLogMaxRows <= 100000
     ? rawAuditLogMaxRows
     : defaultSystemSettings.auditLogMaxRows;
+  // 磁盘日志自动截断阈值：缺失/越界一律回到默认值，避免 0 或负数导致「每次检查都截断」
+  const rawLogMaxSizeMb = Number(merged.logMaxSizeMb);
+  const logMaxSizeMb = Number.isFinite(rawLogMaxSizeMb)
+    && rawLogMaxSizeMb >= logFiles.MAX_SIZE_MB_MIN
+    && rawLogMaxSizeMb <= logFiles.MAX_SIZE_MB_MAX
+    ? Math.round(rawLogMaxSizeMb)
+    : defaultSystemSettings.logMaxSizeMb;
   return {
     ...merged,
     allowUserDesignPlanColorMark: allowOwnDesignPlanColor,
     auditLogMaxRows,
+    logAutoTrimEnabled: merged.logAutoTrimEnabled !== false,
+    logMaxSizeMb,
     allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
     allowUserChangePassword: merged.allowUserChangePassword === true,
     defaultGunHours: {
@@ -2100,6 +2115,51 @@ router.get('/admin-login-logs', [authMiddleware, superAdminMiddleware], asyncHan
     .slice(0, 10);
 
   res.json(adminLogs);
+}));
+
+/* 日志文件占用（日志管理）：logs/ 目录下每个文件的大小 + 数据库日志表的行数与体积。
+ * 只做 stat 不读内容——单个日志文件可能几百 MB，读进来会把后端拖死。
+ * 权限与其它日志接口一致，仅超级管理员可见。 */
+router.get('/log-files', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  res.json(logFiles.getLogSummary());
+}));
+
+/* 手动清理日志文件（日志管理）：就地截断而不是删除文件。
+ * backend.log / frontend.log 在服务运行期间被隐藏 cmd 窗口占用，删除必然失败；
+ * 这些文件都是追加写，就地截断不会产生空洞，写入方也不会失效。
+ * mode=oversized 只清理超过阈值的文件，mode=all 清空全部日志文件（仅保留一行说明）。 */
+const trimLogFilesSchema = Joi.object({
+  mode: Joi.string().valid('oversized', 'all').default('oversized'),
+  files: Joi.array().items(Joi.string().max(120)).max(50).optional()
+});
+
+router.post('/log-files/trim', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const { error, value } = trimLogFilesSchema.validate(req.body || {}, { stripUnknown: true });
+  if (error) {
+    return res.status(400).json({ message: '输入格式不正确', details: error.details });
+  }
+
+  const result = logFiles.trimLogFiles({ mode: value.mode, files: value.files, source: 'manual' });
+  const trimmedBytes = result.trimmed.reduce((sum, item) => sum + Math.max(0, item.beforeBytes - item.afterBytes), 0);
+  // 被运行中的服务占用的文件（backend.log 等）清不掉，要明确告诉用户「什么时候会清」，
+  // 而不是笼统地报一句失败
+  const lockedCount = result.failed.filter((item) => item.locked).length;
+  const otherFailed = result.failed.length - lockedCount;
+
+  let message;
+  if (result.trimmed.length > 0) {
+    message = `已清理 ${result.trimmed.length} 个日志文件，释放 ${(trimmedBytes / 1024 / 1024).toFixed(2)} MB`;
+    if (lockedCount > 0) message += `；${lockedCount} 个正被运行中的进程占用，停止服务后启动时会自动轮转`;
+    if (otherFailed > 0) message += `；${otherFailed} 个处理失败`;
+  } else if (lockedCount > 0) {
+    message = `${lockedCount} 个日志文件正被运行中的进程占用，停止服务后重新启动时会自动轮转`;
+  } else if (result.failed.length > 0) {
+    message = '日志文件清理失败，请查看详情';
+  } else {
+    message = '没有需要清理的日志文件';
+  }
+
+  res.json({ message, trimmedBytes, result, summary: logFiles.getLogSummary() });
 }));
 
 /* ==================== IP 黑名单（仅超级管理员） ====================

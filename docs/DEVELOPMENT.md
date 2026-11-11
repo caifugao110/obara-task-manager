@@ -48,6 +48,8 @@ npm run dev:frontend   :: 只起前端 :5173（Vite）
 | 某个接口的校验/权限/组装响应 | `backend/routes/<模块>.js` |
 | 读写 SQLite | 只允许 `backend/db.js`、`backend/taskStore.js`；路由里**不要**直接 `prepare()` |
 | 无状态工具（解析/导出/加锁） | `backend/utils/*.js` |
+| 运行状态采集与断开判定（心跳/流量/事件） | `backend/utils/systemMonitor.js`（自建 `monitor_*` 表），接口在 `backend/routes/monitor.js` |
+| 日志文件占用统计与轮转 | `backend/utils/logFiles.js`（后端自动截断与接口共用）；启动前轮转在 `tools/trim-logs.js`，二者共用 `trimOneFile()` |
 | 可能阻塞的共享盘 I/O | `backend/utils/productionScheduleWorker.js`（子进程），不要直接在主进程 `fs.stat` / `readFile` UNC 路径 |
 | 全局状态（登录态、系统设置） | `frontend/src/context/*.tsx` |
 | HTTP 请求 | 一律 `services/api.ts` 导出的 `axiosInstance` + 路径字符串，不新增 `xxxAPI` 分组封装 |
@@ -120,6 +122,8 @@ getCurrentSocket()?.emit('task_updated', {
 
 > 注意区分两个 `settings`：`settings.system` 是**系统级配置**（多设备登录、工时规则、配色等），`settings.<页面名>` 是**页面访问开关**三元组。别放错地方。
 
+**带数值阈值的配置要兜两遍**：`db.js` 的 `applySettingsDefaults()` 管落库前的回填，`routes/system.js` 的 `normalizeSystemSettings()` 管接口读取时的归一化。两处都要做范围校验，否则一个 `0` 或空串会让运行期逻辑异常——例如磁盘日志的 `logMaxSizeMb` 若被当成 0，「超过阈值就截断」会退化成「每轮检查都把日志清空」。前端 `SystemSettingsContext` 也要按同一范围回退默认值，三处口径必须一致。
+
 ### 4.5 新增一个导出
 
 导出分三类，各有现成工具：任务导出 `utils/taskExportWorkbook.js`、焊枪台账导出 `utils/gunLedgerExport.js`、工时报表 `utils/exportWorkbook.js`，多文件打包用 `utils/simpleZip.js`。
@@ -141,6 +145,8 @@ getCurrentSocket()?.emit('task_updated', {
 - `server.js` 的 `exit` / `beforeExit` 钩子（写 `logs/backend-exit.log`）是**退出取证**，也不要删：它记录退出码、`reason`、内存与活跃句柄数。它的价值在于「没有记录」本身就是结论——被 `TerminateProcess` 强杀不触发 `exit` 事件，据此可把「自己退的」和「被外部干掉的」分开。钩子内部全部包了 `try/catch`，因为 `stdout/stderr` 管道断开时 `console.error` 会抛 `EPIPE`，在异常处理器里再抛会让 Node 静默退出、堆栈彻底丢失。
 - 老式回调 socket / 流在 `destroy()` 之后仍可能补发 `'error'`（`ECONNRESET`、`ENOTFOUND`），此时若无监听者会升级成未捕获异常击穿进程。这类对象要保留一个空的 `'error'` 监听，参考 `utils/uncShare.js` 的 `probeHost`。
 - **共享盘调用一律走子进程**：SMB 会话失效时 UNC 调用会在 Windows 内核里挂住不返回，主进程直接 `await fs.promises.*` 会把 libuv 线程池（默认 4 线程）占满，表现为「进程活着、端口在监听、所有 HTTP 超时」。`utils/productionSchedule.js` 的做法是 fork `productionScheduleWorker.js`、父进程只等 IPC 并带硬超时；新增共享盘读取时照抄这个模式，并给熔断器计一次失败（`recordFailure`），不要在路由层直接读 UNC。
+- **启动阶段的慢操作不要同步做**：`server.listen` 之后的回调里如果执行同步的 `net use` / 大文件读取，端口已经在监听，但事件循环被整段占住，健康探针 5 秒超时会把后端判成假死。共享盘预热（`productionSchedule.ensureShareReady()`）因此改成 `async` 并在 `.then()` 里打印结果，不阻塞后续调度器与日志截断的启动。
+- **后台定时任务用「巡检式」而不是一次性计时器**：`systemMonitor` 的自动清理（每 10 分钟检查是否到 6 小时周期）与 `logFiles` 的截断检查都是这个结构——一次性 `setTimeout(duration)` 会被重启清零，服务频繁重启时就永远等不到执行。新增周期性维护时照此实现，并把「上次执行时间」持久化。
 - **不要删除/绕过三层防护**：子进程隔离（`productionScheduleWorker.js`）、熔断（`BREAKER_*`）、外部假死探针（`backend-health-probe.bat`）分别对应「单次挂死」「持续故障」「已经卡死」三种情况，缺一层就会回到 2026-11 的人工重启。改这块时同步 `TOOLS.md` 与 `DEPLOYMENT.md` 的判读说明。
 
 ### 前端
@@ -162,7 +168,8 @@ getCurrentSocket()?.emit('task_updated', {
 | 环境变量增删 | `README.md`、`DEPLOYMENT.md`、`docs/API.md`、`backend/.env.example` |
 | 权限开关、角色规则 | `README.md` 权限模型 + `docs/API.md` 权限速查 |
 | 部署方式、启动脚本 | `DEPLOYMENT.md` |
-| 守护/自愈机制、探针、日志判读 | `README.md`（脚本与维护建议）、`docs/DEPLOYMENT.md`（排障）、`docs/TOOLS.md`（日志怎么读） |
+| 守护/自愈机制、探针、日志判读 | `README.md`（脚本与维护建议）、`docs/DEPLOYMENT.md`（排障）、`docs/TOOLS.md`（日志怎么读、状态监测怎么判读） |
+| 监测采集口径、断开原因判定、日志截断策略 | `README.md`（状态监测 / 日志文件管理）、`docs/API.md`（`monitor` 与 `log-files` 接口）、`docs/USER-GUIDE.md`（9.4 / 9.7）、`docs/TOOLS.md`（第五、六节） |
 | 数据结构、模块划分 | `README.md` 数据存储 / 项目结构 |
 | 文档增删或读者定位变化 | `docs/README.md` 的文档清单 + `README.md` 的「文档导航」表（两处都要） |
 
@@ -249,6 +256,9 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 新增的全局 `keydown` 监听把弹窗的 Esc/快捷键抢了 | 主页面有 5 处独立 window 级 Esc 监听、互不 `stopPropagation` | 新语义先判所有弹窗状态并 `return`，按「弹窗 → 页面选中」的顺序串联 |
 | `Space`×2 既想新增/编辑任务、又保留快速取号，两个监听互相抢键 | 一个键位多义，拆成两个监听时两次按键会被各判一次 | 收口在同一个 window `keydown`：弹窗打开 → 不接管空格；`quickSpaceActionRef` 有值（选中加号 / 唯一选中主任务）→ 新增/编辑；否则才取号 |
 | 弹窗加上拖动后，拖起来一顿一顿的 | 位移走 React state 时每帧 `setState`，看板/台账这种超大页面会整页重渲染 | 统一用 `hooks/useModalDrag.ts`：位移直写 DOM `transform`，state 只记 `dragging`（切光标），打开/切换目标时复位 |
+| 台账取号一直 `409 取号冲突`，或同一张表里「序号 4 的行挂着 0201 的编号」 | 历史数据序号与名字里的编号错位（旧版占位行按任意序号提升），`serialNumber` 与编号不再一一对应，取号算出的「下一个编号」与存量行撞名 | 后端已改为**序号 ↔ 编号强绑定**：写入、取号、改规则、读取时都会把序号压实为 `1..N` 并按规则校正名字里的编号（前缀/后缀保留，校正后若会与其它行重名则保留原名）。**不要再加「编号不符就 400 拒绝整表保存」的校验**——那会让一张已经错位的表永远存不进去。纯函数在 `backend/routes/gunLedger.js` 的 `enforceSerialNumberBinding`，单测见 `backend/tests/unit/gunLedgerSerial.test.js` |
+| 日志文件清不掉、提示 `EBUSY`，或 `logs/` 涨到几百 MB | `backend.log` / `frontend.log` 等被隐藏 cmd 窗口的重定向句柄占用，Windows 上删除与写入都会失败；node/nodemon 自身不会截断 | 用「系统设置 → 日志文件管理」或 `node tools/trim-logs.js`（就地截断，不删文件），被占用的文件由 `start.bat` 在下次启动前轮转。不要为了清空间去删 `.pid` / `.token` / `backend-health-probe.gen` |
+| 状态监测里冒出一串「无证据的断开」，同时页面加载很慢、健康探针报超时 | 启动阶段的同步操作（如 `net use` 共享预热、同步读大文件）把事件循环占住，端口在监听但请求排队，探针 5 秒超时判假死 | 启动回调里的慢操作一律异步化（`ensureShareReady()` 已是 `async`）。开发期 nodemon 重启造成的断开可在监测页用「排除代码热重载」开关剔除，不要为此放宽判定口径 |
 
 ## 相关文档
 

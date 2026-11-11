@@ -11,6 +11,7 @@ import {
   Database,
   Download,
   FileSpreadsheet,
+  FileText,
   LogOut,
   PlayCircle,
   Plus,
@@ -22,18 +23,22 @@ import {
   Trash2,
   Upload,
   History,
-  Search,
+  ChevronDown,
+  ChevronUp,
   Clock,
   ClipboardList,
   X,
   CalendarDays,
   Palette,
   RotateCcw,
-  Save
+  Save,
+  Activity
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
+import SystemStatusMonitor from './SystemStatusMonitor';
+import OperationLogPanel from '../components/OperationLogPanel';
 import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
 import { clearOfflineSheetsCache } from '../utils/offlineSheetsCache';
@@ -81,6 +86,63 @@ interface MaintenanceFile {
   path: string;
   size: number;
   mtime: string;
+}
+
+// 日志文件占用（日志管理）：logs/ 目录逐文件 + 库内日志表
+interface LogFileEntry {
+  name: string;
+  label: string;
+  note: string;
+  isLog: boolean;
+  // truncate=可清空（被占用不能删）/ delete=可删除 / forbid=禁止删除
+  cleanup: 'truncate' | 'delete' | 'forbid';
+  advice: string;
+  caution: string;
+  bytes: number;
+  modifiedAtMs: number;
+  oversized: boolean;
+  trimmable: boolean;
+  overflowBytes: number;
+  // 被运行中的服务占用：现在写不进去，只能等重启时由启动脚本轮转
+  locked: boolean;
+}
+
+interface LogTrimRecord {
+  at: number;
+  source: string;
+  mode: string;
+  thresholdBytes: number;
+  keepTailBytes: number;
+  trimmed: { name: string; beforeBytes: number; afterBytes: number; keptBytes: number }[];
+  failed: { name: string; message: string }[];
+}
+
+interface LogFilesSummary {
+  dir: string;
+  exists: boolean;
+  scannedAtMs: number;
+  files: LogFileEntry[];
+  logFileCount: number;
+  logBytes: number;
+  runtimeFileCount: number;
+  runtimeBytes: number;
+  totalBytes: number;
+  lastModifiedMs: number | null;
+  oversizeCount: number;
+  settings: {
+    autoTrimEnabled: boolean;
+    maxSizeMb: number;
+    thresholdBytes: number;
+    keepTailBytes: number;
+    checkIntervalMinutes: number;
+  };
+  lastTrim: LogTrimRecord | null;
+  database: {
+    auditLogs: { rows: number; bytes: number | null };
+    loginLogs: { rows: number; bytes: number | null };
+    totalBytes: number | null;
+    auditRetentionRows: number | null;
+  };
 }
 
 interface YearlyCleanupRecord {
@@ -149,6 +211,30 @@ interface MaintenanceLastRun {
   errors?: string[];
 }
 
+interface DbBreakdownItem {
+  key: string;
+  label: string;
+  note: string | null;
+  /** 物理页占用（已把该表索引算进来） */
+  bytes: number;
+  rows: number | null;
+  tables: string[];
+  /** 子项按内容字节（JSON 文本）给出，不含页开销，仅用于说明占比来源 */
+  details: { label: string; bytes: number }[] | null;
+}
+
+interface DbBreakdown {
+  basis: 'physical';
+  /** 数据页总量：各项之和（含空闲页）＝这个数 */
+  totalBytes: number;
+  /** 主文件实际字节数 */
+  fileBytes: number;
+  /** 已提交但还在 WAL 里、尚未落盘的页 */
+  pendingBytes: number;
+  freeBytes: number;
+  items: DbBreakdownItem[];
+}
+
 interface MaintenanceStatus {
   settings: MaintenanceSettings;
   paths: { database: string; backupDir: string; taskExportDir: string; gunLedgerExportDir: string; yearlyArchiveDir: string; offlineBackupDir: string };
@@ -163,6 +249,8 @@ interface MaintenanceStatus {
     tasksJsonSize: number;
     tasksCount: number;
     taskItemsCount: number;
+    /** 主文件体积构成：按数据类型拆解，各项之和 = 数据页总量 */
+    breakdown?: DbBreakdown | null;
   };
   files: { backups: MaintenanceFile[]; taskExports: MaintenanceFile[]; gunLedgerExports: MaintenanceFile[]; yearlyArchives: MaintenanceFile[]; offlineBackups: MaintenanceFile[] };
   scheduler: { running: boolean; nextRunAt?: string; nextRunAtLocal?: string; timezone?: string; lastRun?: MaintenanceLastRun | null };
@@ -307,6 +395,8 @@ const SystemSettings = () => {
   };
   const [accessSettingsLoaded, setAccessSettingsLoaded] = useState(false);
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
+  // 管理员登录信息卡片折叠状态（默认展开，收起后把空间让给下方的操作日志明细）
+  const [loginLogsCollapsed, setLoginLogsCollapsed] = useState(false);
   // IP 黑名单：配置数据 / 添加输入框 / 备注 / 提交中
   const [ipBlacklist, setIpBlacklist] = useState<IpBlacklistData>({ enabled: false, entries: [] });
   const [ipInput, setIpInput] = useState('');
@@ -314,7 +404,7 @@ const SystemSettings = () => {
   const [ipSaving, setIpSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs' | 'plan'>('data');
+  const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs' | 'audit' | 'plan' | 'monitor'>('data');
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
@@ -330,6 +420,16 @@ const SystemSettings = () => {
   // 操作日志保留条数草稿（日志管理）：输入后点保存才提交，避免逐字触发保存
   const [logRetentionDraft, setLogRetentionDraft] = useState('5000');
   const [logRetentionSaving, setLogRetentionSaving] = useState(false);
+  // 日志文件占用（日志管理）：磁盘 logs/ 目录 + 库内日志表的体积统计
+  const [logFilesSummary, setLogFilesSummary] = useState<LogFilesSummary | null>(null);
+  const [logFilesLoading, setLogFilesLoading] = useState(false);
+  // 自动截断阈值草稿（MB）：输入后点保存才提交，避免逐字触发保存
+  const [logMaxSizeDraft, setLogMaxSizeDraft] = useState('50');
+  const [logMaxSizeSaving, setLogMaxSizeSaving] = useState(false);
+  const [logTrimming, setLogTrimming] = useState(false);
+  // 操作日志面板吸顶偏移：由「标签栏顶部偏移 + 标签栏实测高度」算出，避免写死像素值
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  const [panelStickyTop, setPanelStickyTop] = useState(99);
   const [showCleanupTasksModal, setShowCleanupTasksModal] = useState(false);
   const [cleanupTasksMode, setCleanupTasksMode] = useState<'single' | 'batch' | 'all'>('single');
   const [cleanupTasksMonth, setCleanupTasksMonth] = useState(format(new Date(), 'yyyy-MM'));
@@ -360,6 +460,8 @@ const SystemSettings = () => {
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   const isOffline = !isOnline;
+  // 标签栏的 sticky 偏移：有离线提示条时整体下移 33px
+  const tabBarTop = isOffline ? 81 : 48;
   const isSuperAdmin = user?.role === 'superadmin';
   const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
 
@@ -431,6 +533,20 @@ const SystemSettings = () => {
     } catch (err) {
       markOfflineIfNetworkError(err);
       addToast('无法加载登录历史', 'error');
+    }
+  }, [isSuperAdmin, token, markOfflineIfNetworkError]);
+
+  // 日志文件占用：logs/ 目录逐文件大小 + 库内日志表行数（只 stat，不改动任何文件）
+  const fetchLogFiles = useCallback(async () => {
+    if (!isSuperAdmin || !token) return;
+    setLogFilesLoading(true);
+    try {
+      const res = await axios.get('/api/system/log-files', authHeader);
+      setLogFilesSummary(res.data);
+    } catch (err) {
+      if (!markOfflineIfNetworkError(err)) addToast('无法加载日志文件占用', 'error');
+    } finally {
+      setLogFilesLoading(false);
     }
   }, [isSuperAdmin, token, markOfflineIfNetworkError]);
 
@@ -580,6 +696,30 @@ const SystemSettings = () => {
     setLogRetentionDraft(String(settings.auditLogMaxRows));
   }, [settingsLoaded, settings.auditLogMaxRows]);
 
+  // 日志管理：设置加载完成后同步「自动截断阈值」草稿
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    setLogMaxSizeDraft(String(settings.logMaxSizeMb ?? 50));
+  }, [settingsLoaded, settings.logMaxSizeMb]);
+
+  // 日志管理：进入该标签页时才统计日志文件体积（其它标签页没必要访问磁盘）
+  useEffect(() => {
+    if (activeTab !== 'logs') return;
+    fetchLogFiles();
+  }, [activeTab, fetchLogFiles]);
+
+  // 实测标签栏高度，算出操作日志面板正确可用的吸顶起点（标签栏底部）
+  useEffect(() => {
+    const el = tabBarRef.current;
+    if (!el) return;
+    const measure = () => setPanelStickyTop(tabBarTop + el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [tabBarTop]);
+
   // 网络恢复后自动重新加载数据
   useEffect(() => {
     const handleOnline = () => {
@@ -589,6 +729,7 @@ const SystemSettings = () => {
       fetchIpBlacklist();
       fetchMaintenanceStatus();
       fetchGunLedgerCats();
+      fetchLogFiles();
     };
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
@@ -597,7 +738,7 @@ const SystemSettings = () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats]);
+  }, [fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats, fetchLogFiles]);
 
   // 后端服务停止/恢复（navigator.onLine 感知不到本机服务停止，由 axiosInstance 拦截器广播）
   useEffect(() => {
@@ -609,6 +750,7 @@ const SystemSettings = () => {
       fetchIpBlacklist();
       fetchMaintenanceStatus();
       fetchGunLedgerCats();
+      fetchLogFiles();
     };
     window.addEventListener('server-unreachable', handleServerUnreachable);
     window.addEventListener('server-online', handleServerOnline);
@@ -616,7 +758,7 @@ const SystemSettings = () => {
       window.removeEventListener('server-unreachable', handleServerUnreachable);
       window.removeEventListener('server-online', handleServerOnline);
     };
-  }, [fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats]);
+  }, [fetchAccessSettings, fetchLoginLogs, fetchIpBlacklist, fetchMaintenanceStatus, fetchGunLedgerCats, fetchLogFiles]);
 
   // 离线期间每 5 秒轻量探测后端是否恢复（成功时拦截器自动广播 server-online）
   useEffect(() => {
@@ -628,7 +770,7 @@ const SystemSettings = () => {
   }, [isOffline]);
 
   useEffect(() => {
-    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'maintenance' || activeTab === 'plan')) {
+    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'audit' || activeTab === 'maintenance' || activeTab === 'plan' || activeTab === 'monitor')) {
       setActiveTab('data');
     }
   }, [isSuperAdmin, activeTab]);
@@ -666,6 +808,73 @@ const SystemSettings = () => {
     } finally {
       setLogRetentionSaving(false);
     }
+  };
+
+  // 保存自动截断阈值（日志管理）：5 ~ 2048 MB 的整数，保存后立即重新统计
+  const handleSaveLogMaxSize = async () => {
+    const mb = Number(logMaxSizeDraft);
+    if (!Number.isInteger(mb) || mb < 5 || mb > 2048) {
+      addToast('自动截断阈值需为 5 ~ 2048 之间的整数（MB）', 'error');
+      return;
+    }
+    setLogMaxSizeSaving(true);
+    try {
+      const ok = await updateSettings({ logMaxSizeMb: mb });
+      if (ok) fetchLogFiles();
+    } finally {
+      setLogMaxSizeSaving(false);
+    }
+  };
+
+  // 手动清理日志文件：就地截断（不删除文件），清理结果里的 summary 直接刷新卡片
+  const runTrimLogs = async (mode: 'oversized' | 'all') => {
+    if (guardOffline()) return;
+    setLogTrimming(true);
+    try {
+      const res = await axios.post('/api/system/log-files/trim', { mode }, authHeader);
+      if (res.data?.summary) setLogFilesSummary(res.data.summary);
+      // 一个都没清掉（全被运行中的进程占用）时不能报成功，否则用户以为空间已释放
+      const trimmedCount = res.data?.result?.trimmed?.length || 0;
+      addToast(res.data?.message || '已清理日志文件', trimmedCount > 0 ? 'success' : 'error');
+    } catch (err: any) {
+      addToast(err.response?.data?.message || '清理日志文件失败', 'error');
+    } finally {
+      setLogTrimming(false);
+    }
+  };
+
+  const handleTrimOversizedLogs = () => {
+    if (guardOffline()) return;
+    const oversized = (logFilesSummary?.files || []).filter(file => file.trimmable && file.oversized);
+    if (oversized.length === 0) {
+      addToast('当前没有超过阈值的日志文件', 'error');
+      return;
+    }
+    const freed = oversized.reduce((sum, file) => sum + file.overflowBytes, 0);
+    setConfirmDialog({
+      title: '清理超限日志文件',
+      tone: 'amber',
+      warning: '日志内容是排障证据，清理后无法恢复',
+      message: `将就地在原文件上截断 ${oversized.length} 个超过阈值的日志文件（${oversized.map(file => file.name).join('、')}），`
+        + `每个文件保留最后约 ${formatFileSize(logFilesSummary?.settings.keepTailBytes || 0)} 内容，预计释放 ${formatFileSize(freed)}。`
+        + '文件本身不会被删除，正在写入的服务不受影响。是否继续？',
+      confirmText: '确认清理',
+      onConfirm: async () => { await runTrimLogs('oversized'); }
+    });
+  };
+
+  const handleClearAllLogs = () => {
+    if (guardOffline()) return;
+    setConfirmDialog({
+      title: '清空全部日志文件',
+      tone: 'red',
+      warning: '将清空 logs 目录下所有日志文件，无法恢复',
+      message: `将清空 ${logFilesSummary?.logFileCount ?? 0} 个日志文件（共 ${formatFileSize(logFilesSummary?.logBytes || 0)}），`
+        + '每个文件只保留一行 [log-trim] 说明。pid、token 等运行时文件不受影响。'
+        + '清空后历史排障信息会全部丢失，建议先把需要的内容另存。是否继续？',
+      confirmText: '确认清空',
+      onConfirm: async () => { await runTrimLogs('all'); }
+    });
   };
 
   const updateAccessSettings = async (next: Partial<typeof defaultAccessSettings>) => {
@@ -1041,6 +1250,41 @@ const SystemSettings = () => {
     });
   };
 
+  // 清空所有监测数据：监测表（样本/流量/事件）整表清空，并顺手压缩数据库把空间还给磁盘。
+  // 与「压缩数据库」不同，这里连数据本身一起删掉，监测页的可用率与曲线会从空白重新累计。
+  const handlePurgeMonitorData = () => {
+    if (guardOffline()) return;
+    if (!token) return;
+    const monitorBytes = maintenanceStatus?.database?.breakdown?.items?.find(item => item.key === 'monitor')?.bytes || 0;
+    setConfirmDialog({
+      title: '清空所有监测数据',
+      tone: 'red',
+      warning: '此操作不可恢复',
+      message: `将删除全部心跳样本、流量分钟/小时明细、接口路径聚合与生命周期事件${monitorBytes > 0 ? `（当前约 ${formatFileSize(monitorBytes)}）` : ''}，随后压缩数据库把空间还给磁盘。清空后状态监测页的可用率、资源曲线与流量热力图会从空白重新累计，无法恢复。是否继续？`,
+      confirmText: '确认清空',
+      onConfirm: async () => {
+        setMaintenanceLoading(true);
+        try {
+          const res = await axios.post('/api/system/monitor/cleanup', { mode: 'all' }, authHeader);
+          const total = res.data?.totalDeleted || 0;
+          const freed = res.data?.freedBytes || 0;
+          addToast(
+            total > 0
+              ? `已清空监测数据 ${total} 行${freed > 0 ? `，回收 ${formatFileSize(freed)} 磁盘空间` : ''}`
+              : '没有可清空的监测数据',
+            'success'
+          );
+          // 主文件体积与构成都会变，重新拉一次维护状态
+          fetchMaintenanceStatus();
+        } catch (err: any) {
+          addToast(err.response?.data?.message || '清空监测数据失败', 'error');
+        } finally {
+          setMaintenanceLoading(false);
+        }
+      },
+    });
+  };
+
   // 清理任务数据：由弹窗内嵌二次确认步骤触发（确认后才会调用）
   const handleCleanupTasks = async () => {
     if (guardOffline()) return;
@@ -1235,8 +1479,8 @@ const SystemSettings = () => {
         </div>
       )}
 
-      <div className={`sticky ${isOffline ? 'top-[81px]' : 'top-[48px]'} z-30 bg-white border-b border-gray-200`}>
-        <div className="max-w-5xl mx-auto px-8 flex space-x-1">
+      <div ref={tabBarRef} style={{ top: tabBarTop }} className="sticky z-30 bg-white border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-8 flex space-x-1 overflow-x-auto">
           <button
             onClick={() => setActiveTab('data')}
             className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'data' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
@@ -1265,7 +1509,14 @@ const SystemSettings = () => {
                 className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'logs' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
               >
                 <History size={18} />
-                日志管理
+                日志文件管理
+              </button>
+              <button
+                onClick={() => setActiveTab('audit')}
+                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'audit' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <ClipboardList size={18} />
+                操作日志
               </button>
               <button
                 onClick={() => setActiveTab('plan')}
@@ -1273,6 +1524,13 @@ const SystemSettings = () => {
               >
                 <CalendarDays size={18} />
                 计划管理
+              </button>
+              <button
+                onClick={() => setActiveTab('monitor')}
+                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'monitor' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <Activity size={18} />
+                状态监测
               </button>
             </>
           )}
@@ -1650,243 +1908,245 @@ const SystemSettings = () => {
         </div>
       )}
 
-      <main className={`flex-1 p-8 max-w-5xl mx-auto w-full space-y-8 ${isOffline ? 'offline-locked' : ''}`}>
+      <main className={`flex-1 p-8 w-full space-y-6 max-w-7xl mx-auto ${isOffline ? 'offline-locked' : ''}`}>
         {activeTab === 'data' && (
           <>
-            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-              <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
-                <FileSpreadsheet className="mr-2 text-green-600" size={22} />
-                任务管理
-              </h3>
-              <p className="text-sm text-gray-500 mb-6">
-                {isSuperAdmin
-                  ? '\u5bfc\u5165\u6587\u4ef6\u9700\u4e0e\u672c\u7cfb\u7edf\u5bfc\u51fa\u7684 xls \u683c\u5f0f\u4e00\u81f4\uff1b\u6bcf\u6b21\u5bfc\u5165\u53ea\u80fd\u9009\u62e9\u4e00\u4e2a\u6708\u4efd\u8fdb\u884c\u8986\u76d6\u3002'
-                  : '\u4e00\u822c\u7ba1\u7406\u5458\u53ef\u5bfc\u51fa\u4efb\u52a1\u6570\u636e\uff1b\u5bfc\u5165\u4efb\u52a1\u6570\u636e\u4ec5\u8d85\u7ea7\u7ba1\u7406\u5458\u53ef\u64cd\u4f5c\u3002'}
-              </p>
-              <div className="flex flex-wrap gap-4">
-                <button
-                  onClick={handleTaskExport}
-                  disabled={exporting}
-                  className="flex items-center gap-2 px-5 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                >
-                  {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
-                  {'\u5bfc\u51fa\u4efb\u52a1\u6570\u636e'}
-                </button>
-                {isSuperAdmin && (
-                  <>
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3 items-stretch">
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 flex flex-col">
+                <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
+                  <FileSpreadsheet className="mr-2 text-green-600" size={22} />
+                  任务管理
+                </h3>
+                <p className="text-sm text-gray-500 mb-6">
+                  {isSuperAdmin
+                    ? '\u5bfc\u5165\u6587\u4ef6\u9700\u4e0e\u672c\u7cfb\u7edf\u5bfc\u51fa\u7684 xls \u683c\u5f0f\u4e00\u81f4\uff1b\u6bcf\u6b21\u5bfc\u5165\u53ea\u80fd\u9009\u62e9\u4e00\u4e2a\u6708\u4efd\u8fdb\u884c\u8986\u76d6\u3002'
+                    : '\u4e00\u822c\u7ba1\u7406\u5458\u53ef\u5bfc\u51fa\u4efb\u52a1\u6570\u636e\uff1b\u5bfc\u5165\u4efb\u52a1\u6570\u636e\u4ec5\u8d85\u7ea7\u7ba1\u7406\u5458\u53ef\u64cd\u4f5c\u3002'}
+                </p>
+                <div className="mt-auto flex flex-wrap gap-3">
+                  <button
+                    onClick={handleTaskExport}
+                    disabled={exporting}
+                    className="flex items-center gap-2 px-5 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                  >
+                    {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                    {'\u5bfc\u51fa\u4efb\u52a1\u6570\u636e'}
+                  </button>
+                  {isSuperAdmin && (
+                    <>
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={importing}
+                        className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                      >
+                        {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
+                        {'\u5bfc\u5165\u4efb\u52a1\u6570\u636e'}
+                      </button>
+                      <button
+                        onClick={() => setShowCleanupTasksModal(true)}
+                        disabled={exporting || importing}
+                        className="flex items-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                      >
+                        <Trash2 size={18} />
+                        清理任务数据
+                      </button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".xls,.xlsx"
+                        className="hidden"
+                        onChange={handleTaskImport}
+                      />
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 flex flex-col">
+                <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
+                  <Clock className="mr-2 text-orange-600" size={22} />
+                  工时管理表
+                </h3>
+                <p className="text-sm text-gray-500 mb-6">按照月份导出，统计每个设计员的月工时（总工时、工作日工时、周末加班工时、出差工时、请假工时），按总工时降序排列。</p>
+                <div className="mt-auto flex flex-wrap gap-3 items-center">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-700 shrink-0">选择月份：</span>
+                    <input
+                      type="month"
+                      value={whExportMonth}
+                      onChange={(e) => setWhExportMonth(e.target.value)}
+                      className="px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
+                    />
+                  </div>
+                  <button
+                    onClick={handleWorkHoursExport}
+                    disabled={exporting}
+                    className="flex items-center gap-2 px-5 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                  >
+                    {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                    导出工时管理表
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 flex flex-col">
+                <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
+                  <ClipboardList className="mr-2 text-purple-600" size={22} />
+                  状态跟踪表
+                </h3>
+                <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，按纳期月份进行筛选导出。</p>
+                <div className="mt-auto flex flex-wrap gap-3 items-center">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-700 shrink-0">选择纳期月份：</span>
+                    <input
+                      type="month"
+                      value={stExportDeliveryMonth}
+                      onChange={(e) => setStExportDeliveryMonth(e.target.value)}
+                      className="px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
+                    />
+                  </div>
+                  <button
+                    onClick={handleStatusTrackingExport}
+                    disabled={exporting}
+                    className="flex items-center gap-2 px-5 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                  >
+                    {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                    导出状态跟踪表
+                  </button>
+                  {isSuperAdmin && (
                     <button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={importing}
-                      className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                    >
-                      {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
-                      {'\u5bfc\u5165\u4efb\u52a1\u6570\u636e'}
-                    </button>
-                    <button
-                      onClick={() => setShowCleanupTasksModal(true)}
-                      disabled={exporting || importing}
+                      onClick={() => setShowCleanupStModal(true)}
+                      disabled={exporting}
                       className="flex items-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
                     >
                       <Trash2 size={18} />
-                      清理任务数据
+                      清理状态追踪
                     </button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".xls,.xlsx"
-                      className="hidden"
-                      onChange={handleTaskImport}
-                    />
+                  )}
+                </div>
+              </div>
+
+              {/* 焊枪编号台账：独占一行，按需选择分类导出（单分类 xls，多分类 zip） */}
+              <div className="lg:col-span-2 xl:col-span-3 bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
+                  <ClipboardList className="mr-2 text-emerald-600" size={22} />
+                  焊枪编号台账
+                </h3>
+                <p className="text-sm text-gray-500 mb-5">按分类导入/导出焊枪编号台账。每个分类是一个 xls 工作簿，分类下的每张表对应一个工作表。导出时：选择 1 个分类下载单个 xls，选择多个分类时打包为 zip。导入时：工作簿内的每个工作表会成为目标分类下的一张表，并覆盖目标分类。</p>
+                {gunCatsLoading ? (
+                  <div className="text-sm text-gray-400 flex items-center gap-2 py-2">
+                    <RefreshCw size={14} className="animate-spin" />正在加载分类...
+                  </div>
+                ) : gunLedgerCats.length === 0 ? (
+                  <div className="text-sm text-gray-400 bg-gray-50 rounded-xl border border-gray-100 p-4">暂无可导出的分类，或当前账号没有焊枪编号台账的访问权限。</div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap gap-2 mb-5">
+                      {gunLedgerCats.map(item => {
+                        const checked = gunExportCats.includes(item.category);
+                        return (
+                          <label
+                            key={item.category}
+                            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border cursor-pointer text-sm font-bold transition ${checked ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 accent-emerald-600"
+                              checked={checked}
+                              onChange={() => toggleGunExportCat(item.category)}
+                            />
+                            {item.category}
+                            <span className="text-[10px] font-normal text-gray-400">{item.tables} 表 / {item.rows} 行</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4">
+                      <div className="flex items-center gap-3 text-xs font-bold">
+                        <button className="text-emerald-600 hover:text-emerald-700 transition" onClick={() => setGunExportCats(gunLedgerCats.map(item => item.category))}>全选</button>
+                        <button className="text-gray-400 hover:text-gray-600 transition" onClick={() => setGunExportCats([])}>清空</button>
+                      </div>
+                      <button
+                        onClick={handleGunLedgerExport}
+                        disabled={exporting || importing || !gunExportCats.length}
+                        className="flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                      >
+                        {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+                        导出焊枪编号台账
+                      </button>
+                      {isSuperAdmin && (
+                        <>
+                          <button
+                            onClick={() => gunFileInputRef.current?.click()}
+                            disabled={importing}
+                            className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                          >
+                            {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
+                            导入焊枪编号台账
+                          </button>
+                          <input
+                            ref={gunFileInputRef}
+                            type="file"
+                            accept=".xls,.xlsx"
+                            className="hidden"
+                            onChange={handleGunLedgerImportFile}
+                          />
+                        </>
+                      )}
+                    </div>
                   </>
                 )}
-              </div>
-            </div>
 
-            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-              <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
-                <ClipboardList className="mr-2 text-purple-600" size={22} />
-                状态跟踪表
-              </h3>
-              <p className="text-sm text-gray-500 mb-6">导出状态跟踪表的数据，按纳期月份进行筛选导出。</p>
-              <div className="flex flex-wrap gap-4 items-center">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-gray-700">选择纳期月份：</span>
-                  <input
-                    type="month"
-                    value={stExportDeliveryMonth}
-                    onChange={(e) => setStExportDeliveryMonth(e.target.value)}
-                    className="px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
-                  />
-                </div>
-                <button
-                  onClick={handleStatusTrackingExport}
-                  disabled={exporting}
-                  className="flex items-center gap-2 px-5 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                >
-                  {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
-                  导出状态跟踪表
-                </button>
-                {isSuperAdmin && (
-                  <button
-                    onClick={() => setShowCleanupStModal(true)}
-                    disabled={exporting}
-                    className="flex items-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                  >
-                    <Trash2 size={18} />
-                    清理状态追踪
-                  </button>
+                {/* 导入确认面板 */}
+                {gunPendingFile && (
+                  <div className="mt-5 rounded-xl border-2 border-blue-200 bg-blue-50 p-5 space-y-4">
+                    <div className="font-bold text-gray-800 flex items-center gap-2">
+                      <Upload size={18} className="text-blue-600" />确认导入焊枪编号台账
+                    </div>
+                    <div className="text-sm text-gray-600">文件：<span className="font-bold text-gray-800 break-all">{gunPendingFile.name}</span></div>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 text-sm font-bold text-gray-700 cursor-pointer">
+                        <input type="radio" className="w-4 h-4 accent-blue-600" checked={!gunImportAsNew} onChange={() => setGunImportAsNew(false)} />
+                        导入到现有分类：
+                      </label>
+                      {!gunImportAsNew && (
+                        <select
+                          value={gunImportCategory}
+                          onChange={(e) => setGunImportCategory(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-200"
+                        >
+                          {gunLedgerCats.length === 0 && <option value="">（暂无现有分类，请改用新分类）</option>}
+                          {gunLedgerCats.map(item => <option key={item.category} value={item.category}>{item.category}（{item.tables} 表 / {item.rows} 行）</option>)}
+                        </select>
+                      )}
+                      <label className="flex items-center gap-2 text-sm font-bold text-gray-700 cursor-pointer pt-1">
+                        <input type="radio" className="w-4 h-4 accent-blue-600" checked={gunImportAsNew} onChange={() => setGunImportAsNew(true)} />
+                        导入到新分类：
+                      </label>
+                      {gunImportAsNew && (
+                        <input
+                          type="text"
+                          value={gunImportNewName}
+                          onChange={(e) => setGunImportNewName(e.target.value)}
+                          placeholder="请输入新分类名称（1-30 字符）"
+                          maxLength={30}
+                          className="w-full px-3 py-2.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-200"
+                        />
+                      )}
+                    </div>
+                    <label className="flex items-start gap-2 text-sm text-gray-700 font-bold cursor-pointer">
+                      <input type="checkbox" className="w-4 h-4 mt-0.5 accent-blue-600" checked={gunImportConfirmed} onChange={(e) => setGunImportConfirmed(e.target.checked)} />
+                      <span>已确认文件格式与系统导出格式一致（每张表一个工作表，含序号/焊枪名/客户/时间/担当/备注表头），并知悉导入将<span className="text-red-600">覆盖目标分类下的全部表格</span>。</span>
+                    </label>
+                    <div className="flex justify-end gap-2">
+                      <button onClick={cancelGunLedgerImport} disabled={importing} className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60">取消</button>
+                      <button onClick={confirmGunLedgerImport} disabled={importing} className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition disabled:opacity-60">
+                        {importing && <RefreshCw size={16} className="animate-spin" />}
+                        {importing ? '导入中...' : '确认导入'}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
-            </div>
-
-            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-              <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
-                <Clock className="mr-2 text-orange-600" size={22} />
-                工时管理表
-              </h3>
-              <p className="text-sm text-gray-500 mb-6">按照月份导出，统计每个设计员的月工时（总工时、工作日工时、周末加班工时、出差工时、请假工时），按总工时降序排列。</p>
-              <div className="flex flex-wrap gap-4 items-center">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-gray-700">选择月份：</span>
-                  <input
-                    type="month"
-                    value={whExportMonth}
-                    onChange={(e) => setWhExportMonth(e.target.value)}
-                    className="px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
-                  />
-                </div>
-                <button
-                  onClick={handleWorkHoursExport}
-                  disabled={exporting}
-                  className="flex items-center gap-2 px-5 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                >
-                  {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
-                  导出工时管理表
-                </button>
-              </div>
-            </div>
-
-            {/* 焊枪编号台账：按需选择分类导出（单分类 xls，多分类 zip） */}
-            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-              <h3 className="text-lg font-bold text-gray-800 mb-2 flex items-center">
-                <ClipboardList className="mr-2 text-emerald-600" size={22} />
-                焊枪编号台账
-              </h3>
-              <p className="text-sm text-gray-500 mb-5">按分类导入/导出焊枪编号台账。每个分类是一个 xls 工作簿，分类下的每张表对应一个工作表。导出时：选择 1 个分类下载单个 xls，选择多个分类时打包为 zip。导入时：工作簿内的每个工作表会成为目标分类下的一张表，并覆盖目标分类。</p>
-              {gunCatsLoading ? (
-                <div className="text-sm text-gray-400 flex items-center gap-2 py-2">
-                  <RefreshCw size={14} className="animate-spin" />正在加载分类...
-                </div>
-              ) : gunLedgerCats.length === 0 ? (
-                <div className="text-sm text-gray-400 bg-gray-50 rounded-xl border border-gray-100 p-4">暂无可导出的分类，或当前账号没有焊枪编号台账的访问权限。</div>
-              ) : (
-                <>
-                  <div className="flex flex-wrap gap-2 mb-5">
-                    {gunLedgerCats.map(item => {
-                      const checked = gunExportCats.includes(item.category);
-                      return (
-                        <label
-                          key={item.category}
-                          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border cursor-pointer text-sm font-bold transition ${checked ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="w-4 h-4 accent-emerald-600"
-                            checked={checked}
-                            onChange={() => toggleGunExportCat(item.category)}
-                          />
-                          {item.category}
-                          <span className="text-[10px] font-normal text-gray-400">{item.tables} 表 / {item.rows} 行</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-4">
-                    <div className="flex items-center gap-3 text-xs font-bold">
-                      <button className="text-emerald-600 hover:text-emerald-700 transition" onClick={() => setGunExportCats(gunLedgerCats.map(item => item.category))}>全选</button>
-                      <button className="text-gray-400 hover:text-gray-600 transition" onClick={() => setGunExportCats([])}>清空</button>
-                    </div>
-                    <button
-                      onClick={handleGunLedgerExport}
-                      disabled={exporting || importing || !gunExportCats.length}
-                      className="flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                    >
-                      {exporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
-                      导出焊枪编号台账
-                    </button>
-                    {isSuperAdmin && (
-                      <>
-                        <button
-                          onClick={() => gunFileInputRef.current?.click()}
-                          disabled={importing}
-                          className="flex items-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
-                        >
-                          {importing ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
-                          导入焊枪编号台账
-                        </button>
-                        <input
-                          ref={gunFileInputRef}
-                          type="file"
-                          accept=".xls,.xlsx"
-                          className="hidden"
-                          onChange={handleGunLedgerImportFile}
-                        />
-                      </>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {/* 导入确认面板 */}
-              {gunPendingFile && (
-                <div className="mt-5 rounded-xl border-2 border-blue-200 bg-blue-50 p-5 space-y-4">
-                  <div className="font-bold text-gray-800 flex items-center gap-2">
-                    <Upload size={18} className="text-blue-600" />确认导入焊枪编号台账
-                  </div>
-                  <div className="text-sm text-gray-600">文件：<span className="font-bold text-gray-800 break-all">{gunPendingFile.name}</span></div>
-                  <div className="space-y-2">
-                    <label className="flex items-center gap-2 text-sm font-bold text-gray-700 cursor-pointer">
-                      <input type="radio" className="w-4 h-4 accent-blue-600" checked={!gunImportAsNew} onChange={() => setGunImportAsNew(false)} />
-                      导入到现有分类：
-                    </label>
-                    {!gunImportAsNew && (
-                      <select
-                        value={gunImportCategory}
-                        onChange={(e) => setGunImportCategory(e.target.value)}
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-200"
-                      >
-                        {gunLedgerCats.length === 0 && <option value="">（暂无现有分类，请改用新分类）</option>}
-                        {gunLedgerCats.map(item => <option key={item.category} value={item.category}>{item.category}（{item.tables} 表 / {item.rows} 行）</option>)}
-                      </select>
-                    )}
-                    <label className="flex items-center gap-2 text-sm font-bold text-gray-700 cursor-pointer pt-1">
-                      <input type="radio" className="w-4 h-4 accent-blue-600" checked={gunImportAsNew} onChange={() => setGunImportAsNew(true)} />
-                      导入到新分类：
-                    </label>
-                    {gunImportAsNew && (
-                      <input
-                        type="text"
-                        value={gunImportNewName}
-                        onChange={(e) => setGunImportNewName(e.target.value)}
-                        placeholder="请输入新分类名称（1-30 字符）"
-                        maxLength={30}
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-200"
-                      />
-                    )}
-                  </div>
-                  <label className="flex items-start gap-2 text-sm text-gray-700 font-bold cursor-pointer">
-                    <input type="checkbox" className="w-4 h-4 mt-0.5 accent-blue-600" checked={gunImportConfirmed} onChange={(e) => setGunImportConfirmed(e.target.checked)} />
-                    <span>已确认文件格式与系统导出格式一致（每张表一个工作表，含序号/焊枪名/客户/时间/担当/备注表头），并知悉导入将<span className="text-red-600">覆盖目标分类下的全部表格</span>。</span>
-                  </label>
-                  <div className="flex justify-end gap-2">
-                    <button onClick={cancelGunLedgerImport} disabled={importing} className="px-4 py-2 rounded-lg border border-gray-200 text-gray-700 font-bold hover:bg-gray-100 transition disabled:opacity-60">取消</button>
-                    <button onClick={confirmGunLedgerImport} disabled={importing} className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition disabled:opacity-60">
-                      {importing && <RefreshCw size={16} className="animate-spin" />}
-                      {importing ? '导入中...' : '确认导入'}
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
 
             {isSuperAdmin && (
@@ -2067,219 +2327,298 @@ const SystemSettings = () => {
                         {latestYearlyHistory.removedSheets > 0
                           ? <>归档并删除 {latestYearlyHistory.removedSheets} 个工作表（{latestYearlyHistory.removedTaskItems || 0} 条记录）{latestYearlyHistory.archiveFile ? `，归档文件 ${latestYearlyHistory.archiveFile.split(/[\\/]/).pop()}` : ''}</>
                           : '无符合条件的任务数据'}
-                      </>
-                    ) : '暂无年度清理执行记录'}
-                  </div>
+                    </>
+                  ) : '暂无年度清理执行记录'}
                 </div>
+              </div>
 
-                <div className={`rounded-xl border border-amber-200 bg-amber-50/40 p-4 ${maintenanceSettings.offlineBackupEnabled ? '' : 'opacity-70'}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2 font-bold text-gray-800"><Power size={17} className="text-amber-600" />关机自动备份</div>
-                    <input type="checkbox" checked={maintenanceSettings.offlineBackupEnabled} onChange={(e) => updateMaintenanceField('offlineBackupEnabled', e.target.checked)} className="w-5 h-5 accent-amber-600" />
-                  </div>
-                  <p className="text-xs text-gray-500 leading-relaxed mb-3">
-                    服务器进程关闭时（Ctrl+C、关闭服务控制台、收到 SIGTERM）自动执行一次数据库一致性备份；5 分钟内重复关闭仅备份一次，与每日备份分开存放。
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-                    <label className="block">
-                      <span className="text-xs font-bold text-gray-600">备份保留天数</span>
-                      <input type="number" min={1} max={3650} value={maintenanceSettings.offlineBackupRetentionDays} onChange={(e) => updateMaintenanceField('offlineBackupRetentionDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400" />
-                    </label>
-                    <label className="block">
-                      <span className="text-xs font-bold text-gray-600">备份存放目录（相对后端）</span>
-                      <input value={maintenanceSettings.offlineBackupDir} onChange={(e) => updateMaintenanceField('offlineBackupDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400" />
-                    </label>
-                  </div>
-                  <div className="rounded-lg bg-white/80 border border-amber-100 px-3 py-2 text-xs text-gray-500">
-                    适用于服务意外停止前的最后保障；每日计划执行时也会按上面的保留天数一并清理本目录的过期备份。
-                  </div>
+              <div className={`rounded-xl border border-amber-200 bg-amber-50/40 p-4 ${maintenanceSettings.offlineBackupEnabled ? '' : 'opacity-70'}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2 font-bold text-gray-800"><Power size={17} className="text-amber-600" />关机自动备份</div>
+                  <input type="checkbox" checked={maintenanceSettings.offlineBackupEnabled} onChange={(e) => updateMaintenanceField('offlineBackupEnabled', e.target.checked)} className="w-5 h-5 accent-amber-600" />
+                </div>
+                <p className="text-xs text-gray-500 leading-relaxed mb-3">
+                  服务器进程关闭时（Ctrl+C、关闭服务控制台、收到 SIGTERM）自动执行一次数据库一致性备份；5 分钟内重复关闭仅备份一次，与每日备份分开存放。
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                  <label className="block">
+                    <span className="text-xs font-bold text-gray-600">备份保留天数</span>
+                    <input type="number" min={1} max={3650} value={maintenanceSettings.offlineBackupRetentionDays} onChange={(e) => updateMaintenanceField('offlineBackupRetentionDays', Number(e.target.value))} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400" />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-bold text-gray-600">备份存放目录（相对后端）</span>
+                    <input value={maintenanceSettings.offlineBackupDir} onChange={(e) => updateMaintenanceField('offlineBackupDir', e.target.value)} className="mt-1 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400" />
+                  </label>
+                </div>
+                <div className="rounded-lg bg-white/80 border border-amber-100 px-3 py-2 text-xs text-gray-500">
+                  适用于服务意外停止前的最后保障；每日计划执行时也会按上面的保留天数一并清理本目录的过期备份。
                 </div>
               </div>
             </div>
+            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 items-start">
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-5">
                 <h3 className="font-bold text-gray-800 mb-1 flex items-center gap-2">
                   <PlayCircle size={18} className="text-blue-600" />手动维护
                 </h3>
                 <p className="text-xs text-gray-400 mb-4">立即在服务器上执行一次，不影响每日计划；执行后状态自动刷新。</p>
 
                 <div className="text-xs font-bold text-gray-500 mb-2">常规操作</div>
-                <div className="grid grid-cols-1 gap-2.5 mb-5">
-                  <button onClick={handleBackupNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                <div className="grid grid-cols-1 gap-2 mb-4">
+                  <button onClick={handleBackupNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
                     <Database size={17} />立即备份数据库
                   </button>
-                  <button onClick={handleManualTaskExport} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
-                    <FileSpreadsheet size={17} />立即导出任务数据
+                  <button onClick={handleManualTaskExport} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                      <FileSpreadsheet size={17} />立即导出任务数据
                   </button>
-                  <button onClick={handleManualGunLedgerExport} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                  <button onClick={handleManualGunLedgerExport} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
                     <ClipboardList size={17} />立即导出编号台账
                   </button>
-                  <button onClick={handleCleanupBackupsNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
-                    <Trash2 size={17} />清理过期文件
-                    <span className="ml-auto text-[11px] font-normal opacity-90 text-right">备份 / 任务导出 / 台账导出 / 关机备份</span>
+                  <button onClick={handleCleanupBackupsNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2.5 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <Trash2 size={17} className="shrink-0" />清理过期文件
+                    <span className="ml-auto min-w-0 truncate text-[11px] font-normal opacity-90">备份 / 任务导出 / 台账导出 / 关机备份</span>
                   </button>
                 </div>
 
                 <div className="text-xs font-bold text-red-500 mb-2 flex items-center gap-1"><AlertCircle size={13} />危险操作（不可恢复）</div>
-                <div className="grid grid-cols-1 gap-2.5 rounded-xl bg-red-50/60 border border-red-100 p-3">
-                  <button onClick={handleYearlyCleanupNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                <div className="grid grid-cols-1 gap-2 rounded-xl bg-red-50/60 border border-red-100 p-3">
+                  <button onClick={handleYearlyCleanupNow} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
                     <Archive size={17} />立即执行年度清理检测
                   </button>
-                  <button onClick={handleClearLogs} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
-                    <History size={17} />清空所有登录与操作日志
+                  <button onClick={handleClearLogs} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <History size={17} className="shrink-0" />清空所有登录与操作日志
+                  </button>
+                  <button onClick={handlePurgeMonitorData} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2.5 bg-rose-500 hover:bg-rose-600 disabled:opacity-60 text-white font-bold rounded-xl transition text-left">
+                    <Activity size={17} className="shrink-0" />清空所有监测数据
+                    <span className="ml-auto min-w-0 shrink-0 text-[11px] font-normal opacity-90">样本 / 流量 / 事件</span>
                   </button>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-                <h3 className="font-bold text-gray-800 mb-4">运行状态</h3>
-                <div className="space-y-4 text-sm text-gray-600">
-                  {/* 调度器状态 */}
-                  <div className="rounded-xl border border-gray-200 p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-gray-700">调度器</span>
-                      {(() => {
-                        const badge = !maintenanceSettings.enabled
-                          ? { dot: 'bg-gray-400', text: '已停用', cls: 'bg-gray-100 text-gray-600' }
-                          : maintenanceStatus?.scheduler?.running
-                            ? { dot: 'bg-blue-500 animate-pulse', text: '正在执行', cls: 'bg-blue-50 text-blue-700' }
-                            : { dot: 'bg-green-500', text: '计划中', cls: 'bg-green-50 text-green-700' };
-                        return (
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${badge.cls}`}>
-                            <span className={`w-2 h-2 rounded-full ${badge.dot}`} />{badge.text}
-                          </span>
-                        );
-                      })()}
-                    </div>
-                    <div className="mt-2 space-y-1 text-xs">
-                      <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">下次执行</span><span className="text-gray-700">{(maintenanceStatus?.scheduler?.nextRunAtLocal || '').replace(/\s*\(.*\)$/, '') || (maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-')}</span></div>
-                      <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">上次执行</span><span className="text-gray-700">{maintenanceStatus?.scheduler?.lastRun?.finishedAt ? format(new Date(maintenanceStatus.scheduler.lastRun.finishedAt), 'yyyy-MM-dd HH:mm:ss') : '尚无自动执行记录'}</span></div>
-                      {maintenanceStatus?.scheduler?.timezone && (
-                        <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">时区</span><span className="text-gray-500">服务器本地时间（{maintenanceStatus.scheduler.timezone}）</span></div>
-                      )}
-                    </div>
-
-                    {/* 上次计划执行的逐项结果 */}
-                    {maintenanceStatus?.scheduler?.lastRun?.finishedAt && (() => {
-                      const lr = maintenanceStatus.scheduler.lastRun as MaintenanceLastRun;
-                      if (lr.skipped) {
-                        return <div className="mt-2 rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-500">本次计划执行已跳过：{lr.reason === 'disabled' ? '自动维护已停用' : lr.reason}</div>;
-                      }
-                      type Tone = 'ok' | 'off' | 'muted' | 'warn';
-                      const toneCls: Record<Tone, string> = {
-                        ok: 'text-green-700 bg-green-50',
-                        off: 'text-gray-400 bg-gray-50',
-                        muted: 'text-gray-500 bg-gray-50',
-                        warn: 'text-amber-700 bg-amber-50'
-                      };
-                      const steps: { label: string; tone: Tone; text: string }[] = [];
-                      steps.push(!maintenanceSettings.dailyBackupEnabled
-                        ? { label: '数据库备份', tone: 'off', text: '未启用' }
-                        : lr.backup ? { label: '数据库备份', tone: 'ok', text: lr.backup.fileName } : { label: '数据库备份', tone: 'muted', text: '未生成' });
-                      const te = lr.taskExport;
-                      steps.push(!maintenanceSettings.dailyTaskExportEnabled
-                        ? { label: '任务表格', tone: 'off', text: '未启用' }
-                        : te?.skipped ? { label: '任务表格', tone: 'muted', text: '无任务数据，跳过' }
-                        : te ? { label: '任务表格', tone: 'ok', text: `${te.taskSheets} 个工作表 / ${te.taskItems} 条记录` }
-                        : { label: '任务表格', tone: 'muted', text: '未生成' });
-                      const ge = lr.gunLedgerExport;
-                      steps.push(!maintenanceSettings.dailyGunLedgerExportEnabled
-                        ? { label: '编号台账', tone: 'off', text: '未启用' }
-                        : ge?.skipped ? { label: '编号台账', tone: 'muted', text: '无台账数据，跳过' }
-                        : ge ? { label: '编号台账', tone: 'ok', text: `${ge.categories} 个分类已导出` }
-                        : { label: '编号台账', tone: 'muted', text: '未生成' });
-                      const ss = lr.scheduleSync;
-                      steps.push(!maintenanceSettings.dailyScheduleSyncEnabled
-                        ? { label: '状态同步', tone: 'off', text: '未启用' }
-                        : !ss ? { label: '状态同步', tone: 'muted', text: '-' }
-                        : ss.reason ? { label: '状态同步', tone: 'warn', text: `失败：${ss.reason}` }
-                        : ss.skipped ? { label: '状态同步', tone: 'muted', text: '无变更，跳过' }
-                        : { label: '状态同步', tone: 'ok', text: `新增 ${ss.added || 0} / 更新 ${ss.updated || 0} 条，补全担当 ${ss.salesFilled || 0} 条` });
-                      steps.push(lr.backupCleanup
-                        ? { label: '过期清理', tone: 'ok', text: `删除 ${lr.backupCleanup.removedCount} 个过期文件` }
-                        : { label: '过期清理', tone: 'muted', text: '-' });
-                      const yc = lr.yearlyCleanup;
-                      steps.push(!maintenanceSettings.yearlyCleanupEnabled
-                        ? { label: '年度清理', tone: 'off', text: '未启用' }
-                        : !yc ? { label: '年度清理', tone: 'muted', text: '-' }
-                        : yc.skipped ? { label: '年度清理', tone: 'muted', text: yearlySkipReasonText[yc.reason || ''] || yc.reason || '已跳过' }
-                        : yc.removedSheets ? { label: '年度清理', tone: 'warn', text: `归档删除 ${yc.removedSheets} 个工作表（${yc.removedTaskItems || 0} 条记录）` }
-                        : { label: '年度清理', tone: 'ok', text: '无需要清理的数据' });
-                      return (
-                        <div className="mt-2 space-y-1.5">
-                          {steps.map(step => (
-                            <div key={step.label} className="flex items-start gap-2 text-xs">
-                              <span className="w-16 shrink-0 font-bold text-gray-400 pt-0.5">{step.label}</span>
-                              <span className={`px-2 py-0.5 rounded break-all ${toneCls[step.tone]}`}>{step.text}</span>
-                            </div>
-                          ))}
-                          {lr.errors?.length ? (
-                            <div className="rounded-lg bg-red-50 border border-red-200 px-2 py-2 text-xs text-red-700">执行错误：{lr.errors.join('；')}</div>
-                          ) : null}
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* 数据库占用 */}
-                  <div className="rounded-xl border border-gray-200 p-3 space-y-2">
-                    <div className="font-bold text-gray-700 text-xs">数据库占用</div>
-                    <div className="text-xs">
-                      <span className="font-bold text-blue-600">{maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.totalDiskSize) : '-'}</span>
-                      {maintenanceStatus?.database && (
-                        <span className="text-gray-400 ml-2">
-                          （主文件 {formatFileSize(maintenanceStatus.database.dbFileSize)}
-                          {maintenanceStatus.database.walSize > 0 ? ` + WAL ${formatFileSize(maintenanceStatus.database.walSize)}` : ''}
-                          {maintenanceStatus.database.shmSize > 0 ? ` + SHM ${formatFileSize(maintenanceStatus.database.shmSize)}` : ''}）
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs">
-                      <span className="font-bold text-green-600">tasks 集合 {maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.tasksJsonSize) : '-'}</span>
-                      {maintenanceStatus?.database && (
-                        <span className="text-gray-400 ml-2">（{maintenanceStatus.database.tasksCount} 个工作表，{maintenanceStatus.database.taskItemsCount} 条任务记录）</span>
-                      )}
-                    </div>
-                    {(maintenanceStatus?.database?.reclaimableBytes || 0) > 0 && (
-                      <div className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 text-xs text-amber-800 leading-relaxed">
-                        有 <span className="font-bold">{formatFileSize(maintenanceStatus!.database.reclaimableBytes!)}</span> 是已删除数据留下的空闲页，仍占着磁盘。
-                        执行「压缩数据库」后才会真正释放。
+              {/* 右列：运行状态 + 存储目录 上下叠放 */}
+              <div className="space-y-6">
+                {/* 运行状态：只保留调度器 */}
+                <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-5">
+                  <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <Activity size={16} className="text-emerald-600" />运行状态
+                  </h3>
+                  <div className="space-y-4 text-sm text-gray-600">
+                    {/* 调度器状态 */}
+                    <div className="rounded-xl border border-gray-200 p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-gray-700">调度器</span>
+                        {(() => {
+                          const badge = !maintenanceSettings.enabled
+                            ? { dot: 'bg-gray-400', text: '已停用', cls: 'bg-gray-100 text-gray-600' }
+                            : maintenanceStatus?.scheduler?.running
+                              ? { dot: 'bg-blue-500 animate-pulse', text: '正在执行', cls: 'bg-blue-50 text-blue-700' }
+                              : { dot: 'bg-green-500', text: '计划中', cls: 'bg-green-50 text-green-700' };
+                          return (
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${badge.cls}`}>
+                              <span className={`w-2 h-2 rounded-full ${badge.dot}`} />{badge.text}
+                            </span>
+                          );
+                        })()}
                       </div>
-                    )}
-                    <div className="flex items-center gap-2 pt-0.5">
-                      <button
-                        onClick={handleCompactDatabase}
-                        disabled={maintenanceLoading}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold transition"
-                      >
-                        <Database size={13} />
-                        压缩数据库
-                      </button>
-                      <span className="text-[11px] text-gray-400 leading-tight">回收空闲页并截断 WAL</span>
-                    </div>
-                    <div className="text-xs text-gray-500">数据文件：<span className="break-all text-gray-600">{maintenanceStatus?.paths?.database || '-'}</span></div>
-                  </div>
+                      <div className="mt-2 space-y-1 text-xs">
+                        <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">下次执行</span><span className="text-gray-700">{(maintenanceStatus?.scheduler?.nextRunAtLocal || '').replace(/\s*\(.*\)$/, '') || (maintenanceStatus?.scheduler?.nextRunAt ? format(new Date(maintenanceStatus.scheduler.nextRunAt), 'yyyy-MM-dd HH:mm') : '-')}</span></div>
+                        <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">上次执行</span><span className="text-gray-700">{maintenanceStatus?.scheduler?.lastRun?.finishedAt ? format(new Date(maintenanceStatus.scheduler.lastRun.finishedAt), 'yyyy-MM-dd HH:mm:ss') : '尚无自动执行记录'}</span></div>
+                        {maintenanceStatus?.scheduler?.timezone && (
+                          <div className="flex gap-2"><span className="w-16 shrink-0 text-gray-400 font-bold">时区</span><span className="text-gray-500">服务器本地时间（{maintenanceStatus.scheduler.timezone}）</span></div>
+                        )}
+                      </div>
 
-                  {/* 存储目录绝对路径 */}
-                  <div className="rounded-xl border border-gray-200 p-3">
-                    <div className="font-bold text-gray-700 text-xs mb-1.5">存储目录（服务器绝对路径）</div>
-                    <div className="space-y-1 text-xs">
-                      {[
-                        { label: '数据库备份', path: maintenanceStatus?.paths?.backupDir },
-                        { label: '任务表格导出', path: maintenanceStatus?.paths?.taskExportDir },
-                        { label: '编号台账导出', path: maintenanceStatus?.paths?.gunLedgerExportDir },
-                        { label: '年度归档', path: maintenanceStatus?.paths?.yearlyArchiveDir },
-                        { label: '关机备份', path: maintenanceStatus?.paths?.offlineBackupDir }
-                      ].map(item => (
-                        <div key={item.label} className="flex gap-2">
-                          <span className="w-20 shrink-0 text-gray-400 font-bold">{item.label}</span>
-                          <span className="break-all text-gray-600">{item.path || '-'}</span>
-                        </div>
-                      ))}
+                      {/* 上次计划执行的逐项结果 */}
+                      {maintenanceStatus?.scheduler?.lastRun?.finishedAt && (() => {
+                        const lr = maintenanceStatus.scheduler.lastRun as MaintenanceLastRun;
+                        if (lr.skipped) {
+                          return <div className="mt-2 rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-500">本次计划执行已跳过：{lr.reason === 'disabled' ? '自动维护已停用' : lr.reason}</div>;
+                        }
+                        type Tone = 'ok' | 'off' | 'muted' | 'warn';
+                        const toneCls: Record<Tone, string> = {
+                          ok: 'text-green-700 bg-green-50',
+                          off: 'text-gray-400 bg-gray-50',
+                          muted: 'text-gray-500 bg-gray-50',
+                          warn: 'text-amber-700 bg-amber-50'
+                        };
+                        const steps: { label: string; tone: Tone; text: string }[] = [];
+                        steps.push(!maintenanceSettings.dailyBackupEnabled
+                          ? { label: '数据库备份', tone: 'off', text: '未启用' }
+                          : lr.backup ? { label: '数据库备份', tone: 'ok', text: lr.backup.fileName } : { label: '数据库备份', tone: 'muted', text: '未生成' });
+                        const te = lr.taskExport;
+                        steps.push(!maintenanceSettings.dailyTaskExportEnabled
+                          ? { label: '任务表格', tone: 'off', text: '未启用' }
+                          : te?.skipped ? { label: '任务表格', tone: 'muted', text: '无任务数据，跳过' }
+                          : te ? { label: '任务表格', tone: 'ok', text: `${te.taskSheets} 个工作表 / ${te.taskItems} 条记录` }
+                          : { label: '任务表格', tone: 'muted', text: '未生成' });
+                        const ge = lr.gunLedgerExport;
+                        steps.push(!maintenanceSettings.dailyGunLedgerExportEnabled
+                          ? { label: '编号台账', tone: 'off', text: '未启用' }
+                          : ge?.skipped ? { label: '编号台账', tone: 'muted', text: '无台账数据，跳过' }
+                          : ge ? { label: '编号台账', tone: 'ok', text: `${ge.categories} 个分类已导出` }
+                          : { label: '编号台账', tone: 'muted', text: '未生成' });
+                        const ss = lr.scheduleSync;
+                        steps.push(!maintenanceSettings.dailyScheduleSyncEnabled
+                          ? { label: '状态同步', tone: 'off', text: '未启用' }
+                            : !ss ? { label: '状态同步', tone: 'muted', text: '-' }
+                          : ss.reason ? { label: '状态同步', tone: 'warn', text: `失败：${ss.reason}` }
+                          : ss.skipped ? { label: '状态同步', tone: 'muted', text: '无变更，跳过' }
+                          : { label: '状态同步', tone: 'ok', text: `新增 ${ss.added || 0} / 更新 ${ss.updated || 0} 条，补全担当 ${ss.salesFilled || 0} 条` });
+                        steps.push(lr.backupCleanup
+                          ? { label: '过期清理', tone: 'ok', text: `删除 ${lr.backupCleanup.removedCount} 个过期文件` }
+                          : { label: '过期清理', tone: 'muted', text: '-' });
+                        const yc = lr.yearlyCleanup;
+                        steps.push(!maintenanceSettings.yearlyCleanupEnabled
+                          ? { label: '年度清理', tone: 'off', text: '未启用' }
+                          : !yc ? { label: '年度清理', tone: 'muted', text: '-' }
+                          : yc.skipped ? { label: '年度清理', tone: 'muted', text: yearlySkipReasonText[yc.reason || ''] || yc.reason || '已跳过' }
+                          : yc.removedSheets ? { label: '年度清理', tone: 'warn', text: `归档删除 ${yc.removedSheets} 个工作表（${yc.removedTaskItems || 0} 条记录）` }
+                          : { label: '年度清理', tone: 'ok', text: '无需要清理的数据' });
+                        return (
+                          <div className="mt-2 space-y-1.5">
+                            {steps.map(step => (
+                              <div key={step.label} className="flex items-start gap-2 text-xs">
+                                <span className="w-16 shrink-0 font-bold text-gray-400 pt-0.5">{step.label}</span>
+                                <span className={`px-2 py-0.5 rounded break-all ${toneCls[step.tone]}`}>{step.text}</span>
+                              </div>
+                            ))}
+                              {lr.errors?.length ? (
+                                <div className="rounded-lg bg-red-50 border border-red-200 px-2 py-2 text-xs text-red-700">执行错误：{lr.errors.join('；')}</div>
+                              ) : null}
+                            </div>
+                          );
+                        })()}
+                      </div>
                     </div>
+                </div>
+
+                {/* 存储目录：标出各操作写入的服务器路径，与手动维护同排便于对照 */}
+                <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-5">
+                  <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
+                    <Archive size={16} className="text-slate-500" />存储目录
+                    <span className="text-[10px] font-normal text-gray-400">服务器绝对路径</span>
+                  </h3>
+                  <div className="overflow-hidden rounded-xl border border-gray-200 divide-y divide-gray-100">
+                    {[
+                      { label: '数据库备份', path: maintenanceStatus?.paths?.backupDir, tone: 'text-blue-600' },
+                      { label: '任务表格导出', path: maintenanceStatus?.paths?.taskExportDir, tone: 'text-green-600' },
+                      { label: '编号台账导出', path: maintenanceStatus?.paths?.gunLedgerExportDir, tone: 'text-emerald-600' },
+                      { label: '年度归档', path: maintenanceStatus?.paths?.yearlyArchiveDir, tone: 'text-red-500' },
+                      { label: '关机备份', path: maintenanceStatus?.paths?.offlineBackupDir, tone: 'text-amber-600' }
+                    ].map(item => (
+                      <div key={item.label} className="px-3 py-2">
+                        <div className={`text-[10px] font-bold ${item.tone}`}>{item.label}</div>
+                        <div className="break-all text-[11px] leading-snug text-gray-600">{item.path || '-'}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
+              </div>
+            </div>
+
+            {/* 数据库占用：单独一行横向铺满，明细（主文件构成、空闲页）不再被挤压 */}
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-5">
+              <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
+                <Database size={16} className="text-blue-600" />数据库占用
+              </h3>
+              <div className="space-y-2">
+                <div className="text-xs">
+                  <span className="font-bold text-blue-600">{maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.totalDiskSize) : '-'}</span>
+                  {maintenanceStatus?.database && (
+                    <span className="text-gray-400 ml-2">
+                      （主文件 {formatFileSize(maintenanceStatus.database.dbFileSize)}
+                      {maintenanceStatus.database.walSize > 0 ? ` + WAL ${formatFileSize(maintenanceStatus.database.walSize)}` : ''}
+                      {maintenanceStatus.database.shmSize > 0 ? ` + SHM ${formatFileSize(maintenanceStatus.database.shmSize)}` : ''}）
+                    </span>
+                  )}
+                </div>
+                {/* 主文件构成：把「主文件 1.59 MB」拆到数据类型上，避免只看到一个总数 */}
+                {(() => {
+                  const bd = maintenanceStatus?.database?.breakdown;
+                  if (!bd || !bd.items?.length) return null;
+                  const barColor: Record<string, string> = {
+                    audit: '#fb7185',
+                    kv: '#3b82f6',
+                    tasks: '#10b981',
+                    monitor: '#f59e0b',
+                    login: '#a78bfa',
+                    schema: '#9ca3af'
+                  };
+                  const total = bd.totalBytes || 1;
+                  const pct = (bytes: number) => (bytes / total) * 100;
+                  const pctText = (bytes: number) => {
+                    const p = pct(bytes);
+                    return p > 0 && p < 0.1 ? '<0.1%' : `${p.toFixed(1)}%`;
+                  };
+                  return (
+                    <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5 space-y-2">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-gray-600">主文件构成（按数据类型，含索引）</span>
+                        <span className="text-gray-400">合计 {formatFileSize(bd.totalBytes)}</span>
+                      </div>
+                      <div className="flex h-2 w-full overflow-hidden rounded-full bg-gray-200">
+                        {bd.items.map(item => (
+                          <div
+                            key={item.key}
+                            title={`${item.label} ${formatFileSize(item.bytes)}（${pctText(item.bytes)}）`}
+                            style={{ width: `${pct(item.bytes)}%`, backgroundColor: barColor[item.key] || '#64748b' }}
+                          />
+                        ))}
+                        {bd.freeBytes > 0 && (
+                          <div title={`空闲页 ${formatFileSize(bd.freeBytes)}`} style={{ width: `${pct(bd.freeBytes)}%`, backgroundColor: '#e5e7eb' }} />
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        {bd.items.map(item => (
+                          <div key={item.key} className="text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: barColor[item.key] || '#64748b' }} />
+                              <span className="w-14 shrink-0 font-bold text-gray-700">{item.label}</span>
+                              <span className="w-16 shrink-0 text-right tabular-nums text-gray-600">{formatFileSize(item.bytes)}</span>
+                              <span className="w-11 shrink-0 text-right tabular-nums text-gray-400">{pctText(item.bytes)}</span>
+                              <span className="flex-1 truncate text-gray-400" title={item.note || ''}>{item.note || ''}</span>
+                            </div>
+                            {item.details && item.details.length > 0 && (
+                              <div className="ml-4 mt-0.5 text-[11px] leading-relaxed text-gray-400">
+                                {item.details.map(detail => `${detail.label} ${formatFileSize(detail.bytes)}`).join(' · ')}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-[11px] leading-relaxed text-gray-400">
+                              按数据页实测统计，索引已计入所属类型；业务数据的括号明细是集合内容体积（不含页开销），因此小于其占用。
+                              {bd.pendingBytes > 0 && `另有 ${formatFileSize(bd.pendingBytes)} 已提交但尚在 WAL 中，checkpoint 后才会并入主文件。`}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      <div className="text-xs">
+                        <span className="font-bold text-green-600">tasks 集合 {maintenanceStatus?.database ? formatFileSize(maintenanceStatus.database.tasksJsonSize) : '-'}</span>
+                        {maintenanceStatus?.database && (
+                          <span className="text-gray-400 ml-2">（{maintenanceStatus.database.tasksCount} 个工作表，{maintenanceStatus.database.taskItemsCount} 条任务记录）</span>
+                        )}
+                      </div>
+                      {(maintenanceStatus?.database?.reclaimableBytes || 0) > 0 && (
+                        <div className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 text-xs text-amber-800 leading-relaxed">
+                          有 <span className="font-bold">{formatFileSize(maintenanceStatus!.database.reclaimableBytes!)}</span> 是已删除数据留下的空闲页，仍占着磁盘。
+                          执行「压缩数据库」后才会真正释放。
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <button
+                          onClick={handleCompactDatabase}
+                          disabled={maintenanceLoading}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold transition"
+                        >
+                          <Database size={13} />
+                          压缩数据库
+                        </button>
+                        <span className="text-[11px] text-gray-400 leading-tight">回收空闲页并截断 WAL</span>
+                      </div>
+                      <div className="text-xs text-gray-500">数据文件：<span className="break-all text-gray-600">{maintenanceStatus?.paths?.database || '-'}</span></div>
               </div>
             </div>
 
@@ -2320,7 +2659,7 @@ const SystemSettings = () => {
               <Shield className="mr-2 text-purple-600" size={22} />
               登录管理
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               {[
                 { label: '允许多设备同时在线', detail: 'Multi Device', key: 'allowMultiDevice' as const },
                 { label: '允许登录用户修改本人设计计划完成状态', detail: 'Own Design Plan Status', key: 'allowUserDesignPlanColorMark' as const },
@@ -2494,7 +2833,292 @@ const SystemSettings = () => {
 
         {activeTab === 'logs' && (
           <>
+          {/* 日志文件占用：磁盘日志由启动脚本追加写入、没有上限，必须在页面上看得见 */}
           <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 mb-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800 flex items-center mb-1">
+                  <FileText className="mr-2 text-blue-600" size={22} />
+                  日志文件占用
+                </h3>
+                <p className="text-xs text-gray-400">
+                  统计 logs 目录下每个文件的实际大小，以及数据库里操作日志、登录日志的条数与占用。磁盘日志由启动脚本追加写入，超过阈值后自动就地截断（不删除文件）。
+                </p>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                {logFilesSummary && (
+                  <span className="text-xs text-gray-400">
+                    统计于 {format(new Date(logFilesSummary.scannedAtMs), 'HH:mm:ss')}
+                  </span>
+                )}
+                <button
+                  onClick={() => { if (guardOffline()) return; fetchLogFiles(); }}
+                  disabled={isOffline || logFilesLoading}
+                  className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 text-gray-700 rounded-lg text-sm font-bold hover:bg-gray-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <RefreshCw size={15} className={logFilesLoading ? 'animate-spin' : ''} />
+                  刷新
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="text-[11px] font-bold text-gray-500">磁盘日志合计</div>
+                <div className="mt-1 text-xl font-bold text-blue-600 tabular-nums">
+                  {logFilesSummary ? formatFileSize(logFilesSummary.logBytes) : '-'}
+                </div>
+                <div className="mt-0.5 text-[11px] text-gray-400">
+                  {logFilesSummary
+                    ? `${logFilesSummary.logFileCount} 个日志文件 · 另有 ${logFilesSummary.runtimeFileCount} 个运行时文件 ${formatFileSize(logFilesSummary.runtimeBytes)}`
+                    : '统计中…'}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="text-[11px] font-bold text-gray-500">操作日志（数据库）</div>
+                <div className="mt-1 text-xl font-bold text-rose-500 tabular-nums">
+                  {logFilesSummary ? `${logFilesSummary.database.auditLogs.rows} 条` : '-'}
+                </div>
+                <div className="mt-0.5 text-[11px] text-gray-400">
+                  {logFilesSummary
+                    ? `占用 ${logFilesSummary.database.auditLogs.bytes === null ? '未知' : formatFileSize(logFilesSummary.database.auditLogs.bytes)}${
+                        logFilesSummary.database.auditRetentionRows ? ` · 保留上限 ${logFilesSummary.database.auditRetentionRows} 条` : ''
+                      }`
+                    : '统计中…'}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="text-[11px] font-bold text-gray-500">登录日志（数据库）</div>
+                <div className="mt-1 text-xl font-bold text-violet-500 tabular-nums">
+                  {logFilesSummary ? `${logFilesSummary.database.loginLogs.rows} 条` : '-'}
+                </div>
+                <div className="mt-0.5 text-[11px] text-gray-400">
+                  {logFilesSummary
+                    ? `占用 ${logFilesSummary.database.loginLogs.bytes === null ? '未知' : formatFileSize(logFilesSummary.database.loginLogs.bytes)}`
+                    : '统计中…'}
+                </div>
+              </div>
+            </div>
+
+            {/* 自动截断配置：磁盘日志没有写入上限，靠这里定阈值 */}
+            <div className={`mt-4 rounded-xl border px-4 py-3 ${logFilesSummary?.settings.autoTrimEnabled ? 'border-blue-200 bg-blue-50/50' : 'border-gray-200 bg-gray-50/60'}`}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-bold text-gray-800">超过阈值自动截断</span>
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${logFilesSummary?.settings.autoTrimEnabled ? 'border-blue-300 bg-blue-500 text-white' : 'border-gray-200 bg-white text-gray-400'}`}>
+                      {logFilesSummary?.settings.autoTrimEnabled ? '已开启' : '已关闭'}
+                    </span>
+                    {!!logFilesSummary?.oversizeCount && (
+                      <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-600">
+                        {logFilesSummary.oversizeCount} 个文件已超限
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+                    每 {logFilesSummary?.settings.checkIntervalMinutes ?? 30} 分钟检查一次：超过阈值的日志文件保留最后
+                    {' '}{formatFileSize(logFilesSummary?.settings.keepTailBytes ?? 0)} 内容，前面的部分清掉，并在首行写入一行 <code className="rounded bg-white px-1 py-0.5 font-mono text-[10px]">[log-trim]</code> 说明。
+                    就地截断不删除文件，正在写入的服务不受影响；标「运行中占用」的文件（backend.log 等）运行期间写不进去，改由 <code className="rounded bg-white px-1 py-0.5 font-mono text-[10px]">start.bat</code> 在下次启动前轮转。
+                  </p>
+                  {logFilesSummary?.lastTrim && (
+                    <p className="mt-1 text-[11px] text-gray-400">
+                      上次截断：{format(new Date(logFilesSummary.lastTrim.at), 'MM-dd HH:mm:ss')}
+                      {' · '}{logFilesSummary.lastTrim.source === 'auto' ? '自动' : '手动'}
+                      {' · '}{logFilesSummary.lastTrim.trimmed.length} 个文件
+                      {logFilesSummary.lastTrim.trimmed.length > 0 && `，释放 ${formatFileSize(
+                        logFilesSummary.lastTrim.trimmed.reduce((sum, item) => sum + Math.max(0, item.beforeBytes - item.afterBytes), 0)
+                      )}`}
+                      {logFilesSummary.lastTrim.failed.length > 0 && `，${logFilesSummary.lastTrim.failed.length} 个失败`}
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-500">阈值</span>
+                    <input
+                      type="number"
+                      min={5}
+                      max={2048}
+                      value={logMaxSizeDraft}
+                      onChange={(e) => setLogMaxSizeDraft(e.target.value)}
+                      disabled={!isSuperAdmin || isOffline}
+                      className="w-20 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-100 disabled:text-gray-400"
+                    />
+                    <span className="text-xs text-gray-500">MB</span>
+                    <button
+                      onClick={handleSaveLogMaxSize}
+                      disabled={!isSuperAdmin || isOffline || logMaxSizeSaving}
+                      className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {logMaxSizeSaving ? '保存中…' : '保存'}
+                    </button>
+                  </div>
+                  <div className="relative inline-block h-6 w-12 select-none align-middle transition duration-200 ease-in">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.logAutoTrimEnabled)}
+                      onChange={(e) => { if (guardOffline()) return; updateSettings({ logAutoTrimEnabled: e.target.checked }); }}
+                      disabled={!isSuperAdmin || isOffline}
+                      className="toggle-checkbox absolute z-10 block h-6 w-6 cursor-pointer appearance-none rounded-full border-4 bg-white"
+                    />
+                    <label className={`toggle-label block h-6 cursor-pointer overflow-hidden rounded-full ${settings.logAutoTrimEnabled ? 'bg-blue-500' : 'bg-gray-300'}`}></label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 手动清理：同样就地截断，不删文件 */}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-[11px] text-gray-400">
+                手动清理与自动截断使用同一套逻辑：只处理 <code className="rounded bg-gray-100 px-1 font-mono text-[10px]">*.log</code>，
+                pid / token 等运行时文件一律不动；标「运行中占用」的文件会被跳过并在结果里说明。
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleTrimOversizedLogs}
+                  disabled={!isSuperAdmin || isOffline || logTrimming || !logFilesSummary?.oversizeCount}
+                  className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={logTrimming ? 'animate-spin' : ''} />
+                  清理超限文件{logFilesSummary?.oversizeCount ? `（${logFilesSummary.oversizeCount}）` : ''}
+                </button>
+                <button
+                  onClick={handleClearAllLogs}
+                  disabled={!isSuperAdmin || isOffline || logTrimming || !logFilesSummary?.logBytes}
+                  className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Trash2 size={13} />
+                  清空全部日志文件
+                </button>
+              </div>
+            </div>
+
+            {logFilesSummary && !logFilesSummary.exists ? (
+              <div className="mt-4 flex flex-col items-center justify-center rounded-lg border border-dashed border-gray-200 bg-white/60 py-8 text-center">
+                <FileText size={28} className="text-gray-200" />
+                <p className="mt-2 text-sm text-gray-400 font-medium">未找到 logs 目录</p>
+                <p className="mt-0.5 text-xs text-gray-300 break-all">{logFilesSummary.dir}</p>
+              </div>
+            ) : (
+              <div className="mt-4 overflow-hidden rounded-lg border border-gray-100">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500 text-left">
+                    <tr>
+                      <th className="px-4 py-2.5 text-xs font-bold">文件</th>
+                      <th className="px-4 py-2.5 text-xs font-bold">说明</th>
+                      <th className="px-4 py-2.5 text-xs font-bold">清理建议</th>
+                      <th className="px-4 py-2.5 text-xs font-bold text-right">大小</th>
+                      <th className="px-4 py-2.5 text-xs font-bold">最后写入</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(logFilesSummary?.files || []).map(file => (
+                      <tr key={file.name} className="border-t border-gray-50 hover:bg-gray-50/60">
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className={`font-mono text-[13px] ${file.isLog ? 'font-bold text-gray-800' : 'text-gray-400'}`}>{file.name}</span>
+                            {file.oversized && (
+                              <span
+                                className="shrink-0 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-600"
+                                title={`超过阈值 ${formatFileSize(logFilesSummary?.settings.thresholdBytes || 0)}，下一个检查周期会被自动截断`}
+                              >
+                                超限
+                              </span>
+                            )}
+                            {!file.isLog && (
+                              <span className="shrink-0 rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] font-bold text-gray-400">运行时</span>
+                            )}
+                            {file.isLog && file.locked && (
+                              <span
+                                className="shrink-0 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500"
+                                title="文件正被运行中的服务占用（Windows 句柄），现在无法清空；停止服务后启动时会自动轮转"
+                              >
+                                运行中占用
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[300px] truncate" title={`${file.label}：${file.note}\n${file.caution}`}>
+                          {file.label} · {file.note}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span
+                            className={`inline-flex shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-bold ${
+                              file.cleanup === 'delete'
+                                ? 'border-green-200 bg-green-50 text-green-600'
+                                : file.cleanup === 'truncate'
+                                  ? 'border-amber-200 bg-amber-50 text-amber-600'
+                                  : 'border-red-200 bg-red-50 text-red-600'
+                            }`}
+                            title={file.caution}
+                          >
+                            {file.advice}
+                          </span>
+                        </td>
+                        <td className={`px-4 py-2.5 text-right tabular-nums whitespace-nowrap ${file.isLog ? 'font-bold text-gray-700' : 'text-gray-400'}`}>
+                          {formatFileSize(file.bytes)}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-gray-400 whitespace-nowrap">
+                          {file.modifiedAtMs ? format(new Date(file.modifiedAtMs), 'yyyy-MM-dd HH:mm:ss') : '-'}
+                        </td>
+                      </tr>
+                    ))}
+                    {!logFilesSummary && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-6 text-center text-gray-400">
+                          {logFilesLoading ? '统计中…' : '暂无数据'}
+                        </td>
+                      </tr>
+                    )}
+                    {logFilesSummary && logFilesSummary.files.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-6 text-center text-gray-400">logs 目录下暂无文件</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* 清理注意事项：这里回答「哪些能删、删了会有什么后果」 */}
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+              <h4 className="flex items-center gap-1.5 text-xs font-bold text-amber-700">
+                <AlertCircle size={14} />
+                清理前请注意
+              </h4>
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-relaxed text-amber-900/80">
+                <li>
+                  <b className="font-bold">backend.log / backend.err.log / frontend.log / frontend.err.log</b>
+                  ：服务运行期间被隐藏 cmd 窗口持有句柄，<b className="font-bold">直接删除文件会失败</b>（Windows 占用），
+                  页面上的清理按钮也清不掉（标「运行中占用」）；<code className="rounded bg-white px-1 font-mono text-[10px]">start.bat</code>
+                  会在下次启动前（句柄已释放时）自动轮转超限文件，所以这几个文件的实际清理时机是「重启服务」。
+                </li>
+                <li>
+                  <b className="font-bold">backend-crash.log</b> 可随时删除，但删掉就失去最近一次崩溃堆栈的证据，
+                  建议先在「状态监测」确认断开原因，或先把文件复制走再删。
+                </li>
+                <li>
+                  <b className="font-bold">*.pid 千万不要删</b>：stop.bat 靠它找到对应进程，删除后只能手动 taskkill 结束。
+                </li>
+                <li>
+                  <b className="font-bold">*.token / backend-health-probe.gen 不要删</b>：关机备份校验与假死探活依赖它们，
+                  删除会让对应脚本静默失效（后端重启后才会重建）。
+                </li>
+                <li>
+                  不要在服务运行期间手动删除日志文件本身；需要释放空间时用上面的「清理超限文件 / 清空全部日志文件」，
+                  它们都是就地截断并保留一行 <code className="rounded bg-white px-1 font-mono text-[10px]">[log-trim]</code> 说明，
+                  以后翻日志能知道这段内容为什么没了。
+                </li>
+                <li>数据库里的操作日志/登录日志由「操作日志」页的「操作日志保留条数」自动清理，与磁盘日志互不影响。</li>
+              </ul>
+            </div>
+          </div>
+          </>
+        )}
+
+        {activeTab === 'audit' && (
+          <div className="space-y-6">
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <h3 className="text-lg font-bold text-gray-800 flex items-center mb-1">
@@ -2527,22 +3151,27 @@ const SystemSettings = () => {
             </div>
           </div>
           <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="font-bold text-gray-800 flex items-center">
-                  <History className="mr-2 text-gray-500" size={20} />
-                  管理员登录信息
-                </h3>
-                <p className="text-xs text-gray-400 mt-1">显示最近 10 条管理员登录记录</p>
-              </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setLoginLogsCollapsed(prev => !prev)}
+                aria-expanded={!loginLogsCollapsed}
+                className="group flex items-start gap-2 text-left"
+              >
+                <span className="mt-0.5 text-gray-400 transition group-hover:text-gray-600">
+                  {loginLogsCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+                </span>
+                <span>
+                  <span className="font-bold text-gray-800 flex items-center">
+                    <History className="mr-2 text-gray-500" size={20} />
+                    管理员登录信息
+                  </span>
+                  <span className="mt-1 block text-xs text-gray-400">
+                    显示最近 10 条管理员登录记录{loginLogsCollapsed ? ' · 点击展开' : ' · 点击折叠'}
+                  </span>
+                </span>
+              </button>
               <div className="flex items-center gap-3">
-                <Link
-                  to="/system-logs"
-                  className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold transition"
-                >
-                  <Search size={15} />
-                  详细日志
-                </Link>
                 <button
                   onClick={fetchLoginLogs}
                   className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 font-medium"
@@ -2552,7 +3181,8 @@ const SystemSettings = () => {
                 </button>
               </div>
             </div>
-            <div className="overflow-x-auto rounded-xl border border-gray-100">
+            {!loginLogsCollapsed && (
+            <div className="mt-4 overflow-x-auto rounded-xl border border-gray-100">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 text-gray-500 text-left">
                   <tr>
@@ -2598,8 +3228,11 @@ const SystemSettings = () => {
                 </tbody>
               </table>
             </div>
+            )}
           </div>
-          </>
+          {/* 详细操作日志明细：直接内嵌，无需再跳转独立页面；表头贴着上方标签栏吸顶 */}
+          <OperationLogPanel notify={addToast} stickyTop={panelStickyTop} />
+          </div>
         )}
 
         {activeTab === 'plan' && (
@@ -2748,6 +3381,10 @@ const SystemSettings = () => {
               </div>
             </div>
           </div>
+        )}
+
+        {activeTab === 'monitor' && isSuperAdmin && (
+          <SystemStatusMonitor />
         )}
       </main>
     </div>

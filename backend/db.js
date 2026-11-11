@@ -69,6 +69,11 @@ const openDatabase = () => {
 // 操作日志保留条数默认值。实际生效值取自「系统设置 → 日志管理」中的
 // auditLogMaxRows 配置项；未配置或非法时回退该默认值。
 const DEFAULT_AUDIT_LOG_MAX_ROWS = 5000;
+// 磁盘日志自动截断默认值（系统设置 → 日志管理）：与 utils/logFiles.js 保持一致
+const DEFAULT_LOG_AUTO_TRIM_ENABLED = true;
+const DEFAULT_LOG_MAX_SIZE_MB = 50;
+const DEFAULT_LOG_MAX_SIZE_MB_MIN = 5;
+const DEFAULT_LOG_MAX_SIZE_MB_MAX = 2048;
 
 // 读取当前配置的操作日志保留条数。
 // _cache 尚未加载时（如启动阶段的日志迁移）回退默认值，保证始终可用。
@@ -405,20 +410,30 @@ const normalizeTableList = (list) => {
   return list.map(t => {
     if (typeof t === 'string') return { id: `gun-tbl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, name: t, rows: [] };
     if (!t || typeof t !== 'object') return null;
-    const rows = Array.isArray(t.rows) ? t.rows.filter(r => r && typeof r === 'object').map(r => ({
-      id: r.id || `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      serialNumber: Number.isFinite(Number(r.serialNumber)) ? Number(r.serialNumber) : 0,
-      gunName: String(r.gunName || ''),
-      customer: String(r.customer || ''),
-      time: String(r.time || ''),
-      responsiblePerson: String(r.responsiblePerson || ''),
-      spec: String(r.spec || ''),
-      remarks: String(r.remarks || ''),
-      createdAt: r.createdAt || '',
-      createdBy: sanitizeUserMeta(r.createdBy),
-      updatedAt: r.updatedAt || '',
-      updatedBy: sanitizeUserMeta(r.updatedBy)
-    })) : [];
+    // 行 id 必须唯一：同一表内出现重复 id 时（历史数据曾因并发新增写入），
+    // 前端按 id 更新行会一次改到多行，编辑一行连带改掉另一行，因此这里给重复者重新分配 id
+    const usedRowIds = new Set();
+    const newRowId = () => `gun-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const rows = Array.isArray(t.rows) ? t.rows.filter(r => r && typeof r === 'object').map(r => {
+      let rowId = r.id;
+      if (!rowId || usedRowIds.has(rowId)) rowId = newRowId();
+      while (usedRowIds.has(rowId)) rowId = newRowId();
+      usedRowIds.add(rowId);
+      return {
+        id: rowId,
+        serialNumber: Number.isFinite(Number(r.serialNumber)) ? Number(r.serialNumber) : 0,
+        gunName: String(r.gunName || ''),
+        customer: String(r.customer || ''),
+        time: String(r.time || ''),
+        responsiblePerson: String(r.responsiblePerson || ''),
+        spec: String(r.spec || ''),
+        remarks: String(r.remarks || ''),
+        createdAt: r.createdAt || '',
+        createdBy: sanitizeUserMeta(r.createdBy),
+        updatedAt: r.updatedAt || '',
+        updatedBy: sanitizeUserMeta(r.updatedBy)
+      };
+    }) : [];
     // 序号严格按自然顺序连续排列：按序号升序后重新编号为 1..N，杜绝跳号（如 1 直接到 11）
     rows.sort((a, b) => a.serialNumber - b.serialNumber);
     rows.forEach((r, i) => { r.serialNumber = i + 1; });
@@ -434,7 +449,7 @@ const normalizeTableList = (list) => {
   }).filter(Boolean);
 };
 
-// 检测台账中是否存在序号跳号/乱序（启动时决定是否需要落库修复）
+// 检测台账中是否存在序号跳号/乱序/重复行 id（启动时决定是否需要落库修复）
 const gunLedgerHasGaps = (gunLedger) => {
   if (!gunLedger || !gunLedger.categories) return false;
   for (const cat of Object.keys(gunLedger.categories)) {
@@ -442,6 +457,12 @@ const gunLedgerHasGaps = (gunLedger) => {
     for (const t of list) {
       const rows = Array.isArray(t?.rows) ? t.rows : [];
       if (rows.some((r, i) => !r || Number(r.serialNumber) !== i + 1)) return true;
+      const ids = new Set();
+      for (const r of rows) {
+        const id = r && r.id;
+        if (!id || ids.has(id)) return true;
+        ids.add(id);
+      }
     }
   }
   return false;
@@ -615,7 +636,7 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.designStandardsPrompt.knowledgeBases = {};
   }
   if (!parsed.settings.system) {
-    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5, auditLogMaxRows: DEFAULT_AUDIT_LOG_MAX_ROWS };
+    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5, auditLogMaxRows: DEFAULT_AUDIT_LOG_MAX_ROWS, logAutoTrimEnabled: DEFAULT_LOG_AUTO_TRIM_ENABLED, logMaxSizeMb: DEFAULT_LOG_MAX_SIZE_MB };
   }
   // IP 黑名单：{ enabled: boolean, entries: [{ id, ip, note, createdAt, createdBy }] }
   if (!parsed.settings.ipBlacklist || typeof parsed.settings.ipBlacklist !== 'object' || Array.isArray(parsed.settings.ipBlacklist)) {
@@ -643,6 +664,14 @@ const applySettingsDefaults = (parsed) => {
   const auditLogMaxRows = Number(parsed.settings.system.auditLogMaxRows);
   if (!Number.isInteger(auditLogMaxRows) || auditLogMaxRows < 100 || auditLogMaxRows > 100000) {
     parsed.settings.system.auditLogMaxRows = DEFAULT_AUDIT_LOG_MAX_ROWS;
+  }
+  // 磁盘日志自动截断：默认开启、单文件 50MB 上限（缺失/越界时回填，避免 0 导致每次都截断）
+  if (typeof parsed.settings.system.logAutoTrimEnabled !== 'boolean') {
+    parsed.settings.system.logAutoTrimEnabled = DEFAULT_LOG_AUTO_TRIM_ENABLED;
+  }
+  const logMaxSizeMb = Number(parsed.settings.system.logMaxSizeMb);
+  if (!Number.isInteger(logMaxSizeMb) || logMaxSizeMb < DEFAULT_LOG_MAX_SIZE_MB_MIN || logMaxSizeMb > DEFAULT_LOG_MAX_SIZE_MB_MAX) {
+    parsed.settings.system.logMaxSizeMb = DEFAULT_LOG_MAX_SIZE_MB;
   }
   if (!parsed.statusTrackingItems) parsed.statusTrackingItems = [];
   // auditLogs / loginLogs 存放于独立表，tasks 存放于 taskStore 关系表，此处不再回填

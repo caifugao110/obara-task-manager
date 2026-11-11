@@ -762,12 +762,17 @@ function getScheduleStatus() {
 // 共享盘的是普通 UNC 调用，Windows 可能先用 guest/匿名建一条隐式会话，
 // 之后再换配置的凭据就会撞 1219，要多绕一轮「断开再重连」。
 // 因此启动时若配了凭据，就主动先把连接建好；没配凭据则什么都不做。
-function ensureShareReady() {
+//
+// 必须是异步的：预热走的是一次 net use，共享服务器不可达时要等满 15 秒超时。
+// 早先这里用同步实现（execFileSync），端口已经 listen 之后事件循环被整段占住 15 秒——
+// 期间所有请求排队，健康探测 5 秒超时按「假死」记一笔，状态监测里就会冒出一串
+// 「无证据的断开」。改成异步后等待发生在 libuv 线程池，探测与页面加载都不受影响。
+async function ensureShareReady() {
   const filePath = getScheduleFilePath();
   if (!filePath) return { attempted: false, ok: false, message: '未配置大日程文件路径（PRODUCTION_SCHEDULE_PATH）' };
   const credentials = getShareCredentials();
   if (!credentials.user) return { attempted: false, ok: false, message: '未配置共享凭据，跳过预热' };
-  return uncShare.ensureShareAccess(filePath, { ...credentials, force: true });
+  return uncShare.ensureShareAccessAsync(filePath, { ...credentials, force: true });
 }
 
 // 同步失败时给用户看的消息：在原来的统一话术后面补上真实错误码与处置建议，

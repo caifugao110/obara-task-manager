@@ -189,6 +189,8 @@ const {
 } = require('./utils/statusTrackingLocks');
 const taskStore = require('./taskStore');
 const productionSchedule = require('./utils/productionSchedule');
+const logFiles = require('./utils/logFiles');
+const systemMonitor = require('./utils/systemMonitor');
 
 // Middleware
 const { auditLogMiddleware } = require('./middleware/auditLog');
@@ -205,9 +207,14 @@ const statusTrackingRoutes = require('./routes/statusTracking');
 const workHoursRoutes = require('./routes/workHours');
 const gunLedgerRoutes = require('./routes/gunLedger');
 const designStandardsRoutes = require('./routes/designStandards');
+const monitorRoutes = require('./routes/monitor');
 
 app.use(auditLogMiddleware);
 
+// 状态监测流量统计：仅内存累加，定时批量落盘（见 utils/systemMonitor.js）
+app.use(systemMonitor.trafficMiddleware);
+
+app.use('/api/system/monitor', monitorRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/designers', designerRoutes);
@@ -238,6 +245,18 @@ app.use((err, req, res, next) => {
 
 // Socket.io connection
 app.set('io', io);
+
+// 状态监测：在线连接数取自 socket.io 引擎，用于「前端并发」指标
+systemMonitor.setSocketCountProvider(() => (io.engine ? io.engine.clientsCount : 0));
+// 进程退出（含崩溃退出路径能走到 exit 的场景）补记一条结束事件，
+// 与启动时的 boot 事件配对，即可判定这一轮会话正常结束还是异常中断。
+process.on('exit', (code) => {
+  try {
+    systemMonitor.recordExit(code);
+  } catch {
+    // 退出路径不允许再抛
+  }
+});
 
 const editingSessions = new Map();
 // 会话键精确到主任务：同一单元格内不同主任务的编辑互不影响；itemId 为空为旧版整格会话
@@ -787,6 +806,12 @@ gunTableLockSweeper.unref();
 
 const handleShutdown = async (signal) => {
   console.log(`\n[shutdown] Received ${signal}, starting graceful shutdown...`);
+  // 先登记「计划内停止」，下次启动时状态监测就能把这段空窗判定为正常停止而非崩溃
+  try {
+    systemMonitor.recordGracefulStop(signal);
+  } catch {
+    // 监测写入失败不阻塞关机
+  }
   console.log('[shutdown] Creating offline backup before exit...');
   
   const backupResult = await createOfflineBackup(undefined, undefined, { async: true });
@@ -808,25 +833,52 @@ const handleShutdown = async (signal) => {
 process.on('SIGINT', handleShutdown);
 process.on('SIGTERM', handleShutdown);
 
+// nodemon 热重载通过 SIGUSR2 结束子进程。默认终止信号不会触发 exit 事件，
+// 状态监测会把每次热重载都记成「进程被外部强制结束」。这里显式登记为计划内停止，
+// 让开发期的重启不会被误报为故障（生产环境没有 SIGUSR2 发送方，不影响线上判定）。
+process.on('SIGUSR2', () => {
+  try {
+    systemMonitor.recordGracefulStop('SIGUSR2');
+  } catch {
+    // 忽略
+  }
+  process.exit(0);
+});
+
 // 启动前初始化数据库（加载缓存到内存）
 db.init();
 
 server.listen(securityConfig.server.port, () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
+  // 状态监测：登记本次启动，并判定上一轮是正常停止还是异常中断
+  try {
+    systemMonitor.recordBoot();
+  } catch (err) {
+    console.error('[monitor] 启动登记失败:', err && err.message ? err.message : err);
+  }
   db.initAdmin();
   // 共享盘预热：配了 PRODUCTION_SCHEDULE_UNC_USER 时，先用该凭据把 SMB 连接建好。
   // 否则「第一次读大日程」可能由一次普通 UNC 访问先落成 guest/匿名隐式会话，
   // 之后再换凭据就会撞 1219，要多绕一轮断开重连才恢复。
-  try {
-    const warm = productionSchedule.ensureShareReady();
-    if (warm && warm.attempted) {
-      console.log(`[productionSchedule] 共享预热${warm.ok ? '成功' : '失败'}：${warm.message}`);
-    }
-  } catch (err) {
-    console.error('[productionSchedule] 共享预热异常:', err && err.message ? err.message : err);
-  }
+  // 不 await：预热失败要等满 15 秒超时，等它只会把后面的调度器、日志截断一起拖后；
+  // 而且预热只是「顺手把连接建好」，读取路径上还有 withShareRetryAsync 的 1219 重连兜底。
+  productionSchedule.ensureShareReady()
+    .then((warm) => {
+      if (warm && warm.attempted) {
+        console.log(`[productionSchedule] 共享预热${warm.ok ? '成功' : '失败'}：${warm.message}`);
+      }
+    })
+    .catch((err) => {
+      console.error('[productionSchedule] 共享预热异常:', err && err.message ? err.message : err);
+    });
   // 维护计划配置迁移（旧 scheduleTime 单值 -> scheduleTimes）在调度器内部完成
   startMaintenanceScheduler().catch((err) => {
     console.error('[maintenance] 维护计划调度启动失败:', err && err.message ? err.message : err);
   });
+  // 磁盘日志自动截断：logs/ 下的文件没有上限，超过阈值就地截断并保留末尾内容
+  try {
+    logFiles.startAutoTrim();
+  } catch (err) {
+    console.error('[logFiles] 自动截断调度启动失败:', err && err.message ? err.message : err);
+  }
 });

@@ -32,6 +32,9 @@ export interface SystemSettingsData {
   specNumberDigits: number;
   // 操作日志保留条数（超限自动清理最旧记录）
   auditLogMaxRows: number;
+  // 磁盘日志超过阈值自动截断（日志管理）
+  logAutoTrimEnabled?: boolean;
+  logMaxSizeMb?: number;
   // 任务内容 → 单元格配色体系（系统设置可配置，默认见 DEFAULT_TASK_COLOR_CONFIG）
   taskColorConfig: TaskColorConfig;
   defaultGunHours?: DefaultGunHours;
@@ -54,6 +57,8 @@ const defaultSettings: SystemSettingsData = {
   allowUserChangePassword: false,
   specNumberDigits: 5,
   auditLogMaxRows: 5000,
+  logAutoTrimEnabled: true,
+  logMaxSizeMb: 50,
   taskColorConfig: DEFAULT_TASK_COLOR_CONFIG,
   defaultGunHours,
   tableGunHours: BUILTIN_TABLE_GUN_HOURS,
@@ -129,6 +134,8 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
       const digits = res.data.specNumberDigits === 6 ? 6 : 5;
       const rows = Number(res.data.auditLogMaxRows);
       const auditLogMaxRows = Number.isInteger(rows) && rows >= 100 && rows <= 100000 ? rows : 5000;
+      const rawMaxMb = Number(res.data.logMaxSizeMb);
+      const logMaxSizeMb = Number.isInteger(rawMaxMb) && rawMaxMb >= 5 && rawMaxMb <= 2048 ? rawMaxMb : 50;
       const rawGunHours = res.data.defaultGunHours && typeof res.data.defaultGunHours === 'object'
         ? res.data.defaultGunHours
         : {};
@@ -143,6 +150,8 @@ export const SystemSettingsProvider: React.FC<{ children: React.ReactNode }> = (
         allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
         specNumberDigits: digits,
         auditLogMaxRows,
+        logAutoTrimEnabled: res.data.logAutoTrimEnabled !== false,
+        logMaxSizeMb,
         defaultGunHours: {
           confirm: mergeGunType('confirm'),
           design: mergeGunType('design'),

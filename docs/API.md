@@ -77,7 +77,7 @@ Authorization: Bearer <token>
 | 设置用户权限（改角色） | 否 | 否 | 是 |
 | 批量重置登录用户密码 | 否 | 否 | 是 |
 | 页面权限设置 | 否 | 否 | 是 |
-| 系统设置登录管理、日志管理 | 否 | 否 | 是 |
+| 系统设置登录管理、日志文件管理、操作日志 | 否 | 否 | 是 |
 | 系统设置数据管理导出 | 否 | 取决于 `systemSettings.allowAdmins` | 是 |
 | 系统设置数据管理导入 | 否 | 否 | 是 |
 | 查看和修改组长规则 | 否 | 是 | 是 |
@@ -1977,6 +1977,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 响应：返回完整的 `gunLedger` 对象（含 `categories` 和 `defaultResponsiblePersons`）。
 
+说明：读取时会顺带自愈历史错位数据——有生效焊枪名规则的表，行序号被压实为 `1..N`、名字里的编号被校正到「序号对应的规则编号」（前缀与后缀保留）；只有检测到变化时才落库并广播 `gun_ledger_updated`（`action: 'update_rows'`），因此正常情况下该接口是纯读。
+
 ### 获取分类摘要
 
 `GET /api/gun-ledger/summary`
@@ -2282,6 +2284,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 连续取多个号时整批一次性写入：任何一个生成出的枪名与存量重名都整体拒绝（`409`），不会出现「前几个成功、后面失败」的半截状态。
 - **表级编辑锁保护**：表正被他人打开时返回 `409`，响应体附 `lockedBy`；锁由本人持有时放行。
 - 表未配置焊枪名规则时返回 `400`；`count` 超出 `1`–`10` 时返回 `400`。
+- **取号前自愈**：写入前先把该表存量行的序号压实为 `1..N`、并把名字里的编号校正到「序号对应的规则编号」（见「保存表的全部行」的序号 ↔ 编号强绑定规则）。历史错位数据（如序号 1 却挂 `SRTD-C0201`）会被就地修正后再算「下一个未取号」，否则下一个编号会与存量行撞名而永远 `409 取号冲突`。本次校正内容随响应体的 `renamed` 返回。
 - 写入后通过 Socket.IO 广播一次 `gun_ledger_updated`（`action: 'update_rows'`，带全部行），台账页与其它弹窗会自动同步下一行号。
 
 响应：
@@ -2319,13 +2322,21 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - **表级编辑锁保护**：该表正被他人编辑时返回 `409` 和 `该表正由「xxx」编辑，请等待其完成后再保存`。
-- **焊枪名唯一性校验**：同表内不允许重复焊枪名（空值不计），存在重复时返回 `409`，响应体含 `message`（列出重复项详情，如 `焊枪名不可重复：「xxx」（序号 1、3）`）和 `duplicates` 数组。
-- **焊枪名编号校验**：表有生效焊枪名规则（`gunNameRule` 启用）时，非空焊枪名的编号必须与规则计算值一致，手动修改编号会被拒绝，返回 `400` 和 `焊枪名编号不可修改：序号 N（编号应为 15015，可在编号后追加后缀）`；焊枪名前缀可自由编辑，编号之后也可继续追加任意后缀（`SRTC-2C15015L`、`SRTC-2C15015-EL`、`SRTC-2C15015L-WL` 等），校验时按编号位置归一化后逐字比对整串。
+- **序号 ↔ 编号强绑定（唯一权威规则）**：行序号永远等于该行在表中的位置（按提交顺序压实为 `1..N`，不接受客户端传入的跳号/乱序），焊枪名里的编号永远等于规则计算出的「该序号对应的编号」。因此后端会**按序号自动校正**名字里的编号数字段（前缀与编号之后的后缀 `L` / `-EL` / `L-WL` 等原样保留），不再以 `400` 拒绝整表保存——否则一张已被历史数据写错位的表会永远存不进去。校正结果通过响应体的 `renamed` 返回，前端据此提示「已按序号校正 N 个焊枪名编号」。
+- **焊枪名唯一性校验**：编号与序号绑定后，同表重名已不可能由正常编辑产生；该校验作为兜底（尤其是未配置规则的表）保留，命中时返回 `409`，响应体含 `message`（如 `焊枪名不可重复：「xxx」（序号 1、3）`）和 `duplicates` 数组。
 - 后端会保留已存在行的 `createdAt`/`createdBy`，新行补全创建者信息。
-- 行序号会被强制重排为严格连续 `1..N`（先按序号升序，再重新编号），杜绝跳号。
 - 所有行的 `updatedAt`/`updatedBy` 会更新为当前时间和当前用户。
 
-响应：返回保存后的行数组。
+响应：
+
+```json
+{
+  "rows": [ { "id": "gun-row-a", "serialNumber": 1, "gunName": "SRTC-2C15000", "…": "…" } ],
+  "renamed": [ { "serialNumber": 4, "from": "SRTC-2C15005", "to": "SRTC-2C15003" } ]
+}
+```
+
+`renamed` 为空数组表示数据本来就是一致的（序号与编号已对齐），前端无需额外处理。
 
 ### 配置焊枪名生成规则
 
@@ -2340,6 +2351,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 ```
 
 说明：仅超级管理员可在「台账初始化」面板中按表配置；保存后通过 Socket.IO 广播 `gun_ledger_updated`（`action: 'gun_name_rule'`）。
+
+规则一改，`序号 → 编号` 的映射随之改变，因此保存时会立即按新规则重整该表存量行的编号（序号保持不变，只替换名字里的编号数字段，前缀与后缀保留），避免库里留下「编号与序号不符」的行继续与占位行撞号。响应体除规则字段外额外返回 `renamed` 数组（`[{ serialNumber, from, to }]`），为空表示无行需要改动；有改动时会再广播一次 `action: 'update_rows'`。
 
 ### 焊枪名初始化
 
@@ -2693,7 +2706,8 @@ PUT 请求：
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划完成状态。
 - `allowUserChangePassword` 为「允许用户自主改密」开关，缺失时默认 `false`：关闭时 `POST /api/auth/change-password` 返回 `403`（`系统已禁用自主修改密码，请联系管理员`）；该开关不影响超管经 `PUT /api/users/:id` 重置密码。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
-- `auditLogMaxRows` 为操作日志保留条数，取值 `100` ~ `100000` 的整数，缺失或非法时默认为 `5000`；操作日志条数超过该值时自动清理最旧的记录。由「系统设置 → 日志管理」维护。
+- `auditLogMaxRows` 为操作日志保留条数，取值 `100` ~ `100000` 的整数，缺失或非法时默认为 `5000`；操作日志条数超过该值时自动清理最旧的记录。由「系统设置 → 操作日志」维护。
+- `logAutoTrimEnabled` 为「磁盘日志超过阈值自动截断」开关，缺失时默认 `true`；`logMaxSizeMb` 为单文件阈值（`5` ~ `2048` 的整数，缺失或非法时默认 `50`）。两者都由「系统设置 → 日志文件管理」维护，后台每 30 分钟按阈值检查一次 `logs/` 下的 `*.log`，超过就保留末尾（阈值的 10%，64KB ~ 512KB）并清掉前面内容，具体见 `POST /api/system/log-files/trim`。
 - `taskColorConfig` 为「任务内容配色」体系，10 个键各自对应一个**底色 hex**（`#rgb` 或 `#rrggbb`），文字色固定、不可配置。常规底色：`default`（未勾选任务内容，`#d8b4fe`）、`confirm`（确认图，`#bbf7d0`）、`design`（设计，`#fef9c3`）、`confirmModify`（确认图修改，浅蓝 `#bae6fd`）、`designChange`（设计变更，`#fdba74`）、`drawingReview`（既制审图，粉 `#fbcfe8`）、`paused`（暂停/取消，纯红 `#ff0000`）；加急底色只有三个（仅确认图 / 设计 / 确认图修改有加急状态）：`urgentConfirm`（`#ffff00`）、`urgentDesign`（`#ffff00`）、`urgentConfirmModify`（`#ffff00`）。「设计变更 / 既制审图 / 暂停取消」没有加急状态，已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被 `stripUnknown` 过滤。缺失或非法色值逐项回退默认值；历史 `{ bg, text }` 结构在读取时只取 `bg`。该字段取代了已下线的 `randomDesignPlanColor` / `randomAssignmentColor` 两个开关（服务端在归一化时显式删除历史残留，GET 不再返回）。
 - 「任务内容配色」保存后立即生效：`PUT /settings` 会与库中现有设置**合并**（只覆盖请求体里带的字段），不会把未提交的设置项打回默认值；前端在进入主页面、窗口重新获得焦点（含在其他标签页保存后切回）时都会重新拉取设置，因此主页面新增 / 重新编辑任务时即刻使用最新配色。
 - `randomDesignPlanColor` / `randomAssignmentColor` 为**已下线字段**：任务底色不再随机，统一由 `taskColorConfig` + 任务内容 + 加急状态派生，两个开关已从后端 schema 与返回值中移除，传入也会被 `stripUnknown` 过滤。
@@ -3008,9 +3022,128 @@ PUT 请求：
 
 说明：
 
-- 用于系统设置页面「日志管理」模块主页显示。
+- 用于系统设置「操作日志」标签页的「管理员登录信息」卡片显示。
 - 按时间倒序排列。
 - 字段结构与 `GET /api/system/login-logs` 一致。
+
+### 获取日志文件占用
+
+`GET /api/system/log-files`
+
+权限：仅 `superadmin`
+
+响应示例：
+
+```json
+{
+  "dir": "E:\\My Trae\\obara-task-manager\\logs",
+  "exists": true,
+  "scannedAtMs": 1794408438509,
+  "files": [
+    {
+      "name": "backend.log",
+      "label": "后端运行输出",
+      "note": "后端标准输出，nodemon 重启提示也在这里",
+      "isLog": true,
+      "cleanup": "truncate",
+      "advice": "可清空",
+      "caution": "服务运行期间被隐藏 cmd 窗口占用，删除会失败；清空是安全的，但会丢失当前排障上下文",
+      "bytes": 25865,
+      "modifiedAtMs": 1794408450814,
+      "oversized": false,
+      "trimmable": true,
+      "overflowBytes": 0,
+      "locked": true
+    }
+  ],
+  "logFileCount": 9,
+  "oversizeCount": 0,
+  "settings": {
+    "autoTrimEnabled": true,
+    "maxSizeMb": 50,
+    "thresholdBytes": 52428800,
+    "keepTailBytes": 524288,
+    "checkIntervalMinutes": 30
+  },
+  "lastTrim": null,
+  "logBytes": 242217,
+  "runtimeFileCount": 5,
+  "runtimeBytes": 453,
+  "totalBytes": 242670,
+  "lastModifiedMs": 1794408522642,
+  "database": {
+    "auditLogs": { "rows": 244, "bytes": 987136 },
+    "loginLogs": { "rows": 6, "bytes": 12288 },
+    "totalBytes": 999424,
+    "auditRetentionRows": 5000
+  }
+}
+```
+
+说明：
+
+- 用于系统设置「日志文件管理」标签页的「日志文件占用」卡片。
+- 只对 `logs/` 目录下的文件执行 `stat`，**不读取日志内容**：单个日志文件可能达到数百 MB，读入内存会阻塞后端。
+- `files` 中日志文件（`isLog: true`，按扩展名或内置清单判定）在前、体积大的在前；`.pid`、`.token` 等运行时文件单独计入 `runtimeFileCount` / `runtimeBytes`，不计入 `logBytes`。
+- 目录不存在（例如直接用 `npm run dev` 启动、没有重定向输出）时返回 `exists: false` 与空 `files`，不是错误。
+- 单个日志文件体积达到 `settings.thresholdBytes`（由 `logMaxSizeMb` 决定，默认 50MB）时该文件 `oversized: true`，前端标记「超限」并会在下一个检查周期被自动截断。
+- `files[].cleanup` 给出清理方式：`truncate`（可清空，文件被运行中的进程占用，删除必然失败）、`delete`（可删除，无进程持有句柄）、`forbid`（禁止删除，pid / token / probe 等运行时文件）；`advice` 是徽标文案，`caution` 是具体后果说明，页面「清理建议」列与提示都取自这两个字段。
+- `trimmable` 表示该文件是否参与自动截断（只有 `*.log` 为 `true`），`overflowBytes` 是超过阈值的部分，可用于提示「清掉能省多少」。
+- `locked` 表示文件正被其它进程独占（`r+` 打开失败）。`backend.log` / `backend.err.log` / `frontend.log` / `frontend.err.log` 在服务运行期间恒为 `true`：它们在隐藏 cmd 窗口的重定向句柄里，**运行中无法清空**，只能等服务停止后由 `start.bat` 启动前调用的 `tools/trim-logs.js` 轮转。
+- `settings` 为当前自动截断配置：`autoTrimEnabled`（默认开启）、`maxSizeMb`（5 ~ 2048）、`thresholdBytes`、`keepTailBytes`（截断时保留的末尾字节，阈值的 10%，夹在 64KB ~ 512KB）、`checkIntervalMinutes`（后台检查周期，固定 30 分钟）。
+- `lastTrim` 为最近一次截断记录：`{ at, source: 'auto'|'manual', mode, thresholdBytes, keepTailBytes, trimmed: [{ name, beforeBytes, afterBytes, keptBytes }], failed: [{ name, message }] }`；从未截断时为 `null`。
+- `database.auditLogs.bytes` / `loginLogs.bytes` 来自 `dbstat` 实测页占用（含索引）；`dbstat` 不可用时为 `null`，前端只显示条数，不估算体积。
+- `database.auditRetentionRows` 为当前「操作日志保留条数」设置值，可用于解释操作日志为何只保留这么多条。
+
+### 清理日志文件（就地截断）
+
+`POST /api/system/log-files/trim`
+
+权限：仅 `superadmin`
+
+请求体：
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `mode` | 否 | `oversized` | `oversized` 只清理达到阈值的日志文件；`all` 清空全部日志文件（每个只留一行说明） |
+| `files` | 否 | 无 | 指定文件名数组（最多 50 个），仅接受 `logs/` 目录下实际存在的 `*.log`，指定时不受阈值限制 |
+
+响应：
+
+```json
+{
+  "message": "已清理 1 个日志文件，释放 5.50 MB",
+  "trimmedBytes": 5767194,
+  "result": {
+    "at": 1794409979032,
+    "source": "manual",
+    "mode": "oversized",
+    "thresholdBytes": 5242880,
+    "keepTailBytes": 524288,
+    "trimmed": [{ "name": "backend.log", "skipped": false, "beforeBytes": 6291480, "afterBytes": 524286, "keptBytes": 524181 }],
+    "failed": []
+  },
+  "summary": { "...": "与 GET /api/system/log-files 相同，前端可直接用它刷新卡片" }
+}
+```
+
+说明：
+
+- **就地截断而不是删除文件**：`logs/` 下所有文件都是追加写（`>>` / `appendFileSync`），重写后写入方继续在文件末尾追加，不会产生空洞；删除文件则可能失败（占用）或让写入方失效。
+- **被占用的文件清不掉**：`backend.log` / `backend.err.log` / `frontend.log` / `frontend.err.log` 在服务运行期间被隐藏 cmd 窗口持有句柄，本接口会把它们放进 `result.failed`（`locked: true`），并返回「X 个日志文件正被运行中的进程占用，停止服务后重新启动时会自动轮转」。真正的清理发生在重启时：`start.bat` 在 `:cleanup_processes` 之后、拉起服务之前调用 `node tools/trim-logs.js`，此时句柄已释放。
+- 截断只处理 `*.log`；`.pid`、`.token`、`backend-health-probe.gen` 等运行时文件一律不参与，即使显式传 `files` 也会被过滤。
+- 截断后文件首行写入 `[log-trim] <时间> <原因>，原 <大小>，已保留最后 <大小>`（`mode=all` 时为「已清空」），便于回溯「这段日志为什么没了」。
+- 单个文件失败（被独占锁定、磁盘满等）不影响其它文件，失败原因在 `result.failed` 中返回。
+- 后台每 30 分钟按 `settings.system.logAutoTrimEnabled` / `logMaxSizeMb` 自动执行一次等价于 `mode=oversized` 的检查（启动后 2 分钟先跑一次），无需人工触发；它只能处理当前没有被占用的日志文件。
+
+启动前轮转脚本（运维可用，与接口共用同一份配置和截断逻辑）：
+
+```bash
+node tools/trim-logs.js              # 按数据库阈值清理超限日志（start.bat 默认调用）
+node tools/trim-logs.js --max-mb 5   # 临时指定阈值，不写库
+node tools/trim-logs.js --all        # 清空全部日志文件（保留一行说明）
+node tools/trim-logs.js --dry-run    # 只报告不修改
+```
 
 ### 获取操作日志
 
@@ -3070,7 +3203,7 @@ PUT 请求：
 
 说明：
 
-- 操作日志最多保留 `auditLogMaxRows` 条（系统设置 → 日志管理，默认 5000），超过时自动清理最旧的记录。
+- 操作日志最多保留 `auditLogMaxRows` 条（系统设置 → 操作日志，默认 5000），超过时自动清理最旧的记录。
 - 仅记录已登录用户的请求（匿名请求不记）；登录成功的请求会从登录响应中补取用户信息后记录。
 - **记录范围按「是否改变状态」收敛**（`backend/middleware/auditLog.js` 的 `shouldAudit`）：
   - 写操作全记：`POST` / `PUT` / `PATCH` / `DELETE`；
@@ -3190,6 +3323,294 @@ PUT 请求：
 | `warnings.over10MB` | 逻辑数据超过 10MB（仅提示，非硬限制） |
 | `warnings.oldTaskData` | 任务数据超过 24 个月 |
 
+### 状态监测
+
+用于「系统设置 → 状态监测」页面，回答后端何时断过、断了多久、断开前稳定运行多久、可能原因，以及前端访问流量。采集写入独立的 `monitor_*` 表（不进入 `kv_store` 快照）：
+
+| 表 | 内容 | 写入节奏 | 保留 |
+|------|------|----------|------|
+| `monitor_samples` | 心跳样本（RSS/堆/事件循环延迟/DB 延迟/在线连接数） | 30 秒 | 200 天 |
+| `monitor_samples_hour` | 样本的小时汇总（平均值累加 + 峰值） | 随样本同步累加 | 200 天 |
+| `monitor_events` | `boot` / `graceful_stop` / `exit` / `disconnect` / `stall` 生命周期事件 | 事件触发 | 长期 |
+| `monitor_traffic_min` | 每分钟请求量、5xx、慢请求、耗时合计、客户端 IP 数 | 内存累加，20 秒落盘 | 35 天 |
+| `monitor_traffic_hour` | 流量的小时汇总 | 随分钟数据同步累加 | 200 天 |
+| `monitor_traffic_path` | 每小时 × 路径 × 方法的请求聚合 | 内存累加，20 秒落盘 | 200 天 |
+| `monitor_meta` | 采集元信息（采集起点、回填标记等） | 低频 | 长期 |
+
+判定口径：
+
+- 样本间隔超过 90 秒记为「后端无响应」；每次进程启动都会与上一轮会话的结束记录比对，无正常停止记录即判定为异常中断（因此 1 秒内被拉起的重启也不会漏记）。
+- 断开原因只基于可核对证据给出：`logs/backend-crash.log`（未捕获异常）、`logs/backend-exit.log`（退出码）、`logs/backend.log` 中的 nodemon 重启标记、源码文件 mtime、断开前内存曲线、断开前 5xx 突增；证据不足时置信度返回 `low`。
+- **崩溃/退出记录按会话归属，不按「最近 10 分钟」收口**：`backend-crash.log`、`backend-exit.log` 是追加式文件，一次崩溃的记录会长期留在末尾。匹配时要求记录时间落在「上一轮会话启动时刻 → 本次启动时刻 + 2 秒」之间（2 秒仅吸收时钟抖动），只有确实写在这段会话里的记录才算证据；被排除后按后续证据继续判定，开发模式下通常回落到 `hot_reload`。反例：只按「断开前 10 分钟」取窗口，会让一次崩溃在其后 10 分钟内的每次重启上重复命中（实测一次真崩溃被记成 7 次，其中 6 次是 nodemon 重启被误判）。
+- **看门狗强杀单独判定**：假死探测脚本（`backend-health-probe.bat`）连续 3 次探测超时后会 `taskkill /F /T` 杀整棵进程树，并把 `[FATAL] backend unresponsive N consecutive probes ... killing process tree` 写进 `logs/backend-watchdog.log`。强杀不执行退出钩子，进程来不及写任何退出/崩溃记录，因此该日志是唯一书面证据；命中时判 `watchdog_kill`（`severity = warning`）。它优先于热重载启发式，否则「断开前刚保存过文件」会把一次真实的假死重启标成 `hot_reload`；也优先于崩溃日志——未设 `CRASH_EXIT_ON_UNCAUGHT=1` 时 `uncaughtException` 只记日志不退出，会话里有崩溃记录不等于本次断开是它造成的（命中强杀时崩溃记录作为附带线索列出）。日志时间戳是 Windows `%date% %time%`（如 `[周三 2026/11/11 23:09:23.08]`，末两位是百分秒），按字段自行拼装；若系统区域把日期输出成「月/日/年」，该证据会被跳过并回落到原有判定。
+- **代码热重载与故障分开判定**：Linux/macOS 上 nodemon 用 `SIGUSR2` 结束子进程，可直接取证；Windows 的 Node 不支持 `SIGUSR2`（libuv 只实现 `SIGINT`/`SIGBREAK`），子进程被直接终止、来不及写任何记录。因此补充两条证据：
+  - 子进程启动瞬间读取 `logs/backend.log` 尾部，若紧邻的几行是 `[nodemon] restarting/starting`，把该行写入本次 `boot` 事件的 `detail.nodemonBoot`；
+  - 扫描后端源码目录（深度 ≤ 3，`.js/.cjs/.mjs/.json`）最近修改的文件，若断开前 5 分钟内被改动则记录文件名与提前秒数。
+  两条证据任一成立、且无崩溃日志/退出码、且由 `npm run dev`/nodemon 启动时，判定 `cause.code = hot_reload`（`severity = info`）。仅命中 nodemon 日志而找不到具体文件时，还要求断开到重新拉起的间隔 ≤ 5 分钟——`start.bat` 本身就走 nodemon，冷启动同样有 `[nodemon]` 日志，停了一夜再开机不会被算成热重载。
+- 采集从部署后第一次启动开始，此前的区间无法回算，`range.startMs → collection.startedAtMs` 之间的时间不计入可用率。
+- **保留期与查询范围的对应关系**：趋势数据（`monitor_samples`、`monitor_samples_hour`、`monitor_traffic_hour`、`monitor_traffic_path`）保留 200 天，覆盖「近半年」（180 天）查询；`monitor_traffic_min` 只保留 35 天，仅服务顶部「近 1 分钟请求」与断开原因里的 5xx 取证（过期区间自动回退到小时汇总）。所以 35 天的明细保留**不会**造成近半年数据缺失——趋势图、资源曲线、热力图、可用性时间轴都不读这张表。
+
+`cause.code` 取值：
+
+| code | 含义 | 置信度 |
+|------|------|--------|
+| `hot_reload` | 代码热重载（文件变更触发 nodemon 重启） | `high` 有具体变更文件；`medium` 仅有 nodemon 拉起记录 |
+| `planned` | 计划内停止 / 正常重启 | `high` |
+| `uncaught_exception` | 未捕获异常崩溃 | `high` |
+| `watchdog_kill` | 看门狗强杀重启（健康探测连续失败后 `taskkill` 进程树） | `high` |
+| `exit_nonzero` | 非零退出码 | `medium` |
+| `memory` | 疑似内存耗尽 | `medium` / `low` |
+| `external_kill` | 被外部强制结束或运行环境消失 | `low` |
+| `stall` | 进程未重启但心跳中断 | `medium` |
+
+#### 运行状态总览
+
+`GET /api/system/monitor/overview`
+
+权限：仅 `superadmin`
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `preset` | 否 | `today`（默认）\| `3d` \| `7d` \| `30d` \| `90d` \| `180d` \| `day` |
+| `date` | 否 | `YYYY-MM-DD`，与 `preset=day` 搭配，表示「指定某一天」 |
+| `ignoreHotReload` | 否 | `1` 时把 `hot_reload` 类型的断开从可用率与断开次数中剔除（列表里也不再返回），仅用于统计口径，不修改入库数据 |
+
+区间起点按服务器本地时区取当日 00:00；`today`~`7d` 按小时聚合，`30d` 及以上按天聚合。聚合桶以区间起点为锚点切分，保证「按天」时不会出现 08:00 起算的错位桶。
+
+响应（节选）：
+
+```json
+{
+  "serverTimeMs": 1794401429441,
+  "range": { "preset": "today", "label": "今日", "startMs": 1794326400000, "endMs": 1794401429441, "granularity": "hour" },
+  "collection": { "startedAtMs": 1794401153114, "coverageStartMs": 1794401153114, "coverageMs": 312313, "hasData": true },
+  "availability": {
+    "uptimeMs": 195445,
+    "downtimeMs": 116868,
+    "ratio": 0.625798477809121,
+    "disconnectCount": 8,
+    "totalCount": 10,
+    "hotReloadCount": 2,
+    "ignoreHotReload": false,
+    "longestDowntimeMs": 30828,
+    "longestStableMs": 90062,
+    "avgStableMs": 22530,
+    "currentUptimeSec": 17,
+    "bootedAtMs": 1794401450221
+  },
+  "timeline": [{ "startMs": 1794326400000, "endMs": 1794330000000, "state": "unknown", "downSec": 0, "availability": 1 }],
+  "disconnects": [{
+    "kind": "restart",
+    "startAtMs": 1794401430257,
+    "endAtMs": 1794401444922,
+    "durationSec": 15,
+    "stableBeforeSec": 60,
+    "precision": "sample",
+    "cause": {
+      "code": "external_kill",
+      "label": "进程被外部强制结束（无退出取证）",
+      "confidence": "low",
+      "severity": "warning",
+      "evidence": ["无正常停止记录、无退出日志、无崩溃日志：进程被强制结束或运行环境直接消失"]
+    }
+  }],
+  "traffic": {
+    "granularity": "hour",
+    "bucketMs": 3600000,
+    "series": [{ "tsMs": 1794398400000, "requests": 144, "errors": 0, "slow": 0, "avgMs": 4, "maxMs": 16, "clients": 1 }],
+    "totals": { "requests": 144, "errors": 0, "slow": 0, "avgMs": 4, "errorRate": 0, "peakClients": 1, "peakRequests": 144, "peakAtMs": 1794398400000 },
+    "topPaths": [{ "path": "/api/auth/session-policy", "method": "GET", "requests": 49, "errors": 0, "avgMs": 1 }],
+    "methods": [{ "method": "GET", "requests": 144 }]
+  },
+  "resources": {
+    "series": [{ "tsMs": 1794398400000, "rssMb": 105.7, "rssMaxMb": 118.2, "heapMb": 41.3, "lagMs": 1.2, "lagMaxMs": 8, "dbMs": 0.3, "sockets": 10, "samples": 120 }],
+    "summary": { "peakRssMb": 118.2, "peakLagMs": 8, "avgLagMs": 1.2, "peakSockets": 10, "avgDbMs": 0.3 }
+  },
+  "heatmap": { "matrix": [[0]], "max": 136, "total": 144 },
+  "events": [{
+    "tsMs": 1794401450221,
+    "type": "boot",
+    "detail": {
+      "pid": 36604,
+      "node": "v22.22.1",
+      "launcher": "npm run dev",
+      "platform": "win32 x64",
+      "uptimeBeforeBootSec": 19,
+      "previousUptimeSec": 1240,
+      "previousRssMb": 104.6,
+      "nodemonBoot": "[nodemon] starting `node server.js`",
+      "previousStopType": null,
+      "previousStopSignal": null
+    }
+  }]
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `collection.coverageMs` | 区间内实际采集覆盖的时长（已剔除采集开始之前的部分） |
+| `availability.ratio` | 可用率 = 1 − 中断时长 / 覆盖时长；无采集数据时为 `null` |
+| `availability.disconnectCount` / `totalCount` | 参与统计的断开次数 / 区间内实际发生的断开次数（含被 `ignoreHotReload` 剔除的） |
+| `availability.hotReloadCount` | 区间内判定为 `hot_reload` 的次数，供前端展示「已排除 N 次」 |
+| `availability.longestStableMs` / `avgStableMs` | 区间内各次断开前「已稳定运行时长」的最大值 / 平均值，无重启记录时为 `null` |
+| `timeline[].state` | `up` 正常 / `down` 中断 / `partial` 部分中断 / `unknown` 尚未采集 |
+| `disconnects[].kind` | `restart` 进程重启型中断；`stall` 进程未重启但心跳中断（长任务阻塞、DB 写锁等待、宿主机休眠） |
+| `disconnects[].precision` | `exact` 依据正常停止事件；`sample` 取最后一次心跳，精度 ±30 秒 |
+| `disconnects[].stableBeforeSec` | 本次断开前系统已稳定运行的秒数 |
+| `disconnects[].cause.confidence` | `high` 证据充分 / `medium` 较可信 / `low` 待观察 |
+| `traffic.totals.errorRate` | 5xx 占比（0~1） |
+| `traffic.totals.peakRequests` | 单个聚合桶内的最大请求数（小时桶为 QPH，天桶为 QPD） |
+| `heatmap.matrix` | 7×24 矩阵，行=周一至周日，列=0~23 时，按本地时区还原 |
+| `heatmap.total` | 矩阵总和，供「合计」行使用 |
+| `events` | 生命周期事件，按时间倒序（最新在前）最多 60 条；`boot` 事件带 `nodemonBoot`（本次启动是否由 nodemon 拉起）、`previousUptimeSec` / `previousRssMb`（被替换进程的最终运行时长与内存），`graceful_stop` / `exit` 事件带 `signal`、`code`、`uptimeSec`、`rssMb`、`heapMb`、`handles`、`label` |
+
+#### 实时状态
+
+`GET /api/system/monitor/live`
+
+权限：仅 `superadmin`。用于页面顶部状态条（前端每 15 秒轮询）。
+
+响应：
+
+```json
+{
+  "serverTimeMs": 1794401429441,
+  "bootedAtMs": 1794401400225,
+  "uptimeSec": 31,
+  "socketCount": 10,
+  "requestsLastMinute": 12,
+  "errorsLastMinute": 0,
+  "rssMb": 105.7,
+  "heapMb": 41.3,
+  "lagMs": 0,
+  "dbMs": 0.2,
+  "sampleAgeSec": 29,
+  "collectionStartedAtMs": 1794401153114
+}
+```
+
+说明：`sampleAgeSec` 为最近一条心跳样本距今的秒数（>60 说明心跳异常）；`socketCount` 取自 Socket.IO 引擎的当前连接数，即同时在线的前端数量。
+
+#### 存储占用
+
+`GET /api/system/monitor/storage`
+
+权限：仅 `superadmin`。默认走 30 秒缓存（汇总接口会跟页面自动刷新一起被调用），`?force=1` 强制重新统计。
+
+监测数据与业务数据同库（`data.db`），所以这里同时回答两个问题：监测数据占了多少、整个库有没有可以回收的空间。
+
+响应（节选）：
+
+```json
+{
+  "serverTimeMs": 1794405509188,
+  "db": {
+    "fileName": "data.db",
+    "mainBytes": 1679360,
+    "walBytes": 28872,
+    "shmBytes": 32768,
+    "totalBytes": 1741000,
+    "pageSize": 4096,
+    "pageCount": 410,
+    "freelistCount": 0,
+    "reclaimableBytes": 0,
+    "journalMode": "wal"
+  },
+  "monitor": {
+    "bytes": 143360,
+    "rows": 463,
+    "share": 0.0854,
+    "tables": [{
+      "key": "samples",
+      "table": "monitor_samples",
+      "label": "心跳样本",
+      "note": "30 秒一条，可用率与资源曲线的原始数据",
+      "retentionDays": 200,
+      "rows": 195,
+      "bytes": 32768,
+      "oldestMs": 1794401153114,
+      "newestMs": 1794405509000
+    }]
+  },
+  "policy": {
+    "retentionDays": 200,
+    "minuteRetentionDays": 35,
+    "cleanupIntervalHours": 6,
+    "autoCleanup": true,
+    "lastCleanupAtMs": 1794405579671,
+    "lastCleanupMode": "retention",
+    "lastCleanupSource": "manual",
+    "lastCleanupDeleted": 16200,
+    "lastCleanupFreedBytes": 477155,
+    "lastCleanupDurationMs": 31,
+    "cleanupCount": 5,
+    "totalDeleted": 16200,
+    "lastVacuumAtMs": null,
+    "lastVacuumFreedBytes": 0,
+    "nextCleanupAtMs": 1794427179671
+  },
+  "estimate": {
+    "collectedDays": 0.05,
+    "bytesPerDay": null,
+    "projectedFullBytes": null
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `db.totalBytes` | 主文件 + `-wal` + `-shm` 的实际磁盘占用 |
+| `db.reclaimableBytes` | `freelist_count × page_size`，即删除后尚未回收的空闲页；只有 `VACUUM` 能真正还给磁盘 |
+| `monitor.bytes` | 各监测表（含其索引）实际占用，取自 `dbstat`；该 SQLite 构建未启用 `dbstat` 时返回 `null` |
+| `monitor.share` | 监测数据占主文件体积的比例 |
+| `policy.lastCleanupSource` | `auto` 定时清理 / `manual` 页面手动清理 |
+| `policy.cleanupIntervalHours` | 自动清理间隔。服务每 10 分钟巡检一次，只要距上次清理超过该值就执行——用「巡检 + 到期」而不是一次性定时器，因此进程在这期间重启过也不会把清理跳过 |
+| `policy.nextCleanupAtMs` | 下一次自动清理的预计时刻（首次部署无记录时为 `null`，启动后约 10 分钟会先跑一次建立基线） |
+| `estimate.bytesPerDay` | 按实测（监测数据总量 ÷ 采集天数）外推的日增；**采集不足 1 天时为 `null`**，不做无意义外推 |
+| `estimate.projectedFullBytes` | 日增 × 保留天数，即保留期满时的体积估算 |
+
+#### 执行清理
+
+`POST /api/system/monitor/cleanup`
+
+权限：仅 `superadmin`。请求体：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `mode` | string | `retention`（默认，按各自保留期删）\| `days`（删 N 天前的全部监测数据）\| `vacuum`（按保留期清理后重建数据库文件）\| `all`（**清空全部监测数据**，不看时间，供「系统设置 → 危险操作 → 清空所有监测数据」使用） |
+| `days` | number | 与 `mode=days` 搭配，范围 1~365，默认 7 |
+| `vacuum` | boolean | 清理后是否 `VACUUM`，`mode=vacuum` 时恒为真；`mode=all` 时默认 `true`（传 `false` 才跳过重建） |
+| `includeEvents` | boolean | 是否连 `monitor_events` 一起按保留期清理，默认 `false`（生命周期事件数量极少，默认长期保留）；`mode=all` 时无条件一起清空 |
+
+只删 `monitor_*` 五张采样/流量表，业务数据（`kv_store`、`tasks`、`audit_logs`、`login_logs` 等）不受影响。删除在单个事务内完成；随后执行 `wal_checkpoint(TRUNCATE)` 收缩 WAL，`vacuum=true` 时再 `VACUUM` 重建文件并**再次 checkpoint**（`VACUUM` 过程会重写整库、把 WAL 撑大，不做第二次 checkpoint 文件看起来反而更大）。
+
+`mode=all` 额外做两件事：`monitor_events` 一并清空（只剩事件没有样本会让时间线自相矛盾）；把 `monitor_meta.collectionStartedAt` 重置为清空时刻，否则监测页的「已采集 N 天 / 日均增量」会把清空前的时间算进去，出现「采集了 30 天却只有 0 字节」的错估。`source` 记为 `manual-purge` 以便与常规自动清理区分。清空后各表仍保留空表根页（约 40~50 KB），`monitor.bytes` 不会归零。
+
+响应：
+
+```json
+{
+  "mode": "retention",
+  "source": "manual",
+  "durationMs": 31,
+  "vacuumed": false,
+  "vacuumMs": 0,
+  "checkpointed": true,
+  "deleted": { "samples": 14400, "samplesHour": 120, "trafficMin": 1440, "trafficHour": 0, "trafficPath": 240 },
+  "totalDeleted": 16200,
+  "before": { "totalBytes": 3360232, "reclaimableBytes": 0 },
+  "after": { "totalBytes": 2893077, "reclaimableBytes": 1204224 },
+  "freedBytes": 477155,
+  "storage": { "…": "清理后的完整存储快照，字段同 GET /storage" }
+}
+```
+
+说明：`VACUUM` 会阻塞事件循环（实测 7 MB 库约 20 ms，百 MB 级会更久），因此只允许手动触发，不在定时清理里执行。
+
 ### 大日程读取探针
 
 `GET /api/system/schedule-probe`
@@ -3260,7 +3681,20 @@ PUT 请求：
     "reclaimableBytes": 262144,
     "tasksJsonSize": 524288,
     "tasksCount": 240,
-    "taskItemsCount": 5000
+    "taskItemsCount": 5000,
+    "breakdown": {
+      "basis": "physical",
+      "totalBytes": 943718,
+      "fileBytes": 943718,
+      "pendingBytes": 0,
+      "freeBytes": 0,
+      "items": [
+        { "key": "audit", "label": "审计日志", "note": "1832 条记录", "bytes": 421888, "rows": 1832, "tables": ["audit_logs"], "details": null },
+        { "key": "kv", "label": "业务数据", "note": "用户、设置、编号台账、状态跟踪等集合", "bytes": 393216, "rows": 5, "tables": ["kv_store"], "details": [{ "label": "状态跟踪数据", "bytes": 174080 }, { "label": "编号台账", "bytes": 32768 }] },
+        { "key": "tasks", "label": "任务数据", "note": "240 个工作表，5000 条任务记录", "bytes": 86016, "rows": 5240, "tables": ["task_entries", "task_sheets"], "details": null },
+        { "key": "schema", "label": "库结构", "note": "表定义、自增序列等系统目录", "bytes": 24576, "rows": null, "tables": ["sqlite_schema", "sqlite_sequence"], "details": null }
+      ]
+    }
   },
   "files": {
     "backups": [...],
@@ -3317,6 +3751,13 @@ PUT 请求：
 | `database.tasksJsonSize` | `tasks` 集合 JSON 序列化后的逻辑大小（字节） |
 | `database.tasksCount` | 任务工作表数量 |
 | `database.taskItemsCount` | 任务条目总数 |
+| `database.breakdown` | 主文件体积构成（按数据类型拆解，供「数据库占用」展示）。`dbstat` 不可用时为 `null` |
+| `database.breakdown.basis` | 统计口径，固定 `physical`：按数据页实测占用，各表索引已计入所属表 |
+| `database.breakdown.totalBytes` | 数据页总量（字节）= 各项 `bytes` 之和 + `freeBytes`；页数来自 `page_count`，因此含仍在 WAL 中未落盘的页 |
+| `database.breakdown.fileBytes` | 主文件实际字节数（与 `database.dbFileSize` 一致），`totalBytes` 比它大出的部分即 `pendingBytes` |
+| `database.breakdown.pendingBytes` | 已提交但还在 WAL 里、尚未 checkpoint 到主文件的体积（字节） |
+| `database.breakdown.freeBytes` | 空闲页体积（字节），与 `database.freelistBytes` 同值，压缩后回收 |
+| `database.breakdown.items[]` | 各类型数据占用，按 `bytes` 降序：`key`（`audit`/`kv`/`tasks`/`monitor`/`login`/`schema`，未归类对象为 `other:<表名>`）、`label`、`note`（行数等说明）、`bytes`、`rows`（可空）、`tables`（归并的表名）、`details`（子项明细，仅 `kv` 提供，为集合 JSON 内容体积、不含页开销） |
 | `files.backups` | 最近 5 个数据库备份文件列表 |
 | `files.taskExports` | 最近 5 个任务导出文件列表 |
 | `files.gunLedgerExports` | 最近 5 个编号台账导出文件列表 |
@@ -4425,7 +4866,7 @@ socket.emit('task_updated', {
 8. **账号禁用**：支持禁用账号，禁用后无法登录
 9. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
 10. **强制修改密码与会话吊销**：新建用户首次登录需修改密码，一般管理员修改自己密码后下次登录需再次修改；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。超级管理员重置用户密码（单个或批量）后不强制改密，但会吊销旧令牌并记录一次性失效原因，旧会话校验时收到「密码已被管理员重置」提示
-11. **操作审计**：记录已登录用户的**数据变更与敏感操作**（写操作全记；`GET` 仅记导出与数据库统计；心跳与页面初始化读接口不记，避免刷新页面产生大量日志），默认最多保留 5000 条（可在系统设置 → 日志管理中调整）；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
+11. **操作审计**：记录已登录用户的**数据变更与敏感操作**（写操作全记；`GET` 仅记导出与数据库统计；心跳与页面初始化读接口不记，避免刷新页面产生大量日志），默认最多保留 5000 条（可在系统设置 → 操作日志中调整）；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
 12. **登录失败全量留痕与防枚举**：登录成功与失败均写登录日志，失败日志含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`）；对客户端统一返回 `用户名或密码错误`，不暴露用户名是否存在
 13. **Excel 依赖本地化**：Excel 解析使用随仓库分发的 `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，`file:` 协议安装），修复旧版 0.18.5 的 CVE-2023-30533 与 CVE-2024-22363
 14. **IP 黑名单**：超级管理员可在系统设置「登录管理」中配置（精确 IP / CIDR 网段 / IPv4 通配符，最多 500 条），命中的来源 IP 访问任意 `/api` 接口返回 `403`（`IP_BANNED`）；`OPTIONS` 预检与本机回环地址永不拦截，黑名单 IP 的登录尝试会写入失败原因为「IP 已被列入黑名单」的登录日志

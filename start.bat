@@ -41,6 +41,8 @@ if errorlevel 1 goto end
 call :install_deps
 if errorlevel 1 goto end
 
+call :trim_logs
+
 call :start_backend
 if errorlevel 1 goto end
 
@@ -178,6 +180,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
+exit /b 0
+
+:trim_logs
+rem 启动前轮转超限日志（见 tools\trim-logs.js）。
+rem backend.log / backend.err.log / frontend.log / frontend.err.log 在服务运行期间
+rem 被重定向句柄占用（EBUSY），后端自己的自动截断清不掉它们，只能在这里处理：
+rem 此时上一轮进程已在 :cleanup_processes 里被结束，句柄已释放。
+rem 阈值读数据库里「系统设置 → 日志管理」的配置，失败不影响启动。
+echo.
+echo [logs] Rotating oversized log files...
+node "%SCRIPT_DIR%tools\trim-logs.js"
+if errorlevel 1 echo [WARN] Log rotation failed, continuing anyway.
 exit /b 0
 
 :start_backend

@@ -15,7 +15,6 @@ export const PAGE_TITLES: Record<string, string> = {
   '/change-password': 'OTM-修改密码',
   '/admin': 'OTM-用户管理中心',
   '/system-settings': 'OTM-系统设置',
-  '/system-logs': 'OTM-操作日志',
   '/design-standards': 'OTM-设计规范知识库',
   '/gun-ledger': 'OTM-焊枪编号台账',
   '/leaderboard': 'OTM-任务报表',
