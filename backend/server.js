@@ -206,6 +206,7 @@ const specRoutes = require('./routes/spec');
 const statusTrackingRoutes = require('./routes/statusTracking');
 const workHoursRoutes = require('./routes/workHours');
 const gunLedgerRoutes = require('./routes/gunLedger');
+const { runGunLedgerSelfHeal } = gunLedgerRoutes;
 const designStandardsRoutes = require('./routes/designStandards');
 const monitorRoutes = require('./routes/monitor');
 
@@ -848,13 +849,19 @@ process.on('SIGUSR2', () => {
 // 启动前初始化数据库（加载缓存到内存）
 db.init();
 
-server.listen(securityConfig.server.port, () => {
+server.listen(securityConfig.server.port, async () => {
   console.log(`Server running on port ${securityConfig.server.port}`);
   // 状态监测：登记本次启动，并判定上一轮是正常停止还是异常中断
   try {
     systemMonitor.recordBoot();
   } catch (err) {
     console.error('[monitor] 启动登记失败:', err && err.message ? err.message : err);
+  }
+  // 台账启动自愈：把历史错位的焊枪名编号校正到对应序号（只在有变化时落库，GET 只读）
+  try {
+    await runGunLedgerSelfHeal();
+  } catch (err) {
+    console.error('[gun-ledger] 启动自愈失败:', err && err.message ? err.message : err);
   }
   db.initAdmin();
   // 共享盘预热：配了 PRODUCTION_SCHEDULE_UNC_USER 时，先用该凭据把 SMB 连接建好。

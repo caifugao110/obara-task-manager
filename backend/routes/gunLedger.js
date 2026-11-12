@@ -289,15 +289,27 @@ const userMeta = (req) => req.user ? { id: req.user.id, username: req.user.usern
 // 仅保留普通对象形态的用户元信息，过滤历史字符串脏值
 const cleanUserMeta = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 
-// GET /api/gun-ledger —— 取全部数据
-// 读取时顺带自愈历史错位数据（序号跳号 / 名字编号与序号不符）：仅在有变化时落库，
-// 保证台账页打开即看到「序号与编号严格一致」的数据，占位行不会与真实行撞号。
+// GET /api/gun-ledger —— 取全部数据（纯读，不自愈；自愈已在启动阶段一次性跑完）
 router.get('/', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const gunLedger = data.gunLedger || { categories: { 'X2C': [], 'X2C-V2': [], 'X2C-V3': [], 'GLOBAL': [], 'PSW': [], 'IT': [], 'ROBOT': [], 'EQ': [], 'TOYOTA': [], 'PROJECTION GUN': [] }, defaultResponsiblePersons: DEFAULT_RESPONSIBLE_PERSONS };
+  res.json(gunLedger);
+}));
+
+/**
+ * 启动阶段一次性自愈：遍历所有有生效取号规则的台账表，
+ * 把历史错位的焊枪名编号校正到对应序号（序号压实 + 编号归一化）。
+ * 有变化时落库并返回 { healedTables, totalRenamed }。
+ * 运行期 GET 只读，写操作路径（PUT /rows、POST /quick-take、PUT /gun-name-rule）
+ * 自身也会在每次写入时调用 bindRowsToSerials 即时校正，与此处不重复。
+ */
+const runGunLedgerSelfHeal = async () => {
+  const data = db.readDb();
+  const gunLedger = data.gunLedger;
+  if (!gunLedger || !gunLedger.categories) return { healedTables: [], totalRenamed: 0 };
 
   const healedTables = [];
-  Object.keys(gunLedger.categories || {}).forEach(category => {
+  Object.keys(gunLedger.categories).forEach(category => {
     (Array.isArray(gunLedger.categories[category]) ? gunLedger.categories[category] : []).forEach(table => {
       const rule = getEffectiveGunNameRule(category, table);
       if (!rule) return;
@@ -311,20 +323,14 @@ router.get('/', [authMiddleware, accessSettingsMiddleware('gunLedger')], asyncHa
 
   if (healedTables.length) {
     await db.writeDb(data);
+    const totalRenamed = healedTables.reduce((sum, t) => sum + t.renamed.length, 0);
     healedTables.forEach(t => {
-      console.log(`[gun-ledger] 已按序号校正焊枪名编号：${t.category}/${t.tableName} ${t.renamed.map(r => `${r.from}→${r.to}`).join('、')}`);
+      console.log(`[gun-ledger] 启动自愈：按序号校正焊枪名编号：${t.category}/${t.tableName} ${t.renamed.map(r => `${r.from}→${r.to}`).join('、')}`);
     });
-    const io = req.app.get('io');
-    if (io) {
-      healedTables.forEach(t => {
-        const table = (gunLedger.categories[t.category] || []).find(x => x && x.id === t.tableId);
-        io.emit('gun_ledger_updated', { action: 'update_rows', tableId: t.tableId, rows: table ? table.rows : [] });
-      });
-    }
+    return { healedTables, totalRenamed };
   }
-
-  res.json(gunLedger);
-}));
+  return { healedTables: [], totalRenamed: 0 };
+};
 
 // GET /api/gun-ledger/gun-name-locations —— 枪名 → 所在分类/表 的轻量索引
 // 仅统计真实行（不含前端占位预留行）；同名枪名以分类/表顺序首次出现位置为准。
@@ -1330,3 +1336,5 @@ router.post('/initialize-all', [authMiddleware, superAdminMiddleware, accessSett
 router.__testables = { enforceSerialNumberBinding, bindRowsToSerials, normalizeGunNameNumber, buildGunNumber };
 
 module.exports = router;
+// 命名导出：启动阶段一次性自愈（server.js 在 listen 后 db.init() 完成时调用）
+module.exports.runGunLedgerSelfHeal = runGunLedgerSelfHeal;
