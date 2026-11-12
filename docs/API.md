@@ -3347,6 +3347,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
   - 子进程启动瞬间读取 `logs/backend.log` 尾部，若紧邻的几行是 `[nodemon] restarting/starting`，把该行写入本次 `boot` 事件的 `detail.nodemonBoot`；
   - 扫描后端源码目录（深度 ≤ 3，`.js/.cjs/.mjs/.json`）最近修改的文件，若断开前 5 分钟内被改动则记录文件名与提前秒数。
   两条证据任一成立、且无崩溃日志/退出码、且由 `npm run dev`/nodemon 启动时，判定 `cause.code = hot_reload`（`severity = info`）。仅命中 nodemon 日志而找不到具体文件时，还要求断开到重新拉起的间隔 ≤ 5 分钟——`start.bat` 本身就走 nodemon，冷启动同样有 `[nodemon]` 日志，停了一夜再开机不会被算成热重载。
+- **手动停止单独判定**：`stop.bat` 用 `taskkill /F /T` 结束进程树，进程收不到 `SIGINT`/`SIGTERM`，既写不了 `graceful_stop` 也写不了退出码，表面上与「进程凭空消失」完全一致，会把一次人为停机报成 `external_kill`。因此脚本在动手前把 `logs/manual-stop.json`（`tsMs` / `at` / `source` / `user` / `host` / `targets`）写在磁盘上，后端在判定时读该文件：标记时刻落在「断开起点前 90 秒 → 恢复时刻 + 2 秒」之间即判 `manual_stop`（`severity = info`）。90 秒窗口用于吸收「断开起点取最后一次心跳」的误差，同时窄到不会把上一次停机错认成这一次；窗口外的旧标记一律忽略。该判定的优先级高于崩溃日志与热重载——`backend-crash.log` 覆盖的是整轮会话，早些时候的异常记录不该顶替本次的人为停机。命中标记时同时用标记时刻替换「最后一次心跳」作为断开起点，`precision` 由 `sample` 升为 `exact`（断开时刻与持续时长不再是 ±30 秒的近似值）。
 - 采集从部署后第一次启动开始，此前的区间无法回算，`range.startMs → collection.startedAtMs` 之间的时间不计入可用率。
 - **保留期与查询范围的对应关系**：趋势数据（`monitor_samples`、`monitor_samples_hour`、`monitor_traffic_hour`、`monitor_traffic_path`）保留 200 天，覆盖「近半年」（180 天）查询；`monitor_traffic_min` 只保留 35 天，仅服务顶部「近 1 分钟请求」与断开原因里的 5xx 取证（过期区间自动回退到小时汇总）。所以 35 天的明细保留**不会**造成近半年数据缺失——趋势图、资源曲线、热力图、可用性时间轴都不读这张表。
 
@@ -3355,6 +3356,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 | code | 含义 | 置信度 |
 |------|------|--------|
 | `hot_reload` | 代码热重载（文件变更触发 nodemon 重启） | `high` 有具体变更文件；`medium` 仅有 nodemon 拉起记录 |
+| `manual_stop` | 手动停止（执行 `stop.bat`，计划内停机） | `high` |
 | `planned` | 计划内停止 / 正常重启 | `high` |
 | `uncaught_exception` | 未捕获异常崩溃 | `high` |
 | `watchdog_kill` | 看门狗强杀重启（健康探测连续失败后 `taskkill` 进程树） | `high` |
@@ -3393,6 +3395,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
     "disconnectCount": 8,
     "totalCount": 10,
     "hotReloadCount": 2,
+    "manualStopCount": 1,
     "ignoreHotReload": false,
     "longestDowntimeMs": 30828,
     "longestStableMs": 90062,
@@ -3454,12 +3457,13 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 |------|------|
 | `collection.coverageMs` | 区间内实际采集覆盖的时长（已剔除采集开始之前的部分） |
 | `availability.ratio` | 可用率 = 1 − 中断时长 / 覆盖时长；无采集数据时为 `null` |
-| `availability.disconnectCount` / `totalCount` | 参与统计的断开次数 / 区间内实际发生的断开次数（含被 `ignoreHotReload` 剔除的） |
+| `availability.disconnectCount` / `totalCount` | 参与统计的断开次数 / 区间内实际发生的断开次数（含被 `ignoreHotReload` 剔除的，以及始终不计入统计的 `manual_stop`） |
 | `availability.hotReloadCount` | 区间内判定为 `hot_reload` 的次数，供前端展示「已排除 N 次」 |
+| `availability.manualStopCount` | 区间内判定为 `manual_stop` 的次数。计划内停机一律不计入 `disconnectCount` / `ratio` / `longestDowntimeMs` / `timeline`，但仍出现在 `disconnects` 列表里供回溯 |
 | `availability.longestStableMs` / `avgStableMs` | 区间内各次断开前「已稳定运行时长」的最大值 / 平均值，无重启记录时为 `null` |
 | `timeline[].state` | `up` 正常 / `down` 中断 / `partial` 部分中断 / `unknown` 尚未采集 |
 | `disconnects[].kind` | `restart` 进程重启型中断；`stall` 进程未重启但心跳中断（长任务阻塞、DB 写锁等待、宿主机休眠） |
-| `disconnects[].precision` | `exact` 依据正常停止事件；`sample` 取最后一次心跳，精度 ±30 秒 |
+| `disconnects[].precision` | `exact` 依据正常停止事件或手动停止标记；`sample` 取最后一次心跳，精度 ±30 秒 |
 | `disconnects[].stableBeforeSec` | 本次断开前系统已稳定运行的秒数 |
 | `disconnects[].cause.confidence` | `high` 证据充分 / `medium` 较可信 / `low` 待观察 |
 | `traffic.totals.errorRate` | 5xx 占比（0~1） |
@@ -3995,6 +3999,146 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 - 清理前会将旧数据归档到 `yearlyArchiveDir`。
 - 每年只执行一次，记录在 `yearlyCleanupHistory` 中。
 - 清理完成后自动执行一次数据库压缩（`VACUUM` + WAL 截断），结果在 `compaction` 中返回（年度清理常一次删掉数千条记录，不压缩的话磁盘占用不会下降）；压缩失败时为 `null`，不影响清理结果。
+
+### 年度归档：列表 / 预览 / 恢复
+
+系统设置「运维工具」标签页使用这三个接口，把年度清理归档的 JSON 快照写回数据库。
+
+#### 列出归档文件
+
+`GET /api/system/maintenance/archives`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "dir": "E:\\project\\backend\\backups\\yearly-archives",
+  "dirExists": true,
+  "files": [
+    {
+      "fileName": "yearly-archive-before-2025-20261112-213500.json",
+      "size": 1837,
+      "modifiedAt": "2026-11-12T13:23:05.780Z",
+      "cutoffYear": 2025
+    }
+  ]
+}
+```
+
+说明：只返回归档目录下命名符合 `yearly-archive-before-<YYYY>-<YYYYMMDD-HHmmss>.json` 的文件，按修改时间倒序。目录不存在时 `dirExists` 为 `false`、`files` 为空数组。
+
+#### 预览归档内容
+
+`GET /api/system/maintenance/archives/inspect?file=<fileName>`
+
+权限：仅 `superadmin`
+
+响应：
+
+```json
+{
+  "fileName": "yearly-archive-before-2025-20261112-213500.json",
+  "filePath": "E:\\project\\backend\\backups\\yearly-archives\\yearly-archive-before-2025-20261112-213500.json",
+  "size": 1837,
+  "modifiedAt": "2026-11-12T13:23:05.780Z",
+  "archivedAt": "2026-11-12T13:35:00.000Z",
+  "cutoff": "before-2025-01",
+  "declared": { "taskSheets": 1, "taskItems": 2 },
+  "summary": {
+    "totalSheets": 1,
+    "newSheets": 1,
+    "existingSheets": 0,
+    "invalidSheets": 0,
+    "totalItems": 2,
+    "years": [2025]
+  },
+  "sheets": [
+    {
+      "id": "sheet-1790516115944-2025-3",
+      "designerId": "1790516115944",
+      "designerName": "陈青松",
+      "month": 3,
+      "year": 2025,
+      "taskItems": 2,
+      "dates": 2,
+      "status": "new",
+      "existingId": null
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `status` | `new` 库里不存在该月表，恢复时新增；`exists` 库里已存在该设计员 + 年 + 月 |
+| `existingId` | 库里已存在时的 sheet id，覆盖恢复时用于删除旧行 |
+| `designerName` | 按当前设计员列表反查；设计员已被删除时为 `null`（仍按 id 恢复） |
+| `invalidSheets` | 结构不合法（缺设计员 id、月份 1-12 之外、年份 2000-2100 之外等）被跳过的表数 |
+
+错误：文件名不符合命名规则或路径越界返回 `400`；文件不存在返回 `404`；内容不是合法 JSON 或 `type !== 'yearly-cleanup-archive'` 返回 `400`。
+
+#### 恢复归档
+
+`POST /api/system/maintenance/archives/restore`
+
+权限：仅 `superadmin`
+
+请求体：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `file` | 是 | 归档文件名（不是绝对路径） |
+| `dryRun` | 否 | `true` 只校验与比对、不写库、不备份；默认 `false` |
+| `overwrite` | 否 | `true` 覆盖库里已存在的同月任务表；默认 `false`（跳过） |
+| `backup` | 否 | 写库前是否自动备份整库；默认 `true`，传 `false` 关闭 |
+
+请求示例：
+
+```json
+{
+  "file": "yearly-archive-before-2025-20261112-213500.json",
+  "overwrite": false,
+  "backup": true
+}
+```
+
+响应：
+
+```json
+{
+  "message": "归档恢复完成：写入 1 个工作表（2 条任务记录），跳过 0 个，失败 0 个",
+  "restore": {
+    "dryRun": false,
+    "overwrite": false,
+    "fileName": "yearly-archive-before-2025-20261112-213500.json",
+    "filePath": "...",
+    "planned": {
+      "totalSheets": 1,
+      "writeSheets": 1,
+      "skippedSheets": 0,
+      "invalidSheets": 0,
+      "writeItems": 2,
+      "overwriteSheets": 0
+    },
+    "backup": { "fileName": "db-backup-20261112-212314.db", "filePath": "...", "size": 1855488 },
+    "restoredSheets": 1,
+    "restoredItems": 2,
+    "replacedSheets": 0,
+    "removedOldSheets": 0,
+    "failed": []
+  }
+}
+```
+
+说明：
+
+- 只恢复归档中存在的任务工作表，不删除归档之后新建的数据。
+- 覆盖模式下若库里同月的表 id 与归档不一致，先删除旧 id 的行再写入，避免出现同月两张表（`removedOldSheets` 计数）。
+- 单张表写入失败不会中断其余表，失败明细在 `failed[]` 中返回。
+- 实际写入（`dryRun=false` 且 `restoredSheets>0`）会广播 `task_refreshed` 事件，其他在线用户的任务视图随之刷新；操作记入操作日志，动作名为「恢复年度归档」。
+- `dryRun=true` 时同样会记一条操作日志，便于审计谁在什么时候做过预演。
 
 ### 手动触发断网备份
 

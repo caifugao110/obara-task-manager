@@ -32,12 +32,14 @@ import {
   Palette,
   RotateCcw,
   Save,
-  Activity
+  Activity,
+  Wrench
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import SystemStatusMonitor from './SystemStatusMonitor';
+import OpsToolsPanel from '../components/OpsToolsPanel';
 import OperationLogPanel from '../components/OperationLogPanel';
 import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
@@ -404,7 +406,10 @@ const SystemSettings = () => {
   const [ipSaving, setIpSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs' | 'audit' | 'plan' | 'monitor'>('data');
+  // 默认打开「状态监测」；一般管理员没有该标签页，兜底到「数据管理」（下面的权限 effect 也会再校正一次）
+  const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs' | 'audit' | 'plan' | 'monitor' | 'ops'>(
+    user?.role === 'superadmin' ? 'monitor' : 'data'
+  );
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
@@ -770,7 +775,7 @@ const SystemSettings = () => {
   }, [isOffline]);
 
   useEffect(() => {
-    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'audit' || activeTab === 'maintenance' || activeTab === 'plan' || activeTab === 'monitor')) {
+    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'audit' || activeTab === 'maintenance' || activeTab === 'plan' || activeTab === 'monitor' || activeTab === 'ops')) {
       setActiveTab('data');
     }
   }, [isSuperAdmin, activeTab]);
@@ -1481,6 +1486,15 @@ const SystemSettings = () => {
 
       <div ref={tabBarRef} style={{ top: tabBarTop }} className="sticky z-30 bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-8 flex space-x-1 overflow-x-auto">
+          {isSuperAdmin && (
+            <button
+              onClick={() => setActiveTab('monitor')}
+              className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'monitor' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              <Activity size={18} />
+              状态监测
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('data')}
             className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'data' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
@@ -1526,11 +1540,11 @@ const SystemSettings = () => {
                 计划管理
               </button>
               <button
-                onClick={() => setActiveTab('monitor')}
-                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'monitor' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                onClick={() => setActiveTab('ops')}
+                className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'ops' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
               >
-                <Activity size={18} />
-                状态监测
+                <Wrench size={18} />
+                运维工具
               </button>
             </>
           )}
@@ -3385,6 +3399,10 @@ const SystemSettings = () => {
 
         {activeTab === 'monitor' && isSuperAdmin && (
           <SystemStatusMonitor />
+        )}
+
+        {activeTab === 'ops' && isSuperAdmin && (
+          <OpsToolsPanel />
         )}
       </main>
     </div>

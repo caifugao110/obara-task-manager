@@ -31,6 +31,14 @@ const BACKEND_LOG_PATH = path.join(LOG_DIR, 'backend.log');
 // 假死探测脚本（backend-health-probe.bat）的日志：连续 N 次探测失败后会 taskkill 整棵树。
 // 进程被强杀时不会执行退出钩子，是唯一能证明「这次断开是看门狗干的」的书面证据。
 const WATCHDOG_LOG_PATH = path.join(LOG_DIR, 'backend-watchdog.log');
+// 手动停止标记：stop.bat 在 taskkill /F 之前写入。
+// taskkill /F 直接终止进程树，SIGINT/SIGTERM 处理器不会执行，进程既写不了 graceful_stop
+// 也写不了退出码与崩溃堆栈；没有这份标记时，一次人为停机只能被判成「进程被外部强制结束」，
+// 与真正的故障无法区分。标记由脚本侧落盘，即使后端被瞬间杀掉也一定可读。
+const MANUAL_STOP_PATH = path.join(LOG_DIR, 'manual-stop.json');
+// 心跳间隔 30 秒，断开起点取最后一次心跳，标记时刻通常比它晚几秒到几十秒；
+// 90 秒窗口既吸收这个误差，又窄到不会把上一次手动停机错认成这一次。
+const MANUAL_STOP_MATCH_MS = 90 * 1000;
 
 const RETENTION_DAYS = 200;
 // 分钟级流量明细保留天数（长期趋势由小时汇总表承担）
@@ -430,6 +438,57 @@ const readWatchdogKills = () => {
   items.sort((a, b) => a.tsMs - b.tsMs);
   watchdogCache = { at: now, items };
   return items;
+};
+
+/**
+ * 读取 stop.bat 落下的手动停止标记。
+ * 文件由脚本侧写入，只读不改；解析失败一律当作「没有标记」，绝不因脏文件影响判定。
+ * 缓存按 mtime 失效：同一次总览里每条断开记录都会问一次，没必要反复解析。
+ * @returns {{ tsMs: number, at: string, source: string, operator: string|null, targets: string[] }|null}
+ */
+let manualStopCache = { at: 0, mtimeMs: -1, value: null };
+const readManualStopMarker = () => {
+  let stat;
+  try {
+    stat = fs.statSync(MANUAL_STOP_PATH);
+  } catch {
+    return null;
+  }
+  if (manualStopCache.mtimeMs === stat.mtimeMs && nowMs() - manualStopCache.at < 5000) {
+    return manualStopCache.value;
+  }
+
+  let value = null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(MANUAL_STOP_PATH, 'utf8'));
+    const tsMs = Number(raw && raw.tsMs);
+    if (Number.isFinite(tsMs) && tsMs > 0) {
+      value = {
+        tsMs,
+        at: String((raw && raw.at) || '') || clockOf(tsMs),
+        source: String((raw && raw.source) || 'stop.bat'),
+        operator: String((raw && raw.user) || '').trim() || null,
+        targets: Array.isArray(raw && raw.targets) ? raw.targets.map(String) : []
+      };
+    }
+  } catch {
+    value = null;
+  }
+  manualStopCache = { at: nowMs(), mtimeMs: stat.mtimeMs, value };
+  return value;
+};
+
+/**
+ * 把标记匹配到某一次断开上。
+ * 下界：早于本次断开起点 90 秒的标记属于上一次停机，不能算；
+ * 上界：晚于恢复时刻的标记与本次断开无关（脚本可能在进程停稳后才跑）。
+ */
+const matchManualStop = (startMs, endMs) => {
+  const marker = readManualStopMarker();
+  if (!marker) return null;
+  if (marker.tsMs < startMs - MANUAL_STOP_MATCH_MS) return null;
+  if (marker.tsMs > endMs + 2000) return null;
+  return marker;
 };
 
 /**
@@ -1093,6 +1152,35 @@ function inferCause({ startMs, endMs, clean, lastStop, lastSampleRssMb: rssBefor
     };
   }
 
+  // 0.5) 手动停止：stop.bat 用 taskkill /F 结束进程树，进程收不到信号、写不了 graceful_stop，
+  //      没有标记时只能归到兜底的 external_kill（「无退出取证」），人为停机被当成故障。
+  //      标记证明「这个时刻有人主动停机」，因此必须优先于崩溃/退出码推断——
+  //      crashLines 覆盖的是整轮会话，早些时候的异常记录不该顶替本次的人为停机。
+  const manualStop = matchManualStop(startMs, endMs);
+  if (manualStop) {
+    const manualEvidence = [
+      `手动停止标记命中：${manualStop.at} 执行 ${manualStop.source}`
+        + `${manualStop.operator ? `（操作者 ${manualStop.operator}）` : ''}`
+        + `，主动结束${manualStop.targets.length ? ` ${manualStop.targets.join(' / ')}` : '服务进程'}`
+    ];
+    manualEvidence.push(
+      'stop.bat 以 taskkill /F 结束进程树：进程不会执行退出钩子，因此既没有正常停止事件，也没有退出码与崩溃堆栈——这是停止方式决定的，不代表故障'
+    );
+    if (crashLines.length) {
+      manualEvidence.push(`本轮会话内另有 ${crashLines.length} 条未捕获异常记录，但进程当时并未退出，不是本次断开的直接原因`);
+    }
+    if (rssBefore) {
+      manualEvidence.push(`断开前内存 ${Math.round(rssBefore)} MB`);
+    }
+    return {
+      code: 'manual_stop',
+      label: '手动停止（执行 stop.bat，计划内停机）',
+      confidence: 'high',
+      severity: 'info',
+      evidence: manualEvidence
+    };
+  }
+
   if (crashLines.length) {
     const first = crashLines[crashLines.length - 1];
     const cleaned = first.raw.replace(/^\[[^\]]+\]\s*/, '');
@@ -1306,9 +1394,16 @@ const buildDowntimes = (fromMs, toMs) => {
       .prepare('SELECT ts_ms, rss_mb FROM monitor_samples WHERE ts_ms < ? ORDER BY ts_ms DESC LIMIT 1')
       .get(boot.ts_ms);
 
-    const startMs = stop && (!lastSample || stop.ts_ms >= lastSample.ts_ms)
+    const startMsBySample = stop && (!lastSample || stop.ts_ms >= lastSample.ts_ms)
       ? stop.ts_ms
       : (lastSample ? lastSample.ts_ms : (stop ? stop.ts_ms : prevBootMs));
+
+    // 手动停止有精确到毫秒的标记时刻：用它替代「最后一次心跳」的近似值。
+    // 心跳 30 秒一次，近似值最坏会偏早半分钟；有标记就能把断开时刻和持续时长算准，
+    // 页面上的「时间±30秒」提示也随之取消。留 1 秒余量，避免标记晚于启动时把时长算成 0。
+    const manualStop = !stop ? matchManualStop(startMsBySample, boot.ts_ms) : null;
+    const manualUsable = Boolean(manualStop && manualStop.tsMs < boot.ts_ms - 1000);
+    const startMs = manualUsable ? manualStop.tsMs : startMsBySample;
 
     const durationMs = boot.ts_ms - startMs;
     if (durationMs < 3000) return;
@@ -1345,7 +1440,7 @@ const buildDowntimes = (fromMs, toMs) => {
       durationMs,
       stableBeforeMs: Math.max(0, startMs - (downtimes.length ? downtimes[downtimes.length - 1].endMs : prevBootMs)),
       cause,
-      precision: stop ? 'exact' : 'sample'
+      precision: stop || manualUsable ? 'exact' : 'sample'
     });
   });
 
@@ -1637,7 +1732,15 @@ const getOverview = ({ preset, date, ignoreHotReload }) => {
 
   // 开发期的 nodemon 热重载不是故障：单独计数，并可整体从可用率里剔除
   const hotReloadItems = inRangeAll.filter((item) => item.cause.code === 'hot_reload');
+  // 手动停止（stop.bat）是计划内停机，同样不是故障：列表照常展示（便于回溯），
+  // 但一律不计入「中断次数 / 可用率 / 最长中断」，否则按流程停服会让可用率失真。
+  const manualStopItems = inRangeAll.filter((item) => item.cause.code === 'manual_stop');
+  const statsItems = inRangeAll.filter((item) => item.cause.code !== 'manual_stop');
   const inRange = ignoreHotReload
+    ? statsItems.filter((item) => item.cause.code !== 'hot_reload')
+    : statsItems;
+  // 列表数据源与统计口径分开：手动停机关掉开关后也要能被看到，只是不进统计
+  const listItems = ignoreHotReload
     ? inRangeAll.filter((item) => item.cause.code !== 'hot_reload')
     : inRangeAll;
 
@@ -1687,6 +1790,7 @@ const getOverview = ({ preset, date, ignoreHotReload }) => {
       disconnectCount: inRange.length,
       totalCount: inRangeAll.length,
       hotReloadCount: hotReloadItems.length,
+      manualStopCount: manualStopItems.length,
       ignoreHotReload: Boolean(ignoreHotReload),
       longestDowntimeMs: inRange.reduce((max, item) => Math.max(max, item.durationMs), 0),
       longestStableMs: stableList.length ? Math.max(...stableList) : null,
@@ -1697,7 +1801,7 @@ const getOverview = ({ preset, date, ignoreHotReload }) => {
       bootedAtMs: bootedAtMs || (nowMs() - process.uptime() * 1000)
     },
     timeline: buildTimeline(range.startMs, range.endMs, inRange, collectionStartedAtMs),
-    disconnects: inRange.slice(-60).map((item) => ({
+    disconnects: listItems.slice(-60).map((item) => ({
       kind: item.kind,
       startAtMs: item.startMs,
       endAtMs: item.endMs,

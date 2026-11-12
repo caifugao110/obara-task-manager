@@ -113,7 +113,7 @@ npm run dev
 | 管理后台 | `/admin` | OTM-用户管理中心 | 设计人员列表、登录用户列表、批量导入 |
 | 登录 | `/login` | OTM-登录 | 管理员和普通用户登录 |
 | 修改密码 | `/change-password` | OTM-修改密码 | 首次登录或被重置密码后强制修改密码 |
-| 系统设置 | `/system-settings` | OTM-系统设置 | 数据管理、数据库维护、登录管理、日志文件管理、操作日志、计划管理、状态监测七个标签页（除数据管理外仅超级管理员可见） |
+| 系统设置 | `/system-settings` | OTM-系统设置 | 状态监测、数据管理、数据库维护、登录管理、日志文件管理、操作日志、计划管理、运维工具八个标签页（除数据管理外仅超级管理员可见） |
 | 状态追踪 | `/status-tracking` | OTM-状态跟踪表 | 任务状态追踪与批量导入导出 |
 | 焊枪台账 | `/gun-ledger` | OTM-焊枪编号台账 | 焊枪编号台账：分类/表/行三级管理、焊枪名自动取号、表级独占编辑锁、分类导出与导入 |
 | 设计规范知识库 | `/design-standards` | OTM-设计规范知识库 | 基于本地 WeKnora 的规范检索与智能问答（带引用），知识库按 ID 关联，支持多工作空间与答复约束提示词 |
@@ -435,7 +435,7 @@ npm run dev
 
 ### 系统设置
 
-系统设置页面包含「数据管理」「数据库维护」「登录管理」「日志文件管理」「操作日志」「计划管理」「状态监测」七个标签页。除「数据管理」外，其余标签页仅超级管理员可见；「数据管理」对一般管理员的开放程度由系统设置页面权限控制。
+系统设置页面包含「状态监测」「数据管理」「数据库维护」「登录管理」「日志文件管理」「操作日志」「计划管理」「运维工具」八个标签页，超级管理员进入页面默认落在「状态监测」。除「数据管理」外，其余标签页仅超级管理员可见；「数据管理」对一般管理员的开放程度由系统设置页面权限控制。
 
 #### 数据管理
 
@@ -456,6 +456,7 @@ npm run dev
 - **磁盘占用与压缩**：数据库信息除 `data.db` / `-wal` / `-shm` 体积外，还会显示「空闲页」体积（已删除但尚未归还给操作系统的空间）。SQLite 的删除只把页放进空闲页链表，不压缩的话文件大小不会变化——所以清理任务数据后会**自动执行一次压缩**（`VACUUM` + WAL 截断），存在可回收空间时页面也会提示「有 xx MB 是已删除数据留下的空闲页」，并提供「压缩数据库」按钮（需二次确认；压缩期间数据库被独占重建，通常只需数秒）。
 - **主文件体积构成**（`GET /api/system/maintenance` 返回的 `database.breakdown`）：借 `dbstat` 按表实测页占用、把索引归并到所属表，再按「审计日志 / 业务数据 / 任务数据 / 运行监测 / 登录日志 / 库结构」归组，各项之和等于数据页总量；`kv_store` 还会给出各集合的 JSON 内容体积，空闲页与「已提交但仍在 WAL 里」的部分（`pendingBytes`）单独列出。只给一个「主文件 1.59 MB」无法回答「到底是谁占的」——同样体积可能全是审计日志、也可能全是任务数据，处理方式完全不同。`dbstat` 不可用时该字段为 `null`，页面只显示总体积，不编造数字。
 - 年度清理会先将待删除数据永久归档；断网备份在服务器关闭时（Ctrl+C、SIGTERM）自动触发。
+- **运维工具**（仅超级管理员）：列出 `yearlyArchiveDir` 下的年度归档 JSON，解析出每张工作表的设计员、年月与条目数，与库内现状比对后标记「新增 / 已存在 / 结构异常」；支持**预演**（只校验不写库）与**恢复**（默认跳过已存在的月份、默认先备份整库，勾选后才覆盖）。归档只含任务工作表，状态跟踪与焊枪台账需靠数据库备份恢复。
 - **数据库备份为单地址**：手动「立即备份数据库」与每日定时备份均只写入配置的数据库备份目录（默认 `backups/database/`），不再复制到任何网络共享地址；如需异地留存，请由运维侧对备份目录做独立的同步/归档。
 
 #### 登录管理（仅超级管理员）
@@ -498,6 +499,7 @@ npm run dev
 | 判定结果 | 证据来源 | 是否计入可用率 |
 |----------|----------|----------------|
 | 代码热重载 | `logs/backend.log` 的 `[nodemon] restarting/starting` + 断开前几分钟内有源文件改动，无崩溃日志、无退出码 | 默认排除，可用右上角开关切换 |
+| 手动停止（执行 stop.bat） | `logs/manual-stop.json` 的停机标记（`stop.bat` 在 `taskkill /F` 之前写入停机时刻、操作者与目标服务），命中窗口为「断开起点前 90 秒 → 恢复时刻」 | 不计入（计划内停机，列表里标「非故障」） |
 | 计划内停止 / 正常重启 | 收到 SIGINT/SIGTERM 后写入的正常停止记录（`server.js` 也注册了 SIGUSR2，但 Windows 上收不到该信号，nodemon 重启改由上面的日志证据判定） | 计入 |
 | 未捕获异常 / 非零退出 | `logs/backend-crash.log`、`logs/backend-exit.log` | 计入 |
 | 疑似内存耗尽 | 断开前 RSS 明显高于近一小时均值 | 计入 |
@@ -683,7 +685,7 @@ node tests\gun-search-relational.js
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
 | `backend-watchdog.bat` | 后端守护循环，由 `start.bat` 调用。后端进程一旦结束就重新拉起（默认 10 秒，连续快速崩溃退避到 30/60 秒），把每次启动/退出/重启写入 `logs/backend-watchdog.log`；以 `npm run dev -- --exitcrash` 启动，使 nodemon 在崩溃时真正退出而不是停在 `app crashed` 空转。`OBARA_RESTART_DELAY` 调等待秒数，`OBARA_BACKEND_CMD` 可换成 `node server.js`（只守护、不监听文件变化）。每次拉起后端时同时启动一个假死探测器（见下一行） |
 | `backend-health-probe.bat` | 后端假死探测器，由 `backend-watchdog.bat` 每次拉起后端时自动启动，不需要手动执行。每 30 秒向本机后端发一次 HTTP 请求（5 秒超时），连续 3 次**完全拿不到响应**即判定「进程活着但不干活」（典型原因：共享盘 UNC 调用在 Windows 内核里挂死、占满 libuv 线程池），找到监听端口的 PID 后 `taskkill /F /T`，让 nodemon 退出、看门狗照常重新拉起。任何 HTTP 响应（包括 401/404）都算健康。`OBARA_PROBE_INTERVAL` / `OBARA_PROBE_TIMEOUT` / `OBARA_PROBE_FAILS` 可调间隔、单次超时与失败阈值；日志写入 `logs/backend-watchdog.log`（`[probe]` 前缀），实例代号写入 `logs/backend-health-probe.gen`，后端换代后旧探测器自动退休，不会误杀新实例 |
-| `stop.bat` | 停止前后端进程；停止前先调用断网备份接口备份数据库。停止时**从监听端口的 PID 沿父进程链向上找到进程树顶层**（`cmd.exe` 由 VBS 启动 → `node.exe` npm → `cmd.exe` 子 shell → `node.exe` nodemon/vite → `node.exe` 服务本体），再 `taskkill /F /T` 整棵树，避免只杀掉监听进程、残留 npm/nodemon/cmd 继续占着日志文件或改文件后自动重启；随后按命令行路径清扫已不监听端口的残留进程、清理 `logs/*.pid`，并逐一回检端口给出真实结论（不再无条件打印成功）。若进程由服务/计划任务在 Session 0 启动，普通权限无法结束时会自动以管理员身份重启自身 |
+| `stop.bat` | 停止前后端进程；停止前先调用断网备份接口备份数据库，并把停机标记写入 `logs/manual-stop.json`（否则 `taskkill /F` 会让这次停机在状态监测里显示成「进程被外部强制结束」）。停止时**从监听端口的 PID 沿父进程链向上找到进程树顶层**（`cmd.exe` 由 VBS 启动 → `node.exe` npm → `cmd.exe` 子 shell → `node.exe` nodemon/vite → `node.exe` 服务本体），再 `taskkill /F /T` 整棵树，避免只杀掉监听进程、残留 npm/nodemon/cmd 继续占着日志文件或改文件后自动重启；随后按命令行路径清扫已不监听端口的残留进程、清理 `logs/*.pid`，并逐一回检端口给出真实结论（不再无条件打印成功）。若进程由服务/计划任务在 Session 0 启动，普通权限无法结束时会自动以管理员身份重启自身 |
 | `control/ObaraServiceController.csproj` | 使用 MSBuild 构建 Windows 服务控制台 EXE，详见「Windows 服务控制台」章节 |
 
 前端类型检查：
@@ -1011,6 +1013,7 @@ obara-task-manager/
 │       │   ├── LoadingScreen.tsx     # 全站统一加载态：中心动画卡片 + 可选骨架屏
 │       │   ├── LoadingSkeleton.tsx   # 7 个页面的骨架屏组件与 SkeletonKind 映射
 │       │   ├── OperationLogPanel.tsx # 操作日志明细面板（筛选/导出/列表/分页），系统设置「操作日志」标签页使用
+│       │   ├── OpsToolsPanel.tsx     # 运维工具标签页：年度归档列表/预览/预演/恢复（仅超级管理员，系统设置内嵌）
 │       │   ├── QuickConfirmAssignModal.tsx # 「快速确认图安排」弹窗（台账页 Shift×2 / 主页面取号弹窗共用）
 │       │   └── QuickGunTakeModal.tsx # 主页面 Space×2「焊枪名快速取号」弹窗（无选中目标时呼出；含安排确认图二级浮层）
 │       ├── context/
@@ -1068,7 +1071,7 @@ obara-task-manager/
 │   ├── docker-compose.yml
 │   ├── start.bat
 │   └── start.sh
-├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log；进程级未捕获异常堆栈在 backend-crash.log；后端每次退出的退出码与内存/句柄快照在 backend-exit.log；后端自动重启与假死探测记录在 backend-watchdog.log，探测器实例代号在 backend-health-probe.gen；断网备份一次性令牌在 offline-backup.token）
+├── logs/                        # 运行时日志（start.bat 生成：backend/frontend 日志、*.err.log、*.pid、startup.log；进程级未捕获异常堆栈在 backend-crash.log；后端每次退出的退出码与内存/句柄快照在 backend-exit.log；后端自动重启与假死探测记录在 backend-watchdog.log，探测器实例代号在 backend-health-probe.gen；断网备份一次性令牌在 offline-backup.token；手动停机标记在 manual-stop.json，由 stop.bat 写入、状态监测读取）
 ├── tools/                       # 运维诊断工具（启动项目用不到，随时可跑）
 │   ├── backend-report.bat       # 双击运行：按你输入的时长生成后端断开分析报告
 │   ├── backend-report.ps1       # 报告逻辑：端口采样 + 看门狗/退出/崩溃日志交叉核对
@@ -1272,6 +1275,9 @@ obara-task-manager/
 | 编号台账导出 | `POST /api/system/maintenance/export-gun-ledger` | 立即导出全部焊枪编号台账：打包为单个 `.zip`，其中每个分类一个独立 `.xls`（文件名 `gun-ledger-all-YYYYMMDD-HHmmss.zip`） |
 | 清理过期备份 | `POST /api/system/maintenance/cleanup-backups` | 清理超过保留天数的备份 |
 | 年度清理 | `POST /api/system/maintenance/yearly-cleanup` | 执行年度任务清理，请求体传 `{"force": true}` 可跳过时间检查强制执行 |
+| 归档列表 | `GET /api/system/maintenance/archives` | 列出年度归档目录下命名合规的 JSON 文件（文件名、大小、修改时间、临界年份） |
+| 归档预览 | `GET /api/system/maintenance/archives/inspect?file=<fileName>` | 解析归档内容并标注每张表是「新增」还是「库内已存在」；非法文件名/路径越界返回 400 |
+| 归档恢复 | `POST /api/system/maintenance/archives/restore` | 请求体 `{file, dryRun?, overwrite?, backup?}`：`dryRun` 只预演、`overwrite` 覆盖已存在的同月表（默认跳过）、`backup` 写库前备份整库（默认 true）；单表失败不影响其余表，写入后广播 `task_refreshed` |
 | 清空所有日志 | `POST /api/system/maintenance/clear-logs` | 同时清空登录日志和操作日志 |
 | 清理任务数据 | `POST /api/system/maintenance/cleanup-tasks` | 请求体 `{month, year}`（指定月份）、`{beforeMonth, beforeYear}`（该月之前）或 `{all: true}`（清空全部）；清理后自动压缩数据库，返回 `freedBytes` |
 | 压缩数据库 | `POST /api/system/maintenance/compact` | 手动执行 `VACUUM` + WAL 截断并清理孤儿任务条目，返回 `compaction.freedBytes` |

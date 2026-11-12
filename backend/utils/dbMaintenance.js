@@ -498,6 +498,287 @@ const runYearlyTaskCleanup = async (options = {}) => {
   return { skipped: false, cutoffYear, archivedSheets: archive.taskSheets, removedSheets: archive.taskSheets, removedTaskItems: archive.taskItems, archive, compaction };
 };
 
+// ---------------------------------------------------------------------------
+// 年度归档：读取与恢复
+//
+// 归档文件是年度清理删库前的唯一快照，恢复路径必须 fail-closed：
+// 只接受归档目录下符合标准命名的 .json，结构与字段逐项校验，任何一项不符直接拒绝，
+// 绝不「尽力猜一个」——猜错的结果是把脏数据写进正式库。
+// ---------------------------------------------------------------------------
+const YEARLY_ARCHIVE_FILE_PATTERN = /^yearly-archive-before-(\d{4})-\d{8}-\d{6}\.json$/;
+
+const archiveError = (message, statusCode = 400) => {
+  const error = new Error(message);
+  // 全局错误处理读 err.status，路由内部按 statusCode 判断，两处都设置避免落成 500
+  error.statusCode = statusCode;
+  error.status = statusCode;
+  return error;
+};
+
+// 把前端传来的文件名解析成归档目录内的绝对路径；文件名非法或越界一律 400
+const resolveYearlyArchiveFile = (fileName) => {
+  const { settings } = getMaintenanceSettings();
+  const dir = resolveManagedDir(settings.yearlyArchiveDir);
+  const name = String(fileName || '').trim();
+  if (!YEARLY_ARCHIVE_FILE_PATTERN.test(name)) {
+    throw archiveError('归档文件名不合法，只接受 yearly-archive-before-YYYY-YYYYMMDD-HHmmss.json');
+  }
+  const filePath = path.resolve(dir, name);
+  if (filePath !== path.join(dir, name)) {
+    throw archiveError('归档文件路径越界');
+  }
+  if (!fs.existsSync(filePath)) {
+    throw archiveError('归档文件不存在，可能已被手工移动或删除', 404);
+  }
+  return { dir, name, filePath, settings };
+};
+
+const listYearlyArchives = () => {
+  const { settings } = getMaintenanceSettings();
+  const dir = resolveManagedDir(settings.yearlyArchiveDir);
+  if (!fs.existsSync(dir)) {
+    return { dir, dirExists: false, files: [] };
+  }
+  const files = fs.readdirSync(dir)
+    .filter(name => YEARLY_ARCHIVE_FILE_PATTERN.test(name))
+    .map(name => {
+      // 扫描期间文件可能被手工删掉/移走：单个文件读不到只跳过，不能让整个列表 500
+      let stat;
+      try {
+        stat = fs.statSync(path.join(dir, name));
+      } catch {
+        return null;
+      }
+      return {
+        fileName: name,
+        size: stat.size,
+        modifiedAt: stat.mtime.toISOString(),
+        cutoffYear: Number(name.match(YEARLY_ARCHIVE_FILE_PATTERN)[1])
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : a.modifiedAt > b.modifiedAt ? -1 : 0));
+  return { dir, dirExists: true, files };
+};
+
+const readYearlyArchive = (fileName) => {
+  const { dir, name, filePath } = resolveYearlyArchiveFile(fileName);
+  const stat = fs.statSync(filePath);
+  let payload;
+  try {
+    payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    throw archiveError(`归档文件不是合法 JSON：${error.message}`);
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw archiveError('归档文件内容不是对象结构');
+  }
+  if (payload.type !== 'yearly-cleanup-archive' || !Array.isArray(payload.tasks)) {
+    throw archiveError('不是年度清理归档文件（缺少 type 或 tasks）');
+  }
+  return { payload, dir, fileName: name, filePath, size: stat.size, modifiedAt: stat.mtime.toISOString() };
+};
+
+// 单张工作表的校验与净化：非法月份/年份/设计员直接判为不可恢复，
+// 日期与条目做白名单过滤，保证写库时不会带入结构异常的数据。
+const normalizeArchiveSheet = (sheet) => {
+  if (!sheet || typeof sheet !== 'object' || Array.isArray(sheet)) return null;
+  const designerId = String(sheet.designerId || '').trim();
+  const month = Number(sheet.month);
+  const year = Number(sheet.year);
+  if (!designerId) return null;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+
+  const sourceDays = sheet.days && typeof sheet.days === 'object' && !Array.isArray(sheet.days) ? sheet.days : {};
+  const days = {};
+  let itemCount = 0;
+  Object.keys(sourceDays).forEach(date => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    const items = Array.isArray(sourceDays[date]) ? sourceDays[date] : [];
+    const kept = items.filter(item => item && typeof item === 'object' && !Array.isArray(item));
+    if (kept.length === 0) return;
+    days[date] = kept;
+    itemCount += kept.length;
+  });
+
+  const id = String(sheet.id || '').trim() || `sheet-${designerId}-${year}-${month}`;
+  return { id, designerId, month, year, days, itemCount };
+};
+
+const buildDesignerNameMap = () => {
+  const designers = db.readDesigners();
+  const map = new Map();
+  if (Array.isArray(designers)) {
+    designers.forEach(designer => {
+      if (designer && designer.id !== undefined) map.set(String(designer.id), designer.name || '');
+    });
+  }
+  return map;
+};
+
+// 预览：只读解析，标出每张表是「新增」还是「已存在」，供前端在执行前展示
+const inspectYearlyArchive = (fileName) => {
+  const archive = readYearlyArchive(fileName);
+  const nameMap = buildDesignerNameMap();
+  const sheets = [];
+  let invalidSheets = 0;
+  let totalItems = 0;
+  let newSheets = 0;
+  let existingSheets = 0;
+  const years = new Set();
+
+  archive.payload.tasks.forEach(rawSheet => {
+    const sheet = normalizeArchiveSheet(rawSheet);
+    if (!sheet) {
+      invalidSheets += 1;
+      return;
+    }
+    const existing = taskStore.getSheet(sheet.designerId, sheet.month, sheet.year);
+    totalItems += sheet.itemCount;
+    years.add(sheet.year);
+    if (existing) existingSheets += 1;
+    else newSheets += 1;
+    sheets.push({
+      id: sheet.id,
+      designerId: sheet.designerId,
+      designerName: nameMap.get(String(sheet.designerId)) || null,
+      month: sheet.month,
+      year: sheet.year,
+      taskItems: sheet.itemCount,
+      dates: Object.keys(sheet.days).length,
+      status: existing ? 'exists' : 'new',
+      existingId: existing ? existing.id : null
+    });
+  });
+
+  sheets.sort((a, b) => a.year - b.year || a.month - b.month || String(a.designerName || a.designerId).localeCompare(String(b.designerName || b.designerId), 'zh-Hans-CN'));
+
+  return {
+    fileName: archive.fileName,
+    filePath: archive.filePath,
+    size: archive.size,
+    modifiedAt: archive.modifiedAt,
+    archivedAt: typeof archive.payload.archivedAt === 'string' ? archive.payload.archivedAt : null,
+    cutoff: typeof archive.payload.cutoff === 'string' ? archive.payload.cutoff : null,
+    declared: {
+      taskSheets: Number(archive.payload.taskSheets) || 0,
+      taskItems: Number(archive.payload.taskItems) || 0
+    },
+    summary: {
+      totalSheets: sheets.length,
+      newSheets,
+      existingSheets,
+      invalidSheets,
+      totalItems,
+      years: Array.from(years).sort()
+    },
+    sheets
+  };
+};
+
+// 恢复：dryRun 只算不写；默认跳过已存在的月表，overwrite 才覆盖（先删旧 id 再写归档数据）。
+// 真正写库前先做一次整库备份，确保「恢复本身」也可逆。
+const restoreYearlyArchive = async (options = {}) => {
+  const archive = readYearlyArchive(options.fileName);
+  const overwrite = Boolean(options.overwrite);
+  const dryRun = Boolean(options.dryRun);
+  const withBackup = options.backup !== false;
+  const nameMap = buildDesignerNameMap();
+
+  const plan = [];
+  let invalidSheets = 0;
+  archive.payload.tasks.forEach(rawSheet => {
+    const sheet = normalizeArchiveSheet(rawSheet);
+    if (!sheet) {
+      invalidSheets += 1;
+      return;
+    }
+    const existing = taskStore.getSheet(sheet.designerId, sheet.month, sheet.year);
+    let action = 'insert';
+    if (existing) action = overwrite ? 'overwrite' : 'skip';
+    plan.push({
+      sheet,
+      action,
+      existingId: existing ? existing.id : null,
+      designerName: nameMap.get(String(sheet.designerId)) || null
+    });
+  });
+
+  const toWrite = plan.filter(item => item.action !== 'skip');
+  const skippedSheets = plan.filter(item => item.action === 'skip').length;
+  const result = {
+    dryRun,
+    overwrite,
+    fileName: archive.fileName,
+    filePath: archive.filePath,
+    planned: {
+      totalSheets: plan.length,
+      writeSheets: toWrite.length,
+      skippedSheets,
+      invalidSheets,
+      writeItems: toWrite.reduce((sum, item) => sum + item.sheet.itemCount, 0),
+      overwriteSheets: plan.filter(item => item.action === 'overwrite').length
+    },
+    backup: null,
+    restoredSheets: 0,
+    restoredItems: 0,
+    replacedSheets: 0,
+    removedOldSheets: 0,
+    failed: []
+  };
+
+  if (dryRun || toWrite.length === 0) return result;
+
+  if (withBackup) {
+    try {
+      result.backup = await createDatabaseBackup();
+    } catch (error) {
+      // 选了「恢复前备份」就必须真的备份成功才写库；失败直接中止。
+      // 标 expose 让全局错误处理保留原始消息，否则生产环境只会看到「服务器内部错误」。
+      const backupError = archiveError(`恢复前备份失败，已中止写入：${error.message}`, 500);
+      backupError.expose = true;
+      throw backupError;
+    }
+  }
+
+  // 「删旧表 + 写新表」必须落在同一个事务里：拆成两步时，一旦写入失败，
+  // 该月份会先被删掉却没有新数据补上，只能靠 .db 备份手工找回。
+  // taskStore 内部的 deleteSheetsByIds / saveSheet 各自开事务，嵌套在外层事务里
+  // 会退化成 savepoint，整体仍然原子。
+  const raw = db.getRawDb();
+  const applySheet = raw.transaction(({ sheet, action, existingId }) => {
+    // 覆盖模式下若库里同月的表 id 与归档不一致（历史 id 规则不同），
+    // 先删掉旧 id 的行，否则 saveSheet 会新增一条，出现同月两张表。
+    const removedOld = Boolean(action === 'overwrite' && existingId && existingId !== sheet.id);
+    if (removedOld) taskStore.deleteSheetsByIds([existingId]);
+    taskStore.saveSheet({ id: sheet.id, designerId: sheet.designerId, month: sheet.month, year: sheet.year, days: sheet.days });
+    return removedOld;
+  });
+
+  toWrite.forEach(item => {
+    const { sheet, action, designerName } = item;
+    try {
+      if (applySheet(item)) result.removedOldSheets += 1;
+      result.restoredSheets += 1;
+      result.restoredItems += sheet.itemCount;
+      if (action === 'overwrite') result.replacedSheets += 1;
+    } catch (error) {
+      console.error('[maintenance] 归档恢复失败:', sheet.id, error.message);
+      result.failed.push({
+        id: sheet.id,
+        designerId: sheet.designerId,
+        designerName,
+        year: sheet.year,
+        month: sheet.month,
+        message: error.message
+      });
+    }
+  });
+
+  return result;
+};
+
 // 计算下一次执行时刻：在配置的多个时间点中取最近的一个（不足两个时按实际数量计算）
 const getNextRunAt = (scheduleTimes, fromDate = new Date()) => {
   const times = Array.isArray(scheduleTimes) && scheduleTimes.length > 0
@@ -917,6 +1198,9 @@ module.exports = {
   exportGunLedgerData,
   cleanupOldBackups,
   runYearlyTaskCleanup,
+  listYearlyArchives,
+  inspectYearlyArchive,
+  restoreYearlyArchive,
   runScheduledMaintenance,
   startMaintenanceScheduler,
   scheduleNextRun

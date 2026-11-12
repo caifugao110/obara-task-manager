@@ -141,6 +141,13 @@ const RUNTIME_META = {
     advice: '禁止删除',
     caution: '关机备份脚本靠它通过校验，删除后本次关机备份会被拒绝（后端重启才会重建）'
   },
+  'manual-stop.json': {
+    label: '手动停止标记',
+    note: 'stop.bat 停机前写入，供状态监测识别计划内停机',
+    cleanup: 'forbid',
+    advice: '禁止删除',
+    caution: '删除后最近一次手动停机在 /system-settings 里会被判成「进程被外部强制结束」，下次执行 stop.bat 会重新生成'
+  },
   '.probe.token': {
     label: '探活令牌',
     note: 'watchdog 探活使用',

@@ -81,6 +81,8 @@ interface OverviewData {
     /** 含热重载的总条数（忽略开关开启时与 disconnectCount 不同） */
     totalCount: number;
     hotReloadCount: number;
+    /** 手动停止（stop.bat）次数：列表可见，但不计入中断次数与可用率 */
+    manualStopCount: number;
     ignoreHotReload: boolean;
     longestDowntimeMs: number;
     longestStableMs: number | null;
@@ -946,14 +948,25 @@ const SystemStatusMonitor: React.FC = () => {
               value={formatNumber(availability?.disconnectCount)}
               unit="次"
               tone={availability?.disconnectCount ? 'rose' : 'emerald'}
-              badge={availability?.hotReloadCount ? (
-                <span className="rounded-full bg-sky-50 px-1.5 py-0.5 text-[9px] font-bold text-sky-600 ring-1 ring-sky-100">
-                  热重载 {availability.hotReloadCount}
+              badge={availability?.hotReloadCount || availability?.manualStopCount ? (
+                <span className="flex items-center gap-1">
+                  {availability?.hotReloadCount ? (
+                    <span className="rounded-full bg-sky-50 px-1.5 py-0.5 text-[9px] font-bold text-sky-600 ring-1 ring-sky-100">
+                      热重载 {availability.hotReloadCount}
+                    </span>
+                  ) : null}
+                  {availability?.manualStopCount ? (
+                    <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600 ring-1 ring-slate-200">
+                      手动停止 {availability.manualStopCount}
+                    </span>
+                  ) : null}
                 </span>
               ) : undefined}
               hint={availability?.longestDowntimeMs
                 ? `最长中断 ${formatDurationMs(availability.longestDowntimeMs)}`
-                : (availability?.hotReloadCount && availability.ignoreHotReload ? '已排除代码热重载' : '区间内无中断')}
+                : (availability?.hotReloadCount && availability.ignoreHotReload
+                  ? '已排除代码热重载'
+                  : availability?.manualStopCount ? '手动停止不计入中断' : '区间内无中断')}
             />
             <KpiCard
               icon={<Zap size={16} />}
@@ -1163,17 +1176,20 @@ const SystemStatusMonitor: React.FC = () => {
 
           {/* 断开事件 */}
           <SectionCard
-            title={<><AlertTriangle size={16} className={data.disconnects.some((item) => item.cause.code !== 'hot_reload') ? 'text-rose-600' : 'text-sky-600'} />后端断开记录</>}
+            title={<><AlertTriangle size={16} className={data.disconnects.some((item) => item.cause.code !== 'hot_reload' && item.cause.code !== 'manual_stop') ? 'text-rose-600' : 'text-sky-600'} />后端断开记录</>}
             subtitle={
               data.availability.ignoreHotReload && data.availability.hotReloadCount
                 ? `已隐藏 ${data.availability.hotReloadCount} 次代码热重载；关闭顶部「排除代码热重载」可查看全部`
-                : '断开时间取最后一次心跳（精度 ±30 秒）；有正常停止记录时精确到事件时刻'
+                : '断开时间取最后一次心跳（精度 ±30 秒）；有正常停止记录或手动停止标记时精确到事件时刻'
             }
             right={
               <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ring-1 ${
-                data.disconnects.length ? 'bg-rose-50 text-rose-600 ring-rose-100' : 'bg-emerald-50 text-emerald-600 ring-emerald-100'
+                data.availability.disconnectCount ? 'bg-rose-50 text-rose-600 ring-rose-100' : 'bg-emerald-50 text-emerald-600 ring-emerald-100'
               }`}>
-                {data.disconnects.length ? `${data.disconnects.length} 次中断` : '区间内无中断'}
+                {data.availability.disconnectCount
+                  ? `${data.availability.disconnectCount} 次中断`
+                  : data.availability.manualStopCount ? '区间内无故障中断' : '区间内无中断'}
+                {data.availability.manualStopCount ? ` · ${data.availability.manualStopCount} 次手动停止` : ''}
               </span>
             }
           >
@@ -1199,20 +1215,26 @@ const SystemStatusMonitor: React.FC = () => {
                   {[...data.disconnects].reverse().map((item, index) => {
                   const critical = item.cause.severity === 'critical';
                   const isReload = item.cause.code === 'hot_reload';
+                  // 手动停止（stop.bat）同样是计划内停机：用中性灰配色，不能跟故障一个颜色
+                  const isManual = item.cause.code === 'manual_stop';
                   return (
                     <div
                       key={`${item.startAtMs}-${index}`}
                       className={`overflow-hidden rounded-xl border bg-white transition hover:shadow-sm ${
                         isReload
                           ? 'border-sky-100'
-                          : critical ? 'border-rose-100' : item.cause.severity === 'warning' ? 'border-amber-100' : 'border-gray-100'
+                          : isManual
+                            ? 'border-slate-200'
+                            : critical ? 'border-rose-100' : item.cause.severity === 'warning' ? 'border-amber-100' : 'border-gray-100'
                       }`}
                     >
                       <div className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center">
                         <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
                           isReload
                             ? 'bg-sky-50 text-sky-500'
-                            : critical ? 'bg-rose-50 text-rose-500' : item.cause.severity === 'warning' ? 'bg-amber-50 text-amber-500' : 'bg-slate-100 text-slate-500'
+                            : isManual
+                              ? 'bg-slate-100 text-slate-500'
+                              : critical ? 'bg-rose-50 text-rose-500' : item.cause.severity === 'warning' ? 'bg-amber-50 text-amber-500' : 'bg-slate-100 text-slate-500'
                         }`}>
                           {isReload ? <RefreshCw size={16} /> : item.kind === 'restart' ? <Server size={17} /> : <AlertTriangle size={17} />}
                         </div>
@@ -1228,7 +1250,7 @@ const SystemStatusMonitor: React.FC = () => {
                           </div>
                           <div>
                             <div className="text-[10px] text-gray-400">持续时长</div>
-                            <div className={`text-[12px] font-black tabular-nums ${isReload ? 'text-sky-600' : 'text-rose-600'}`}>{formatDuration(item.durationSec, { compact: true })}</div>
+                            <div className={`text-[12px] font-black tabular-nums ${isReload ? 'text-sky-600' : isManual ? 'text-slate-500' : 'text-rose-600'}`}>{formatDuration(item.durationSec, { compact: true })}</div>
                           </div>
                           <div>
                             <div className="text-[10px] text-gray-400">断开前已稳定运行</div>
@@ -1241,12 +1263,15 @@ const SystemStatusMonitor: React.FC = () => {
 
                       <div className="flex flex-wrap items-start gap-2 border-t border-gray-50 bg-slate-50/60 px-3.5 py-2.5">
                         <span className="flex items-center gap-1.5 text-[11px] font-bold text-gray-700">
-                          <span className={`h-1.5 w-1.5 rounded-full ${isReload ? 'bg-sky-500' : critical ? 'bg-rose-500' : item.cause.severity === 'warning' ? 'bg-amber-500' : 'bg-gray-400'}`} />
+                          <span className={`h-1.5 w-1.5 rounded-full ${isReload ? 'bg-sky-500' : isManual ? 'bg-slate-400' : critical ? 'bg-rose-500' : item.cause.severity === 'warning' ? 'bg-amber-500' : 'bg-gray-400'}`} />
                           可能原因：{item.cause.label}
                         </span>
                         <ConfidenceBadge confidence={item.cause.confidence} />
                         {isReload && (
                           <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-bold text-sky-600 ring-1 ring-sky-100">非故障</span>
+                        )}
+                        {isManual && (
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200">计划内停机 · 不计入可用率</span>
                         )}
                         {item.precision === 'sample' && (
                           <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-gray-400 ring-1 ring-gray-100">时间±30秒</span>

@@ -26,6 +26,7 @@ if /i "%~1"=="--elevated" (
     call :trigger_backup
 )
 
+call :write_manual_stop_marker
 call :stop_by_port %BACKEND_PORT% backend
 call :stop_by_port %FRONTEND_PORT% frontend
 call :sweep_by_path
@@ -63,6 +64,35 @@ rem request header; when the token is missing or already expired we only warn
 rem and skip the backup, so the shutdown flow itself is never blocked by it.
 powershell -NoProfile -Command "$ErrorActionPreference='Stop'; try { $tokenFile = Join-Path '%LOG_DIR%' 'offline-backup.token'; if (-not (Test-Path -LiteralPath $tokenFile)) { throw 'token file not found' }; $token = (Get-Content -LiteralPath $tokenFile -Raw).Trim(); if (-not $token) { throw 'token file is empty' }; $r = Invoke-RestMethod -Uri 'http://localhost:%BACKEND_PORT%/api/system/maintenance/offline-backup' -Method POST -Headers @{ 'X-Offline-Backup-Token' = $token } -TimeoutSec 30; Write-Host ('[OK] Offline backup API returned: ' + $r.message + ' / ' + $r.reason) } catch { Write-Host ('[WARN] Failed to trigger backup via API, will skip. (' + $_.Exception.Message + ')') }"
 
+exit /b 0
+
+rem ---------------------------------------------------------------
+rem Write the manual stop marker that the backend status monitor reads.
+rem
+rem The services are ended with "taskkill /F /T", which never runs node's
+rem exit hooks: the process cannot record a graceful_stop event, an exit
+rem code or a crash stack. From the outside that looks exactly like a
+rem process that vanished, so /system-settings used to report every manual
+rem shutdown as "process killed externally (no exit evidence)" - i.e. as a
+rem fault. This marker is written by the script itself right before the
+rem kill, so it is the only reliable proof that the downtime was planned.
+rem The backend matches it to the disconnect inside a 90 second window;
+rem failing to write it only costs the nicer label, never the shutdown.
+rem
+rem Only write it when the backend is actually listening. If nothing is
+rem running (the backend just crashed, or it was already stopped), a marker
+rem written now would later be matched to that crash and relabel a real
+rem fault as a planned shutdown.
+rem ---------------------------------------------------------------
+:write_manual_stop_marker
+echo.
+netstat -ano 2>nul | findstr ":%BACKEND_PORT% " | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Backend is not running, skip manual stop marker.
+    exit /b 0
+)
+echo --- Writing manual stop marker ---
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; try { $dir = '%LOG_DIR%'; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; $now = [DateTimeOffset]::Now; $payload = [ordered]@{ tsMs = $now.ToUnixTimeMilliseconds(); at = $now.ToString('yyyy-MM-dd HH:mm:ss'); source = 'stop.bat'; reason = 'manual-stop'; user = $env:USERNAME; host = $env:COMPUTERNAME; targets = @('backend','frontend') }; $json = $payload | ConvertTo-Json -Compress; $file = Join-Path $dir 'manual-stop.json'; [System.IO.File]::WriteAllText($file, $json); Write-Host ('[OK] Manual stop marker: ' + $json) } catch { Write-Host ('[WARN] Failed to write manual stop marker, the shutdown itself continues. (' + $_.Exception.Message + ')') }"
 exit /b 0
 
 rem ---------------------------------------------------------------

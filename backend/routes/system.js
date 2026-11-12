@@ -1353,6 +1353,44 @@ router.post('/maintenance/yearly-cleanup', [authMiddleware, superAdminMiddleware
   res.json({ message: result.skipped ? '年度任务清理检测已跳过' : '年度任务清理检测已完成', yearlyCleanup: result });
 }));
 
+// ===== 年度归档：列表 / 预览 / 恢复 =====
+// 只读接口供「运维工具」标签页展示，全部限制在归档目录与标准文件名之内（见 dbMaintenance）。
+router.get('/maintenance/archives', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  res.json(maintenance.listYearlyArchives());
+}));
+
+router.get('/maintenance/archives/inspect', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const fileName = String(req.query.file || '').trim();
+  if (!fileName) return res.status(400).json({ message: '请指定要预览的归档文件' });
+  res.json(maintenance.inspectYearlyArchive(fileName));
+}));
+
+// 恢复是一次性写库操作：默认先备份整库、默认跳过已存在的月份，
+// 只有显式传 overwrite 才会覆盖现有任务表。
+router.post('/maintenance/archives/restore', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  const fileName = String(body.file || '').trim();
+  if (!fileName) return res.status(400).json({ message: '请指定要恢复的归档文件' });
+
+  const result = await maintenance.restoreYearlyArchive({
+    fileName,
+    dryRun: Boolean(body.dryRun),
+    overwrite: Boolean(body.overwrite),
+    backup: body.backup !== false
+  });
+
+  if (!result.dryRun && result.restoredSheets > 0) {
+    const io = req.app.get('io');
+    if (io) io.emit('task_refreshed', { scope: 'yearly-archive-restore' });
+  }
+
+  const message = result.dryRun
+    ? `预演完成：可恢复 ${result.planned.writeSheets} 个工作表，跳过 ${result.planned.skippedSheets} 个已存在的工作表`
+    : `归档恢复完成：写入 ${result.restoredSheets} 个工作表（${result.restoredItems} 条任务记录），跳过 ${result.planned.skippedSheets} 个，失败 ${result.failed.length} 个`;
+
+  res.json({ message, restore: result });
+}));
+
 router.post('/maintenance/clear-logs', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
   // 登录/操作日志均在独立表中，直接清空，无需整库读写
   const loginLogsCount = db.countLoginLogs();

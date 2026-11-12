@@ -234,8 +234,10 @@ app.use((err, req, res, next) => {
   const status = err.status || 500;
   const isDev = process.env.NODE_ENV === 'development';
   // 5xx 服务端错误：生产环境不向客户端透出内部错误细节（如 SQLite 约束错误、
-  // 文件路径等），避免信息泄露；4xx 客户端错误保留原始消息便于排障
-  const message = status >= 500 && !isDev
+  // 文件路径等），避免信息泄露；4xx 客户端错误保留原始消息便于排障。
+  // 显式标了 err.expose 的错误（如「备份失败已中止写入」）例外：这类消息不含内部细节，
+  // 且正是运维需要看到的操作结论，不该被吞成「服务器内部错误」。
+  const message = status >= 500 && !isDev && !err.expose
     ? '服务器内部错误'
     : (err.message || '服务器内部错误');
   res.status(status).json({

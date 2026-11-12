@@ -129,10 +129,16 @@ const READ_ONLY_POST_PATHS = new Set([
   '/api/status-tracking/sync-schedule/preview'
 ]);
 
-// GET 中值得留痕的敏感读取：导出（数据外带）、数据库统计（库体量探测）
-// 覆盖 /export、/export-all、/export-xls 三种命名
+// GET 中值得留痕的敏感读取：导出（数据外带）、数据库统计（库体量探测）、
+// 年度归档的列表与预览（把归档内容解析出来，等同一次数据外带）。
+// 导出类覆盖 /export、/export-all、/export-xls 三种命名。
+const SENSITIVE_READ_PATHS = new Set([
+  '/api/system/db-stats',
+  '/api/system/maintenance/archives',
+  '/api/system/maintenance/archives/inspect'
+]);
 const isSensitiveRead = (normalizedPath) =>
-  /\/export(-all|-xls)?$/.test(normalizedPath) || normalizedPath === '/api/system/db-stats';
+  /\/export(-all|-xls)?$/.test(normalizedPath) || SENSITIVE_READ_PATHS.has(normalizedPath);
 
 const normalizePath = (rawPath = '') => {
   const withoutQuery = String(rawPath).split('?')[0];
@@ -194,6 +200,9 @@ const getActionDescription = (method, path, body) => {
     'system/maintenance/export-tasks': '导出任务数据',
     'system/maintenance/cleanup-backups': '清理过期备份',
     'system/maintenance/yearly-cleanup': '执行年度清理',
+    'system/maintenance/archives': '查看年度归档',
+    'system/maintenance/archives/inspect': '预览年度归档',
+    'system/maintenance/archives/restore': '恢复年度归档',
     'system/maintenance/clear-logs': '清空日志',
     'system/log-files/trim': '清理日志文件',
     'system/maintenance/cleanup-tasks': '清理任务数据',
