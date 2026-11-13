@@ -397,8 +397,8 @@ const SystemSettings = () => {
   };
   const [accessSettingsLoaded, setAccessSettingsLoaded] = useState(false);
   const [loginLogs, setLoginLogs] = useState<LoginLog[]>([]);
-  // 管理员登录信息卡片折叠状态（默认展开，收起后把空间让给下方的操作日志明细）
-  const [loginLogsCollapsed, setLoginLogsCollapsed] = useState(false);
+  // 管理员登录信息卡片折叠状态（默认折叠，把空间让给下方的操作日志明细；用户点击可展开）
+  const [loginLogsCollapsed, setLoginLogsCollapsed] = useState(true);
   // IP 黑名单：配置数据 / 添加输入框 / 备注 / 提交中
   const [ipBlacklist, setIpBlacklist] = useState<IpBlacklistData>({ enabled: false, entries: [] });
   const [ipInput, setIpInput] = useState('');
@@ -480,7 +480,13 @@ const SystemSettings = () => {
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
-    setToasts(prev => [...prev, { message, type, id }]);
+    // 同文案提示去重：页面初始化会并发拉十几个接口，后端重启/断网时
+    // 每个失败都弹一条会让屏幕堆满重复红条；同一提示在展示期内只保留一条
+    setToasts(prev => (
+      prev.some(t => t.message === message && t.type === type)
+        ? prev
+        : [...prev, { message, type, id }]
+    ));
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
@@ -562,8 +568,9 @@ const SystemSettings = () => {
       const res = await axios.get('/api/system/ip-blacklist', authHeader);
       setIpBlacklist({ enabled: Boolean(res.data?.enabled), entries: Array.isArray(res.data?.entries) ? res.data.entries : [] });
     } catch (err) {
-      markOfflineIfNetworkError(err);
-      addToast('无法加载 IP 黑名单', 'error');
+      // 后端不可达（重启/停止）由离线提示条统一说明，这里不再额外弹红条：
+      // 否则每次重连自愈的整批重拉都会再弹一次，看起来像「一直在报错」
+      if (!markOfflineIfNetworkError(err)) addToast('无法加载 IP 黑名单', 'error');
     }
   }, [isSuperAdmin, token, markOfflineIfNetworkError]);
 
@@ -712,6 +719,12 @@ const SystemSettings = () => {
     if (activeTab !== 'logs') return;
     fetchLogFiles();
   }, [activeTab, fetchLogFiles]);
+
+  // 每次切换到「操作日志」标签页时，管理员登录信息卡片回到默认折叠状态，优先露出下方的操作日志明细
+  useEffect(() => {
+    if (activeTab !== 'audit') return;
+    setLoginLogsCollapsed(true);
+  }, [activeTab]);
 
   // 实测标签栏高度，算出操作日志面板正确可用的吸顶起点（标签栏底部）
   useEffect(() => {

@@ -231,6 +231,13 @@ const Dashboard = () => {
   const [systemSettingsAccess, setSystemSettingsAccess] = useState(defaultAccessSettings);
   const [workdayOverrides, setWorkdayOverrides] = useState<WorkdayOverrides>({});
   const [updatingWorkdayOverrideDate, setUpdatingWorkdayOverrideDate] = useState<string | null>(null);
+  // 「设为周末加班日 / 普通工作日」会一并改动周末底色、周末加班统计、工时管理与工时导出，
+  // 鼠标悬停表头时很容易误点，勾选后先弹二次确认再落库
+  const [workdayOverrideConfirm, setWorkdayOverrideConfirm] = useState<{
+    date: string;
+    naturalIsWeekend: boolean;
+    checked: boolean;
+  } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const addToast = useCallback((message: string, type: 'success' | 'error') => {
@@ -505,7 +512,7 @@ const Dashboard = () => {
   }, [loading, systemSettingsLoaded]);
 
   const handleWorkdayOverrideChange = async (date: string, naturalIsWeekend: boolean, checked: boolean) => {
-    if (!isAdmin || !token) return;
+    if (!isAdmin || !token) return false;
 
     const type: WorkdayOverrideType | null = checked
       ? (naturalIsWeekend ? 'workday' : 'weekend')
@@ -517,13 +524,36 @@ const Dashboard = () => {
       setWorkdayOverrides(normalizeWorkdayOverrides(res.data));
       socketRef.current?.emit('task_updated');
       addToast('工作日设置已保存', 'success');
+      return true;
     } catch (err: any) {
       addToast(err.response?.data?.message || '保存工作日设置失败', 'error');
       fetchWorkdayOverrides();
+      return false;
     } finally {
       setUpdatingWorkdayOverrideDate(null);
     }
   };
+
+  // 确认弹窗点「确认设置」：成功后关窗，失败时保留弹窗（toast 已提示原因）以便重试
+  const confirmWorkdayOverrideChange = async () => {
+    const pending = workdayOverrideConfirm;
+    if (!pending) return;
+    const ok = await handleWorkdayOverrideChange(pending.date, pending.naturalIsWeekend, pending.checked);
+    if (ok) setWorkdayOverrideConfirm(null);
+  };
+
+  // 确认弹窗支持 Esc 关闭（保存中不响应，避免请求已发出却看不到结果）
+  useEffect(() => {
+    if (!workdayOverrideConfirm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (updatingWorkdayOverrideDate) return;
+      e.stopPropagation();
+      setWorkdayOverrideConfirm(null);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [workdayOverrideConfirm, updatingWorkdayOverrideDate]);
 
   const filteredDesigners = useMemo(() => {
     if (selectedDesignerId.startsWith('group:')) {
@@ -3344,7 +3374,11 @@ const Dashboard = () => {
                             type="checkbox"
                             checked={Boolean(workdayOverrides[d.fullDate])}
                             disabled={updatingWorkdayOverrideDate === d.fullDate}
-                            onChange={(e) => handleWorkdayOverrideChange(d.fullDate, d.naturalIsWeekend, e.target.checked)}
+                            onChange={(e) => setWorkdayOverrideConfirm({
+                              date: d.fullDate,
+                              naturalIsWeekend: d.naturalIsWeekend,
+                              checked: e.target.checked,
+                            })}
                             className="h-3 w-3 cursor-pointer disabled:cursor-not-allowed"
                           />
                           <span>{getWorkdayOverrideLabel(d.naturalIsWeekend)}</span>
@@ -5771,6 +5805,109 @@ const Dashboard = () => {
           </div>
         </div>
       )}
+
+      {/* 工作日覆盖二次确认：勾选会联动周末底色、加班统计与工时导出，表头上的勾选框极易误点，先拦一道 */}
+      {workdayOverrideConfirm && (() => {
+        const pending = workdayOverrideConfirm;
+        const weekday = `星期${'日一二三四五六'[new Date(`${pending.date}T00:00:00`).getDay()]}`;
+        // 勾选后：自然周末 → 普通工作日，自然工作日 → 周末加班日；取消勾选则回到自然状态
+        const effectiveIsWeekend = pending.checked ? !pending.naturalIsWeekend : pending.naturalIsWeekend;
+        const targetLabel = effectiveIsWeekend ? '周末加班日' : '普通工作日';
+        const actionLabel = pending.checked
+          ? (pending.naturalIsWeekend ? '将该日设为普通工作日' : '将该日设为周末加班日')
+          : '取消该日的工作日设置';
+        const saving = updatingWorkdayOverrideDate === pending.date;
+        return (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="workday-override-confirm-title"
+          >
+            <div
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              onClick={() => { if (!saving) setWorkdayOverrideConfirm(null); }}
+            />
+            <div className="relative w-[440px] max-w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
+              <div className="flex items-center justify-between bg-gradient-to-r from-amber-500 to-amber-600 px-5 py-4 text-white">
+                <div className="flex items-center gap-2 text-lg font-bold">
+                  <AlertCircle size={18} />
+                  确认修改工作日
+                </div>
+                <button
+                  type="button"
+                  className="rounded p-1 transition hover:bg-white/20 disabled:opacity-50"
+                  onClick={() => setWorkdayOverrideConfirm(null)}
+                  disabled={saving}
+                  title="关闭"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-3 p-5">
+                <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <AlertCircle size={20} className="mt-0.5 shrink-0 text-amber-500" />
+                  <div className="text-sm leading-relaxed text-gray-700">
+                    <div id="workday-override-confirm-title" className="mb-1 font-bold text-amber-700">
+                      确定要{actionLabel}吗？
+                    </div>
+                    <div className="text-xs text-gray-600">该设置会联动统计口径，请确认日期无误后再保存。</div>
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs leading-relaxed text-gray-500">
+                  <div>
+                    日期：<span className="font-bold text-gray-700">{pending.date}</span>
+                    <span className="mx-1 text-gray-300">·</span>
+                    <span className="font-bold text-gray-700">{weekday}</span>
+                  </div>
+                  <div>
+                    修改后：
+                    <span className={`ml-1 inline-flex items-center rounded border px-1.5 py-0.5 font-bold ${effectiveIsWeekend
+                      ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                      {targetLabel}
+                    </span>
+                  </div>
+                  <div className="pt-1 text-[11px] text-gray-400">
+                    同步影响：主页面周末底色、底部周末加班统计、工时管理统计、工时导出表
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-5 py-4">
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-200 px-4 py-2 font-bold text-gray-700 transition hover:bg-gray-100 disabled:opacity-50"
+                  onClick={() => setWorkdayOverrideConfirm(null)}
+                  disabled={saving}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-5 py-2 font-bold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={() => void confirmWorkdayOverrideChange()}
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <>
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                      保存中...
+                    </>
+                  ) : (
+                    <>
+                      <Check size={14} />
+                      确认设置
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {changePasswordOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

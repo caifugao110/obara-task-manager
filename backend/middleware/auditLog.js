@@ -130,11 +130,13 @@ const READ_ONLY_POST_PATHS = new Set([
 ]);
 
 // GET 中值得留痕的敏感读取：导出（数据外带）、数据库统计（库体量探测）、
-// 年度归档的列表与预览（把归档内容解析出来，等同一次数据外带）。
+// 年度归档的预览（把归档内容解析出来，等同一次数据外带）。
 // 导出类覆盖 /export、/export-all、/export-xls 三种命名。
+// 注意：年度归档「列表」(/maintenance/archives) 不进此集合——系统设置页的
+// 运维面板一挂载就会拉取该列表，属于纯页面初始化读，与「谁改了什么」无关，
+// 记下来只会把日志刷成「查看系统维护配置状态」。真正解析归档的 inspect 仍留痕。
 const SENSITIVE_READ_PATHS = new Set([
   '/api/system/db-stats',
-  '/api/system/maintenance/archives',
   '/api/system/maintenance/archives/inspect'
 ]);
 const isSensitiveRead = (normalizedPath) =>

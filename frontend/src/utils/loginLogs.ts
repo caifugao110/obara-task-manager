@@ -200,6 +200,10 @@ const routeActionDescriptions: Record<string, { label: string; description: stri
   'POST system/maintenance/export-tasks': { label: '导出任务数据', description: '手动导出任务表格数据' },
   'POST system/maintenance/cleanup-backups': { label: '清理过期备份', description: '清理过期的数据库备份文件' },
   'POST system/maintenance/yearly-cleanup': { label: '执行年度清理', description: '执行年度任务数据清理检测' },
+  // 归档列表/预览必须精确登记：缺项会被「截掉末段」的兜底匹配归一成
+  // GET system/maintenance，于是日志里显示成「查看系统维护配置状态」
+  'GET system/maintenance/archives': { label: '查看年度归档', description: '查看年度清理归档文件列表' },
+  'GET system/maintenance/archives/inspect': { label: '预览年度归档', description: '解析年度归档文件内容' },
   'POST system/maintenance/clear-logs': { label: '清空日志', description: '清空登录日志和操作日志' },
   'POST system/maintenance/cleanup-tasks': { label: '清理任务数据', description: '清理指定月份的任务数据' },
   'GET system/db-stats': { label: '查看数据库统计', description: '查看数据库大小和数据统计' },
