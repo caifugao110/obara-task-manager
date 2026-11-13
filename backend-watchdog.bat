@@ -31,7 +31,7 @@ rem                        mainly used by automated tests
 rem
 rem Log: logs\backend-watchdog.log (one line per start / exit / restart)
 rem
-rem Hang detection (方案 3)
+rem Hang detection (strategy 3)
 rem -----------------------
 rem A process that is alive but no longer answers HTTP never "ends", so neither
 rem --exitcrash nor the exit-code check below can see it. Every spawn also
@@ -67,8 +67,10 @@ set /a FAILS=0
 :loop
 set /a SPAWN+=1
 
-rem 让上一代的探测器退休（它每轮比对代号，不一致即退出），再启动本代的探测器。
-rem 必须在启动后端之前写代号：旧探测器醒来先读代号再探测，不会误杀新实例。
+rem Retire the previous generation's probe (it compares the gen number each
+rem round and exits when it no longer matches), then start this generation's probe.
+rem The gen number MUST be written before the backend starts: the old probe reads
+rem the gen first, then probes, so it never kills the new instance by mistake.
 >"%PROBE_GEN_FILE%" echo %SPAWN%
 start "obara-health-probe" /b "%~dp0backend-health-probe.bat" %SPAWN%
 

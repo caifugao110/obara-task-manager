@@ -3,28 +3,33 @@ chcp 65001 >nul 2>&1
 setlocal
 
 rem =====================================================================
-rem 后端假死探测器（方案 3，由 backend-watchdog.bat 启动）
+rem Backend hang detector (strategy 3, launched by backend-watchdog.bat)
 rem
-rem 为什么需要它
-rem ------------
-rem 后端可能「活着但不响应」：共享盘 UNC 调用挂死把 libuv 线程池占满后，
-rem 事件循环还在跑、端口也还在 LISTENING，但所有 HTTP 请求都排队等不到响应。
-rem 这种情况下进程不会退出，nodemon 的 --exitcrash 与 watchdog 的退出码判断
-rem 完全察觉不到，只能靠人工重启——2026-11 的生产故障就是这种情况。
+rem Why this exists
+rem ---------------
+rem The backend can be "alive but unresponsive": when a UNC share call hangs
+rem and fills the libuv thread pool, the event loop keeps running and the port
+rem stays LISTENING, but every HTTP request queues forever with no response.
+rem In that state the process never exits, so neither nodemon's --exitcrash
+rem nor the watchdog's exit-code check can detect it - the only remedy was a
+rem manual restart, which caused the Nov 2026 production incident.
 rem
-rem 本脚本每 30 秒向本机后端发一次 HTTP 请求（含超时），连续 3 次拿不到任何
-rem HTTP 响应即判定假死：找到监听该端口的 PID 并 taskkill /F /T，nodemon 随之
-rem 退出，watchdog 走原有的重新拉起流程。
+rem This script sends one HTTP request (with timeout) to the local backend
+rem every 30 seconds. After 3 consecutive rounds with no HTTP response at all
+rem it declares a hang: finds the PID listening on that port and runs
+rem taskkill /F /T, which makes nodemon exit (via --exitcrash) and the
+rem watchdog restart it through its normal recovery flow.
 rem
-rem 参数 1 = 本次后端实例代号（watchdog 每次 spawn 递增并写入 .gen 文件）。
-rem   代号变化说明后端已换代（正常重启/文件热重载），本实例立即退出，
-rem   避免旧探测器误杀新实例。
+rem Arg 1 = this backend instance's generation number (the watchdog increments
+rem   it on every spawn and writes it to the .gen file). When the number
+rem   changes the backend has been replaced (normal restart / hot reload), so
+rem   this probe exits immediately rather than killing the new instance.
 rem
-rem 环境变量（均有默认值）：
-rem   PORT                    后端端口（start.bat 传入）
-rem   OBARA_PROBE_INTERVAL    探测间隔秒数，默认 30
-rem   OBARA_PROBE_TIMEOUT     单次 HTTP 超时秒数，默认 5
-rem   OBARA_PROBE_FAILS       连续失败阈值，默认 3
+rem Environment variables (all have defaults):
+rem   PORT                    backend port (passed in by start.bat)
+rem   OBARA_PROBE_INTERVAL    probe interval in seconds, default 30
+rem   OBARA_PROBE_TIMEOUT     single HTTP timeout in seconds, default 5
+rem   OBARA_PROBE_FAILS       consecutive-failure threshold, default 3
 rem =====================================================================
 
 set "SCRIPT_DIR=%~dp0"
@@ -47,7 +52,7 @@ set /a ROUND=0
 set /a WAIT=OBARA_PROBE_INTERVAL+1
 
 :loop
-rem 后端实例换代 → 本探测器退出
+rem Backend instance generation changed -> this probe retires
 set "CURRENT_GEN="
 if exist "%GEN_FILE%" set /p CURRENT_GEN=<"%GEN_FILE%"
 if not "%CURRENT_GEN%"=="%MY_GEN%" (
@@ -58,13 +63,15 @@ if not "%CURRENT_GEN%"=="%MY_GEN%" (
 
 set /a ROUND+=1
 set "PROBE_OK=0"
-rem 任何 HTTP 响应（包括 401/404）都说明事件循环还能处理请求；只有完全拿不到
-rem 响应（超时/连接无响应）才算失败。用 PowerShell 是为了有明确的超时控制。
+rem Any HTTP response (even 401/404) proves the event loop still serves
+rem requests; only a complete lack of response (timeout / connection dead)
+rem counts as failure. PowerShell is used for its explicit timeout control.
 powershell -NoProfile -Command "try { $null = Invoke-WebRequest -Uri ('http://127.0.0.1:%PORT%/') -UseBasicParsing -TimeoutSec %OBARA_PROBE_TIMEOUT% -ErrorAction Stop; exit 0 } catch { if ($_.Exception.Response) { exit 0 } else { exit 1 } }" >nul 2>&1
 if %ERRORLEVEL% EQU 0 set "PROBE_OK=1"
 
-rem 失败计数与日志不要写在同一个括号块里：cmd 会在解析时就展开 %FAILS%，
-rem 括号内打出来的会是自增前的旧值。这里用 goto 拆开。
+rem Keep the failure counter and its log out of the same parenthesised block:
+rem cmd expands %FAILS% at parse time, so inside a block it would print the
+rem pre-increment value. Use goto to split them apart.
 if "%PROBE_OK%"=="1" goto probe_healthy
 set /a FAILS+=1
 call :log "health probe failed (%FAILS%/%OBARA_PROBE_FAILS%) on port %PORT% (round %ROUND%)"
@@ -79,9 +86,10 @@ ping -n %WAIT% 127.0.0.1 >nul
 goto loop
 
 rem ---------------------------------------------------------------------
-rem 找出监听该端口的 PID 并杀掉整个进程树。
-rem 端口仍在 LISTENING 却没有 HTTP 响应，正是「假死」的特征；
-rem nodemon 看到子进程退出后会因 --exitcrash 一并退出，watchdog 随即重启。
+rem Find the PID listening on this port and kill its entire process tree.
+rem A port that is still LISTENING yet answers no HTTP is the very signature
+rem of a "hang"; once nodemon sees its child exit it exits too (--exitcrash),
+rem and the watchdog restarts the backend right after.
 rem ---------------------------------------------------------------------
 :kill_listener
 set "FOUND="
@@ -104,7 +112,8 @@ if errorlevel 1 (
 exit /b 0
 
 rem ---------------------------------------------------------------------
-rem 写一行到 watchdog 日志并回显到 stdout（start.bat 会重定向到 logs\backend.log）
+rem Append one line to the watchdog log and echo to stdout (start.bat
+rem redirects stdout into logs\backend.log)
 rem ---------------------------------------------------------------------
 :log
 >>"%WATCHDOG_LOG%" echo [%date% %time%] [probe] %~1
