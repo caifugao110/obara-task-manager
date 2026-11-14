@@ -10,6 +10,7 @@ const Joi = require('joi');
 const { applyExportStyles, buildAutoColumns } = require('../utils/exportWorkbook');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const { getStatusTrackingLock } = require('../utils/statusTrackingLocks');
+const { emitToPage, emitToPageExcept } = require('../utils/socketRooms');
 const { calculateDesignDeliveryDays, withDynamicDesignDeliveryDays } = require('../utils/designDelivery');
 const scheduleSyncService = require('../utils/scheduleSyncService');
 
@@ -35,16 +36,16 @@ const rowLockConflictMessage = (lock, req) => {
 // 广播的内容是本次请求写入后的服务端快照，对发起者而言永远滞后于它本地最新的输入：
 // 若也回推给它，前端受控 input 的 value 会被改回旧值，中文输入法的合成被强行中断，
 // 表现为「字还没打完就被截断」（浏览器里会残留 fafan'kuaifan'ku 这样的拼音）。
-// 前端会带 x-socket-id，据此精确排除；不带（脚本/旧客户端）时退化为全员广播。
+// 前端会带 x-socket-id，据此精确排除；不带（脚本/旧客户端）时退化为房间内全员广播。
+// 收件人范围同时收敛到 page:statusTracking 房间——无该页面权限的连接不得收到业务数据。
 const emitToOthers = (io, req, event, payload) => {
   if (!io) return;
   const requesterSocketId = String(req.get('x-socket-id') || '').trim();
-  if (requesterSocketId && typeof io.except === 'function') {
-    io.except(requesterSocketId).emit(event, payload);
-  } else {
-    io.emit(event, payload);
-  }
+  emitToPageExcept(io, 'statusTracking', event, payload, requesterSocketId);
 };
+
+// 全量下发（同步/导入/清理后）：同样只发往有状态的权限连接
+const emitStatusTrackingBulk = (io, items) => emitToPage(io, 'statusTracking', 'status_tracking_bulk', items);
 
 const statusTrackingItemSchema = Joi.object({
   id: Joi.string().allow(''),
@@ -290,7 +291,7 @@ router.post('/items/bulk', [authMiddleware, adminMiddleware, accessSettingsMiddl
   const dynamicItems = data.statusTrackingItems.map(withDynamicDesignDeliveryDays);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_bulk', dynamicItems);
+    emitStatusTrackingBulk(io, dynamicItems);
   }
   
   res.json(dynamicItems);
@@ -344,7 +345,7 @@ router.post('/sync-schedule', [authMiddleware, adminMiddleware, scheduleSyncPerm
   const { stats, data, applied } = result;
   const io = req.app.get('io');
   if (io && applied) {
-    io.emit('status_tracking_bulk', (data.statusTrackingItems || []).map(withDynamicDesignDeliveryDays));
+    emitStatusTrackingBulk(io, (data.statusTrackingItems || []).map(withDynamicDesignDeliveryDays));
   }
 
   res.json({
@@ -694,7 +695,7 @@ router.post('/import', [authMiddleware, superAdminMiddleware, upload.single('fil
   const dynamicItems = data.statusTrackingItems.map(withDynamicDesignDeliveryDays);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_bulk', dynamicItems);
+    emitStatusTrackingBulk(io, dynamicItems);
   }
 
   res.json({ importedRows, updatedRows });
@@ -751,7 +752,7 @@ router.post('/cleanup', [authMiddleware, superAdminMiddleware], asyncHandler(asy
   const dynamicItems = data.statusTrackingItems.map(withDynamicDesignDeliveryDays);
   const io = req.app.get('io');
   if (io) {
-    io.emit('status_tracking_bulk', dynamicItems);
+    emitStatusTrackingBulk(io, dynamicItems);
   }
 
   res.json({

@@ -4,10 +4,11 @@ import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import { acquireSocket } from '../utils/socketClient';
 import LoadingScreen from '../components/LoadingScreen';
+import LogoutButton from '../components/LogoutButton';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { getTaskDisplayColors, isTaskPaused } from '../utils/taskColors';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, ChevronDown, LogOut, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users, CalendarDays, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, AlertCircle, CheckCircle, RefreshCw, TrendingUp, FileSpreadsheet, BarChart2, Shield, Users, CalendarDays, X } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface DesignerData {
@@ -73,7 +74,7 @@ const weekDayLabel = (dateStr: string) => {
 };
 
 const Leaderboard = () => {
-  const { user, token, logout } = useAuth();
+  const { user, token } = useAuth();
   const { specNumberDigits, settings: systemSettings } = useSystemSettings();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [designers, setDesigners] = useState<DesignerData[]>([]);
@@ -666,10 +667,7 @@ const Leaderboard = () => {
           {user ? (
             <div className="flex items-center space-x-4">
               <span className="text-sm font-bold text-amber-700">{user.name}</span>
-              <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-                <LogOut size={18} />
-                <span>退出</span>
-              </button>
+              <LogoutButton offline={isOffline} />
             </div>
           ) : (
             <Link to="/login" className="text-blue-600 hover:text-blue-800 font-bold transition">
@@ -699,10 +697,7 @@ const Leaderboard = () => {
             <span>返回工作台</span>
           </Link>
           {user && (
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={isOffline} />
           )}
         </header>
         <div className="flex-1 flex items-center justify-center">
@@ -798,10 +793,7 @@ const Leaderboard = () => {
         {user && (
           <div className="flex items-center space-x-4">
             <span className="text-sm font-bold text-amber-700">{user.name}</span>
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={isOffline} />
           </div>
         )}
       </header>
@@ -913,7 +905,6 @@ const Leaderboard = () => {
                     <div className="space-y-3">
                       {specProgressStats.map(stat => {
                         const completedPct = stat.total > 0 ? Math.round((stat.completed / stat.total) * 100) : 0;
-                        const unfinishedPct = stat.total > 0 ? Math.round((stat.unfinished / stat.total) * 100) : 0;
                         const segmented = stat.total > 0 && stat.total <= 50;
                         // 分类徽标底色跟随「任务内容配色体系」：确认图=淡绿、确认图修改=淡粉、设计=浅黄
                         const badgeColor = systemSettings.taskColorConfig[stat.key as keyof typeof systemSettings.taskColorConfig] || '#e5e7eb';

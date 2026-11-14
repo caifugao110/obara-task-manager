@@ -9,8 +9,21 @@ const path = require('path');
 const fs = require('fs');
 
 const securityConfig = require('./config/security');
-const { socketAuthMiddleware, requireSocketAuth, requireSocketRole } = require('./middleware/socketAuth');
+const {
+  socketAuthMiddleware,
+  validateSocketSession,
+  requireSocketAuth,
+  requireSocketRole
+} = require('./middleware/socketAuth');
 const { hasAccessSettings } = require('./middleware/auth');
+// 页面级广播收敛：业务数据只发给当前确有该页面权限的连接
+const {
+  PAGE_ROOMS,
+  syncSocketRooms,
+  syncAllSocketRooms,
+  emitToPage,
+  disconnectSocketWithReason
+} = require('./utils/socketRooms');
 
 // ---------------------------------------------------------------------------
 // 进程级崩溃兜底
@@ -300,10 +313,11 @@ const broadcastGunLedgerStopped = (sessions, sourceSocket) => {
   sessions.forEach(session => {
     const payload = { tableId: session.tableId, serialNumber: session.serialNumber, userId: session.userId };
     if (sourceSocket) {
-      sourceSocket.broadcast.emit('gun_ledger_edit_stop', payload);
+      // 只发给有台账权限的连接（sourceSocket.to 语义：不含发起者本身）
+      sourceSocket.to(PAGE_ROOMS.gunLedger).emit('gun_ledger_edit_stop', payload);
       sourceSocket.emit('gun_ledger_edit_stop', payload);
     } else {
-      io.emit('gun_ledger_edit_stop', payload);
+      emitToPage(io, 'gunLedger', 'gun_ledger_edit_stop', payload);
     }
   });
 };
@@ -325,10 +339,10 @@ const broadcastStatusTrackingStopped = (sessions, sourceSocket) => {
   sessions.forEach(session => {
     const payload = { itemId: session.itemId, userId: session.userId };
     if (sourceSocket) {
-      sourceSocket.broadcast.emit('status_tracking_edit_stop', payload);
+      sourceSocket.to(PAGE_ROOMS.statusTracking).emit('status_tracking_edit_stop', payload);
       sourceSocket.emit('status_tracking_edit_stop', payload);
     } else {
-      io.emit('status_tracking_edit_stop', payload);
+      emitToPage(io, 'statusTracking', 'status_tracking_edit_stop', payload);
     }
   });
 };
@@ -342,6 +356,14 @@ const stateSnapshotProviders = {
   gun_ledger_editing_state: publicGunLedgerSessions,
   gun_ledger_table_locks_state: () => gunTableLocks.snapshot(),
   status_tracking_editing_state: publicStatusTrackingSessions
+};
+
+// 快照所属页面：按需补发时同样要校验页面权限，
+// 否则无权限连接只要发一次 request_state 就能把行锁/表锁全量取走
+const stateSnapshotPages = {
+  gun_ledger_editing_state: 'gunLedger',
+  gun_ledger_table_locks_state: 'gunLedger',
+  status_tracking_editing_state: 'statusTracking'
 };
 
 // Socket 事件频率限制：按连接计数，防止单个客户端高频广播造成全体刷新风暴。
@@ -446,14 +468,26 @@ io.on('connection', (socket) => {
   // 此时用户已通过认证中间件验证
   const user = socket.data.user;
   socket.join(`user:${user.id}`);
-  console.log(`User connected: ${user.username} (${socket.id})`);
+  // 按页面权限入房间：后续台账/状态跟踪的业务广播只发往这些房间，
+  // 无该页面权限的连接既收不到实时数据，也收不到行锁与编辑提示
+  syncSocketRooms(socket);
+  const canGunLedger = socket.rooms.has(PAGE_ROOMS.gunLedger);
+  const canStatusTracking = socket.rooms.has(PAGE_ROOMS.statusTracking);
+  console.log(
+    `User connected: ${user.username} (${socket.id}) 权限[gunLedger=${canGunLedger ? 'Y' : 'N'} statusTracking=${canStatusTracking ? 'Y' : 'N'}]`
+  );
 
   socket.emit('editing_state', publicEditingSessions());
-  socket.emit('gun_ledger_editing_state', publicGunLedgerSessions());
-  socket.emit('gun_ledger_table_locks_state', gunTableLocks.snapshot());
+  // 快照同样按权限下发：否则无权限连接一连上就能拿到全部行锁与表锁信息
+  if (canGunLedger) {
+    socket.emit('gun_ledger_editing_state', publicGunLedgerSessions());
+    socket.emit('gun_ledger_table_locks_state', gunTableLocks.snapshot());
+  }
   // 状态跟踪行锁快照：后连接的客户端据此渲染「被他人编辑」状态，
   // 不必等下一次编辑广播才能看到锁
-  socket.emit('status_tracking_editing_state', publicStatusTrackingSessions());
+  if (canStatusTracking) {
+    socket.emit('status_tracking_editing_state', publicStatusTrackingSessions());
+  }
 
   // task_updated 事件：验证用户身份
   socket.on('task_updated', (payload) => {
@@ -614,7 +648,7 @@ io.on('connection', (socket) => {
       };
 
       statusTrackingSessions.set(key, session);
-      socket.broadcast.emit('status_tracking_edit_start', session);
+      socket.to(PAGE_ROOMS.statusTracking).emit('status_tracking_edit_start', session);
       socket.emit('status_tracking_edit_start', session);
     } catch (err) {
       socket.emit('error', { message: err.message });
@@ -653,6 +687,9 @@ io.on('connection', (socket) => {
         ? stateSnapshotProviders[eventName]
         : null;
       if (!provider) return;
+      // 需要页面权限的快照：无权限直接静默忽略（不暴露锁信息）
+      const requiredPage = stateSnapshotPages[eventName];
+      if (requiredPage && !socket.rooms.has(PAGE_ROOMS[requiredPage])) return;
       if (!socketRateLimit(socket, 'request_state', 20, 10 * 1000)) return;
       socket.emit(eventName, provider());
     } catch (err) {
@@ -692,7 +729,7 @@ io.on('connection', (socket) => {
         socketId: socket.id
       };
       gunLedgerSessions.set(key, session);
-      socket.broadcast.emit('gun_ledger_edit_start', session);
+      socket.to(PAGE_ROOMS.gunLedger).emit('gun_ledger_edit_start', session);
     } catch (err) {
       socket.emit('error', { message: err.message });
     }
@@ -735,7 +772,7 @@ io.on('connection', (socket) => {
         return;
       }
       if (result.status === 'acquired') {
-        io.emit('gun_ledger_table_locked', result.holder);
+        emitToPage(io, 'gunLedger', 'gun_ledger_table_locked', result.holder);
       } else {
         // 同一用户多标签页：仅向本人确认，无需重复广播
         socket.emit('gun_ledger_table_locked', result.holder);
@@ -755,7 +792,7 @@ io.on('connection', (socket) => {
       }
       const tableId = String(data.tableId);
       const released = gunTableLocks.unlock(tableId, socket.id);
-      if (released) io.emit('gun_ledger_table_unlocked', { tableId });
+      if (released) emitToPage(io, 'gunLedger', 'gun_ledger_table_unlocked', { tableId });
     } catch (err) {
       socket.emit('error', { message: err.message });
     }
@@ -786,7 +823,7 @@ io.on('connection', (socket) => {
     // 释放该 socket 持有的表级编辑锁（引用归零才真正释放并广播）
     const releasedTableIds = gunTableLocks.releaseSocket(socket.id);
     releasedTableIds.forEach(tableId => {
-      io.emit('gun_ledger_table_unlocked', { tableId });
+      emitToPage(io, 'gunLedger', 'gun_ledger_table_unlocked', { tableId });
     });
     console.log(`User disconnected: ${user.username} (${socket.id})`);
   });
@@ -801,10 +838,29 @@ io.on('connection', (socket) => {
 const gunTableLockSweeper = setInterval(() => {
   const staleTableIds = gunTableLocks.sweepStale(io);
   staleTableIds.forEach(tableId => {
-    io.emit('gun_ledger_table_unlocked', { tableId });
+    emitToPage(io, 'gunLedger', 'gun_ledger_table_unlocked', { tableId });
   });
 }, 30 * 1000);
 gunTableLockSweeper.unref();
+
+// 每 60 秒巡检一次在线连接：重算页面房间 + 复核会话。
+// 事件级复核只在「有事件发生时」生效，静默挂着的连接（只收广播、不发事件）
+// 不会触发它；退出登录、被禁用、令牌过期后最长 60 秒内会被这里断开。
+const socketSessionSweeper = setInterval(() => {
+  try {
+    syncAllSocketRooms(io);
+    io.of('/').sockets.forEach((socket) => {
+      const result = validateSocketSession(socket);
+      if (!result.ok) {
+        console.log(`[socket] 巡检断开连接 ${socket.id}: ${result.reason}`);
+        disconnectSocketWithReason(socket, result.reason, result.code);
+      }
+    });
+  } catch (e) {
+    console.error('[socket] 连接巡检失败:', e.message);
+  }
+}, 60 * 1000);
+socketSessionSweeper.unref();
 
 
 const handleShutdown = async (signal) => {

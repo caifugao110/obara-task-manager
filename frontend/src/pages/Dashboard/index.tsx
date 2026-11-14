@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { axiosInstance } from '../../services/api';
 import { isAxiosError } from 'axios';
 import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Check, ShieldCheck, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap } from 'lucide-react';
+import { UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Check, ShieldCheck, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap, Wand2, Search, Loader2, Hash } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
@@ -38,10 +39,15 @@ import {
 import SortableTask from './components/SortableTask';
 import DroppableCell from './components/DroppableCell';
 import QuickConfirmModifyModal from './components/QuickConfirmModifyModal';
+import SpecSelfHealModal from './components/SpecSelfHealModal';
 import QuickGunTakeModal from '../../components/QuickGunTakeModal';
+import LogoutButton from '../../components/LogoutButton';
 import { useEditingSessions } from './hooks/useEditingSessions';
 import { useModalDrag } from '../../hooks/useModalDrag';
 import LoadingScreen from '../../components/LoadingScreen';
+import PageZoomViewport from '../../components/PageZoomViewport';
+import PageZoomIndicator from '../../components/PageZoomIndicator';
+import { getPageZoom, screenToLocal } from '../../utils/pageZoom';
 import { useTaskHistory } from './hooks/useTaskHistory';
 import { useGunDragDrop } from './hooks/useGunDragDrop';
 import { defaultAccessSettings } from './constants';
@@ -141,7 +147,8 @@ const measureTaskNameWidth = (taskId: string): number | undefined => {
     if (markGroup) {
       const markStyle = window.getComputedStyle(markGroup);
       if (markStyle.position !== 'absolute') {
-        leadingButtonsWidth = markGroup.getBoundingClientRect().width + (parseFloat(markStyle.marginRight) || 0);
+        // clientWidth 是布局 px，getBoundingClientRect 是屏幕 px：主页面缩放后两者差一个倍率，统一成本地 px
+        leadingButtonsWidth = screenToLocal(markGroup.getBoundingClientRect().width) + (parseFloat(markStyle.marginRight) || 0);
       }
     }
 
@@ -178,7 +185,8 @@ const pickNameContentWidth = (items: TaskItem[]): number | undefined => {
 
 /* ---------- 主表格列宽 ---------- */
 // 一天在横向上占两列：「任务内容」+「工时」。
-// 主页面要求横向只显示 4 天，所以「任务内容」列的宽度由视口宽度反算（见表格列宽那个 effect 的注释），
+// 100% 缩放时要求横向正好显示 4 天，所以「任务内容」列的宽度由视口宽度反算（见表格列宽那个 effect 的注释）；
+// 页面整体放大/缩小（Ctrl+滚轮）后这个「4 天」不再维持——放大看得更少、缩小看得更多，纯等比缩放。
 // 工时列固定 3rem(48px) 不随视口变化；设计员列与月总工时列各固定 w-24(96px)。
 const VISIBLE_DAY_COLUMNS = 4;
 const DAY_HOURS_COL_WIDTH = 48;
@@ -189,7 +197,7 @@ const MIN_TASK_COL_WIDTH = 240;
 const DEFAULT_TASK_COL_WIDTH = 288;
 
 const Dashboard = () => {
-  const { user, token, logout } = useAuth();
+  const { user, token, login } = useAuth();
   const { specNumberDigits, settings: systemSettings, refreshSettings } = useSystemSettings();
   // 进入主页时回读一次系统设置：保证在 /system-settings 保存的配色立刻生效（含其他标签页保存的情况）
   useEffect(() => {
@@ -291,24 +299,63 @@ const Dashboard = () => {
   const [versionInfo, setVersionInfo] = useState<{ currentVersion: string; hasUpdate: boolean; latestVersion: string | null } | null>(null);
   const [clientInfo, setClientInfo] = useState<{ ip: string; browser: string; summary: string; lastLoginAt?: string | null; previousLoginAt?: string | null } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  // 操作说明弹窗（仅管理员可见入口）
+  // 操作说明弹窗（仅管理员可见入口）：按住顶栏可拖动
   const [helpGuideOpen, setHelpGuideOpen] = useState(false);
+  const {
+    frameRef: helpGuideFrameRef,
+    dragging: helpGuideDragging,
+    headerProps: helpGuideHeaderProps,
+  } = useModalDrag(helpGuideOpen);
   // 快捷添加「确认图修改」弹窗（连按两次 Shift，仅管理员）
   const [quickModifyOpen, setQuickModifyOpen] = useState(false);
-  // 快速取号弹窗（连按两次空格，仅管理员且有焊枪台账访问权限）
+  // 快速取号弹窗（连按两次空格，或点页脚左下角「快速取号」按钮；仅管理员且有焊枪台账访问权限）
   const [quickGunTakeOpen, setQuickGunTakeOpen] = useState(false);
+  // 本次打开落在哪一层：take = 取号界面；assign = 直接进「为今日取号安排确认图」浮层（页脚同名按钮）
+  const [quickGunTakeEntryView, setQuickGunTakeEntryView] = useState<'take' | 'assign'>('take');
+  // 同一个页脚入口反复点击时递增，让弹窗知道「这是一次新的打开」
+  const [quickGunTakeNonce, setQuickGunTakeNonce] = useState(0);
+  // 仕样自愈弹窗（底部「就绪」右侧入口，仅管理员）：检测并按仕样书校准当月客户名与纳期
+  const [specSelfHealOpen, setSpecSelfHealOpen] = useState(false);
+  // 查找弹窗（底部状态栏入口，所有登录用户可用）：按关键字查找任务名/枪名并定位到表格
   const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
   const [batchFindText, setBatchFindText] = useState('');
-  const [batchReplaceText, setBatchReplaceText] = useState('');
   const [batchReplaceAllTable, setBatchReplaceAllTable] = useState(false);
-  const [batchReplaceLoading, setBatchReplaceLoading] = useState(false);
   const [batchSearchLoading, setBatchSearchLoading] = useState(false);
   const [batchMatches, setBatchMatches] = useState<BatchReplaceMatch[]>([]);
   const [batchMatchCount, setBatchMatchCount] = useState(0);
   const [batchSearchDone, setBatchSearchDone] = useState(false);
-  // 点击"定位"后模态框临时半透明，方便透过模态框查看底部表格中的目标任务
-  const [batchLocateDimmed, setBatchLocateDimmed] = useState(false);
-  const batchLocateRestoreTimerRef = useRef<number | null>(null);
+  // 顶部绿条（header）的实测高度：查找弹窗默认停靠在它下面，不遮挡月份切换与导航。
+  // 用测量而不是写死像素，字号/缩放/换行变化时位置自动跟随。
+  // 注意：组件首次挂载时处于 loading 态，header 还没渲染（见下方 early return），
+  // 所以不能用「只跑一次」的 useEffect + useRef——那时 ref 是 null，量不到高度，
+  // 加载完 header 挂载后 effect 也不会再跑。改用 callback ref：header 一挂载就测量，
+  // 卸载时清理 observer，天然适配 loading → 已加载的切换。
+  const headerObserverRef = useRef<ResizeObserver | null>(null);
+  const [dashboardHeaderHeight, setDashboardHeaderHeight] = useState(0);
+  const dashboardHeaderRef = useCallback((el: HTMLElement | null) => {
+    if (headerObserverRef.current) {
+      headerObserverRef.current.disconnect();
+      headerObserverRef.current = null;
+    }
+    if (!el) return;
+    // 页面可能被整体缩放（见 utils/pageZoom）：getBoundingClientRect 是屏幕 px，
+    // 折成本地 px 存下来，倍率变化时这个值才依旧对得上（宽度变了会重新触发 ResizeObserver）
+    const sync = () => setDashboardHeaderHeight(screenToLocal(el.getBoundingClientRect().height));
+    sync();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(sync);
+    observer.observe(el);
+    headerObserverRef.current = observer;
+  }, []);
+  const FIND_MODAL_TOP_GAP = 5;
+  const findModalTop = dashboardHeaderHeight > 0 ? Math.round(dashboardHeaderHeight) + FIND_MODAL_TOP_GAP : null;
+  const findModalMaxHeight = findModalTop !== null ? `calc(100vh - ${findModalTop + 16}px)` : null;
+  // 查找弹窗：按住顶栏可拖动
+  const {
+    frameRef: batchFindFrameRef,
+    dragging: batchFindDragging,
+    headerProps: batchFindHeaderProps,
+  } = useModalDrag(batchReplaceOpen);
   // 删除枪名的二次确认目标：点删除按钮只记录目标，确认后才真正删除（枪名删掉只能靠撤销找回）
   const [gunDeleteTarget, setGunDeleteTarget] = useState<{ item: TaskItem; designerId: string; date: string; gunIndex: number } | null>(null);
 
@@ -358,16 +405,6 @@ const Dashboard = () => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [helpGuideOpen]);
-
-  // 批量操作模态框关闭时恢复透明度并清理定位恢复计时器
-  useEffect(() => {
-    if (batchReplaceOpen) return;
-    setBatchLocateDimmed(false);
-    if (batchLocateRestoreTimerRef.current) {
-      window.clearTimeout(batchLocateRestoreTimerRef.current);
-      batchLocateRestoreTimerRef.current = null;
-    }
-  }, [batchReplaceOpen]);
 
   // 普通用户且在设计人员列表中时，打开主页面默认只显示本人任务；
   // 管理员（admin/superadmin）且在设计人员列表中时，默认筛选显示其所在分组
@@ -488,18 +525,23 @@ const Dashboard = () => {
     };
   }), [daysInMonth, firstDayOfMonth, workdayOverrides]);
 
-  // 主表格列宽：横向只放 4 天（VISIBLE_DAY_COLUMNS）。
-  // 做法是「视口宽度 ÷ 4 = 一天的整列宽度」，再扣掉固定 48px 的工时列，剩下的全给任务内容列——
+  // 主表格列宽：**100% 缩放时**横向正好放 4 天（VISIBLE_DAY_COLUMNS）。
+  // 做法是「可用宽度 ÷ 4 = 一天的整列宽度」，再扣掉固定 48px 的工时列，剩下的全给任务内容列——
   // 工时列宽度不动，只是任务内容列变宽，任务名折行更少，横向要滚动的距离也更短。
   // 用 ResizeObserver 跟着窗口/全屏/F12 缩放一起变；表格按 100% 宽度渲染，
   // 所以列宽合计贴近视口宽度，行内网格与表头才对得齐。
+  //
+  // 页面缩放（Ctrl+滚轮，见 utils/pageZoom）后**不再维持 4 天**：列宽按「缩放前的可用宽度」算，
+  // 所以放大时一天在屏幕上更宽、横向只能看到两三天（滚动条补齐），缩小时一天更窄、能看到五六天，
+  // 这才是纯等比缩放。实现上就是拿容器宽度乘回当前倍率——容器宽度是 视口宽度 / 倍率。
   // 依赖里带上加载态：加载骨架屏期间表格还没挂载，等它渲染出来再量一次，否则会一直用默认列宽。
   useEffect(() => {
     const el = tableScrollRef.current;
     if (!el) return;
     const compute = () => {
-      const dayWidth = (el.clientWidth - FIXED_COL_WIDTH * 2) / VISIBLE_DAY_COLUMNS;
-      // 向下取整：宁可每列少 1px，也保证第 4 天是完整的一列，不会被切掉一小条
+      const referenceWidth = el.clientWidth * getPageZoom();
+      const dayWidth = (referenceWidth - FIXED_COL_WIDTH * 2) / VISIBLE_DAY_COLUMNS;
+      // 向下取整：宁可每列少 1px，也保证 100% 时第 4 天是完整的一列，不会被切掉一小条
       const next = Math.max(MIN_TASK_COL_WIDTH, Math.floor(dayWidth - DAY_HOURS_COL_WIDTH));
       // 差 2px 以内不更新：列宽变了行高可能跟着变（换行不同 → 纵向滚动条出现/消失 → clientWidth 变），
       // 这种微小抖动没必要重排整张表，也避免 ResizeObserver 来回触发
@@ -513,6 +555,11 @@ const Dashboard = () => {
 
   const handleWorkdayOverrideChange = async (date: string, naturalIsWeekend: boolean, checked: boolean) => {
     if (!isAdmin || !token) return false;
+    // 离线时这个开关（连同确认弹窗）本应点不开；这里再兜一层，防止其它入口/键盘绕过
+    if (isOfflineMode) {
+      addToast('当前离线，禁止修改工作日设置', 'error');
+      return false;
+    }
 
     const type: WorkdayOverrideType | null = checked
       ? (naturalIsWeekend ? 'workday' : 'weekend')
@@ -651,7 +698,7 @@ const Dashboard = () => {
     }
   }, [jumpTarget, loading, sheets, designers, navigate, addToast]);
 
-  // 将今日列滚动到视图中央展示（打开主页面自动定位、点击左下角状态手动定位均复用）
+  // 将今日列滚动到视图中央展示（打开主页面自动定位、连按两次 Ctrl 手动定位均复用）
   // 日期表头始终渲染且带有 data-date，整月无任务（sheets 为空）、当日无任务或分组全部折叠时也能定位到今日列
   const scrollTodayColumnIntoView = useCallback(() => {
     const now = new Date();
@@ -677,16 +724,36 @@ const Dashboard = () => {
     return () => window.clearTimeout(timer);
   }, [loading, sheets, designers, currentDate, jumpTarget, scrollTodayColumnIntoView]);
 
-  // 点击左下角状态指示（就绪/离线）时定位到今日列，不触发任何重连或数据刷新
-  // 连按两次 Ctrl 的快捷操作复用同一入口，行为与点击完全一致
-  const handleFooterStatusClick = useCallback(() => {
-    if (loading) return;
-    window.setTimeout(() => {
-      scrollTodayColumnIntoView();
-    }, 0);
-  }, [loading, scrollTodayColumnIntoView]);
+  // 定位今日列：仅由「连按两次 Ctrl」触发（左下角状态区已改为只显示本机延迟，不再可点击），
+  // 只做滚动定位，不触发任何重连或数据刷新。原来点击状态点调用的 handleFooterStatusClick 已随按钮一起删除。
 
-  // 快捷操作：连按两次 Ctrl（间隔 400ms 内）= 点击左下角状态指示「定位到今日任务」
+  // 本机到服务端的往返延迟：左下角状态栏显示（如 15ms），每 10 秒探一次；
+  // 页面在后台时跳过，避免切走标签页后还在持续发请求。
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const measure = async () => {
+      if (document.hidden) return;
+      const started = performance.now();
+      try {
+        await axiosInstance.get('/system/ping', { timeout: 5000 });
+        if (!cancelled) setLatencyMs(Math.max(1, Math.round(performance.now() - started)));
+      } catch {
+        if (!cancelled) setLatencyMs(null);
+      }
+    };
+    void measure();
+    const timer = window.setInterval(() => { void measure(); }, 10000);
+    const onVisible = () => { if (!document.hidden) void measure(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+
+  // 快捷操作：连按两次 Ctrl（间隔 400ms 内）= 定位到今日任务（替代原先点击左下角状态的做法）
   // 只要两次 Ctrl 之间插入了其它按键（Ctrl+C 等组合键）或鼠标按下（Ctrl+单击多选、Ctrl+拖动复制），
   // 即打断判定并重新计数，避免与录入类快捷键冲突
   useEffect(() => {
@@ -842,6 +909,8 @@ const Dashboard = () => {
           quickAction();
           return;
         }
+        // 快捷键一律进取号界面（页脚的「安排确认图」入口才直接落到浮层）
+        setQuickGunTakeEntryView('take');
         setQuickGunTakeOpen(true);
       } else {
         lastSpaceAt = now;
@@ -982,7 +1051,70 @@ const Dashboard = () => {
     helpGuideOpen, batchReplaceOpen, changePasswordOpen, addToast,
   ]);
 
+  // 查找：连按两次 F（间隔 400ms 内）= 打开左下角「查找」弹窗（等同点击底部状态栏的查找按钮）。
+  // 查找对所有登录用户可用，因此这里不区分管理员；但离线时补丁按钮已置灰禁用（查找要打后端），
+  // 快捷键同步停用，避免「按钮点不了、连按两次 F 却能弹出空对话框」的不一致。
+  // Ctrl+F / Cmd+F 是浏览器自带查找，必须整体让行；Shift+F 视作录入字符也不参与判定。
+  // 识别方式同时认 e.key（'f' / 'F' / 中文输入法下的 'Process'）与物理键位 code === 'KeyF'。
+  useEffect(() => {
+    // 离线模式：与页脚「查找」按钮保持一致，整条双击 F 快捷键停用
+    if (isOfflineMode) return;
+    const DOUBLE_F_INTERVAL = 400;
+    let lastFAt = 0;
 
+    const resetTap = () => { lastFAt = 0; };
+
+    const isTypingTarget = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      return !!el.closest('input, textarea, select, [contenteditable="true"]');
+    };
+
+    const handleDoubleFKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) { resetTap(); return; }
+      const isF = e.code === 'KeyF' || e.key === 'f' || e.key === 'F';
+      if (!isF) {
+        // 其它按键一律打断判定，避免「敲了别的键再按 F」被误判成连按
+        resetTap();
+        return;
+      }
+      if (e.repeat || e.shiftKey || isTypingTarget()) {
+        resetTap();
+        return;
+      }
+      // 任一弹窗已打开时不接管：避免在弹窗里连续按 F 把查找窗口叠上来
+      if (
+        modalOpen || quickModifyOpen || quickGunTakeOpen || helpGuideOpen || batchReplaceOpen
+        || changePasswordOpen || specSelfHealOpen || !!gunDeleteTarget
+      ) {
+        resetTap();
+        return;
+      }
+      e.preventDefault();
+      const now = Date.now();
+      if (lastFAt && now - lastFAt <= DOUBLE_F_INTERVAL) {
+        resetTap();
+        // 与左下角「查找」按钮完全一致的动作（该按钮也是 setBatchReplaceOpen(true)）
+        setBatchReplaceOpen(true);
+      } else {
+        lastFAt = now;
+      }
+    };
+
+    // 鼠标点击（选任务、点单元格）打断判定，避免「点一下再按 F」被误判为连按
+    const handleDoubleFMouseDown = () => { resetTap(); };
+
+    window.addEventListener('keydown', handleDoubleFKeyDown);
+    window.addEventListener('mousedown', handleDoubleFMouseDown);
+    return () => {
+      window.removeEventListener('keydown', handleDoubleFKeyDown);
+      window.removeEventListener('mousedown', handleDoubleFMouseDown);
+    };
+  }, [
+    isOfflineMode,
+    modalOpen, quickModifyOpen, quickGunTakeOpen, helpGuideOpen, batchReplaceOpen,
+    changePasswordOpen, specSelfHealOpen, gunDeleteTarget,
+  ]);
 
   // Handle focus when modal opens with focus target
   useEffect(() => {
@@ -1953,8 +2085,8 @@ const Dashboard = () => {
         return;
       }
 
-      // 其余弹窗（快速修改 / 快速取号 / 操作说明 / 改密码）各自处理 Esc，这里不再抢键
-      if (quickModifyOpen || quickGunTakeOpen || helpGuideOpen || changePasswordOpen) return;
+      // 其余弹窗（快速修改 / 快速取号 / 操作说明 / 改密码 / 仕样自愈）各自处理 Esc，这里不再抢键
+      if (quickModifyOpen || quickGunTakeOpen || helpGuideOpen || changePasswordOpen || specSelfHealOpen) return;
 
       // 主页面：Esc 取消主任务选中（单选 / 多选通用），顺手也清掉加号单元格的选中态
       if (isEditableKeyboardTarget(e.target)) return;
@@ -1970,7 +2102,7 @@ const Dashboard = () => {
     };
   }, [
     batchReplaceOpen, modalOpen, modalDesignerId, modalDate, stopEditingCell,
-    quickModifyOpen, quickGunTakeOpen, helpGuideOpen, changePasswordOpen,
+    quickModifyOpen, quickGunTakeOpen, helpGuideOpen, changePasswordOpen, specSelfHealOpen,
   ]);
 
   const fetchWorkdayOverrides = useCallback(async () => {
@@ -2740,9 +2872,10 @@ const Dashboard = () => {
     setBatchSearchDone(false);
   };
 
-  const getBatchReplacePayload = () => ({
-    findText: batchFindText,
-    replaceText: batchReplaceText,
+  // 查找请求体：查找只读，不再带替换文本（替换入口已移除，仅保留查找与定位）
+  const getBatchSearchPayload = () => ({
+    // 前后空格不参与匹配：用户从别处粘过来常带空格，留着会把结果搜成 0 条
+    findText: batchFindText.trim(),
     allTable: batchReplaceAllTable,
     month: currentDate.getMonth() + 1,
     year: currentDate.getFullYear()
@@ -2755,34 +2888,69 @@ const Dashboard = () => {
     return fallback;
   };
 
-  const openBatchReplaceDialog = async () => {
-    if (warnIfOfflineEdit()) return;
-    if (pendingChanges.length > 0) {
-      const changes = [...pendingChanges];
-      for (const change of changes) {
-        await saveItem(change.designerId, change.date, change.itemId, change.field, change.value);
+  // 查找结果里的关键字高亮：按字面量切分（与后端 equals/like 的字面量匹配口径一致）
+  // 命中文字高亮：与后端同口径——英文不区分大小写，中文按字面；
+  // 高亮片段用原文切片（保留任务名里原有的大小写），不把关键字直接写进 mark
+  const highlightMatch = (text: string) => {
+    const source = String(text);
+    const keyword = batchFindText.trim();
+    if (!keyword) return source;
+    const haystack = source.toLowerCase();
+    const needle = keyword.toLowerCase();
+    const nodes: React.ReactNode[] = [];
+    let from = 0;
+    let key = 0;
+    for (;;) {
+      const index = haystack.indexOf(needle, from);
+      if (index === -1) break;
+      if (index > from) {
+        nodes.push(<React.Fragment key={`t${key++}`}>{source.slice(from, index)}</React.Fragment>);
       }
-      setPendingChanges([]);
+      nodes.push(
+        <mark key={`m${key++}`} className="bg-amber-200/80 text-amber-900 rounded px-0.5">
+          {source.slice(index, index + keyword.length)}
+        </mark>
+      );
+      from = index + keyword.length;
     }
+    if (nodes.length === 0) return source;
+    if (from < source.length) {
+      nodes.push(<React.Fragment key={`t${key++}`}>{source.slice(from)}</React.Fragment>);
+    }
+    return <React.Fragment>{nodes}</React.Fragment>;
+  };
 
-    if (modalDesignerId && modalDate) {
-      stopEditingCell(modalDesignerId, modalDate);
-    }
-    setModalOpen(false);
-    setFocusTarget(null);
+  // 左下角「查找」入口：只做查找与定位（替换功能已移除），不再牵动任务弹窗与待保存改动
+  const openFindDialog = () => {
     setBatchReplaceOpen(true);
   };
 
+  /**
+   * 页脚四个快捷入口（仕样自愈 / 快速取号 / 安排确认图 / 查找）的胶囊按钮样式。
+   * 离线时这四个功能全部依赖后端，点了也只会弹「当前离线」错误，因此统一置灰 + disabled。
+   * onlineClasses 里已包含边框色/背景色/文字色/悬停色，离线分支不能再叠同名工具类
+   * （Tailwind 的生成顺序决定谁生效，叠了会时灵时不灵）。
+   */
+  const footerActionChipClass = (onlineClasses: string) =>
+    `group flex items-center gap-1 pl-1.5 pr-2 py-[2px] rounded-full border text-[11px] font-bold shadow-sm transition-colors focus:outline-none ${
+      isOfflineMode
+        ? 'border-gray-300 bg-gray-100 text-gray-400 opacity-60 cursor-not-allowed'
+        : onlineClasses
+    }`;
+
   const handleBatchSearch = async () => {
-    if (warnIfOfflineEdit()) return;
-    if (!batchFindText) {
-      addToast('请输入查找字符', 'error');
+    if (isOfflineMode) {
+      addToast('当前离线，无法查找任务', 'error');
+      return;
+    }
+    if (!batchFindText.trim()) {
+      addToast('请输入查找关键字', 'error');
       return;
     }
 
     setBatchSearchLoading(true);
     try {
-      const res = await axiosInstance.post('/tasks/batch-replace/search', getBatchReplacePayload());
+      const res = await axiosInstance.post('/tasks/batch-replace/search', getBatchSearchPayload());
       setBatchMatches(Array.isArray(res.data.matches) ? res.data.matches : []);
       setBatchMatchCount(res.data.matchCount || 0);
       setBatchSearchDone(true);
@@ -2820,15 +2988,7 @@ const Dashboard = () => {
     // 选中任务以蓝色边框高亮
     setSelectedTasks([{ itemId: match.itemId, designerId: match.designerId, date: match.date }]);
 
-    // 模态框透明度降为 20%，便于透过模态框查看底部定位结果；鼠标移回模态框或 3 秒后恢复
-    setBatchLocateDimmed(true);
-    if (batchLocateRestoreTimerRef.current) window.clearTimeout(batchLocateRestoreTimerRef.current);
-    batchLocateRestoreTimerRef.current = window.setTimeout(() => {
-      setBatchLocateDimmed(false);
-      batchLocateRestoreTimerRef.current = null;
-    }, 3000);
-
-    // 等待表格重渲染后滚动定位
+    // 等待表格重渲染后滚动定位（查找弹窗保持原样，不做半透明处理）
     window.setTimeout(() => {
       const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
       const target = document.querySelector(
@@ -2836,29 +2996,6 @@ const Dashboard = () => {
       ) as HTMLElement | null;
       target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     }, 120);
-  };
-
-  const handleBatchReplace = async () => {
-    if (warnIfOfflineEdit()) return;
-    if (!batchFindText) {
-      addToast('请输入查找字符', 'error');
-      return;
-    }
-
-    setBatchReplaceLoading(true);
-    try {
-      const res = await axiosInstance.post('/tasks/batch-replace', getBatchReplacePayload());
-
-      await fetchSheets();
-      socketRef.current?.emit('task_updated');
-      setBatchReplaceOpen(false);
-      resetBatchSearchResults();
-      addToast(`批量替换完成：替换了 ${res.data.itemCount || 0} 个任务`, 'success');
-    } catch (err: any) {
-      addToast(getRequestErrorMessage(err, '批量替换失败'), 'error');
-    } finally {
-      setBatchReplaceLoading(false);
-    }
   };
 
   // 处理任务项的字段变更，将更改存入 pendingChanges 并实时更新界面。
@@ -3079,6 +3216,8 @@ const Dashboard = () => {
   };
 
   const changeMonth = (offset: number) => {
+    // 离线时月份锁定（本地缓存只对应当前月），在入口处兜一层，防止其它调用点漏拦截
+    if (isOfflineMode) return;
     const newDate = new Date(currentDate);
     newDate.setMonth(newDate.getMonth() + offset);
     setCurrentDate(newDate);
@@ -3141,12 +3280,24 @@ const Dashboard = () => {
     : isOnline
       ? 'bg-green-500'
       : 'bg-red-500';
-  const footerStatusTextClass = !hasRealtimeUpdates ? 'text-amber-600' : '';
-  const footerStatusText = !hasRealtimeUpdates
-    ? '需手动刷新获取最新状态'
-    : isOnline
-      ? '就绪'
-      : '离线';
+  // 左下角只显示本机到服务端的往返延迟（不再显示「就绪」文字，也不可点击）
+  const footerLatencyText = !isOnline
+    ? '离线'
+    : latencyMs !== null
+      ? `${latencyMs}ms`
+      : '…';
+  const footerLatencyClass = !isOnline
+    ? 'text-red-600 font-semibold'
+    : latencyMs === null
+      ? 'text-gray-400'
+      : latencyMs <= 80
+        ? 'text-green-700'
+        : latencyMs <= 200
+          ? 'text-amber-600'
+          : 'text-red-600';
+  const footerLatencyTitle = isOnline
+    ? `本机到服务器的往返延迟（每 10 秒刷新）${latencyMs !== null ? `：${latencyMs}ms` : ''}`
+    : '当前离线：数据来自本地缓存，恢复联网后自动刷新';
 
   // 任务类型非"设计计划"时隐藏批量操作/显示纳期/手动输入（新增+编辑模式均适用）
   // 新增模式：selectedTaskType !== 'none'；编辑模式：正在编辑的任务带有 leaveType
@@ -3158,8 +3309,14 @@ const Dashboard = () => {
     ? selectedTaskType !== 'none'
     : !!editingItemLeaveType;
 
+  // 当前缩放倍率：拖拽浮层挂在缩放层外面，里面写的是本地 px，量出来的屏幕 px 要按倍率折回去
+  const pageZoom = getPageZoom();
+
   return (
-    <div className="h-screen overflow-hidden bg-[#f3f3f3] flex flex-col font-sans">
+    <PageZoomViewport>
+    {/* 尺寸由 PageZoomViewport 提供（100vw/z × 100vh/z），这里用 h-full 铺满它；
+        整页内容都在缩放层里，缩放时布局尺寸不变、视觉等比放大缩小 */}
+    <div className="h-full overflow-hidden bg-[#f3f3f3] flex flex-col font-sans">
       {/* Toast（下移至标题栏下方，避免遮挡顶部标题栏） */}
       <div className="fixed top-16 right-4 z-50 flex flex-col gap-2">
         {toasts.map(toast => (
@@ -3170,10 +3327,12 @@ const Dashboard = () => {
         ))}
       </div>
 
-      <header className="shrink-0 bg-[#217346] text-white px-6 py-2 flex items-center justify-between shadow-md">
+      {/* 页面整体放大后（Ctrl+滚轮）顶栏可用宽度会变窄：允许整组换行，
+          而不是默认的「挤压 flex 子项」——挤到最后按钮文字会竖排，很难看 */}
+      <header ref={dashboardHeaderRef} className="shrink-0 bg-[#217346] text-white px-6 py-2 flex flex-wrap items-center justify-between gap-y-1.5 shadow-md whitespace-nowrap">
         
-        <div className="flex items-center space-x-6">
-          <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5">
+          <div className="flex shrink-0 items-center space-x-2">
             <img src="/favicon.ico" alt="Obara" className="w-6 h-6" />
             <a
               href="https://caifugao110.github.io/obara-task-manager/"
@@ -3184,15 +3343,25 @@ const Dashboard = () => {
               Obara 任务管理系统
             </a>
           </div>
-          <div className="flex items-center bg-[#1a5c38] rounded p-0.5 ml-4">
-            <button onClick={() => changeMonth(-1)} className="p-1 hover:bg-[#217346] rounded transition">
+          <div className="flex shrink-0 items-center bg-[#1a5c38] rounded p-0.5 ml-4">
+            {/* 离线时月份只能停在缓存数据的那个月：切月要重新拉该月任务，离线切过去只会得到空白表 */}
+            <button
+              onClick={() => changeMonth(-1)}
+              disabled={isOfflineMode}
+              title={isOfflineMode ? '当前离线，无法切换月份' : '上一月'}
+              className="p-1 hover:bg-[#217346] rounded transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+            >
               <ChevronLeft size={18} />
             </button>
-            <span className="relative px-4 font-bold text-sm min-w-[110px] text-center cursor-pointer hover:bg-[#217346] rounded transition">
+            <span
+              className={`relative px-4 font-bold text-sm min-w-[110px] text-center rounded transition ${isOfflineMode ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-[#217346]'}`}
+              title={isOfflineMode ? '当前离线，无法切换月份' : '点击选择月份'}
+            >
               {format(currentDate, 'yyyy年 MM月')}
               <input
                 type="month"
                 className="delivery-date-input"
+                disabled={isOfflineMode}
                 value={format(currentDate, 'yyyy-MM')}
                 onChange={(e) => {
                   if (e.target.value) {
@@ -3202,11 +3371,16 @@ const Dashboard = () => {
                 }}
               />
             </span>
-            <button onClick={() => changeMonth(1)} className="p-1 hover:bg-[#217346] rounded transition">
+            <button
+              onClick={() => changeMonth(1)}
+              disabled={isOfflineMode}
+              title={isOfflineMode ? '当前离线，无法切换月份' : '下一月'}
+              className="p-1 hover:bg-[#217346] rounded transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+            >
               <ChevronRight size={18} />
             </button>
           </div>
-          <div className="relative">
+          <div className="relative shrink-0">
             <select
               value={selectedDesignerId}
               onChange={(e) => setSelectedDesignerId(e.target.value)}
@@ -3229,7 +3403,7 @@ const Dashboard = () => {
                 to="/leaderboard"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+                className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
               >
                 <FileSpreadsheet size={16} className="text-blue-200" />
                 <span>任务报表</span>
@@ -3240,7 +3414,7 @@ const Dashboard = () => {
                 to="/work-hours"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+                className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
               >
                 <Clock size={16} className="text-amber-200" />
                 <span>工时管理</span>
@@ -3251,7 +3425,7 @@ const Dashboard = () => {
                 to="/status-tracking"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+                className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
               >
                 <Clock size={16} className="text-blue-200" />
                 <span>状态跟踪表</span>
@@ -3262,7 +3436,7 @@ const Dashboard = () => {
               to="/design-standards"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+              className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
             >
               <BookOpen size={16} className="text-emerald-200" />
               <span>设计规范知识库</span>
@@ -3273,7 +3447,7 @@ const Dashboard = () => {
               to="/gun-ledger"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
+              className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 bg-[#1a5c38] hover:bg-[#237a47] rounded transition text-white text-sm font-medium"
             >
               <ClipboardList size={16} className="text-emerald-200" />
               <span>焊枪编号台账</span>
@@ -3281,7 +3455,7 @@ const Dashboard = () => {
           )}
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className="flex shrink-0 items-center space-x-4">
           {versionInfo && (
             <span className="text-xs opacity-80 font-mono" title={`当前版本: ${versionInfo.currentVersion}`}>
               当前版本 {versionInfo.currentVersion}
@@ -3301,8 +3475,9 @@ const Dashboard = () => {
                     setChangePasswordSuccess('');
                     setChangePasswordOpen(true);
                   }}
-                  title="点击可进行密码修改"
-                  className="text-sm font-bold text-amber-300 hover:text-amber-100 transition cursor-pointer px-1 py-0.5 rounded"
+                  disabled={isOfflineMode}
+                  title={isOfflineMode ? '当前离线，无法修改密码（需校验原密码并提交到服务器）' : '点击可进行密码修改'}
+                  className="text-sm font-bold text-amber-300 hover:text-amber-100 transition px-1 py-0.5 rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-amber-300"
                 >
                   {user.name}
                 </button>
@@ -3322,9 +3497,7 @@ const Dashboard = () => {
                   <UserCog size={20} />
                 </Link>
               )}
-              <button onClick={logout} className="p-1.5 hover:bg-red-600 rounded transition" title="退出">
-                <LogOut size={20} />
-              </button>
+              <LogoutButton offline={isOfflineMode} variant="icon" />
             </>
           )}
         </div>
@@ -3369,17 +3542,23 @@ const Dashboard = () => {
                     <th key={d.fullDate} data-date={d.fullDate} colSpan={2} style={{ minWidth: dayColWidth }} className={`group/date sticky top-0 border border-gray-300 text-center font-bold z-40 ${d.isWeekend ? 'bg-indigo-50' : ''}`}>
                       <div className="whitespace-nowrap">{d.monthNum}月{d.dayNum}日&nbsp;&nbsp;&nbsp;{d.dayName}</div>
                       {isAdmin && (
-                        <label className="mt-1 hidden items-center justify-center gap-1 text-[10px] font-semibold text-gray-600 leading-none cursor-pointer select-none group-hover/date:flex group-focus-within/date:flex">
+                        <label
+                          className={`mt-1 hidden items-center justify-center gap-1 text-[10px] font-semibold leading-none select-none group-hover/date:flex group-focus-within/date:flex ${
+                            isOfflineMode ? 'text-gray-400 opacity-60 cursor-not-allowed' : 'text-gray-600 cursor-pointer'
+                          }`}
+                          title={isOfflineMode ? '当前离线，无法修改工作日设置' : undefined}
+                        >
                           <input
                             type="checkbox"
                             checked={Boolean(workdayOverrides[d.fullDate])}
-                            disabled={updatingWorkdayOverrideDate === d.fullDate}
+                            // 离线时禁用：这个开关会 PUT /settings/workday-overrides 落库
+                            disabled={updatingWorkdayOverrideDate === d.fullDate || isOfflineMode}
                             onChange={(e) => setWorkdayOverrideConfirm({
                               date: d.fullDate,
                               naturalIsWeekend: d.naturalIsWeekend,
                               checked: e.target.checked,
                             })}
-                            className="h-3 w-3 cursor-pointer disabled:cursor-not-allowed"
+                            className={`h-3 w-3 ${isOfflineMode ? 'cursor-not-allowed' : 'cursor-pointer'} disabled:cursor-not-allowed`}
                           />
                           <span>{getWorkdayOverrideLabel(d.naturalIsWeekend)}</span>
                         </label>
@@ -3668,7 +3847,12 @@ const Dashboard = () => {
             </div>
         </main>
 
-        <DragOverlay>
+        {/* 拖拽浮层挂到 body：dnd-kit 用 getBoundingClientRect 的**屏幕 px** 定位浮层，
+            留在缩放层里会被再乘一次倍率、跟不上光标。浮层内部再按倍率放大回页面大小，
+            这样拖动时浮层的字号/行高与表格里完全一致 */}
+        {createPortal(
+          <DragOverlay>
+            <div style={{ position: 'absolute', top: 0, left: 0, transform: `scale(${pageZoom})`, transformOrigin: '0 0' }}>
           {activeTask && (
             <div className="relative">
               {/* 重复提示（移动/复制共用）：浮在拖拽主任务的正上方 */}
@@ -3768,13 +3952,15 @@ const Dashboard = () => {
                 pointerEvents: 'none',
                 filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.22))',
                 // DragOverlay 根容器宽高锁定为激活节点（手柄按钮），必须显式给整行尺寸，
-                // 否则内容会被压缩成手柄大小（约 21px 宽的空白小矩形）
-                width: activeGun.dims ? activeGun.dims.width : 200,
-                height: activeGun.dims ? activeGun.dims.height : 24,
+                // 否则内容会被压缩成手柄大小（约 21px 宽的空白小矩形）；
+                // 这里的尺寸是屏幕 px（getBoundingClientRect 实测），外层浮层再按倍率放大，
+                // 所以先除以倍率换算回页面本地 px
+                width: activeGun.dims ? screenToLocal(activeGun.dims.width) : 200,
+                height: activeGun.dims ? screenToLocal(activeGun.dims.height) : 24,
                 flexShrink: 0,
                 transform:
                   activeGun.dims && (activeGun.dims.offsetX || activeGun.dims.offsetY)
-                    ? `translate(${activeGun.dims.offsetX || 0}px, ${activeGun.dims.offsetY || 0}px)`
+                    ? `translate(${screenToLocal(activeGun.dims.offsetX || 0)}px, ${screenToLocal(activeGun.dims.offsetY || 0)}px)`
                     : undefined,
               }}
             >
@@ -3842,8 +4028,8 @@ const Dashboard = () => {
                 style={{
                   display: 'flex',
                   flexDirection: 'row',
-                  width: activeGun.dims ? activeGun.dims.width : 200,
-                  height: activeGun.dims ? activeGun.dims.height : 24,
+                  width: activeGun.dims ? screenToLocal(activeGun.dims.width) : 200,
+                  height: activeGun.dims ? screenToLocal(activeGun.dims.height) : 24,
                   flexShrink: 0,
                   backgroundColor: activeGun.gun.color && !isWhiteTaskColor(activeGun.gun.color) ? activeGun.gun.color : '#ffffff',
                   border: `1px solid ${gunDropInvalid ? '#f87171' : gunDropSelf ? '#9ca3af' : '#93c5fd'}`,
@@ -3871,7 +4057,7 @@ const Dashboard = () => {
                 </div>
                 <div
                   style={{
-                    width: activeGun.dims ? activeGun.dims.hoursWidth : 48,
+                    width: activeGun.dims ? screenToLocal(activeGun.dims.hoursWidth) : 48,
                     flexShrink: 0,
                     display: 'flex',
                     alignItems: 'center',
@@ -3888,20 +4074,78 @@ const Dashboard = () => {
               </div>
             </div>
           )}
-        </DragOverlay>
+            </div>
+          </DragOverlay>,
+          document.body,
+        )}
       </DndContext>
 
-      <footer className="shrink-0 bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex justify-between items-center text-[11px] text-gray-500">
-        <div className="flex items-center space-x-4">
-          <button
-            type="button"
-            onClick={handleFooterStatusClick}
-            title="点击或连按两次 Ctrl 定位到今日任务"
-            className="flex items-center gap-1.5 hover:text-gray-700 transition-colors cursor-pointer focus:outline-none"
+      <footer className="shrink-0 bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex flex-wrap items-center justify-between gap-y-0.5 text-[11px] text-gray-500 whitespace-nowrap">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
+          {/* 状态点 + 本机延迟：不再可点击（定位今日改用连按两次 Ctrl） */}
+          <div
+            className="flex items-center gap-1.5 select-none"
+            title={footerLatencyTitle}
           >
             <div className={`w-2 h-2 rounded-full ${footerStatusDotClass}`}></div>
-            <span className={footerStatusTextClass}>{footerStatusText}</span>
-            <kbd className="ml-0.5 px-1 py-[1px] text-[10px] font-mono leading-none text-gray-400 bg-white/70 border border-gray-300 rounded shadow-sm">Ctrl×2</kbd>
+            <span className={`tabular-nums ${footerLatencyClass}`}>{footerLatencyText}</span>
+          </div>
+          {/* 仕样自愈：按仕样书校准当月任务里的客户名与纳期（仅管理员可见） */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setSpecSelfHealOpen(true)}
+              disabled={isOfflineMode}
+              title={isOfflineMode ? '当前离线，仕样自愈不可用' : '检测并修复本月任务里的客户名与纳期（按仕样书校准）'}
+              className={footerActionChipClass('border-emerald-300 bg-white/70 text-emerald-700 cursor-pointer hover:bg-[#217346] hover:border-[#217346] hover:text-white focus:ring-2 focus:ring-emerald-300/60')}
+            >
+              <Wand2 size={11} strokeWidth={2.4} />
+              <span>仕样自愈</span>
+            </button>
+          )}
+          {/* 快速取号：与连按两次空格呼出的弹窗完全同源，仅多一个鼠标入口（需管理员且有台账访问权限） */}
+          {canTakeGunNumber && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuickGunTakeEntryView('take');
+                setQuickGunTakeOpen(true);
+              }}
+              disabled={isOfflineMode}
+              title={isOfflineMode ? '当前离线，快速取号不可用' : '焊枪名快速取号（等同主页面连按两次空格）：选分类 → 选表 → 取该表最新的未取行'}
+              className={footerActionChipClass('border-amber-300 bg-white/70 text-amber-700 cursor-pointer hover:bg-amber-600 hover:border-amber-600 hover:text-white focus:ring-2 focus:ring-amber-300/60')}
+            >
+              <Hash size={11} strokeWidth={2.6} />
+              <span>快速取号</span>
+            </button>
+          )}
+          {/* 为今日取号安排确认图：等同取号弹窗页头的同名按钮，直接打开那个浮层（需取号权限） */}
+          {canTakeGunNumber && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuickGunTakeEntryView('assign');
+                setQuickGunTakeNonce(n => n + 1);
+                setQuickGunTakeOpen(true);
+              }}
+              disabled={isOfflineMode}
+              title={isOfflineMode ? '当前离线，取号安排确认图不可用' : '把今天取到的号按客户分组安排确认图任务（与取号弹窗页头的「为今日取号安排确认图」同一个浮层）'}
+              className={footerActionChipClass('border-violet-300 bg-white/70 text-violet-700 cursor-pointer hover:bg-violet-600 hover:border-violet-600 hover:text-white focus:ring-2 focus:ring-violet-300/60')}
+            >
+              <ClipboardList size={11} strokeWidth={2.6} />
+              <span>为今日取号安排确认图</span>
+            </button>
+          )}
+          {/* 查找：原「批量操作」入口，只保留查找与定位（所有登录用户可用） */}
+          <button
+            type="button"
+            onClick={openFindDialog}
+            disabled={isOfflineMode}
+            title={isOfflineMode ? '当前离线，查找不可用' : '按关键字查找任务名与枪名，并定位到表格中的任务'}
+            className={footerActionChipClass('border-sky-300 bg-white/70 text-sky-700 cursor-pointer hover:bg-sky-600 hover:border-sky-600 hover:text-white focus:ring-2 focus:ring-sky-300/60')}
+          >
+            <Search size={11} strokeWidth={2.6} />
+            <span>查找</span>
           </button>
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <div className="flex items-center gap-1.5">
@@ -3921,7 +4165,7 @@ const Dashboard = () => {
             <span>{formatFooterHours(monthlyFooterStats.leaveHours)}</span>
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex shrink-0 items-center gap-4">
           {clientInfo && (
             <>
               {lastLoginText && (
@@ -3948,6 +4192,9 @@ const Dashboard = () => {
               </button>
             </>
           )}
+          <div className="w-[1px] h-3 bg-gray-300"></div>
+          {/* 页面缩放：Ctrl+滚轮 / Ctrl+加减号 的快捷键提示与当前倍率，点数字复位 100% */}
+          <PageZoomIndicator />
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <button
             type="button"
@@ -3982,14 +4229,39 @@ const Dashboard = () => {
           offline={isOfflineMode}
           designers={designers}
           onTasksCreated={handleQuickAssignCreated}
+          entryView={quickGunTakeEntryView}
+          openNonce={quickGunTakeNonce}
+        />
+      )}
+
+      {isAdmin && (
+        <SpecSelfHealModal
+          open={specSelfHealOpen}
+          onClose={() => setSpecSelfHealOpen(false)}
+          year={currentDate.getFullYear()}
+          month={currentDate.getMonth() + 1}
+          addToast={addToast}
+          isSuperAdmin={isSuperAdmin}
+          onApplied={() => {
+            // 更新跨多名设计员：直接重拉当月任务，并广播一次全量刷新给其他在线用户
+            void fetchSheets();
+            emitTaskUpdated();
+          }}
         />
       )}
 
       {helpGuideOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={() => setHelpGuideOpen(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-[820px] max-w-[94vw] max-h-[92vh] flex flex-col overflow-hidden border border-gray-200">
-            <div className="relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0">
+          <div className="absolute inset-0 bg-black/20" onClick={() => setHelpGuideOpen(false)} />
+          <div
+            ref={helpGuideFrameRef}
+            style={{ transform: 'translate3d(0px, 0px, 0)' }}
+            className="relative bg-white rounded-xl shadow-2xl w-[820px] max-w-[94vw] max-h-[92vh] flex flex-col overflow-hidden border border-gray-200"
+          >
+            <div
+              {...helpGuideHeaderProps}
+              className={`relative flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0 select-none touch-none ${helpGuideDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+            >
               <div className="flex items-center gap-2.5">
                 <div className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15 border border-white/25">
                   <HelpCircle size={18} />
@@ -4130,35 +4402,26 @@ const Dashboard = () => {
                   <span className="font-bold text-sm text-gray-800">界面快捷操作</span>
                   <span className="text-[11px] text-gray-400 ml-auto">任意位置均可触发</span>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2">
-                  <ul className="divide-y divide-gray-100 md:border-r md:border-gray-100">
-                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                      <span className="shrink-0 w-[72px]">
-                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Ctrl×2</kbd>
+                {/* 五行快捷操作排成两行（3 + 2）：文字压到最短，完整说明走 title 悬浮提示 */}
+                <div className="grid grid-cols-1 sm:grid-cols-3">
+                  {[
+                    { keys: 'Ctrl×2', text: '定位今日任务', title: '连按两次 Ctrl：滚动定位到今日任务列' },
+                    { keys: 'Shift×2', text: '添加确认图修改', title: '连按两次 Shift：添加确认图修改（添加后自动定位）' },
+                    { keys: 'Space×2', text: '新增 / 编辑 / 取号', title: '连按两次空格：选中加号→新增任务；选中任务→编辑；无选中时快速取号' },
+                    { keys: '~×2', text: '复制主任务表格', title: '连按两次 ~：复制选中主任务为表格（可直接粘贴）' },
+                    { keys: 'F×2', text: '打开「查找」', title: '连按两次 F：打开「查找」弹窗（按任务名 / 枪名查找并定位）' },
+                  ].map((item, index) => (
+                    <div
+                      key={item.keys}
+                      title={item.title}
+                      className={`flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors border-b border-gray-100 ${index >= 3 ? 'sm:border-b-0' : ''}`}
+                    >
+                      <span className="shrink-0 w-[64px]">
+                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">{item.keys}</kbd>
                       </span>
-                      <div className="text-[13px] text-gray-700">定位今日任务</div>
-                    </li>
-                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                      <span className="shrink-0 w-[72px]">
-                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Shift×2</kbd>
-                      </span>
-                      <div className="text-[13px] text-gray-700">添加确认图修改<span className="text-gray-400">（添加后自动定位）</span></div>
-                    </li>
-                  </ul>
-                  <ul className="divide-y divide-gray-100 border-t border-gray-100 md:border-t-0">
-                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                      <span className="shrink-0 w-[72px]">
-                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">Space×2</kbd>
-                      </span>
-                      <div className="text-[13px] text-gray-700">选中加号 → 新增任务；选中任务 → 编辑<span className="text-gray-400">（无选中时快速取号）</span></div>
-                    </li>
-                    <li className="flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 transition-colors">
-                      <span className="shrink-0 w-[72px]">
-                        <kbd className="inline-block px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[11px] font-mono text-gray-700 shadow-sm">~×2</kbd>
-                      </span>
-                      <div className="text-[13px] text-gray-700">复制选中主任务（表格格式，可直接粘贴）</div>
-                    </li>
-                  </ul>
+                      <div className="text-[13px] text-gray-700 whitespace-nowrap">{item.text}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -4212,14 +4475,7 @@ const Dashboard = () => {
                     </label>
                   );
                 })()}
-                {canEditTasks && !hideTaskTypeOptions && (
-                  <button
-                    onClick={() => { void openBatchReplaceDialog(); }}
-                    className="px-4 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded text-sm font-bold transition"
-                  >
-                    批量操作
-                  </button>
-                )}
+                {/* 「批量操作」入口已移到主页面左下角状态栏，改名为「查找」（仅保留查找与定位） */}
                 {!hideTaskTypeOptions && (() => {
                   // 新增模式下「显示纳期」默认勾选：仅当还没填仕样号且当前未勾选时才禁用，
                   // 已勾选状态下允许直接取消，避免出现「勾着却点不动」的死状态
@@ -5649,163 +5905,209 @@ const Dashboard = () => {
       })()}
 
       {batchReplaceOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        // 默认停靠在顶部绿条下方一段距离、窗口右上角（不挡中间的看板表格，也不压住月份切换）；
+        // 顶部偏移与最大高度见上方的 findModalTop / findModalMaxHeight
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-end p-3 sm:p-4"
+          style={findModalTop !== null ? { paddingTop: findModalTop } : undefined}
+        >
           <div
-            className="absolute inset-0 bg-black/35"
-            onClick={() => {
-              if (!batchReplaceLoading) setBatchReplaceOpen(false);
-            }}
+            className="absolute inset-0 bg-black/20"
+            onClick={() => setBatchReplaceOpen(false)}
           />
           <div
-            className="relative w-[540px] max-w-[94vw] bg-white rounded-lg shadow-2xl border-2 border-gray-200 overflow-hidden"
-            style={{ opacity: batchLocateDimmed ? 0.2 : 1, transition: 'opacity 0.3s ease' }}
-            onMouseEnter={() => {
-              if (batchLocateRestoreTimerRef.current) {
-                window.clearTimeout(batchLocateRestoreTimerRef.current);
-                batchLocateRestoreTimerRef.current = null;
-              }
-              setBatchLocateDimmed(false);
+            ref={batchFindFrameRef}
+            style={{
+              transform: 'translate3d(0px, 0px, 0)',
+              maxHeight: findModalMaxHeight ?? undefined,
             }}
+            className="relative w-[680px] max-w-full max-h-[88vh] bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col"
           >
-            <div className="flex items-center justify-between px-4 py-3 bg-[#217346] text-white">
-              <div className="font-bold text-base">批量操作</div>
+            {/* 头部（按住可拖动窗口） */}
+            <div
+              {...batchFindHeaderProps}
+              className={`relative flex items-center justify-between gap-3 px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0 select-none touch-none ${batchFindDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-white/15 border border-white/25 flex items-center justify-center shrink-0">
+                  <Search size={17} />
+                </div>
+                <div className="min-w-0">
+                  <div className="font-bold text-base leading-tight">查找任务</div>
+                  <div className="text-[11px] opacity-80 leading-tight mt-0.5 truncate">
+                    输入关键字匹配任务名与枪名，点击结果直接定位到表格中的任务
+                  </div>
+                </div>
+              </div>
               <button
                 onClick={() => setBatchReplaceOpen(false)}
-                disabled={batchReplaceLoading}
-                className="p-1 hover:bg-red-600 rounded transition disabled:opacity-50"
+                className="p-1.5 rounded-full hover:bg-white/20 transition cursor-pointer shrink-0"
+                title="关闭（Esc）"
               >
                 <X size={18} />
               </button>
             </div>
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1.5">查找字符</label>
-                <input
-                  className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                  value={batchFindText}
-                  onChange={(e) => {
-                    setBatchFindText(e.target.value);
-                    resetBatchSearchResults();
-                  }}
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1.5">替换为</label>
-                <input
-                  className="w-full h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                  value={batchReplaceText}
-                  onChange={(e) => {
-                    setBatchReplaceText(e.target.value);
-                    resetBatchSearchResults();
-                  }}
-                />
-              </div>
-              <div className="flex items-center justify-between rounded-lg bg-gray-50 border border-gray-200 px-3 py-2">
-                <span className="text-sm font-bold text-gray-700">全表</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBatchReplaceAllTable(prev => !prev);
-                    resetBatchSearchResults();
-                  }}
-                  className={`relative h-6 w-11 rounded-full transition ${batchReplaceAllTable ? 'bg-blue-600' : 'bg-gray-300'}`}
-                  aria-pressed={batchReplaceAllTable}
-                >
-                  <span
-                    className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${batchReplaceAllTable ? 'left-6' : 'left-1'}`}
+
+            {/* 搜索区 */}
+            <div className="shrink-0 px-5 pt-4 pb-3 border-b border-gray-100 bg-white">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                  <input
+                    autoFocus
+                    value={batchFindText}
+                    onChange={(e) => {
+                      setBatchFindText(e.target.value);
+                      resetBatchSearchResults();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleBatchSearch();
+                      }
+                    }}
+                    placeholder="输入关键字，例如仕样号 58645、客户名片段或枪名"
+                    className="w-full h-10 pl-9 pr-3 bg-gray-50 border-2 border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-300 focus:bg-white transition"
                   />
+                </div>
+                <button
+                  onClick={() => { void handleBatchSearch(); }}
+                  disabled={batchSearchLoading || !batchFindText.trim()}
+                  className={`flex items-center gap-1.5 h-10 px-4 rounded-lg text-sm font-bold text-white shadow-sm transition ${
+                    batchSearchLoading || !batchFindText.trim()
+                      ? 'bg-gray-300 cursor-not-allowed'
+                      : 'bg-[#217346] hover:bg-[#1b5f3a] hover:shadow'
+                  }`}
+                >
+                  {batchSearchLoading ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
+                  {batchSearchLoading ? '查找中' : '查找'}
                 </button>
               </div>
-              <div className="rounded-lg border border-gray-200 bg-white">
-                <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50">
-                  <div className="text-sm font-bold text-gray-700">
-                    {batchSearchDone
-                      ? `找到 ${batchMatches.length} 个任务，${batchMatchCount} 处字符`
-                      : '查找结果'}
-                  </div>
-                  <button
-                    onClick={handleBatchSearch}
-                    disabled={!canEditTasks || batchSearchLoading || batchReplaceLoading || !batchFindText}
-                    className="px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {batchSearchLoading ? '查找中...' : '查找'}
-                  </button>
+
+              <div className="mt-2.5 flex items-center justify-between gap-3">
+                {/* 搜索范围：当前查看月份 / 全部月份 */}
+                <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 rounded-lg">
+                  {[
+                    { key: false, label: `当前月份（${format(currentDate, 'yyyy年MM月')}）` },
+                    { key: true, label: '全部月份' },
+                  ].map(option => (
+                    <button
+                      key={String(option.key)}
+                      type="button"
+                      onClick={() => {
+                        if (batchReplaceAllTable === option.key) return;
+                        setBatchReplaceAllTable(option.key);
+                        resetBatchSearchResults();
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
+                        batchReplaceAllTable === option.key
+                          ? 'bg-white text-[#217346] shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
                 </div>
-                <div className="max-h-56 overflow-auto">
-                  {!batchSearchDone ? (
-                    <div className="px-3 py-6 text-sm text-gray-400 text-center">点击查找后显示命中的任务</div>
-                  ) : batchMatches.length === 0 ? (
-                    <div className="px-3 py-6 text-sm text-gray-400 text-center">未找到匹配任务</div>
-                  ) : (
-                    <div className="divide-y divide-gray-100">
-                      {batchMatches.map(match => (
-                        <div
-                          key={`${match.designerId}-${match.date}-${match.itemId}`}
-                          className="px-3 py-2 hover:bg-blue-50/60 cursor-pointer transition group/match"
-                          onClick={() => handleBatchLocate(match)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              handleBatchLocate(match);
-                            }
-                          }}
-                          role="button"
-                          tabIndex={0}
-                          title="点击定位到底部表格中的该任务"
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="text-sm font-bold text-gray-800 truncate">{match.taskName || '无任务名'}</div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-[11px] text-gray-500">{match.designerName} · {match.date}</span>
-                              <span className="hidden group-hover/match:inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[11px] font-bold">
-                                <Crosshair size={11} />定位
-                              </span>
-                            </div>
+                <span className="text-[11px] text-gray-400 tabular-nums">
+                  {batchSearchDone
+                    ? `命中 ${batchMatches.length} 个任务 · ${batchMatchCount} 处字符`
+                    : '支持任务名与枪名，英文不区分大小写'}
+                </span>
+              </div>
+            </div>
+
+            {/* 结果区 */}
+            <div className="flex-1 min-h-0 overflow-y-auto bg-gray-50/60">
+              {!batchSearchDone ? (
+                <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-8">
+                  <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center mb-3">
+                    <Search size={20} className="text-emerald-500" />
+                  </div>
+                  <div className="text-[13px] font-bold text-gray-700">输入关键字后开始查找</div>
+                  <p className="text-[11px] text-gray-400 mt-1.5 leading-relaxed max-w-[360px]">
+                    按 <kbd className="px-1 py-[1px] rounded bg-white border border-gray-200 text-[10px] font-mono">Enter</kbd>
+                    {' '}直接查找；命中的任务可直接点击定位，弹窗会保持打开，表格自动滚动到该任务。
+                  </p>
+                </div>
+              ) : batchMatches.length === 0 ? (
+                <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-8">
+                  <div className="w-12 h-12 rounded-xl bg-gray-100 border border-gray-200 flex items-center justify-center mb-3">
+                    <AlertCircle size={20} className="text-gray-400" />
+                  </div>
+                  <div className="text-[13px] font-bold text-gray-600">没有匹配的任务</div>
+                  <p className="text-[11px] text-gray-400 mt-1.5">
+                    换个关键字试试，或把范围切到「全部月份」
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-gray-100">
+                  {batchMatches.map(match => (
+                    <button
+                      type="button"
+                      key={`${match.designerId}-${match.date}-${match.itemId}`}
+                      onClick={() => handleBatchLocate(match)}
+                      className="group w-full text-left px-4 py-2.5 bg-white hover:bg-emerald-50/60 transition-colors"
+                      title="点击定位到表格中的该任务"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[13px] font-bold text-gray-800 leading-snug break-all">
+                            {highlightMatch(match.taskName || '无任务名')}
                           </div>
-                          <div className="mt-1 flex flex-wrap gap-1.5">
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-semibold text-gray-600">{match.designerName}</span>
+                            <span className="text-gray-300">·</span>
+                            <span className="text-[11px] text-gray-500 tabular-nums">{match.date}</span>
                             {match.fields.map((field, index) => {
-                              // 枪名直接显示完整枪名；任务名匹配显示其仕样号（无仕样号时回退为"任务名"）
+                              // 枪名直接显示完整枪名；任务名命中显示其中的仕样号（无仕样号时回退为「任务名」）
                               const badgeLabel = field.field === 'gunName'
                                 ? `枪名${field.text}`
                                 : (() => {
                                     const spec = extractSpecNumber(field.text || '');
-                                    return spec ? `任务仕样号${spec}` : '任务名';
+                                    return spec ? `仕样号${spec}` : '任务名';
                                   })();
                               return (
-                                <span key={`${field.field}-${index}`} className="px-2 py-0.5 rounded bg-yellow-50 text-yellow-800 border border-yellow-200 text-[11px]">
+                                <span
+                                  key={`${field.field}-${index}`}
+                                  className={`px-1.5 py-[1px] rounded border text-[10px] font-bold ${
+                                    field.field === 'gunName'
+                                      ? 'bg-sky-50 text-sky-700 border-sky-200'
+                                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                                  }`}
+                                >
                                   {badgeLabel}：{field.count} 处
                                 </span>
                               );
                             })}
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <span className="shrink-0 mt-0.5 flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Crosshair size={11} />定位
+                        </span>
+                      </div>
+                    </button>
+                  ))}
                 </div>
-              </div>
+              )}
             </div>
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t-2 border-gray-200 bg-gray-50">
+
+            {/* 底部 */}
+            <div className="shrink-0 px-5 py-3 border-t border-gray-200 bg-white flex items-center justify-between gap-3">
+              <span className="text-[11px] text-gray-400 flex items-center gap-1.5 min-w-0">
+                <Crosshair size={12} className="shrink-0" />
+                <span className="truncate">点击结果定位到表格；弹窗保持打开，被定位的任务自动选中并滚动到视图中央</span>
+              </span>
               <button
                 onClick={() => setBatchReplaceOpen(false)}
-                disabled={batchReplaceLoading}
-                className="px-4 py-2 text-sm font-bold text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-100 transition disabled:opacity-50"
+                className="h-9 px-4 rounded-lg text-[12px] font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition shrink-0"
               >
-                取消
-              </button>
-              <button
-                onClick={handleBatchReplace}
-                disabled={!canEditTasks || batchReplaceLoading || !batchFindText}
-                className="px-5 py-2 text-sm font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
-              >
-                {batchReplaceLoading ? '处理中...' : '替换'}
+                关闭
               </button>
             </div>
           </div>
         </div>
       )}
-
       {/* 工作日覆盖二次确认：勾选会联动周末底色、加班统计与工时导出，表头上的勾选框极易误点，先拦一道 */}
       {workdayOverrideConfirm && (() => {
         const pending = workdayOverrideConfirm;
@@ -5958,10 +6260,14 @@ const Dashboard = () => {
 
                 setChangePasswordLoading(true);
                 try {
-                  await axiosInstance.post('/auth/change-password', {
+                  const res = await axiosInstance.post('/auth/change-password', {
                     oldPassword,
                     newPassword
                   });
+                  // 改密后旧会话被吊销、服务端签发新令牌：立即换用，否则后续请求 401
+                  if (res.data?.token && user) {
+                    login(res.data.token, user, false);
+                  }
                   setChangePasswordSuccess('密码修改成功');
                   setOldPassword('');
                   setNewPassword('');
@@ -6136,6 +6442,7 @@ const Dashboard = () => {
         </div>
       )}
     </div>
+    </PageZoomViewport>
   );
 };
 

@@ -3,7 +3,8 @@ import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
 import { buildLoginUrl } from '../utils/redirect';
-import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, LogOut, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, Key, Edit2, X, ToggleLeft, ToggleRight, Upload, Download, Settings, Search, Plus, MoreHorizontal, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import LogoutButton from '../components/LogoutButton';
+import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, Key, Edit2, X, ToggleLeft, ToggleRight, Upload, Download, Settings, Search, Plus, MoreHorizontal, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 interface DesignerData {
   id: string;
@@ -255,7 +256,7 @@ const generateRandomPassword = (): string => {
 };
 
 const Admin = () => {
-  const { token, logout, user: currentUser, authReady } = useAuth();
+  const { token, user: currentUser, authReady } = useAuth();
   const [users, setUsers] = useState<UserData[]>([]);
   const [designers, setDesigners] = useState<DesignerData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1565,13 +1566,7 @@ const Admin = () => {
 
         <div className="flex items-center space-x-6">
           <span className="text-sm font-bold text-amber-700">{currentUser?.name}</span>
-          <button
-            onClick={logout}
-            className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition"
-          >
-            <LogOut size={18} />
-            <span>退出</span>
-          </button>
+          <LogoutButton offline={isOffline} />
         </div>
       </header>
 

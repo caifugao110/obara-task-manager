@@ -102,6 +102,15 @@ interface QuickGunTakeModalProps {
   // 二级浮层「安排确认图」写入任务成功后回调：回传目标设计员/日期与写入后的工时表，
   // 供宿主页面（主页面）立即回显；跨客户端的刷新由确认图弹窗自行广播
   onTasksCreated?: (info: { designerId: string; date: string; sheet?: TaskSheet; itemIds?: string[] }) => void;
+  /**
+   * 本次打开直接落在哪一层：
+   * - take（默认）：正常的取号界面
+   * - assign：跳过取号界面，直接打开「为今日取号安排确认图」浮层
+   *   （主页面页脚的同名按钮走这里，浮层数据与页头入口完全同源）
+   */
+  entryView?: 'take' | 'assign';
+  /** 每次从页脚「安排确认图」入口打开时递增，用于重复打开同一次浮层（entryView='assign' 时必须变化） */
+  openNonce?: number;
 }
 
 // 记住上次取号用的表：同一批料常连续取号，下次呼出直接停在原表
@@ -127,7 +136,7 @@ const buildGunNumberPart = (rule: QuickTakeGunNameRule | null | undefined, seria
 
 
 /**
- * 主页面「快速取号」弹窗（连按两次空格呼出）
+ * 主页面「快速取号」弹窗（连按两次空格，或点页脚左下角「快速取号」按钮呼出）
  *
  * 与 /gun-ledger 页内的取号完全同源：选中分类 + 表格后，直接跳到该表「最新的未取行」
  * （已有行数 + 1），按表的焊枪名规则生成枪名并落库，时间/担当默认当天与当前操作者。
@@ -144,6 +153,8 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   offline = false,
   designers = [],
   onTasksCreated,
+  entryView = 'take',
+  openNonce = 0,
 }) => {
   const { specNumberDigits, settings: systemSettings } = useSystemSettings();
 
@@ -622,17 +633,18 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
   /**
    * 打开「快速确认图安排」浮层
    * - batch：只带刚取到的这一批枪名（取号结果框左下角入口）
-   * - today：带今天取的全部号（取号弹窗顶部的常驻入口）
+   * - today：带今天取的全部号（取号弹窗顶部的常驻入口、主页面页脚入口）
+   * 返回是否真的打开成功：页脚入口据此判断「今天没取号」时要收起弹窗，只留提示。
    */
-  const handleOpenAssign = useCallback(async (scope: 'today' | 'batch' = 'today') => {
+  const handleOpenAssign = useCallback(async (scope: 'today' | 'batch' = 'today'): Promise<boolean> => {
     if (offline) {
       addToast('当前离线，禁止编辑', 'error');
-      return;
+      return false;
     }
     const batch = scope === 'batch' ? lastTaken : null;
     if (scope === 'batch' && (!batch || batch.rows.length === 0)) {
       addToast('还没有本次取号结果，先去取号再安排确认图', 'error');
-      return;
+      return false;
     }
     setAssignLoading(true);
     try {
@@ -662,7 +674,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
         base = Array.isArray(res.data?.todayTaken) ? (res.data.todayTaken as QuickTakeTodayRow[]) : [];
         if (base.length === 0) {
           addToast('今天还没有取号记录，先去取号再安排确认图', 'error');
-          return;
+          return false;
         }
       }
 
@@ -677,12 +689,32 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
         used: usedGunNames.has(String(row.gunName).trim()),
       })));
       setAssignOpen(true);
+      return true;
     } catch (err: any) {
       addToast(err?.response?.data?.message || '无法读取今日取号记录', 'error');
+      return false;
     } finally {
       setAssignLoading(false);
     }
   }, [offline, addToast, systemSettings, lastTaken]);
+
+  /**
+   * 页脚「为今日取号安排确认图」入口：打开弹窗后直接落到浮层，不显示取号界面。
+   * 用 openNonce 做幂等键——同一次打开只请求一次（StrictMode 下 effect 会跑两遍），
+   * 关掉再点同一个按钮时 nonce 递增，才会重新进入。
+   */
+  const autoAssignKeyRef = useRef('');
+  useEffect(() => {
+    if (!open || entryView !== 'assign') return;
+    const key = `${openNonce}`;
+    if (autoAssignKeyRef.current === key) return;
+    autoAssignKeyRef.current = key;
+    void (async () => {
+      const started = await handleOpenAssign('today');
+      // 今天没取过号（或离线）：提示已经弹出，这里收起弹窗，避免停在一个与入口不符的取号界面
+      if (!started) onClose();
+    })();
+  }, [open, entryView, openNonce, handleOpenAssign, onClose]);
 
   const handleCopyGunName = useCallback(async () => {
     if (!lastTaken || lastTaken.rows.length === 0) return;
@@ -701,8 +733,18 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
 
   return (
     <>
+    {/* 页脚「为今日取号安排确认图」入口：浮层数据还在拉取时，别先闪一下取号界面 */}
+    {!assignOpen && entryView === 'assign' && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+        <div className="absolute inset-0 bg-black/20" onClick={() => !assignLoading && onClose()} />
+        <div className="relative flex items-center gap-2 px-5 py-3 rounded-xl bg-white shadow-2xl border border-gray-200 text-[12px] font-bold text-gray-600">
+          <Loader2 size={14} className="animate-spin text-[#2563eb]" />
+          正在读取今日取号记录…
+        </div>
+      </div>
+    )}
     {/* 打开「为今日取号安排确认图」浮层时，本弹窗整体隐藏（关闭浮层后自动恢复） */}
-    {!assignOpen && (
+    {!assignOpen && entryView !== 'assign' && (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/20" onClick={() => !submitting && onClose()} />
       <div

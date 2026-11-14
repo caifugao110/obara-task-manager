@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getPageZoom } from '../utils/pageZoom';
 
 /**
  * 弹窗拖动（按住标题栏移动整个弹窗）
@@ -74,18 +75,23 @@ export function useModalDrag(open: boolean, resetKey?: string | number | boolean
     const rect = el.getBoundingClientRect();
     const { x: originX, y: originY } = offsetRef.current;
     const margin = 8; // 拖动时至少留 8px 在可视区边缘内
+    // 主页面可能被整体等比缩放（见 utils/pageZoom）：transform 里的 px 是「本地 px」，
+    // 而 rect / clientX 都是「屏幕 px」，两者差一个倍率，这里统一换算成本地 px 再算边界。
+    const zoom = getPageZoom();
     // rect 已含当前位移，减掉后得到「未拖动时」的居中位置，再据此算出可拖动范围
-    const baseLeft = rect.left - originX;
-    const baseTop = rect.top - originY;
+    const baseLeft = rect.left / zoom - originX;
+    const baseTop = rect.top / zoom - originY;
+    const viewportWidth = window.innerWidth / zoom;
+    const viewportHeight = window.innerHeight / zoom;
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
       originX,
       originY,
       minX: margin - baseLeft,
-      maxX: window.innerWidth - margin - baseLeft - rect.width,
+      maxX: viewportWidth - margin - baseLeft - rect.width / zoom,
       minY: margin - baseTop,
-      maxY: window.innerHeight - margin - baseTop - rect.height,
+      maxY: viewportHeight - margin - baseTop - rect.height / zoom,
     };
     setDragging(true);
   }, []);
@@ -94,9 +100,11 @@ export function useModalDrag(open: boolean, resetKey?: string | number | boolean
     const drag = dragRef.current;
     if (!drag) return;
     e.preventDefault();
+    // 指针位移是屏幕 px，弹窗的 translate 是缩放层里的本地 px，按倍率换算后光标才跟手
+    const zoom = getPageZoom();
     applyOffset(
-      clampOffset(drag.originX + (e.clientX - drag.startX), drag.minX, drag.maxX),
-      clampOffset(drag.originY + (e.clientY - drag.startY), drag.minY, drag.maxY),
+      clampOffset(drag.originX + (e.clientX - drag.startX) / zoom, drag.minX, drag.maxX),
+      clampOffset(drag.originY + (e.clientY - drag.startY) / zoom, drag.minY, drag.maxY),
     );
   }, [applyOffset]);
 

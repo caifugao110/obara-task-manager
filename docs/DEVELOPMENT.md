@@ -45,6 +45,8 @@ npm run dev:frontend   :: 只起前端 :5173（Vite）
 | 要改的东西 | 位置 |
 |------|------|
 | 中间件装配、Socket 事件处理 | `backend/server.js`（业务逻辑不写这里） |
+| Socket 广播出口、页面房间、带原因断连 | `backend/utils/socketRooms.js`；业务广播一律 `emitToPage()`，不要 `io.emit` |
+| 共享路径健康探测（状态监测页用） | `backend/utils/shareStatus.js`；探测必须廉价、带硬时限，不要在路由里直接 `stat` UNC 路径 |
 | 某个接口的校验/权限/组装响应 | `backend/routes/<模块>.js` |
 | 读写 SQLite | 只允许 `backend/db.js`、`backend/taskStore.js`；路由里**不要**直接 `prepare()` |
 | 无状态工具（解析/导出/加锁） | `backend/utils/*.js` |
@@ -109,6 +111,8 @@ getCurrentSocket()?.emit('task_updated', {
 - 坐标要取**目标数据的真实归属**（比如选中日期的年月），不是当前视图的月份；接收侧只合并与当前视图同月份的表，本端回显也一样——跨月移动时把别月的表并进来会串月。
 
 广播内容由服务端自己读库组装（`getSheet()`），前端传的 payload 只用于定位，不会转发给其他人——所以别指望通过 emit 传自定义数据。
+
+**服务端广播出口统一走 `utils/socketRooms.js`**：`emitToPage(io, 'gunLedger' | 'statusTracking', 事件, 载荷)` 只发给具备该页面权限的 `page:*` 房间；需要排除发起者时用 `emitToPageExcept()`。不要写 `io.emit()` / `socket.broadcast.emit()` 下发业务数据——那会把台账、状态追踪的完整内容发给没有该页面权限的连接，HTTP 层的 `accessSettingsMiddleware` 就形同虚设（2026-11 已修过一次）。断连场景用 `disconnectUserSockets()` / `disconnectSessionSockets()`，它们会先发 `session_invalidated`（带原因与错误码）再断开，直接 `socket.disconnect(true)` 会让前端只看到一次莫名其妙的断线。
 
 涉及并发编辑的功能，还要考虑是否需要加锁：单元格编辑锁在 `server.js` 内存 Map，状态追踪行锁在 `utils/statusTrackingLocks.js`，焊枪台账表锁在 `utils/gunTableLocks.js`。三者都不落库，后端重启即全解锁。
 
@@ -245,6 +249,8 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 跨月移动后对端串月 / 当前视图冒出别月任务 | 把非当前视图月份的 `sheet` 也 `upsertSheet` 了 | 回显与接收侧都只并入 `month/year` 与当前视图一致的表 |
 | 后端莫名消失、端口 5000 没了、日志无堆栈 | 未捕获异常击穿进程（Node 22 对未处理 Promise 拒绝直接退出）；或进程被外部强杀 | 看 `logs/backend-crash.log`；没有崩溃堆栈就看 `logs/backend-exit.log`——有记录是自己退的，没记录是被 `TerminateProcess` 强杀；不要删 `server.js` 顶部兜底与 `exit` 钩子，见「后端」编码约定 |
 | 端口 5000 还在监听，但所有请求一直转圈 / 超时，进程没退出 | 共享盘 SMB 会话失效，UNC 调用挂死在内核，占满 libuv 线程池（后端「活着但不响应」） | 看 `logs/backend-watchdog.log` 的 `[probe]` 行：连续 `health probe failed` 后应有 `[FATAL] ... killing`；共享盘侧用 `GET /api/system/schedule-probe` 看错误码。不要在主进程直接读 UNC，新增逻辑走 `productionScheduleWorker.js` + 熔断，见「后端」编码约定 |
+| 没有台账 / 状态追踪权限的账号，也能收到实时广播与锁提示 | 服务端用了 `io.emit` / `socket.broadcast.emit`，绕过页面房间 | 改用 `utils/socketRooms.js` 的 `emitToPage` / `emitToPageExcept`；房间成员由 `syncSocketRooms` 按最新权限重算 |
+| 账号被禁用、被顶号、令牌过期后，页面仍能收到实时数据 | 只在建连时校验了 JWT，连接挂着就一直收广播 | 业务事件前调 `requireSocketAuth()`（失败先发 `session_invalidated` 再断开）；60 秒巡检兜底；前端收到该事件必须清理登录态 |
 | 晚打开的页面锁状态是空的 | 没监听快照事件/没调 `getSnapshot()` | 见 `socketClient.ts` |
 | 后端一启动就退出 | `JWT_SECRET` 为空 | 填 `backend/.env` |
 | 端口被占用 | 上次进程没退 | `stop.bat`，或按 `DEPLOYMENT.md` 手动释放 |

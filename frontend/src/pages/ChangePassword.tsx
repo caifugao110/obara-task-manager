@@ -20,7 +20,7 @@ const ChangePassword = () => {
   const [loading, setLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const isOffline = !isOnline;
-  const { setForcePasswordChange } = useAuth();
+  const { setForcePasswordChange, login, user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirectTarget = sanitizeRedirect(searchParams.get('redirect'));
@@ -118,10 +118,16 @@ const ChangePassword = () => {
 
     setLoading(true);
     try {
-      await axiosInstance.post('/auth/change-password', {
+      const res = await axiosInstance.post('/auth/change-password', {
         oldPassword,
         newPassword
       });
+
+      // 改密会吊销旧会话并签发新令牌：必须立即换用，
+      // 否则后续 HTTP 请求会 401、Socket 也会因旧会话失效而连不上
+      if (res.data?.token && user) {
+        login(res.data.token, user, false);
+      }
 
       setSuccess('密码修改成功，正在进入系统...');
       setForcePasswordChange(false);

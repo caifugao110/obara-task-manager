@@ -12,7 +12,6 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
-  LogOut,
   PlayCircle,
   Plus,
   Power,
@@ -38,6 +37,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
+import LogoutButton from '../components/LogoutButton';
 import SystemStatusMonitor from './SystemStatusMonitor';
 import OpsToolsPanel from '../components/OpsToolsPanel';
 import OperationLogPanel from '../components/OperationLogPanel';
@@ -337,7 +337,7 @@ const ColorInput: React.FC<{
 };
 
 const SystemSettings = () => {
-  const { user, token, logout } = useAuth();
+  const { user, token } = useAuth();
   const { settings, setSettings, refreshSettings } = useSystemSettings();
   const [accessSettings, setAccessSettings] = useState(defaultAccessSettings);
   // 任务内容配色草稿：编辑后点「保存配色」落库，避免连续取色时反复写设置
@@ -406,9 +406,11 @@ const SystemSettings = () => {
   const [ipSaving, setIpSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  // 默认打开「状态监测」；一般管理员没有该标签页，兜底到「数据管理」（下面的权限 effect 也会再校正一次）
+  // 默认打开「状态监测」：超级管理员与一般管理员都从这里进入页面（管理员为只读）。
+  // 首帧若 user 尚未从 localStorage 恢复（直接刷新落在本页时的加载顺序），
+  // 下面的 defaultTabResolvedRef effect 会在拿到角色后补切一次。
   const [activeTab, setActiveTab] = useState<'data' | 'maintenance' | 'login' | 'logs' | 'audit' | 'plan' | 'monitor' | 'ops'>(
-    user?.role === 'superadmin' ? 'monitor' : 'data'
+    user?.role === 'superadmin' || user?.role === 'admin' ? 'monitor' : 'data'
   );
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -477,6 +479,29 @@ const SystemSettings = () => {
     if (user.role === 'admin' && accessSettings.allowAdmins) return true;
     return false;
   })();
+
+  // 状态监测对一般管理员开放（只读）：管理员排障时最需要它——「页面打不开」是进程挂了、
+  // 事件循环卡住还是共享盘掉了，只有这一页能看出来。清理/压缩属写入，仍只给超级管理员。
+  const canViewMonitor = canViewSystemSettings && (isSuperAdmin || user?.role === 'admin');
+
+  // 默认标签只按角色决定一次：首帧没拿到 user 时先落在「数据管理」，
+  // 这里在角色就绪后补切到「状态监测」，否则直接刷新本页的管理员会停在数据管理。
+  // 用 ref 保证只执行一次——之后管理员手动点「数据管理」不会被反复拉回来。
+  const defaultTabResolvedRef = useRef(false);
+  useEffect(() => {
+    if (defaultTabResolvedRef.current || !user) return;
+    defaultTabResolvedRef.current = true;
+    if ((user.role === 'superadmin' || user.role === 'admin') && activeTab === 'data') {
+      setActiveTab('monitor');
+    }
+  }, [user, activeTab]);
+
+  // 没有监测权限（如系统设置权限被关闭）时不能停在监测标签上
+  useEffect(() => {
+    if (accessSettingsLoaded && activeTab === 'monitor' && !canViewMonitor) {
+      setActiveTab('data');
+    }
+  }, [accessSettingsLoaded, activeTab, canViewMonitor]);
 
   const addToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now();
@@ -788,7 +813,7 @@ const SystemSettings = () => {
   }, [isOffline]);
 
   useEffect(() => {
-    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'audit' || activeTab === 'maintenance' || activeTab === 'plan' || activeTab === 'monitor' || activeTab === 'ops')) {
+    if (!isSuperAdmin && (activeTab === 'login' || activeTab === 'logs' || activeTab === 'audit' || activeTab === 'maintenance' || activeTab === 'plan' || activeTab === 'ops')) {
       setActiveTab('data');
     }
   }, [isSuperAdmin, activeTab]);
@@ -1482,10 +1507,7 @@ const SystemSettings = () => {
         {user && (
           <div className="flex items-center space-x-4">
             <span className="text-sm font-bold text-amber-700">{user.name}</span>
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={isOffline} />
           </div>
         )}
       </header>
@@ -1499,7 +1521,7 @@ const SystemSettings = () => {
 
       <div ref={tabBarRef} style={{ top: tabBarTop }} className="sticky z-30 bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-8 flex space-x-1 overflow-x-auto">
-          {isSuperAdmin && (
+          {canViewMonitor && (
             <button
               onClick={() => setActiveTab('monitor')}
               className={`flex items-center gap-2 px-6 py-3 font-bold transition ${activeTab === 'monitor' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
@@ -3410,8 +3432,8 @@ const SystemSettings = () => {
           </div>
         )}
 
-        {activeTab === 'monitor' && isSuperAdmin && (
-          <SystemStatusMonitor />
+        {activeTab === 'monitor' && canViewMonitor && (
+          <SystemStatusMonitor canManage={isSuperAdmin} />
         )}
 
         {activeTab === 'ops' && isSuperAdmin && (

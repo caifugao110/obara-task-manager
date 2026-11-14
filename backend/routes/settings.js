@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { authMiddleware, superAdminMiddleware, adminMiddleware } = require('../middleware/auth');
+const { syncAllSocketRooms } = require('../utils/socketRooms');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const weknora = require('../utils/weknora');
@@ -75,6 +76,9 @@ const updateAccessSettings = (key) => [authMiddleware, superAdminMiddleware, asy
     ? normalizeStatusTrackingSettings(value)
     : normalizeAccessSettingsForKey(key, value);
   await db.writeDb(data);
+  // 页面访问权限变更后立即重算在线连接的房间成员关系：
+  // 否则刚被收回权限的连接会一直留在 page 房间里继续收业务广播
+  syncAllSocketRooms(req.app.get('io'));
   res.json(data.settings[key]);
 })];
 

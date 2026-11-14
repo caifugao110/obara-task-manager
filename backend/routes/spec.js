@@ -3,9 +3,10 @@ const router = express.Router();
 const path = require('path');
 const fs2 = require('fs');
 const asyncHandler = require('express-async-handler');
-const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { authMiddleware, adminMiddleware, superAdminMiddleware } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const db = require('../db');
+const taskStore = require('../taskStore');
 const specPdfParser = require('../utils/specPdfParser');
 const productionSchedule = require('../utils/productionSchedule');
 const { readPdfTextOffThread } = require('../utils/pdfTextPool');
@@ -739,5 +740,481 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
   }
 
 }));
+
+// ============================================================================
+// 仕样自愈：扫描某月任务里的仕样号，按仕样书校正任务名中的「客户名」与「纳期」
+//
+// 为什么不做成一次同步请求：
+// - 校正依据是共享盘上的仕样书 PDF，每份都要 stat + 取文本 + 解析，单份几十一百毫秒，
+//   一个月通常有几十个仕样号，再加上共享盘抖动，同步接口必然撞上前端超时，
+//   而超时会让前端判定「后端不可用」直接进离线模式；
+// - 所以扫描做成服务端 job：POST 建任务立刻返回 jobId，前端轮询进度，
+//   扫描结果留在服务端，一键更新只传 jobId + 勾选的仕样号。
+//
+// 更新时重新读当月任务再比对（扫描到点击之间可能有人改过任务），只改确实不一致的条目。
+// ============================================================================
+
+const HEAL_JOB_TTL_MS = 30 * 60 * 1000;   // 扫描结果保留时长
+const HEAL_SPEC_CONCURRENCY = 3;          // 同时解析的仕样书份数（低于全局 12 份上限，避免挤占正常查询）
+const HEAL_SPEC_TIMEOUT_MS = 20000;       // 单个仕样号「找文件 + 解析」的总时限
+const HEAL_MAX_ITEMS_PER_SPEC = 200;      // 单个仕样号回传的明细条数上限（UI 只用于预览）
+const selfHealJobs = new Map();
+
+const collapseSpace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+// 从任务名取仕样号：只认「与系统设置位数一致」的数字段。
+// 与前端 extractSpecNumber 的差别：这里优先取位数正确的那个，避免
+// 「G2621 58645」这类任务名把项目代码当成仕样号去做无意义的仕样书查询。
+function extractSelfHealSpecNumber(taskName, digits) {
+  const text = String(taskName || '');
+  const re = /\b(?:[A-Za-z]-?)?(\d{4,6})\b/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    if (match[1].length === digits) return match[1];
+  }
+  return null;
+}
+
+// 拆分任务名：主体（客户名） + 尾部任务类型 + 尾部纳期 [M/D]
+// 口径必须与前端 Dashboard/utils.splitDesignTaskName 完全一致，否则「检测」与
+// 手工「相同仕样号同步更新」会给出不同结果。
+function splitSelfHealTaskName(taskName) {
+  const trimmed = String(taskName || '').trim();
+  const deadlineMatch = trimmed.match(/\s*(\[\d{1,2}\/\d{1,2}\])$/);
+  const withoutDeadline = deadlineMatch && typeof deadlineMatch.index === 'number'
+    ? trimmed.slice(0, deadlineMatch.index).trim()
+    : trimmed;
+  const typeMatch = withoutDeadline.match(/\s+(确认图修改|确认图|设计变更|既制审图|暂停\/取消|设计)$/);
+  const baseName = typeMatch && typeof typeMatch.index === 'number'
+    ? withoutDeadline.slice(0, typeMatch.index).trim()
+    : withoutDeadline;
+  return {
+    baseName,
+    typeSuffix: typeMatch ? ` ${typeMatch[1]}` : '',
+    deliverySuffix: deadlineMatch ? deadlineMatch[1] : ''
+  };
+}
+
+// 客户名组合规则与 /spec-info 保持一致（仕样号>中间商_终端客户-项目名）
+function composeSelfHealClientName(specNumber, info) {
+  if (!info) return '';
+  if (info.middleMan && info.finalClient && info.projectName) {
+    return `${specNumber}>${info.middleMan}_${info.finalClient}-${info.projectName}`;
+  }
+  if (info.middleMan && info.finalClient) {
+    return `${specNumber}>${info.middleMan}_${info.finalClient}`;
+  }
+  if (info.middleMan && info.projectName) {
+    return `${specNumber}>${info.middleMan}-${info.projectName}`;
+  }
+  if (info.middleMan) {
+    return `${specNumber}>${info.middleMan}`;
+  }
+  if (info.finalClient && info.projectName) {
+    return `${specNumber}>${info.finalClient}-${info.projectName}`;
+  }
+  if (info.finalClient) {
+    return `${specNumber}>${info.finalClient}`;
+  }
+  return '';
+}
+
+// 「修改仕样书」的任务名要带 M 前缀，与前端 getDesignPlanClientName 一致
+function applySelfHealModificationPrefix(clientName, info, fallbackSpecNumber) {
+  const name = String(clientName || '').trim();
+  if (!name) return '';
+  if (!info || !info.isModification || name.startsWith('M')) return name;
+  const specNumber = info.specNumber || fallbackSpecNumber;
+  if (name.startsWith(`${specNumber}>`)) return `M${name}`;
+  return `M${specNumber}>${name}`;
+}
+
+function composeSelfHealDeliverySuffix(info) {
+  const d = info && info.deliveryDate;
+  if (!d || !d.year || !d.month || !d.day) return '';
+  return `[${Number(d.month)}/${Number(d.day)}]`;
+}
+
+function buildSelfHealTaskName(taskName, expectedClient, expectedDelivery) {
+  const parts = splitSelfHealTaskName(taskName);
+  const clientPart = expectedClient || parts.baseName;
+  const deliveryPart = expectedDelivery || parts.deliverySuffix;
+  return `${clientPart}${parts.typeSuffix}${deliveryPart ? ` ${deliveryPart}` : ''}`.trim();
+}
+
+// 解析单个仕样号 → 期望的客户名与纳期。任何一步失败都返回可展示的原因，
+// 而不是抛错：一个仕样书解析不了不该让整次扫描失败。
+async function resolveSelfHealSpec(specNumber) {
+  const share = await checkSpecShare();
+  if (!share.ok) {
+    return { resolved: false, code: 'SHARE_UNREACHABLE', message: SPEC_SHARE_UNAVAILABLE_MESSAGE };
+  }
+
+  const lookup = await withDeadline(findLatestSpecPdf(specNumber), HEAL_SPEC_TIMEOUT_MS);
+  if (lookup.timedOut) return { resolved: false, code: 'TIMEOUT', message: '读取仕样书超时' };
+  const pdfPath = lookup.value;
+  if (!pdfPath) return { resolved: false, code: 'PDF_MISSING', message: '共享目录中没有该仕样号的仕样书' };
+
+  const parsed = await withDeadline(extractSpecInfoFromPdf(pdfPath), HEAL_SPEC_TIMEOUT_MS);
+  if (parsed.timedOut) return { resolved: false, code: 'TIMEOUT', message: '解析仕样书超时' };
+  const info = parsed.value;
+  if (!info) return { resolved: false, code: 'PARSE_FAILED', message: '仕样书解析失败' };
+
+  const clientName = applySelfHealModificationPrefix(
+    composeSelfHealClientName(specNumber, info),
+    info,
+    specNumber
+  );
+  const deliverySuffix = composeSelfHealDeliverySuffix(info);
+
+  if (!clientName && !deliverySuffix) {
+    return { resolved: false, code: 'NO_DATA', message: '仕样书中未找到客户名与纳期' };
+  }
+  return { resolved: true, clientName, deliverySuffix };
+}
+
+// 单个仕样号的扫描结果：期望值 + 需要改动的明细（已最新时明细为空）
+function buildSelfHealSpecEntry(specNumber, entries, resolution, designerNames) {
+  const entry = {
+    specNumber,
+    status: resolution.resolved ? 'ok' : 'unresolved',
+    resolved: Boolean(resolution.resolved),
+    expectedClient: resolution.clientName || '',
+    expectedDelivery: resolution.deliverySuffix || '',
+    code: resolution.code || '',
+    message: resolution.message || '',
+    itemCount: 0,
+    changes: [],
+    items: [],
+    itemsTruncated: false
+  };
+  if (!resolution.resolved) return entry;
+
+  const changeFlags = new Set();
+  for (const item of entries) {
+    const parts = splitSelfHealTaskName(item.taskName);
+    const clientChanged = entry.expectedClient !== ''
+      && collapseSpace(parts.baseName) !== collapseSpace(entry.expectedClient);
+    const deliveryChanged = entry.expectedDelivery !== ''
+      && parts.deliverySuffix !== entry.expectedDelivery;
+    if (!clientChanged && !deliveryChanged) continue;
+
+    const newTaskName = buildSelfHealTaskName(item.taskName, entry.expectedClient, entry.expectedDelivery);
+    if (!newTaskName || collapseSpace(newTaskName) === collapseSpace(item.taskName)) continue;
+
+    entry.itemCount += 1;
+    if (clientChanged) changeFlags.add('client');
+    if (deliveryChanged) changeFlags.add('delivery');
+    if (entry.items.length >= HEAL_MAX_ITEMS_PER_SPEC) {
+      entry.itemsTruncated = true;
+      continue;
+    }
+    entry.items.push({
+      itemId: item.itemId,
+      designerId: item.designerId,
+      designerName: designerNames.get(item.designerId) || '',
+      date: item.date,
+      taskName: item.taskName,
+      newTaskName,
+      changes: [
+        ...(clientChanged ? ['client'] : []),
+        ...(deliveryChanged ? ['delivery'] : [])
+      ],
+      currentClient: parts.baseName,
+      currentDelivery: parts.deliverySuffix
+    });
+  }
+
+  entry.status = entry.itemCount > 0 ? 'outdated' : 'ok';
+  entry.changes = ['client', 'delivery'].filter(flag => changeFlags.has(flag));
+  return entry;
+}
+
+// 并发受限的批量执行：仕样书解析是重活，串行太慢、全并发会把共享盘和 CPU 一起压垮
+async function forEachWithConcurrency(list, limit, worker) {
+  let cursor = 0;
+  const size = Math.max(1, Math.min(limit, list.length));
+  const runners = Array.from({ length: size }, async () => {
+    while (cursor < list.length) {
+      const index = cursor;
+      cursor += 1;
+      await worker(list[index], index);
+    }
+  });
+  await Promise.all(runners);
+}
+
+function pruneSelfHealJobs() {
+  const now = Date.now();
+  for (const [id, job] of selfHealJobs) {
+    if (now - job.createdAt > HEAL_JOB_TTL_MS) selfHealJobs.delete(id);
+  }
+}
+
+function getSelfHealJobSnapshot(job) {
+  return {
+    jobId: job.id,
+    year: job.year,
+    month: job.month,
+    status: job.status,
+    message: job.message || '',
+    total: job.total,
+    done: job.done,
+    current: job.current,
+    totalItems: job.totalItems,
+    skippedItems: job.skippedItems,
+    summary: job.summary,
+    specs: job.specs,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt
+  };
+}
+
+async function runSelfHealScan(job) {
+  try {
+    const share = await checkSpecShare();
+    if (!share.ok) {
+      job.status = 'failed';
+      job.message = SPEC_SHARE_UNAVAILABLE_MESSAGE;
+      job.finishedAt = Date.now();
+      return;
+    }
+
+    const digits = getConfiguredSpecDigits();
+    const designerNames = new Map((db.readDesigners() || []).map(designer => [designer.id, designer.name]));
+    const sheets = taskStore.listSheets({ month: job.month, year: job.year });
+
+    // 先按仕样号归并当月任务：扫描以仕样号为单位，同一仕样号的所有任务共用一次解析结果
+    const groups = new Map();
+    let totalItems = 0;
+    let skippedItems = 0;
+
+    sheets.forEach(sheet => {
+      Object.entries(sheet.days || {}).forEach(([date, items]) => {
+        if (!Array.isArray(items)) return;
+        items.forEach(item => {
+          if (!item || item.leaveType) return;            // 请假/出差行没有仕样号
+          const taskName = String(item.taskName || '').trim();
+          if (!taskName) return;
+          totalItems += 1;
+          const specNumber = extractSelfHealSpecNumber(taskName, digits);
+          if (!specNumber) {
+            skippedItems += 1;                            // 认不出仕样号的任务，只在汇总里计数
+            return;
+          }
+          if (!groups.has(specNumber)) groups.set(specNumber, []);
+          groups.get(specNumber).push({
+            itemId: item.id,
+            designerId: sheet.designerId,
+            date,
+            taskName
+          });
+        });
+      });
+    });
+
+    job.totalItems = totalItems;
+    job.skippedItems = skippedItems;
+    job.total = groups.size;
+
+    const specNumbers = [...groups.keys()].sort();
+    await forEachWithConcurrency(specNumbers, HEAL_SPEC_CONCURRENCY, async (specNumber) => {
+      job.current = specNumber;
+      let resolution;
+      try {
+        resolution = await resolveSelfHealSpec(specNumber);
+      } catch (e) {
+        console.warn('[spec] 仕样自愈解析失败:', specNumber, e.message);
+        resolution = { resolved: false, code: 'ERROR', message: '解析仕样书失败' };
+      }
+      job.specs.push(buildSelfHealSpecEntry(specNumber, groups.get(specNumber), resolution, designerNames));
+      job.done += 1;
+    });
+
+    job.specs.sort((a, b) => a.specNumber.localeCompare(b.specNumber));
+    job.summary = {
+      specCount: job.specs.length,
+      outdatedSpecs: job.specs.filter(s => s.status === 'outdated').length,
+      okSpecs: job.specs.filter(s => s.status === 'ok').length,
+      unresolvedSpecs: job.specs.filter(s => s.status === 'unresolved').length,
+      outdatedItems: job.specs.reduce((sum, s) => sum + (s.status === 'outdated' ? s.itemCount : 0), 0),
+      totalItems,
+      skippedItems
+    };
+    job.status = 'completed';
+    job.current = '';
+    job.finishedAt = Date.now();
+
+    console.log(
+      `[spec] 仕样自愈扫描完成 ${job.year}-${String(job.month).padStart(2, '0')}：`
+      + `${job.summary.specCount} 个仕样号，需更新 ${job.summary.outdatedSpecs} 个 / ${job.summary.outdatedItems} 条任务，`
+      + `无仕样书 ${job.summary.unresolvedSpecs} 个`
+    );
+  } catch (e) {
+    job.status = 'failed';
+    job.message = '扫描失败，请稍后重试或检查仕样书共享连接';
+    job.finishedAt = Date.now();
+    console.warn('[spec] 仕样自愈扫描失败:', e.message);
+  }
+}
+
+router.post('/self-heal/scan', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+  const year = Number(req.body && req.body.year);
+  const month = Number(req.body && req.body.month);
+  if (!Number.isInteger(year) || year < 1900 || year > 9999 || !Number.isInteger(month) || month < 1 || month > 12) {
+    return res.status(400).json({ success: false, message: '月份参数不正确' });
+  }
+
+  pruneSelfHealJobs();
+
+  const job = {
+    id: `heal-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+    year,
+    month,
+    status: 'running',
+    message: '',
+    total: 0,
+    done: 0,
+    current: '',
+    totalItems: 0,
+    skippedItems: 0,
+    summary: null,
+    specs: [],
+    createdAt: Date.now(),
+    startedAt: Date.now(),
+    finishedAt: null
+  };
+  selfHealJobs.set(job.id, job);
+
+  // 后台执行，立刻把 jobId 交给前端去轮询进度
+  runSelfHealScan(job);
+
+  res.status(202).json({ success: true, ...getSelfHealJobSnapshot(job) });
+}));
+
+router.get('/self-heal/scan/:jobId', [authMiddleware, adminMiddleware], (req, res) => {
+  const job = selfHealJobs.get(String(req.params.jobId || ''));
+  if (!job) {
+    return res.status(404).json({ success: false, message: '扫描结果不存在或已过期，请重新检测' });
+  }
+  res.json({ success: true, ...getSelfHealJobSnapshot(job) });
+});
+
+router.post('/self-heal/apply', [authMiddleware, adminMiddleware], asyncHandler(async (req, res) => {
+  const jobId = String((req.body && req.body.jobId) || '');
+  const job = selfHealJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, message: '扫描结果不存在或已过期，请重新检测' });
+  }
+  if (job.status !== 'completed') {
+    return res.status(409).json({ success: false, message: '扫描尚未完成，请稍候再试' });
+  }
+
+  const applyStartedAt = Date.now();
+
+  const outdated = job.specs.filter(s => s.status === 'outdated' && s.resolved);
+  const requested = Array.isArray(req.body.specNumbers)
+    ? req.body.specNumbers.map(value => String(value || '').trim()).filter(Boolean)
+    : null;
+  // 未传 specNumbers 时更新全部「需更新」的仕样号（一键更新）；传了就只更新勾选的那些
+  const targets = requested && requested.length > 0
+    ? outdated.filter(s => requested.includes(s.specNumber))
+    : outdated;
+
+  if (targets.length === 0) {
+    return res.json({
+      success: true,
+      updatedItems: 0,
+      updatedSpecs: [],
+      designerIds: [],
+      message: '没有需要更新的仕样号'
+    });
+  }
+
+  const bySpec = new Map(targets.map(s => [s.specNumber, s]));
+  const digits = getConfiguredSpecDigits();
+  const sheets = taskStore.listSheets({ month: job.month, year: job.year });
+  const userMeta = { id: req.user.id, username: req.user.username, name: req.user.name || req.user.username };
+  const changedSheets = new Map();
+  const updatedSpecs = new Set();
+  const designerIds = new Set();
+  let updatedItems = 0;
+
+  sheets.forEach(sheet => {
+    Object.entries(sheet.days || {}).forEach(([date, items]) => {
+      if (!Array.isArray(items)) return;
+      items.forEach(item => {
+        if (!item || item.leaveType) return;
+        const taskName = String(item.taskName || '').trim();
+        if (!taskName) return;
+        const specNumber = extractSelfHealSpecNumber(taskName, digits);
+        if (!specNumber) return;
+        const expected = bySpec.get(specNumber);
+        if (!expected) return;
+
+        const newTaskName = buildSelfHealTaskName(item.taskName, expected.expectedClient, expected.expectedDelivery);
+        if (!newTaskName || collapseSpace(newTaskName) === collapseSpace(item.taskName)) return;
+
+        item.taskName = newTaskName;
+        item.updatedAt = new Date().toISOString();
+        item.updatedBy = userMeta;
+
+        updatedItems += 1;
+        updatedSpecs.add(specNumber);
+        designerIds.add(sheet.designerId);
+        changedSheets.set(sheet.id, sheet);
+      });
+    });
+  });
+
+  if (changedSheets.size > 0) {
+    taskStore.saveSheets([...changedSheets.values()]);
+  }
+
+  const updatedSpecList = [...updatedSpecs].sort();
+
+  // 只在真的改了任务时留一条自愈记录（点一次什么都没改，不算一次操作）
+  if (updatedItems > 0) {
+    try {
+      db.appendSelfHealLog({
+        year: job.year,
+        month: job.month,
+        userId: userMeta.id,
+        username: userMeta.username,
+        name: userMeta.name,
+        specCount: job.specs.length,
+        requestedSpecs: targets.map(s => s.specNumber),
+        updatedSpecs: updatedSpecList,
+        updatedItems,
+        sheetCount: changedSheets.size,
+        durationMs: Date.now() - applyStartedAt
+      });
+    } catch (e) {
+      console.warn('[spec] 仕样自愈记录写入失败:', e.message);
+    }
+  }
+
+  console.log(
+    `[spec] 仕样自愈更新 ${job.year}-${String(job.month).padStart(2, '0')}：`
+    + `${updatedSpecs.size} 个仕样号 / ${updatedItems} 条任务（操作人 ${userMeta.username}）`
+  );
+
+  res.json({
+    success: true,
+    updatedItems,
+    updatedSpecs: updatedSpecList,
+    designerIds: [...designerIds],
+    sheetCount: changedSheets.size,
+    message: `已更新 ${updatedItems} 条任务`
+  });
+}));
+
+// 仕样自愈操作记录：谁在什么时候把哪个月的哪些仕样号改成了什么结果
+// 敏感信息（人名 + 改动明细）只对超级管理员开放，普通管理员连列表都读不到
+router.get('/self-heal/logs', [authMiddleware, superAdminMiddleware], (req, res) => {
+  const limit = Number(req.query.limit);
+  const logs = db.listSelfHealLogs(Number.isFinite(limit) && limit > 0 ? limit : 30);
+  res.json({ success: true, logs });
+});
 
 module.exports = router;

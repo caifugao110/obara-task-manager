@@ -8,8 +8,14 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook } = require('../utils/fileUploadSecurity');
 const { authMiddleware, adminMiddleware, superAdminMiddleware, accessSettingsMiddleware } = require('../middleware/auth');
+const { emitToPage } = require('../utils/socketRooms');
 const asyncHandler = require('express-async-handler');
 const Joi = require('joi');
+
+// 台账相关的广播一律只发给持有 gunLedger 页面权限的连接。
+// 直接 io.emit 会把整表行数据推给无权限账号（HTTP 侧这些账号是 403 的）。
+const emitGunLedgerUpdate = (io, payload) => emitToPage(io, 'gunLedger', 'gun_ledger_updated', payload);
+const emitGunLedgerUnlocked = (io, tableId) => emitToPage(io, 'gunLedger', 'gun_ledger_table_unlocked', { tableId });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -556,7 +562,7 @@ router.post('/tables/:tableId/quick-take', [authMiddleware, adminMiddleware, acc
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: found.table.rows, renamed: healed.renamed });
+  if (io) emitGunLedgerUpdate(io, { action: 'update_rows', tableId: req.params.tableId, rows: found.table.rows, renamed: healed.renamed });
 
   res.json({
     success: true,
@@ -762,8 +768,8 @@ router.post('/import',
 
     const io = req.app.get('io');
     if (io) {
-      oldTableIds.forEach(id => io.emit('gun_ledger_table_unlocked', { tableId: id }));
-      io.emit('gun_ledger_updated', { action: 'import', category: targetCategory, isNewCategory, tables: importedTables });
+      oldTableIds.forEach(id => emitGunLedgerUnlocked(io, id));
+      emitGunLedgerUpdate(io, { action: 'import', category: targetCategory, isNewCategory, tables: importedTables });
     }
 
     const importedRows = importedTables.reduce((sum, table) => sum + table.rows.length, 0);
@@ -801,7 +807,7 @@ router.post('/categories', [authMiddleware, adminMiddleware, accessSettingsMiddl
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'add_category', category: name });
+  if (io) emitGunLedgerUpdate(io, { action: 'add_category', category: name });
 
   res.json({ category: name });
 }));
@@ -831,8 +837,8 @@ router.delete('/categories/:category', [authMiddleware, superAdminMiddleware, ac
 
   const io = req.app.get('io');
   if (io) {
-    removedTableIds.forEach(id => io.emit('gun_ledger_table_unlocked', { tableId: id }));
-    io.emit('gun_ledger_updated', { action: 'delete_category', category });
+    removedTableIds.forEach(id => emitGunLedgerUnlocked(io, id));
+    emitGunLedgerUpdate(io, { action: 'delete_category', category });
   }
 
   res.json({ success: true });
@@ -864,7 +870,7 @@ router.post('/categories/:category/tables', [authMiddleware, adminMiddleware, ac
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'add_table', category, table: newTable });
+  if (io) emitGunLedgerUpdate(io, { action: 'add_table', category, table: newTable });
 
   res.json(newTable);
 }));
@@ -908,7 +914,7 @@ router.patch('/tables/order', [authMiddleware, adminMiddleware, accessSettingsMi
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'reorder_tables', category: value.category, order: value.order });
+  if (io) emitGunLedgerUpdate(io, { action: 'reorder_tables', category: value.category, order: value.order });
 
   res.json({ category: value.category, order: value.order });
 }));
@@ -952,7 +958,7 @@ router.post('/tables/order/default', [authMiddleware, superAdminMiddleware, acce
 
   const order = orderedList.map(t => t.id);
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'reorder_tables', category: value.category, order });
+  if (io) emitGunLedgerUpdate(io, { action: 'reorder_tables', category: value.category, order });
 
   res.json({ category: value.category, order });
 }));
@@ -977,7 +983,7 @@ router.patch('/tables/:tableId', [authMiddleware, adminMiddleware, accessSetting
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'rename_table', tableId: req.params.tableId, name: found.table.name });
+  if (io) emitGunLedgerUpdate(io, { action: 'rename_table', tableId: req.params.tableId, name: found.table.name });
 
   res.json(found.table);
 }));
@@ -997,8 +1003,8 @@ router.delete('/tables/:tableId', [authMiddleware, superAdminMiddleware, accessS
 
   const io = req.app.get('io');
   if (io) {
-    io.emit('gun_ledger_table_unlocked', { tableId: req.params.tableId });
-    io.emit('gun_ledger_updated', { action: 'delete_table', tableId: req.params.tableId });
+    emitGunLedgerUnlocked(io, req.params.tableId);
+    emitGunLedgerUpdate(io, { action: 'delete_table', tableId: req.params.tableId });
   }
 
   res.json({ success: true });
@@ -1070,7 +1076,7 @@ router.put('/tables/:tableId/rows', [authMiddleware, adminMiddleware, accessSett
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: nextRows, renamed: bound.renamed });
+  if (io) emitGunLedgerUpdate(io, { action: 'update_rows', tableId: req.params.tableId, rows: nextRows, renamed: bound.renamed });
 
   // 行数据 + 本次按序号校正掉的编号（为空表示数据本来就是一致的）
   res.json({ rows: nextRows, renamed: bound.renamed });
@@ -1108,7 +1114,7 @@ router.patch('/categories/order', [authMiddleware, adminMiddleware, accessSettin
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'reorder_categories', order: value.order });
+  if (io) emitGunLedgerUpdate(io, { action: 'reorder_categories', order: value.order });
 
   res.json({ order: value.order });
 }));
@@ -1135,7 +1141,7 @@ router.post('/categories/order/default', [authMiddleware, superAdminMiddleware, 
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'reorder_categories', order: ordered });
+  if (io) emitGunLedgerUpdate(io, { action: 'reorder_categories', order: ordered });
 
   res.json({ order: ordered });
 }));
@@ -1162,7 +1168,7 @@ router.put('/default-persons', [authMiddleware, superAdminMiddleware], asyncHand
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'default_persons', defaultResponsiblePersons: persons });
+  if (io) emitGunLedgerUpdate(io, { action: 'default_persons', defaultResponsiblePersons: persons });
 
   res.json(persons);
 }));
@@ -1175,7 +1181,7 @@ router.post('/default-persons/reset', [authMiddleware, superAdminMiddleware], as
   await db.writeDb(data);
 
   const io = req.app.get('io');
-  if (io) io.emit('gun_ledger_updated', { action: 'default_persons', defaultResponsiblePersons: data.gunLedger.defaultResponsiblePersons });
+  if (io) emitGunLedgerUpdate(io, { action: 'default_persons', defaultResponsiblePersons: data.gunLedger.defaultResponsiblePersons });
 
   res.json(data.gunLedger.defaultResponsiblePersons);
 }));
@@ -1206,9 +1212,9 @@ router.put('/tables/:tableId/gun-name-rule', [authMiddleware, superAdminMiddlewa
 
   const io = req.app.get('io');
   if (io) {
-    io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId: req.params.tableId, rule });
+    emitGunLedgerUpdate(io, { action: 'gun_name_rule', tableId: req.params.tableId, rule });
     if (bound.renamed.length) {
-      io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: bound.rows, renamed: bound.renamed });
+      emitGunLedgerUpdate(io, { action: 'update_rows', tableId: req.params.tableId, rows: bound.rows, renamed: bound.renamed });
     }
   }
 
@@ -1238,8 +1244,8 @@ router.post('/tables/:tableId/initialize-gun-names', [authMiddleware, superAdmin
 
   const io = req.app.get('io');
   if (io) {
-    io.emit('gun_ledger_updated', { action: 'update_rows', tableId: req.params.tableId, rows: [] });
-    if (rule) io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId: req.params.tableId, rule });
+    emitGunLedgerUpdate(io, { action: 'update_rows', tableId: req.params.tableId, rows: [] });
+    if (rule) emitGunLedgerUpdate(io, { action: 'gun_name_rule', tableId: req.params.tableId, rule });
   }
 
   res.json({ success: true, rows: [], rule });
@@ -1276,10 +1282,10 @@ const applyBatchInitialize = async (req, res, data, tableRefs) => {
 
   const io = req.app.get('io');
   tableRefs.forEach(ref => {
-    if (io) io.emit('gun_ledger_updated', { action: 'update_rows', tableId: ref.table.id, rows: [] });
+    if (io) emitGunLedgerUpdate(io, { action: 'update_rows', tableId: ref.table.id, rows: [] });
   });
   resetRules.forEach(({ tableId, rule }) => {
-    if (io) io.emit('gun_ledger_updated', { action: 'gun_name_rule', tableId, rule });
+    if (io) emitGunLedgerUpdate(io, { action: 'gun_name_rule', tableId, rule });
   });
 
   res.json({

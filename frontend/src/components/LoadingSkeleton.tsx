@@ -3,13 +3,13 @@ import { useAuth } from '../context/AuthContext';
 
 /**
  * 各页面的加载骨架屏 —— 版式对齐真实页面，避免加载完成时布局跳变。
- * - dashboard       主页面（排产表）：绿色顶栏 + 双行表头 + 月总工时列 + 分组行 + 底部状态栏
+ * - dashboard       主页面（排产表）：绿色顶栏 + 双行表头（每天拆「任务内容/工时」两列）+ 月总工时列 + 分组行 + 完整底部状态栏
  * - leaderboard     任务报表：白色顶栏 + 两张渐变查询卡 + 权限设置卡 + 底部状态栏
  * - workhours       工时管理：白色顶栏 + 统计分组条 + 双列统计卡片 + 权限设置卡 + 底部状态栏
  * - statustracking  状态跟踪：白色顶栏（搜索/操作）+ 筛选条 + 双行蓝色表头的宽表格 + 底部状态栏
  * - designstandards 设计规范：白色顶栏（含知识库状态）+ 状态卡 + 3 个 tab + 检索面板 + 权限设置卡
  * - gunledger       焊枪编号台账：绿色顶栏 + 左侧分类/表列表 + 右侧表格 + 底部状态栏
- * - systemsettings  系统设置：白色顶栏 + 8 个 tab + 状态监测/数据管理内容
+ * - systemsettings  系统设置：白色顶栏 + tab 栏（超管 8 个 / 一般管理员 2 个，默认状态监测）+ 对应内容区
  */
 export type SkeletonKind =
   | 'dashboard'
@@ -90,29 +90,16 @@ function IconButton() {
 }
 
 /** 页面底部状态条；设计规范使用 max-w-6xl，并同时展示后端与知识库状态。 */
-function FooterBar({
-  tone = 'white',
-  variant = 'default',
-}: {
-  tone?: 'white' | 'gray';
-  variant?: 'default' | 'knowledge';
-}) {
-  const gray = tone === 'gray';
+function FooterBar({ variant = 'default' }: { variant?: 'default' | 'knowledge' }) {
   const knowledge = variant === 'knowledge';
   return (
-    <div
-      className={`shrink-0 border-t ${
-        gray
-          ? 'bg-[#f3f3f3] border-gray-300 px-4 py-1'
-          : 'bg-white border-gray-200 px-6 py-3'
-      }`}
-    >
+    <div className="shrink-0 border-t bg-white border-gray-200 px-6 py-3">
       <div
         className={`flex items-center justify-between ${
-          gray ? '' : `${knowledge ? 'max-w-6xl' : 'max-w-7xl'} mx-auto`
-        }`}
+          knowledge ? 'max-w-6xl' : 'max-w-7xl'
+        } mx-auto`}
       >
-        <Bar className={gray ? 'h-2.5 w-20' : knowledge ? 'h-3 w-36' : 'h-3 w-20'} />
+        <Bar className={knowledge ? 'h-3 w-36' : 'h-3 w-20'} />
         {knowledge ? (
           <div className="flex items-center gap-4">
             {[0, 1].map((i) => (
@@ -125,13 +112,9 @@ function FooterBar({
           </div>
         ) : (
           <div className="flex items-center gap-2">
-            <Bar className={gray ? 'h-2.5 w-12' : 'h-3 w-14'} />
-            <Bar
-              className={
-                gray ? 'h-2 w-2 rounded-full bg-green-300' : 'h-2.5 w-2.5 rounded-full bg-green-300'
-              }
-            />
-            <Bar className={gray ? 'h-2.5 w-8' : 'h-3 w-9'} />
+            <Bar className="h-3 w-14" />
+            <Bar className="h-2.5 w-2.5 rounded-full bg-green-300" />
+            <Bar className="h-3 w-9" />
           </div>
         )}
       </div>
@@ -144,43 +127,114 @@ function FooterBar({
 const DAY_COUNT = 4;
 /** 用最后一列模拟周末（真实页面周末列是淡黄底） */
 const WEEKEND_COLS = [2];
+/** 与真实页面一致：首尾各 96px，每天拆成「任务内容 + 工时」两列 */
+const TASK_COL = 288;
+const HOURS_COL = 48;
+
+/**
+ * 主页面底部状态栏：左侧状态点 + 四个快捷胶囊 + 月度统计，
+ * 右侧上次登录 / IP / 浏览器 + 操作说明 + 缩放指示器 + 全屏。
+ */
+function DashboardFooter() {
+  return (
+    <div className="shrink-0 bg-[#f3f3f3] border-t border-gray-300 px-4 py-1 flex flex-wrap items-center justify-between gap-y-0.5 text-[11px] text-gray-500 whitespace-nowrap">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
+        <div className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-green-400" />
+          <Bar className="h-2.5 w-7" />
+        </div>
+        {/* 仕样自愈 / 快速取号 / 为今日取号安排确认图 / 查找 */}
+        {[
+          ['border-emerald-300 bg-white/70', 72],
+          ['border-amber-300 bg-white/70', 72],
+          ['border-violet-300 bg-white/70', 140],
+          ['border-sky-300 bg-white/70', 52],
+        ].map(([cls, w], i) => (
+          <span key={i} className={`h-5 rounded-full border ${cls}`} style={{ width: w }} />
+        ))}
+        <span className="w-px h-3 bg-gray-300" />
+        {/* 本月任务条目 / 本月周末加班 / 本月员工出差 / 本月员工请假 */}
+        {[72, 84, 84, 84].map((labelW, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <Bar className="h-2.5" style={{ width: labelW }} />
+            <Bar className="h-2.5 w-8" />
+          </div>
+        ))}
+      </div>
+      <div className="flex shrink-0 items-center gap-4">
+        {/* 上次登录 / IP / 浏览器 */}
+        <Bar className="h-2.5 w-24" />
+        <span className="w-px h-3 bg-gray-300" />
+        <Bar className="h-2.5 w-20" />
+        <span className="w-px h-3 bg-gray-300" />
+        <Bar className="h-2.5 w-14" />
+        <span className="w-px h-3 bg-gray-300" />
+        {/* 操作说明（仅管理员） */}
+        <span className="w-[18px] h-[18px] rounded-full border border-gray-300 bg-white/70" />
+        <span className="w-px h-3 bg-gray-300" />
+        {/* 缩放指示器 − 100% + */}
+        <div className="flex items-center gap-1">
+          <span className="h-4 w-4 rounded border border-gray-300 bg-white/70" />
+          <Bar className="h-2.5 w-6" />
+          <span className="h-4 w-4 rounded border border-gray-300 bg-white/70" />
+        </div>
+        <span className="w-px h-3 bg-gray-300" />
+        {/* 全屏：图标 + 文字 */}
+        <div className="flex items-center gap-1">
+          <Bar className="h-3 w-3 rounded-sm" />
+          <Bar className="h-2.5 w-7" />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function DashboardSkeleton() {
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-[#f3f3f3]" aria-hidden="true">
       {/* ---------- 顶部绿色栏 ---------- */}
-      <div className="shrink-0 h-12 bg-[#217346] px-6 flex items-center justify-between shadow-md">
-        <div className="flex items-center gap-4">
-          <LightBar className="w-6 h-6 rounded-md" />
-          <LightBar className="h-4 w-36" />
+      <div className="shrink-0 bg-[#217346] px-6 py-2 flex flex-wrap items-center justify-between gap-y-1.5 shadow-md">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5">
+          <div className="flex shrink-0 items-center gap-2">
+            <LightBar className="w-6 h-6 rounded-md" />
+            <LightBar className="h-5 w-36" />
+          </div>
           {/* 月份切换 */}
-          <div className="flex items-center gap-2 h-8 px-2 rounded bg-[#1a5c38]">
+          <div className="flex shrink-0 items-center gap-2 h-8 px-2 rounded bg-[#1a5c38]">
             <LightBar className="w-3.5 h-3.5 rounded-sm" />
             <LightBar className="h-3 w-20" />
             <LightBar className="w-3.5 h-3.5 rounded-sm" />
           </div>
           {/* 人员下拉 */}
-          <div className="h-8 w-24 rounded bg-[#1a5c38] flex items-center px-3">
+          <div className="h-8 w-[100px] rounded bg-[#1a5c38] flex items-center px-3">
             <LightBar className="h-2.5 w-12" />
           </div>
           {/* 导航按钮：任务报表 / 工时管理 / 状态跟踪表 / 设计规范知识库 / 焊枪编号台账 */}
-          {[88, 72, 96, 124, 108].map((w, i) => (
+          {[
+            [102, 56],
+            [102, 56],
+            [116, 70],
+            [144, 98],
+            [130, 84],
+          ].map(([w, textW], i) => (
             <div
               key={i}
-              className="h-8 rounded bg-[#1a5c38] flex items-center justify-center"
+              className="h-8 rounded bg-[#1a5c38] flex items-center justify-center gap-1.5"
               style={{ width: w }}
             >
-              <LightBar className="h-2.5" style={{ width: w - 36 }} />
+              <LightBar className="w-4 h-4 rounded-sm" />
+              <LightBar className="h-2.5" style={{ width: textW }} />
             </div>
           ))}
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex shrink-0 items-center gap-4">
+          {/* 当前版本 / 用户名 / 系统设置 / 用户管理 / 退出 */}
           <LightBar className="h-3 w-24" />
-          <LightBar className="h-3 w-14" />
-          <LightBar className="w-6 h-6 rounded-md" />
+          <LightBar className="h-3.5 w-16" />
+          <LightBar className="w-5 h-5 rounded" />
           <span className="h-6 w-px bg-white/20" />
-          <LightBar className="w-6 h-6 rounded-md" />
-          <LightBar className="w-6 h-6 rounded-md" />
+          <LightBar className="w-5 h-5 rounded" />
+          <LightBar className="w-5 h-5 rounded" />
         </div>
       </div>
 
@@ -188,20 +242,23 @@ export function DashboardSkeleton() {
       <div className="flex-1 min-h-0 bg-white border border-gray-300 overflow-hidden">
         <div
           className="grid"
-          style={{ gridTemplateColumns: '96px repeat(' + DAY_COUNT + ', minmax(336px, 1fr)) 96px' }}
+          style={{
+            gridTemplateColumns: `96px repeat(${DAY_COUNT}, minmax(${TASK_COL}px, 1fr) ${HOURS_COL}px) 96px`,
+          }}
         >
-          {/* 主表头 */}
+          {/* 主表头：设计员 ｜ 每天（跨「任务内容 + 工时」两列）｜ 月总工时 */}
           <div className="h-10 bg-[#f8f9fa] border-r border-b border-gray-300 flex items-center justify-center">
             <Bar className="h-3 w-10" />
           </div>
           {Array.from({ length: DAY_COUNT }).map((_, i) => (
             <div
               key={i}
+              style={{ gridColumn: 'span 2' }}
               className={`h-10 border-r border-b border-gray-300 flex flex-col items-center justify-center gap-1.5 ${
                 WEEKEND_COLS.includes(i) ? 'bg-indigo-50' : 'bg-[#f8f9fa]'
               }`}
             >
-              <Bar className="h-2 w-6 opacity-80" />
+              <Bar className="h-2 w-16 opacity-80" />
               <Bar className="h-3 w-5" />
             </div>
           ))}
@@ -209,16 +266,24 @@ export function DashboardSkeleton() {
             <Bar className="h-3 w-12" />
           </div>
 
-          {/* 副表头 */}
+          {/* 副表头：任务内容 / 工时 */}
           <div className="h-6 bg-[#f8f9fa] border-r border-b border-gray-300" />
           {Array.from({ length: DAY_COUNT }).map((_, i) => (
-            <div
-              key={`sub-${i}`}
-              className={`h-6 border-r border-b border-gray-300 flex items-center justify-center ${
-                WEEKEND_COLS.includes(i) ? 'bg-indigo-50' : 'bg-[#f8f9fa]'
-              }`}
-            >
-              <Bar className="h-1.5 w-8 opacity-80" />
+            <div key={`sub-${i}`} className="contents">
+              <div
+                className={`h-6 border-r border-b border-gray-300 flex items-center justify-center ${
+                  WEEKEND_COLS.includes(i) ? 'bg-indigo-50' : 'bg-[#f8f9fa]'
+                }`}
+              >
+                <Bar className="h-1.5 w-12 opacity-80" />
+              </div>
+              <div
+                className={`h-6 border-r border-b border-gray-300 flex items-center justify-center ${
+                  WEEKEND_COLS.includes(i) ? 'bg-indigo-50' : 'bg-[#f8f9fa]'
+                }`}
+              >
+                <Bar className="h-1.5 w-4 opacity-80" />
+              </div>
             </div>
           ))}
           <div className="h-6 bg-[#f8f9fa] border-b border-gray-300" />
@@ -237,16 +302,24 @@ export function DashboardSkeleton() {
                   <div className="h-20 bg-white border-r border-b border-gray-300 flex items-center justify-center">
                     <Bar className="h-3.5 w-12" />
                   </div>
-                  {/* 每日单元格 */}
+                  {/* 每日：任务内容 + 工时 */}
                   {Array.from({ length: DAY_COUNT }).map((_, c) => (
-                    <div
-                      key={c}
-                      className={`h-20 border-r border-b border-gray-300 px-2 py-2.5 flex flex-col justify-center gap-1.5 ${
-                        WEEKEND_COLS.includes(c) ? 'bg-[#fffbf0]' : 'bg-white'
-                      }`}
-                    >
-                      <Bar className="h-2 w-[58%]" />
-                      <Bar className="h-2 w-[36%]" />
+                    <div key={c} className="contents">
+                      <div
+                        className={`h-20 border-r border-b border-gray-300 px-2 py-2.5 flex flex-col justify-center gap-1.5 ${
+                          WEEKEND_COLS.includes(c) ? 'bg-[#fffbf0]' : 'bg-white'
+                        }`}
+                      >
+                        <Bar className="h-2 w-[58%]" />
+                        <Bar className="h-2 w-[36%]" />
+                      </div>
+                      <div
+                        className={`h-20 border-r border-b border-gray-300 flex items-center justify-center ${
+                          WEEKEND_COLS.includes(c) ? 'bg-[#fffbf0]' : 'bg-white'
+                        }`}
+                      >
+                        <Bar className="h-3 w-5" />
+                      </div>
                     </div>
                   ))}
                   {/* 月总工时列 */}
@@ -260,7 +333,7 @@ export function DashboardSkeleton() {
         </div>
       </div>
 
-      <FooterBar tone="gray" />
+      <DashboardFooter />
     </div>
   );
 }
@@ -912,14 +985,15 @@ const TONE_BG: Record<SettingsTone, string> = {
 };
 
 /**
- * 顶部 tab：超管可见 8 个（状态监测 + 数据管理 + 6 个运维 tab），普通管理员只有「数据管理」。
+ * 顶部 tab：超管可见 8 个（状态监测 + 数据管理 + 6 个运维 tab），
+ * 一般管理员可见「状态监测（只读）+ 数据管理」。
  * 顺序与真实页面一致：状态监测排在最前，数据管理其次。
  * 每个 tab = px-6(48) + 图标(18) + gap(8) + 文字宽度。
  */
 const SETTINGS_TABS = [64, 64, 80, 64, 96, 64, 64, 64];
-/** 超管进页面默认打开「状态监测」（数组第 0 个） */
+/** 超管与一般管理员进页面都默认打开「状态监测」（数组第 0 个） */
 const SETTINGS_MONITOR_TAB = 0;
-/** 一般管理员只看到「数据管理」 */
+/** 「数据管理」在数组中的位置 */
 const SETTINGS_DATA_TAB = 1;
 
 /**
@@ -1271,11 +1345,16 @@ function MonitorTabSkeleton() {
           <Bar className="h-[34px] w-[112px] rounded-xl bg-blue-50" />
           <Bar className="h-[34px] w-[136px] rounded-xl border border-gray-200 bg-gray-50" />
         </div>
-        {/* 心跳 / 运行时长 / 内存 / 事件循环 / 在线前端 / 近 1 分钟请求 / 更新时间 */}
+        {/* 心跳 / 运行时长 / 内存 / 事件循环 / 在线前端 / 近 1 分钟请求 / 共享路径 / 更新时间 */}
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-gray-50 pt-2.5">
           {[88, 64, 58, 70, 96, 104].map((w, i) => (
             <Bar key={i} className="h-2.5" style={{ width: w, opacity: 1 - i * 0.08 }} />
           ))}
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-emerald-400" />
+            <Bar className="h-2.5 w-12" />
+            <Bar className="h-2.5 w-16" />
+          </span>
           <Bar className="ml-auto h-2.5 w-20" />
         </div>
       </div>
@@ -1373,6 +1452,74 @@ function MonitorTabSkeleton() {
         ))}
       </div>
 
+      {/* 共享路径访问：每行 = 状态徽标 + 名称 + 环境变量 + 用途 + 耗时，路径，5 项证据，结论/建议 */}
+      <SectionSkeleton
+        titleW={84}
+        subtitleW={330}
+        right={<Bar className="h-[26px] w-[72px] rounded-lg border border-gray-200 bg-gray-50" />}
+      >
+        <div className="space-y-2.5">
+          {[0, 1].map((i) => (
+            <div
+              key={i}
+              className={`rounded-xl border px-4 py-3.5 ${
+                i === 1 ? 'border-rose-200 bg-rose-50/40' : 'border-emerald-100 bg-white'
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Bar
+                  className={`h-4 w-14 rounded-full ${
+                    i === 1 ? 'bg-rose-200' : 'bg-emerald-200'
+                  }`}
+                />
+                <Bar className="h-3 w-24" />
+                <Bar className="h-3.5 w-20 rounded bg-slate-100" />
+                <Bar className="h-2.5 w-40 opacity-70" />
+                <Bar className="ml-auto h-2.5 w-28 opacity-70" />
+              </div>
+              <Bar className="mt-2 h-2.5 w-[62%]" />
+              <div className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-black/5 pt-2.5 sm:grid-cols-3 lg:grid-cols-5">
+                {[0, 1, 2, 3, 4].map((c) => (
+                  <div key={c} className="space-y-1">
+                    <Bar className="h-2 w-12 opacity-70" />
+                    <Bar className="h-2.5 w-16" style={{ opacity: 0.9 - c * 0.08 }} />
+                  </div>
+                ))}
+              </div>
+              {/* 文件体积 / 最后修改 */}
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                <Bar className="h-2.5 w-24" />
+                <Bar className="h-2.5 w-28" />
+              </div>
+              {/* 运行时：最近成功解析 / 已解析条目 / 熔断标记 */}
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                <Bar className="h-2.5 w-36" />
+                <Bar className="h-2.5 w-24" />
+                {i === 1 && (
+                  <Bar className="h-4 w-24 rounded bg-amber-50 ring-1 ring-amber-100" />
+                )}
+              </div>
+              {/* net use 提示行 */}
+              <div className="mt-2 flex items-center gap-1.5">
+                <Bar className="h-3 w-3 rounded-sm bg-gray-200" />
+                <Bar className="h-2.5 w-[46%]" />
+              </div>
+              {/* 不可用时的建议框 */}
+              {i === 1 && (
+                <div className="mt-2 rounded-lg bg-white/70 px-2.5 py-2">
+                  <Bar className="h-2.5 w-[70%] opacity-80" />
+                </div>
+              )}
+            </div>
+          ))}
+          {/* 探测口径说明 */}
+          <div className="flex items-start gap-1.5 rounded-lg bg-slate-50 px-3 py-2">
+            <Bar className="mt-0.5 h-3 w-3 shrink-0 rounded-sm bg-gray-200" />
+            <Bar className="h-2.5 w-[78%]" />
+          </div>
+        </div>
+      </SectionSkeleton>
+
       {/* 后端断开记录：通栏卡片 */}
       <SectionSkeleton
         titleW={92}
@@ -1455,6 +1602,8 @@ function MonitorTabSkeleton() {
           <ListTableSkeleton cols={[160, 60, 70, 90, 70, 90]} rows={5} />
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-slate-50/70 px-3 py-2.5">
+          {/* 一般管理员为只读模式，这里给状态胶囊占位 */}
+          <Bar className="h-6 w-40 rounded-lg bg-white ring-1 ring-gray-200" />
           {[96, 84, 76, 108].map((w, i) => (
             <Bar key={i} className="h-7 rounded-lg" style={{ width: w }} />
           ))}
@@ -1474,16 +1623,25 @@ function MonitorTabSkeleton() {
 
 /**
  * 系统设置骨架屏：按角色选版式，和真实页面的默认 tab 保持一致。
- * - 超级管理员：默认「状态监测」
- * - 一般管理员：只有「数据管理」
+ * - 超级管理员：8 个 tab，默认「状态监测」
+ * - 一般管理员：只有「状态监测（只读）+ 数据管理」两个 tab，默认同样落在「状态监测」
+ * - 其它角色（无系统设置权限）：只有「数据管理」
  */
 export function SystemSettingsSkeleton() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'superadmin';
+  const isAdmin = isSuperAdmin || user?.role === 'admin';
 
-  if (isSuperAdmin) {
+  if (isAdmin) {
     return (
-      <SettingsChrome tabs={SETTINGS_TABS} activeIndex={SETTINGS_MONITOR_TAB}>
+      <SettingsChrome
+        tabs={
+          isSuperAdmin
+            ? SETTINGS_TABS
+            : [SETTINGS_TABS[SETTINGS_MONITOR_TAB], SETTINGS_TABS[SETTINGS_DATA_TAB]]
+        }
+        activeIndex={SETTINGS_MONITOR_TAB}
+      >
         <MonitorTabSkeleton />
       </SettingsChrome>
     );

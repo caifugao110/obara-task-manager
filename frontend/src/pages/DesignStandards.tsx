@@ -16,7 +16,6 @@ import {
   Home,
   Shield,
   RefreshCw,
-  LogOut,
   Send,
   CheckCircle2,
   MessageSquare,
@@ -36,6 +35,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
+import LogoutButton from '../components/LogoutButton';
 import { acquireSocket } from '../utils/socketClient';
 
 /* ==================== 类型 ==================== */
@@ -290,7 +290,7 @@ const KbScopeSelect: React.FC<{
  * 超级管理员可在底部进行权限设置。
  */
 const DesignStandards: React.FC = () => {
-  const { user, token, logout } = useAuth();
+  const { user, token } = useAuth();
   const [settings, setSettings] = useState(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -958,10 +958,7 @@ const DesignStandards: React.FC = () => {
             <span>返回工作台</span>
           </Link>
           {user && (
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={!backendOnline} />
           )}
         </header>
         <div className="flex-1 flex items-center justify-center">
@@ -1056,7 +1053,8 @@ const DesignStandards: React.FC = () => {
             {isSuperAdmin && (
               <button
                 type="button"
-                title="答复约束提示词设置"
+                title={!backendOnline ? '当前离线，答复约束提示词不可用（保存需同步到知识库）' : '答复约束提示词设置'}
+                disabled={!backendOnline}
                 onClick={() => {
                   setShowPromptModal(true);
                   // 首次打开时默认选中第一个知识库，方便直接编辑
@@ -1064,20 +1062,14 @@ const DesignStandards: React.FC = () => {
                     setPromptKbId(status.knowledgeBases[0].id);
                   }
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-50"
               >
                 <Sparkles size={14} className="shrink-0" />
                 答复约束提示词
               </button>
             )}
             <span className="text-sm font-bold text-amber-700">{user.name}</span>
-            <button
-              onClick={logout}
-              className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition"
-            >
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={!backendOnline} />
           </div>
         )}
       </header>
@@ -1468,7 +1460,9 @@ const DesignStandards: React.FC = () => {
                   setSelectedKb(e.target.value);
                   fetchDocuments(e.target.value);
                 }}
-                className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:border-blue-400 outline-none min-w-[220px]"
+                disabled={!kbOnline}
+                title={kbOnline ? '选择要查看的文档所在知识库' : '知识库未连接'}
+                className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:border-blue-400 outline-none min-w-[220px] disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
               >
                 <option value="">请选择知识库</option>
                 {(status?.knowledgeBases || []).map(kb => (
@@ -1660,18 +1654,19 @@ const DesignStandards: React.FC = () => {
                     <div className="font-bold text-gray-700">{item.label}</div>
                     <div className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">{item.detail}</div>
                   </div>
-                  <div className="relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in">
+                  <div className={`relative inline-block w-12 h-6 align-middle select-none transition duration-200 ease-in ${backendOnline ? '' : 'opacity-50'}`}>
                     <input
                       type="checkbox"
                       checked={settings[item.key]}
                       onChange={e => updateSettings({ [item.key]: e.target.checked })}
-                      disabled={!settingsLoaded}
+                      disabled={!settingsLoaded || !backendOnline}
+                      title={backendOnline ? '切换后立即保存到服务器' : '当前离线，暂时无法保存权限设置'}
                       className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer z-10"
                     />
                     <label
-                      className={`toggle-label block overflow-hidden h-6 rounded-full cursor-pointer ${
-                        settings[item.key] ? 'bg-blue-500' : 'bg-gray-300'
-                      }`}
+                      className={`toggle-label block overflow-hidden h-6 rounded-full ${
+                        backendOnline ? 'cursor-pointer' : 'cursor-not-allowed'
+                      } ${settings[item.key] ? 'bg-blue-500' : 'bg-gray-300'}`}
                     ></label>
                   </div>
                 </div>
@@ -1849,8 +1844,9 @@ const DesignStandards: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => handleClearPrompt(promptKbId)}
-                            disabled={promptSaving}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-50 transition disabled:opacity-50"
+                            disabled={promptSaving || !kbOnline}
+                            title={kbOnline ? '清除该知识库的答复约束提示词' : '知识库未连接，暂时无法清除'}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             <Trash2 size={13} />
                             清除

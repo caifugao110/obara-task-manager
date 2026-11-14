@@ -214,7 +214,9 @@ function checkPages() {
 // ---------------------------------------------------------------------------
 const PATH_PREFIXES = ['backend/', 'frontend/', 'docs/', 'tools/', 'weknora/', 'control/', '.github/'];
 // 运行时才生成或作为示例的路径，不做存在性校验
-const PATH_ALLOW = ['logs/', 'frontend/src/pages/NewPage.tsx'];
+// backend/tests/.tmp/：只是 `npm test` 跑测试时用 VACUUM INTO 生成快照、跑完即删的临时目录，
+// 平时并不存在；以前它「碰巧」被上一次测试残留下来，检查才能通过，清理后就会误报。
+const PATH_ALLOW = ['logs/', 'backend/tests/.tmp/', 'frontend/src/pages/NewPage.tsx'];
 
 function checkPaths() {
   let checked = 0;

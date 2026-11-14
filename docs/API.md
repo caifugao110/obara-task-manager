@@ -78,6 +78,8 @@ Authorization: Bearer <token>
 | 批量重置登录用户密码 | 否 | 否 | 是 |
 | 页面权限设置 | 否 | 否 | 是 |
 | 系统设置登录管理、日志文件管理、操作日志 | 否 | 否 | 是 |
+| 系统设置状态监测（查看） | 否 | 是（只读） | 是 |
+| 系统设置状态监测（清理 / 压缩监测数据） | 否 | 否（按钮禁用 + 接口 403） | 是 |
 | 系统设置数据管理导出 | 否 | 取决于 `systemSettings.allowAdmins` | 是 |
 | 系统设置数据管理导入 | 否 | 否 | 是 |
 | 查看和修改组长规则 | 否 | 是 | 是 |
@@ -102,6 +104,7 @@ Authorization: Bearer <token>
 - `settings.gunLedger` 控制焊枪台账页面访问权限：`allowViewers=true` 时普通用户可进入 `/gun-ledger` 只读浏览（GET 接口经 `accessSettingsMiddleware` 放行，写接口仍要求 `admin` 及以上）；一般管理员可见删除分类/表按钮但点击被拦截（提示需超级管理员权限）。
 - `settings.designStandards` 控制设计规范知识库页面（`/design-standards`）访问权限，规则同工时管理。
 - `settings.systemSettings.allowViewers` 后端会强制为 `false`，普通用户不能进入系统设置。
+- 状态监测（`/api/system/monitor/*`）对一般管理员开放**只读**：`overview` / `live` / `storage` / `shares` 四个 GET 走 `adminMiddleware`，`cleanup`（删除 / VACUUM 监测数据，唯一写接口）仍走 `superAdminMiddleware`；前端对非超级管理员把清理按钮整片禁用并显示「只读模式」，即便绕过 UI 直接 POST 也会被 403 拦下。
 - `authMiddleware` 只校验登录态；涉及写入任务、设计人员、状态追踪等接口还会继续校验角色。
 
 ## 认证接口
@@ -235,6 +238,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 修改成功后会自动清除 `forcePasswordChange` 标记。
 - 修改成功后返回新的 JWT Token，前端应使用新 Token 更新本地存储。
 - 修改密码后会更新 sessionId，使旧 Token 失效（防止会话固定攻击）。
+- **改密同时作用到实时连接**：本设备那条 Socket 会被就地切到新会话（不会被自己踢下线），同一账号的其它设备会先收到 `session_invalidated`（`code=SESSION_INVALIDATED`，文案「密码已修改，请使用新密码重新登录」）再被服务端断开。否则那些设备会出现「HTTP 已 401、Socket 还在收广播」的错位状态。
 - 旧密码不正确时返回 `400`（消息 `旧密码不正确`），而非 `401`——避免被前端全局拦截器误判为「会话过期」而强制登出。
 - 参数校验失败返回 `400`，`message` 为单条中文提示（如 `请输入当前密码`、`请输入新密码`、`新密码长度不能少于 6 位`）。
 - 接口受独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次尝试），超限返回 HTTP `429` 与消息 `密码修改尝试过于频繁，请15分钟后再试`。
@@ -258,7 +262,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 登出后会清除用户的 `sessionToken`，使当前会话失效。
-- 如果启用了单设备登录，其他设备不受影响。
+- **实时连接同步处理**：多设备模式下只断开本设备那条连接（不带提示，客户端本就在自行关闭）；单设备模式下会重新生成会话令牌并吊销全部会话，该账号的在线连接一律断开，非当前设备收到 `session_invalidated`（文案「您的账号已在其他设备登录」）。留着连接不断，已登出的客户端仍会继续收到业务广播。
 
 ### 获取当前用户客户端信息
 
@@ -384,6 +388,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 仅 `superadmin` 可修改 `role`；`disabled` 由 `superadmin` 与 `admin` 均可修改（见下条）。
 - 禁用/启用账号：`superadmin` 与 `admin` 均可操作，但**只能操作权限低于自己的账号**——`superadmin` 可禁用/启用其他 `superadmin` 以外的所有账号，`admin` 只能操作 `user`（对同级或其他 `admin` 返回 `403` `只能操作权限低于自己的账号`）。超级管理员账号一律不可禁用；不能修改**当前登录账号**的禁用状态（返回 `400`）。一般管理员操作他人时请求体必须只含 `disabled`，否则 `403`。
 - `admin` 只能修改自己的密码等个人字段；修改他人账号的角色/密码/用户名一律 `403`。
+- **账号状态变化会同步到实时连接**（`utils/socketRooms.js` 的 `disconnectUserSockets`）：禁用 → `ACCOUNT_DISABLED`；改角色 → 「账号权限已变更，请重新登录」（否则旧连接仍按建连时的角色通过 Socket 权限检查）；重置密码 → 「密码已被管理员重置，请使用新密码重新登录」。三者都是先发 `session_invalidated` 再断开。
 
 ### 批量删除登录用户
 
@@ -428,7 +433,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - `disabled=true` 时不能包含超级管理员账号；`disabled=false`（启用）时超级管理员账号会被跳过。
 - `admin` 只能操作 `user` 账号：`ids` 中含任一 `admin` 时整批返回 `403`（`只能操作权限低于自己的账号`）。
 - `ids` 中存在无效用户时返回 `400`，需刷新列表后重试；整批一次写库。
-- 禁用后该账号的既有 JWT 在下一次请求即被拒绝（鉴权中间件逐次校验 `disabled`），无需额外吊销。
+- 禁用后该账号的既有 JWT 在下一次请求即被拒绝（鉴权中间件逐次校验 `disabled`），无需额外吊销；**已建立的 Socket 连接会被立即断开**（先发 `session_invalidated`，`code=ACCOUNT_DISABLED`），否则禁用只是「登录不了」，在线的人照样能收业务广播。
 - 已是目标状态的账号会被跳过，`updatedCount` 为实际变更条数。
 
 请求：
@@ -462,6 +467,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 不能包含超级管理员账号。
 - 单次写库整体生效；`ids` 中存在无效用户时返回 `400`，需刷新列表后重试。
 - 重置后每个账号的已签发令牌被吊销，旧会话立即失效；账号可直接用新密码登录（与超级管理员单账号重置行为一致，不强制改密）。
+- 这些账号若当前在线，已建立的 Socket 连接会被立即断开（先发 `session_invalidated`，文案「密码已被管理员重置，请使用新密码重新登录」），避免旧会话一边 401、一边继续收广播。
 - 新密码仅在本次响应中明文返回一次，落库前已 bcrypt 加密，请立即线下分发给本人。
 
 请求：
@@ -504,6 +510,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 不能删除当前登录账号。
 - 不能删除超级管理员账号。
 - `admin` 只能删除 `user` 账号（对 `admin` 目标返回 `403` `只能操作权限低于自己的账号`）。
+- 被删除账号若仍在线，连接会被立即断开（`code=USER_NOT_FOUND`，文案「账号已被删除，请联系管理员」）；批量删除同样逐个处理。
 
 响应：
 
@@ -1124,9 +1131,11 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 `POST /api/tasks/batch-replace/search`
 
-权限：`admin`、`superadmin`。
+权限：**任意已登录用户**（`user` / `admin` / `superadmin`）——该接口只读扫描，不改任何数据，主页面「查找」按钮对所有登录用户开放；真正写库的 `POST /api/tasks/batch-replace` 仍限 `admin`、`superadmin`。
 
-用于在执行批量替换前搜索匹配项，预览替换范围。
+用于按关键字搜索任务名与枪名里的匹配项。
+
+> **界面变化**：主页面已把原「批量操作」改造为左下角的「查找」入口（所有登录用户可用），**只保留查找与定位**，界面上不再提供批量替换；替换执行接口仍然保留（接口语义、审计口径不变，供脚本或外部调用），实际 UI 只调用本搜索接口。
 
 请求：
 
@@ -1174,9 +1183,10 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 搜索范围包括任务名和枪名。
+- **匹配口径：英文不区分大小写**（`findText: "srtc"` 能命中 `SRTC-2C00001`），中文按字面匹配；关键字按出现次数统计，不重叠计数。`findText` 前后的空格由调用方自行裁剪（前端会先 `trim()` 再提交）。
 - 返回匹配的任务条目列表及每个条目中的匹配字段详情。
 - `fields[].field` 为 `gunName` 时，`label` 格式为 `枪名N`（N 为枪名在条目内的序号，从 1 开始）。
-- 每条匹配包含 `designerId`、`date`、`itemId`，前端「批量操作」模态框据此实现点击查找结果定位到底部表格中的目标任务。
+- 每条匹配包含 `designerId`、`date`、`itemId`，前端「查找」弹窗据此实现点击查找结果定位到底部表格中的目标任务。
 - `itemCount` 表示匹配的任务条目数，`matchCount` 表示总匹配次数。
 
 ### 批量替换执行
@@ -1215,6 +1225,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 说明：
 
 - 替换范围包括任务名和枪名。
+- **替换仍按字面精确匹配（区分大小写）**：`findText: "srtc"` 只会改写成小写形式的 `srtc`，不会动 `SRTC`。查找放宽到不区分大小写是为了好搜，替换是写操作，放宽口径会把用户没打算动的写法一起改掉。候选表预筛用的是 SQLite `LIKE`（ASCII 不区分大小写），只决定「要不要装配这张表」，最终改哪些字符由这里的精确匹配决定。
 - `replacementCount` 表示实际替换的次数。
 - `itemCount` 表示被修改的任务条目数。
 - `sheetCount` 表示被修改的工作表数。
@@ -2199,7 +2210,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 权限：`admin`、`superadmin`，并取决于 `settings.gunLedger` 权限配置。
 
-主页面「快速取号」弹窗（**没有任何选中目标时**连按两次空格呼出）的数据源：只返回分类 → 表的轻量信息，不含行明细。
+主页面「快速取号」弹窗（**没有任何选中目标时**连按两次空格呼出，或点页脚左下角「快速取号」按钮）的数据源：只返回分类 → 表的轻量信息，不含行明细。
 
 响应：
 
@@ -2653,6 +2664,24 @@ PUT 请求：
 - 响应额外附带 `syncErrors`（逐个知识库列出同步失败原因）；某个库同步失败时保留其原有可用配置，不影响其他库。
 
 ## 系统设置接口
+
+### 连通性探针（本机延迟）
+
+`GET /api/system/ping`
+
+权限：**无需登录**。后端不查库、不读设置，只回一个时间戳，用于主页面左下角测量本机到服务端的往返延迟（每 10 秒一次）。
+
+响应：
+
+```json
+{ "ok": true, "serverTime": 1755500000000 }
+```
+
+说明：
+
+- 响应头带 `Cache-Control: no-store`，避免被浏览器或代理缓存后测出 0ms。
+- 由 `backend/routes/system.js` 直接返回，**不进审计日志**、不涉及任何业务数据；仍受全局限流（3000 次 / 15 分钟）约束，10 秒一次远低于上限。
+- 前端只在页面可见时测量（切到后台挂起），失败即把延迟置空并保持状态点颜色不变。
 
 ### 获取系统设置
 
@@ -3210,7 +3239,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
   - `GET` 只记敏感读取：各类导出（`/export`、`/export-all`、`/export-xls`）与 `GET /api/system/db-stats`；
   - 常规读接口不记：`GET /api/settings/*`、`/api/system/settings`、`/api/system/version`、`/api/designers`、`/api/tasks` 等页面初始化请求均不入库；
   - 会话心跳 `GET /api/auth/validate` 不记；
-  - 语义为只读的 `POST` 不记：`/api/spec/spec-info`、`/api/spec/delivery-date`、`/api/spec/spec-raw-text`、`/api/design-standards/search`、`/api/design-standards/chat`、`/api/tasks/batch-replace/search`、`/api/status-tracking/import/check`。
+  - 语义为只读的 `POST` 不记：`/api/spec/spec-info`、`/api/spec/delivery-date`、`/api/spec/spec-raw-text`、`/api/spec/self-heal/scan`（只解析仕样书、生成本次比对的 job，不写任务；真正写库的 `/api/spec/self-heal/apply` 记为「仕样自愈更新」）、`/api/design-standards/search`、`/api/design-standards/chat`、`/api/tasks/batch-replace/search`、`/api/status-tracking/import/check`。
 - `GET /api/system/login-logs`、`GET /api/system/audit-logs`、`GET /api/system/audit-logs/filter-options` 本身不记录；`GET /api/system/audit-logs/export` 作为导出操作正常记录。
 - GET 请求不记录响应消息，POST/PUT/DELETE 请求记录请求体（脱敏后最大 2000 字符；DELETE 的请求体用于说明删除了哪条记录，如 `DELETE /api/tasks/item`、`DELETE /api/users/:id`）。
 - 请求体在入库前递归脱敏：嵌套对象与数组中的字段名只要匹配 `password`、`passwd`、`secret`、`token`、`api_key`/`apikey`、`authorization`（不区分大小写），值一律替换为 `[REDACTED]`。
@@ -3327,6 +3356,8 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 用于「系统设置 → 状态监测」页面，回答后端何时断过、断了多久、断开前稳定运行多久、可能原因，以及前端访问流量。采集写入独立的 `monitor_*` 表（不进入 `kv_store` 快照）：
 
+**权限分层**：读取接口（`overview` / `live` / `storage` / `shares`）对 `admin` 与 `superadmin` 同时开放——管理员排障时最先要看的就是这一页；唯一的写接口 `cleanup` 仅 `superadmin`，前端对一般管理员把清理按钮整片禁用并标注「只读模式」。
+
 | 表 | 内容 | 写入节奏 | 保留 |
 |------|------|----------|------|
 | `monitor_samples` | 心跳样本（RSS/堆/事件循环延迟/DB 延迟/在线连接数） | 30 秒 | 200 天 |
@@ -3369,7 +3400,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 `GET /api/system/monitor/overview`
 
-权限：仅 `superadmin`
+权限：`admin` / `superadmin`（只读，一般管理员可见）
 
 查询参数：
 
@@ -3476,7 +3507,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 `GET /api/system/monitor/live`
 
-权限：仅 `superadmin`。用于页面顶部状态条（前端每 15 秒轮询）。
+权限：`admin` / `superadmin`（只读）。用于页面顶部状态条（前端每 15 秒轮询）。
 
 响应：
 
@@ -3503,7 +3534,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 `GET /api/system/monitor/storage`
 
-权限：仅 `superadmin`。默认走 30 秒缓存（汇总接口会跟页面自动刷新一起被调用），`?force=1` 强制重新统计。
+权限：`admin` / `superadmin`（只读）。默认走 30 秒缓存（汇总接口会跟页面自动刷新一起被调用），`?force=1` 强制重新统计。
 
 监测数据与业务数据同库（`data.db`），所以这里同时回答两个问题：监测数据占了多少、整个库有没有可以回收的空间。
 
@@ -3581,7 +3612,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 `POST /api/system/monitor/cleanup`
 
-权限：仅 `superadmin`。请求体：
+权限：仅 `superadmin`（本页唯一写接口；一般管理员页面上按钮为禁用态，直接调用返回 403）。请求体：
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -3614,6 +3645,105 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 ```
 
 说明：`VACUUM` 会阻塞事件循环（实测 7 MB 库约 20 ms，百 MB 级会更久），因此只允许手动触发，不在定时清理里执行。
+
+#### 共享路径访问
+
+`GET /api/system/monitor/shares`
+
+权限：`admin` / `superadmin`（只读）。默认走缓存（成功 30 秒 / 失败 10 秒），`?force=1` 强制重新探测（页面上「重新探测」按钮）。
+
+监测页原来只看得到后端进程自己的健康度，而「进程活着、共享盘掉了」恰恰是业务整体不可用的常见原因：仕样书取号失败、状态跟踪同步不到大日程，页面上却一切正常。该接口对两个关键路径做**只读**探测，并把结论与证据一起返回。
+
+| 监测目标 | 配置项 | 类型 | 用途 |
+|----------|--------|------|------|
+| 仕样书共享目录 | `SPEC_SHARE_PATH` | 目录 | 取号、仕样书 PDF、设计交付 |
+| 各产品大日程 | `PRODUCTION_SCHEDULE_PATH` | 文件 | 状态跟踪的数量 / 纳期 / 已发图 |
+
+探测顺序与代价控制：
+
+1. 先探 SMB 端口（445/139，1.5 秒超时）。主机都不通就直接判定 `host-unreachable`，**不再发起 UNC 调用**——共享服务器掉线时一次 SMB `stat` 要等 Windows 自身 30 秒超时，还会占住 libuv 线程池的一个线程。
+2. 真正访问文件系统时套硬时限（默认 2.5 秒，`SHARE_STATUS_PROBE_TIMEOUT_MS` 可调），超时只报告 `timeout`，不无限等。目录做 `stat + access(R_OK)`（只 stat 成功不代表能列目录，权限被拒时取号会全部失败），文件额外返回体积与修改时间。
+3. 全部异步实现，避免同步 `stat` 把事件循环整段占住。
+
+响应（节选，其中一个目标异常）：
+
+```json
+{
+  "serverTimeMs": 1794655061040,
+  "probeTimeoutMs": 2500,
+  "paths": [
+    {
+      "key": "specShare",
+      "env": "SPEC_SHARE_PATH",
+      "label": "仕样书共享目录",
+      "scope": "取号、仕样书 PDF、设计交付",
+      "kind": "directory",
+      "path": "\\\\192.168.160.6\\仕样书$",
+      "configured": true,
+      "shareRoot": "\\\\192.168.160.6\\仕样书$",
+      "host": "192.168.160.6",
+      "ok": true,
+      "state": "ok",
+      "reason": "ok",
+      "hint": "",
+      "elapsedMs": 5,
+      "checkedAtMs": 1794655059537,
+      "cached": false,
+      "lastOkAtMs": 1794655059537,
+      "lastFailAtMs": null,
+      "failStreak": 0,
+      "hostProbe": { "ok": true, "port": 445, "elapsedMs": 3, "code": "" },
+      "error": null,
+      "detail": { "isDirectory": true },
+      "share": { "shareRoot": "\\\\192.168.160.6\\仕样书$", "credentialConfigured": false, "lastEnsure": null }
+    },
+    {
+      "key": "productionSchedule",
+      "env": "PRODUCTION_SCHEDULE_PATH",
+      "label": "各产品大日程",
+      "path": "\\\\192.168.160.70\\各产品大日程\\各产品大日程.xls",
+      "ok": false,
+      "state": "unreachable",
+      "reason": "host-unreachable",
+      "hint": "无法连接 192.168.160.70 的 445/139 端口（ETIMEDOUT）：共享服务器离线、网段不通或端口被防火墙拦截",
+      "elapsedMs": 1508,
+      "failStreak": 5,
+      "hostProbe": { "ok": false, "port": 0, "elapsedMs": 1508, "code": "ETIMEDOUT" },
+      "error": { "code": "ETIMEDOUT", "message": "端口探测失败（192.168.160.70）" },
+      "share": {
+        "credentialConfigured": true,
+        "lastEnsure": {
+          "at": "2026-11-14T11:15:49.600Z",
+          "ok": false,
+          "user": "gaoj@obaranj.com",
+          "errorNo": "",
+          "message": "net use 执行失败（无输出，多为共享不可达或凭据被拒）",
+          "connections": []
+        }
+      },
+      "runtime": {
+        "lastSuccessAt": null,
+        "loadedAt": null,
+        "entryCount": 0,
+        "breakerOpen": false,
+        "breakerReason": null,
+        "lastError": null
+      }
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `state` | `ok` 可访问 \| `fail` 访问失败 \| `timeout` 超过探测时限 \| `unreachable` 主机端口不通 \| `unconfigured` 未配置该环境变量 |
+| `reason` | 细分归因：`access-denied`（权限/会话）、`locked`（文件被独占）、`not-found`、`not-directory`、`timeout`、`unreachable`、`host-unreachable` |
+| `hint` | 针对 `reason` 的处置建议，直接展示在页面上（「无法访问共享」这类无信息量提示已被替换） |
+| `failStreak` | 连续失败次数：偶发抖动与持续掉线在页面上颜色不同（≥3 次标红） |
+| `share.lastEnsure` | 最近一次 `net use` 兜底重建连接的结果。`errorNo=1219` 表示该服务器已有使用其他凭据的连接，是排查 Session 0 认证问题的关键证据 |
+| `runtime` | 仅大日程：最近一次成功解析时间、条目数、熔断状态。**文件读得到但 XLSX 解析失败**（结构改版、被写坏）只有这里能看出来 |
+
+安全说明：`net use` 失败时 `execFile` 会把整条命令行（含 `/user:账号 密码`）拼进 `error.message`，接口在返回前统一遮蔽为 `/user:账号 ***`，失败兜底文案也不再回显命令行，避免共享密码出现在接口响应与日志里。
 
 ### 大日程读取探针
 
@@ -4744,6 +4874,199 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 | `未找到仕样号 N 的PDF文件` | 共享目录中无对应 PDF |
 | `系统正在解析其他仕样书，请稍后重试` | 并发解析占满，稍后重试 |
 
+## 仕样自愈接口
+
+> 主页面左下角「仕样自愈」按钮（仅管理员可见）背后的四个接口。
+> 用途：扫描指定月份任务名里的仕样号，按仕样书校正「客户名」与「纳期 `[M/D]`」，并保留每次真正写库的执行记录。
+> 扫描与更新分离：扫描只解析仕样书并把比对结果留在服务端（内存 job），更新时凭 `jobId` 写回任务数据。
+
+### 建立仕样自愈扫描任务
+
+`POST /api/spec/self-heal/scan`
+
+权限：`admin`、`superadmin`。
+
+请求：
+
+```json
+{
+  "year": 2026,
+  "month": 11
+}
+```
+
+说明：
+
+- 仕样号按 `specNumberDigits` 识别，只认位数一致的纯数字段；任务名中先出现项目代码（如 `G2621`）时不会被误认。
+- 请假/出差行、任务名为空、认不出仕样号的任务跳过（后者计入 `skippedItems`）。
+- 同一仕样号当月所有任务共用一次 PDF 解析结果；同时最多解析 3 份，单个仕样号「找文件 + 解析」限时 20 秒。
+- 接口**立即返回** `202` 与 job 快照，扫描在后台继续；结果在内存保留 30 分钟。
+
+响应（`202`）：
+
+```json
+{
+  "success": true,
+  "jobId": "heal-mwg6mvudyvs4kv",
+  "year": 2026,
+  "month": 11,
+  "status": "running",
+  "total": 0,
+  "done": 0,
+  "current": ""
+}
+```
+
+响应（参数错误，`400`）：`{ "success": false, "message": "月份参数不正确" }`
+
+### 查询仕样自愈扫描进度与结果
+
+`GET /api/spec/self-heal/scan/:jobId`
+
+权限：`admin`、`superadmin`。
+
+响应（`200`）：
+
+```json
+{
+  "success": true,
+  "jobId": "heal-mwg6mvudyvs4kv",
+  "status": "completed",
+  "total": 2,
+  "done": 2,
+  "current": "",
+  "summary": {
+    "specCount": 2,
+    "outdatedSpecs": 1,
+    "okSpecs": 1,
+    "unresolvedSpecs": 0,
+    "outdatedItems": 2,
+    "totalItems": 6,
+    "skippedItems": 1
+  },
+  "specs": [
+    {
+      "specNumber": "57475",
+      "status": "outdated",
+      "resolved": true,
+      "expectedClient": "57475>鑫燕隆_埃及MMM-S05&S06",
+      "expectedDelivery": "[11/10]",
+      "code": "",
+      "message": "",
+      "itemCount": 2,
+      "changes": ["client", "delivery"],
+      "items": [
+        {
+          "itemId": "item-xxx",
+          "designerId": "uuid",
+          "designerName": "张三",
+          "date": "2026-11-10",
+          "taskName": "57475>旧客户名 确认图 [1/1]",
+          "newTaskName": "57475>鑫燕隆_埃及MMM-S05&S06 确认图 [11/10]",
+          "changes": ["client", "delivery"],
+          "currentClient": "57475>旧客户名",
+          "currentDelivery": "[1/1]"
+        }
+      ],
+      "itemsTruncated": false
+    }
+  ]
+}
+```
+
+- `status`：`running` / `completed` / `failed`；`done` / `total` 为已解析 / 待解析的仕样号数，`current` 为正在解析的仕样号。
+- 单个仕样号 `status`：`outdated`（需更新）/ `ok`（已最新）/ `unresolved`（无法核对，`code` 与 `message` 说明原因：`PDF_MISSING`、`PARSE_FAILED`、`NO_DATA`、`TIMEOUT`、`SHARE_UNREACHABLE`）。
+- `items` 仅回传「确实需要改写」的任务明细，单仕样号最多 200 条（超出时 `itemsTruncated: true`，`itemCount` 仍是全量）。
+- job 不存在或超过 30 分钟：`404 { "success": false, "message": "扫描结果不存在或已过期，请重新检测" }`。
+
+### 执行仕样自愈更新
+
+`POST /api/spec/self-heal/apply`
+
+权限：`admin`、`superadmin`。
+
+请求（一键更新本月全部「需更新」仕样号）：
+
+```json
+{ "jobId": "heal-mwg6mvudyvs4kv" }
+```
+
+请求（只更新勾选的仕样号）：
+
+```json
+{ "jobId": "heal-mwg6mvudyvs4kv", "specNumbers": ["57475"] }
+```
+
+说明：
+
+- 写回规则：`新任务名 = 仕样书客户名 + 原尾部任务类型 + 仕样书纳期[M/D]`；仕样书缺客户名时保留原主体，缺纳期时保留任务原有的 `[M/D]`。客户名组合规则与 `/api/spec/spec-info` 一致（修改仕样书带 `M` 前缀）。
+- 更新前重新读取当月任务再比对（扫描到点击之间可能有人改过任务），只改确实不一致的条目；重复执行幂等。
+- `unresolved` 的仕样号不参与更新；只写 `taskName`，并更新 `updatedAt` / `updatedBy`，操作日志记为「仕样自愈更新」。
+
+响应（`200`）：
+
+```json
+{
+  "success": true,
+  "updatedItems": 3,
+  "updatedSpecs": ["57475", "58645"],
+  "designerIds": ["uuid"],
+  "sheetCount": 1,
+  "message": "已更新 3 条任务"
+}
+```
+
+| 场景 | 响应 |
+|------|------|
+| job 不存在或已过期 | `404 { "success": false, "message": "扫描结果不存在或已过期，请重新检测" }` |
+| 扫描未完成 | `409 { "success": false, "message": "扫描尚未完成，请稍候再试" }` |
+| 没有可更新项 | `200 { "success": true, "updatedItems": 0, "message": "没有需要更新的仕样号" }` |
+
+### 查询仕样自愈操作记录
+
+`GET /api/spec/self-heal/logs?limit=30`
+
+权限：`superadmin`（仅超级管理员；一般管理员与普通用户返回 `403`，弹窗里的「操作记录」入口也只对超级管理员渲染）。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+|------|------|------|------|------|
+| `limit` | number | 否 | `30` | 返回条数，会被夹在 `1`–`500` 之间 |
+
+响应（`200`）：
+
+```json
+{
+  "success": true,
+  "logs": [
+    {
+      "id": "9f1c…",
+      "timestamp": "2025-11-14T08:41:12.351Z",
+      "year": 2025,
+      "month": 11,
+      "userId": "uuid",
+      "username": "admin",
+      "name": "管理员",
+      "specCount": 24,
+      "requestedSpecs": ["57475", "58645", "61234"],
+      "updatedSpecs": ["57475", "58645"],
+      "updatedItems": 7,
+      "sheetCount": 3,
+      "durationMs": 412
+    }
+  ]
+}
+```
+
+说明：
+
+- 只有**真正写回任务**（`updatedItems > 0`）的 `apply` 才落一条记录，扫描与空更新不记——否则刷几次「检测」就把真实执行记录冲掉。
+- `specCount` 是本次扫描覆盖的仕样号总数，`requestedSpecs` 是用户勾选提交的仕样号，`updatedSpecs` 是其中确实发生改写的仕样号。
+- 存储为独立表 `self_heal_logs`（不写入 `kv_store` 整库 JSON，避免每次执行触发全库序列化），**最多保留 500 条**，超出按 `rowid` 从旧到新修剪。
+- 与操作日志（`/api/system/audit-logs`）互补：审计日志记的是「谁调了 `apply` 接口」，这里记的是「这次执行实际改了多少条任务、涉及哪些仕样号与工时表」。`GET` 请求本身不进审计日志。
+- 不传 `limit` 或传入非法值时回落到 30 条；`limit` 超过 500 按 500 处理。
+
 ## 前端批量导入模板
 
 管理后台中的批量导入目前由前端解析复制粘贴的表格文本，再调用现有接口逐条创建。
@@ -4802,9 +5125,54 @@ WebSocket 连接建立时需携带 JWT Token，支持以下两种方式：
 - `Authentication error: Account disabled`：账号已禁用
 - `Authentication error: Session invalidated`：会话已失效（单设备登录限制）
 
-连接成功后，用户信息会附加到 `socket.data.user`，包含 `id`、`username`、`name`、`role` 字段。服务端会立即下发 `editing_state`（主页面编辑状态）、`gun_ledger_editing_state`（焊枪台账行编辑状态）、`gun_ledger_table_locks_state`（焊枪台账表级锁快照）和 `status_tracking_editing_state`（状态追踪行锁快照）。
+连接成功后，用户信息会附加到 `socket.data.user`，包含 `id`、`username`、`name`、`role` 字段，同时记录 `sessionId`（会话标识）与 `tokenExpiresAt`（令牌过期时间，供后续复核）。服务端会立即下发 `editing_state`（主页面编辑状态）；**快照按页面权限下发**——具备焊枪台账页面权限时另发 `gun_ledger_editing_state`（行编辑状态）与 `gun_ledger_table_locks_state`（表级锁快照），具备状态追踪页面权限时发 `status_tracking_editing_state`（行锁快照）。没有对应权限的连接连上后拿不到任何锁信息。
 
 > 前端约定：这几个快照事件**只在连接建立时下发一次**，不会在页面挂载时重放。前端 `src/utils/socketClient.ts` 以引用计数方式全应用共享一条连接，并缓存这些事件的最近载荷；晚于连接挂载的页面需通过 `getSnapshot()` 补齐初始状态（编辑会话、行锁、表锁），否则会看不到他人已占用的编辑/锁状态。
+
+### 页面级广播房间
+
+Socket 也要跟 HTTP 一样按页面权限收敛，否则「HTTP 拦住、广播漏出去」等于没有权限控制。
+
+连接建立时，服务端按 `hasAccessSettings()` 把连接放进页面房间（`superadmin` 恒有；`admin` 看 `allowAdmins`；`user` 看 `allowViewers`；`enabled=false` 时谁都不进）：
+
+| 房间 | 对应页面开关 | 承载的业务广播 |
+|------|--------------|----------------|
+| `page:gunLedger` | `settings.gunLedger` | `gun_ledger_updated`、`gun_ledger_edit_start`、`gun_ledger_edit_stop`（含断开连接时的清理广播）、`gun_ledger_table_locked`、`gun_ledger_table_unlocked` |
+| `page:statusTracking` | `settings.statusTracking` | `status_tracking_updated`、`status_tracking_bulk`、`status_tracking_edit_start`、`status_tracking_edit_stop` |
+| `user:<userId>` | — | 单设备登录踢下线用的定向通知 |
+
+规则：
+
+- 上述业务广播一律走 `io.to(room)`（排除发起者时用 `socket.to(room)`），**不再 `io.emit` 全员下发**。无该页面权限的连接既收不到业务数据，也收不到行锁与「谁在编辑」提示。
+- 房间成员会重算，不需要重连：保存页面权限设置（`PUT /api/settings/*`）、用户角色变更、以及每次事件级复核后都会调 `syncSocketRooms()`；另有 60 秒巡检兜底。
+- 房间只是**第一层过滤**。事件处理侧仍由 `requireSocketAuth()` 做实时复核（见下一节），两层同时存在——房间解决「数据不该发给你」，复核解决「你已经不该在线」。
+- 实现集中在 `backend/utils/socketRooms.js`（`PAGE_ROOMS` / `emitToPage` / `emitToPageExcept`）。新增需要权限收敛的业务广播时复用它，不要直接写 `io.emit`。
+
+### 事件级会话复核与巡检
+
+建连时的 JWT 校验只是**一次性快照**，而连接寿命可能远长于令牌寿命：期间用户可能被禁用、删除、改密、退出登录或被降权。因此每个需要身份的业务事件在进入处理逻辑前都会调 `requireSocketAuth()` 做一次复核：
+
+| 复核项 | 失败时 |
+|--------|--------|
+| 用户仍存在（重新读库，不用建连快照） | `USER_NOT_FOUND` |
+| 未被禁用 | `ACCOUNT_DISABLED` |
+| 没有强制改密标记 | `FORCE_PASSWORD_CHANGE` |
+| 令牌未过期（比对 `exp`，已挂着的连接不再经过 `jwt.verify`） | `TOKEN_EXPIRED` |
+| 会话仍有效（单设备登录被顶号、`sessionTokens` 已被吊销） | `SESSION_INVALIDATED` |
+
+失败时的动作是**先通知再断开**，而不是只回一条 `error`：
+
+```text
+1. 向该连接 emit('session_invalidated', { reason, code, timestamp })
+2. 150ms 后断开底层连接（留出时间让事件刷到浏览器）
+3. 抛出错误，事件处理中止
+```
+
+> 为什么必须断开：旧实现只回 `error`，连接继续挂着并继续接收后续广播——被禁用或被顶号的客户端仍能实时看到业务数据变更。
+
+复核通过后会**用实时用户覆盖建连快照**（角色被降级后不得继续按旧角色放行），顺带重算页面房间。另外后端有 **60 秒巡检**（`socketSessionSweeper`）遍历全部在线连接执行同一套校验：只收广播、从不发事件的静默连接，最长 60 秒内也会被断开。
+
+前端收到 `session_invalidated` 应清理本地登录态并跳登录页；不要试图重连，服务端会在下次建连时再次拒绝。
 
 ### 编辑状态管理
 
@@ -4857,7 +5225,7 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `connect` | Socket 连接成功（可用于检测后端是否恢复） | - |
 | `connect_error` | Socket 连接失败（后端端口断开或网络异常） | - |
 | `task_updated` | 通知任务已更新，后端收到后会广播 `task_refreshed` 给其他客户端。增量广播参数有两种形态：单表 `{ designerId, month, year }`、多表 `{ targets: [{ designerId, month, year }, ...] }`（最多 8 张，超出部分丢弃）；不传或坐标全部非法时退化为全量刷新信号 | 需已认证；**每个连接 10 秒最多 20 次**；超限时**不回发 `error`**，而是记录最后一次变更坐标并在限流窗口结束后补发一次 `task_refreshed`（见「任务刷新与增量广播」的限流与补发） |
-| `request_state` | 主动索取一次指定状态快照，参数 `{ event }`，`event` 必须是白名单之一：`editing_state`、`gun_ledger_editing_state`、`gun_ledger_table_locks_state`、`status_tracking_editing_state`；服务端校验通过后以同名事件把当前快照回给**发起者**。用于页面晚挂载或 Socket 重连后补一次初始状态，避免只能等下一次变更广播 | 需已认证；**每个连接 10 秒最多 20 次**，超限与该事件不在白名单时**静默忽略**（不回发 `error`，也不回快照） |
+| `request_state` | 主动索取一次指定状态快照，参数 `{ event }`，`event` 必须是白名单之一：`editing_state`、`gun_ledger_editing_state`、`gun_ledger_table_locks_state`、`status_tracking_editing_state`；服务端校验通过后以同名事件把当前快照回给**发起者**。用于页面晚挂载或 Socket 重连后补一次初始状态，避免只能等下一次变更广播 | 需已认证；**每个连接 10 秒最多 20 次**，超限与该事件不在白名单时**静默忽略**（不回发 `error`，也不回快照）；请求 `gun_ledger_*` / `status_tracking_*` 快照还要求连接具备对应页面权限，否则同样静默忽略 |
 | `start_editing` | 通知开始编辑，参数包含 `designerId`、`date`、可选 `mode`（`edit` / `colorMark`）、可选 `itemId`（主任务 id，省略即整格会话）、可选 `gunIndex`（枪名下标，`colorMark` 模式下定位到具体枪名行，`null`/省略表示主任务本身） | 需已认证；用户身份一律取服务端会话，客户端传入的 `userId`/`username` 被忽略 |
 | `stop_editing` | 通知停止编辑，可传 `designerId` 和 `date` 释放该 socket 在此单元格内的**全部主任务会话**（事件不带 `itemId`）；两者都不传则释放当前 socket 的所有编辑会话 | 需已认证 |
 | `status_tracking_start_edit` | 通知开始编辑状态追踪记录，参数只需 `itemId` | **仅 `admin`/`superadmin`**（否则 `error: Insufficient permissions`）；需通过 `statusTracking` 页面权限校验（否则 `error: 无权访问`）；**每个连接 10 秒最多 30 次** |
@@ -4879,21 +5247,23 @@ Socket 重连成功后会自动触发 `task_refreshed`，前端重新加载最�
 | `user_editing` | 某用户正在编辑指定会话，参数为编辑会话（含 `designerId`、`date`、`userId`、`username`、`name`、`mode`、`itemId`、`gunIndex`、`socketId`） | **除发起者外**的其他客户端（发起者需自行维护本地状态） |
 | `editing_blocked` | 目标主任务（或整格）已被其他用户编辑，服务端拒绝新的编辑请求，参数为占用会话 | 仅发起者 |
 | `user_stopped_editing` | 某用户停止编辑指定设计人员日期单元格，参数 `{ designerId, date, userId }`；不带 `itemId`，客户端需自行移除该用户在该单元格内的全部会话（切换/停止多个主任务会话时会逐条下发） | 全体客户端（含发起者） |
-| `session_invalidated` | 当前会话被新登录踢下线 | 该用户的其他设备连接 |
-| `status_tracking_edit_start` | 某用户开始编辑指定状态追踪记录，参数 `{ itemId, userId, username, socketId }` | 全体客户端（含发起者） |
-| `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` | 全体客户端（含发起者） |
-| `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` | 全体客户端 |
-| `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 | 全体客户端 |
-| `gun_ledger_editing_state` | 当前焊枪台账行编辑状态，连接成功后下发 | 仅当前连接 |
-| `gun_ledger_table_locks_state` | 当前焊枪台账表级锁快照，连接成功后下发 | 仅当前连接 |
-| `gun_ledger_edit_start` | 某用户开始编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId, username, name, socketId }` | **除发起者外**的其他客户端 |
-| `gun_ledger_edit_stop` | 某用户停止编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId }` | 全体客户端（含发起者） |
+| `session_invalidated` | 连接已不可继续使用（被顶号、禁用、删除、改密、令牌过期）。载荷 `{ reason, timestamp }`，复核失败时另带 `code`（取值见「事件级会话复核与巡检」）；单设备登录被顶号时还会带 `newLoginIp` / `newLoginBrowser` / `newLoginOs` / `newLoginDevice` 供前端展示「对方设备」 | 被判定失效的那条连接（发完 150ms 后服务端主动断开；登录顶号走 `user:<id>` 房间） |
+| `status_tracking_edit_start` | 某用户开始编辑指定状态追踪记录，参数 `{ itemId, userId, username, socketId }` | `page:statusTracking` 房间内的连接（含发起者） |
+| `status_tracking_edit_stop` | 某用户停止编辑指定状态追踪记录，参数 `{ itemId }` | `page:statusTracking` 房间内的连接（含发起者） |
+| `status_tracking_updated` | 状态追踪记录更新，包含 `action`（add/update/delete）和 `item` 或 `itemId` | `page:statusTracking` 房间内的连接 |
+| `status_tracking_bulk` | 状态追踪批量更新，包含所有记录列表 | `page:statusTracking` 房间内的连接 |
+| `gun_ledger_editing_state` | 当前焊枪台账行编辑状态，连接成功且具备台账权限时下发 | 仅当前连接 |
+| `gun_ledger_table_locks_state` | 当前焊枪台账表级锁快照，连接成功且具备台账权限时下发 | 仅当前连接 |
+| `gun_ledger_edit_start` | 某用户开始编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId, username, name, socketId }` | `page:gunLedger` 房间内**除发起者外**的连接 |
+| `gun_ledger_edit_stop` | 某用户停止编辑焊枪台账某行，参数 `{ tableId, serialNumber, userId }` | `page:gunLedger` 房间内的连接（含发起者） |
 | `gun_ledger_edit_blocked` | 当前行已被其他用户编辑，参数为占用会话 | 仅发起者 |
-| `gun_ledger_table_locked` | 某表被锁定（表级独占编辑锁），参数 `{ tableId, userId, username, name, lockedAt }` | 全体客户端 |
-| `gun_ledger_table_unlocked` | 某表锁被释放，参数 `{ tableId }` | 全体客户端 |
+| `gun_ledger_table_locked` | 某表被锁定（表级独占编辑锁），参数 `{ tableId, userId, username, name, lockedAt }` | `page:gunLedger` 房间内的连接 |
+| `gun_ledger_table_unlocked` | 某表锁被释放，参数 `{ tableId }` | `page:gunLedger` 房间内的连接 |
 | `gun_ledger_table_lock_blocked` | 申请表级锁被他人占用，参数 `{ tableId, holder }` | 仅发起者 |
-| `gun_ledger_updated` | 焊枪台账数据变更，参数含 `action`（import/add_category/delete_category/add_table/rename_table/delete_table/reorder_tables/reorder_categories/update_rows/gun_name_rule/default_persons）及相关数据 | 全体客户端 |
+| `gun_ledger_updated` | 焊枪台账数据变更，参数含 `action`（import/add_category/delete_category/add_table/rename_table/delete_table/reorder_tables/reorder_categories/update_rows/gun_name_rule/default_persons）及相关数据 | `page:gunLedger` 房间内的连接 |
 | `error` | 事件处理出错，参数 `{ message }`（如未认证、权限不足、缺少必填字段、触发限流） | 仅发起者 |
+
+> 「房间内」不等于「所有人都能操作」：房间只决定**广播发给谁**，写操作的角色校验仍在事件处理里（例如 `gun_ledger_lock_table` 仅 `admin`/`superadmin`）。房间成员变更与权限撤销见「页面级广播房间」。
 
 ### 任务刷新与增量广播
 

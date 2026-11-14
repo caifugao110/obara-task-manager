@@ -10,7 +10,6 @@ import {
   RefreshCw,
   AlertCircle,
   Shield,
-  LogOut,
   Check,
   X,
   Lock,
@@ -31,6 +30,7 @@ import {
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
+import LogoutButton from '../components/LogoutButton';
 import QuickConfirmAssignModal, { QuickConfirmGunRow } from '../components/QuickConfirmAssignModal';
 import { useModalDrag } from '../hooks/useModalDrag';
 import { appendDeadlineSuffix, resolveTextDeadlineSuffix } from '../utils/specDeadline';
@@ -336,7 +336,7 @@ const COLUMNS: { key: keyof GunRow | 'serialNumber' | 'clear'; label: string; wi
 const EDITABLE_COLS = ['gunName', 'customer', 'time', 'responsiblePerson', 'spec', 'remarks'] as const;
 
 const GunLedger: React.FC = () => {
-  const { user, token, logout } = useAuth();
+  const { user, token } = useAuth();
   const { specNumberDigits, settings: systemSettings, setSettings } = useSystemSettings();
   const isSuperAdmin = user?.role === 'superadmin';
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
@@ -2619,9 +2619,7 @@ const GunLedger: React.FC = () => {
             <ChevronLeft size={20} /><span>返回工作台</span>
           </Link>
           {user && (
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} /><span>退出</span>
-            </button>
+            <LogoutButton offline={!online} />
           )}
         </header>
         <div className="flex-1 flex items-center justify-center">
@@ -2734,9 +2732,7 @@ const GunLedger: React.FC = () => {
               </button>
             )}
             <span className="text-sm font-bold text-amber-300">{user.name}</span>
-            <button onClick={logout} className="flex items-center space-x-1.5 text-white hover:text-red-300 text-sm font-semibold transition">
-              <LogOut size={18} /><span>退出</span>
-            </button>
+            <LogoutButton offline={!online} variant="onDark" />
           </div>
         )}
       </header>

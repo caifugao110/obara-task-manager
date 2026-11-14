@@ -6,8 +6,18 @@ const db = require('../db');
 const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { disconnectUserSockets } = require('../utils/socketRooms');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
+
+// 账号状态变化（禁用/删除/改角色/重置密码）后必须清理已建立的实时连接：
+// Socket 只在建连时校验一次身份，不断开的话旧连接会继续收广播、
+// 继续按建连时的角色通过 Socket 事件的权限检查。
+const kickSockets = (req, userId, reason, code) => {
+  const io = req.app.get('io');
+  if (!io || !userId) return;
+  disconnectUserSockets(io, userId, { reason, code });
+};
 
 // 自助改密（本人修改自己的密码）限流：与 /api/auth/change-password 同级（5 次/15 分钟，按用户 ID 计数），
 // 防止被盗 JWT 在旧密码校验环节在线爆破；超管重置他人密码不经过该校验，故不受此限流影响
@@ -163,6 +173,9 @@ router.put('/:id', [authMiddleware, adminMiddleware, maybeSelfServicePasswordLim
   }
 
   const targetUser = data.users[userIndex];
+  // 变更前的快照：用于判断本次请求是否需要清理该账号已建立的实时连接
+  const prevRole = targetUser.role;
+  const prevDisabled = Boolean(targetUser.disabled);
   const { username, password, oldPassword, role, name, group, disabled } = req.body;
 
   // 超级管理员账号一律不可被禁用（含超管禁用自己）。
@@ -228,6 +241,26 @@ router.put('/:id', [authMiddleware, adminMiddleware, maybeSelfServicePasswordLim
 
   await db.writeDb(data);
 
+  // 实时连接清理：禁用 → 断开；降级/改角色 → 断开（否则旧连接仍按旧角色通过 Socket 检查）；
+  // 重置密码 → 断开（旧会话令牌已吊销，连接不该继续存活）
+  const io = req.app.get('io');
+  if (io) {
+    if (!prevDisabled && targetUser.disabled) {
+      disconnectUserSockets(io, targetUser.id, {
+        reason: '账号已被禁用，请联系管理员',
+        code: 'ACCOUNT_DISABLED'
+      });
+    } else if (prevRole !== targetUser.role) {
+      disconnectUserSockets(io, targetUser.id, {
+        reason: '账号权限已变更，请重新登录'
+      });
+    } else if (password) {
+      disconnectUserSockets(io, targetUser.id, {
+        reason: '密码已被管理员重置，请使用新密码重新登录'
+      });
+    }
+  }
+
   res.json(toSafeUser(targetUser));
 }));
 
@@ -264,6 +297,9 @@ router.post('/batch-delete', [authMiddleware, adminMiddleware], asyncHandler(asy
   const deletedCount = beforeCount - data.users.length;
 
   await db.writeDb(data);
+  // 被删除账号若仍在线，立即断开：连接上的 socket.data.user 已无对应实体，
+  // 不断开则它会继续接收业务广播直到自行断线
+  [...idSet].forEach(id => kickSockets(req, id, '账号已被删除，请联系管理员', 'USER_NOT_FOUND'));
   res.json({ message: `已删除 ${deletedCount} 个登录用户`, deletedCount });
 }));
 
@@ -313,6 +349,13 @@ router.post('/batch-disabled', [authMiddleware, adminMiddleware], asyncHandler(a
   });
 
   if (changedCount > 0) await db.writeDb(data);
+
+  // 被禁用的账号立即断开在线连接（启用则无需处理：没有连接可断）
+  if (disabled && changedCount > 0) {
+    targets.forEach(u => {
+      if (u.disabled) kickSockets(req, u.id, '账号已被禁用，请联系管理员', 'ACCOUNT_DISABLED');
+    });
+  }
 
   res.json({
     message: disabled ? `已禁用 ${changedCount} 个账号` : `已启用 ${changedCount} 个账号`,
@@ -368,6 +411,9 @@ router.post('/batch-reset-password', [authMiddleware, adminMiddleware], asyncHan
 
   await db.writeDb(data);
 
+  // 批量重置密码后旧会话全部吊销，在线连接同步断开
+  results.forEach(r => kickSockets(req, r.id, '密码已被管理员重置，请使用新密码重新登录'));
+
   res.json({
     message: `已重置 ${results.length} 个账号的密码`,
     resetCount: results.length,
@@ -405,6 +451,7 @@ router.delete('/:id', [authMiddleware, adminMiddleware], asyncHandler(async (req
 
   data.users.splice(userIndex, 1);
   await db.writeDb(data);
+  kickSockets(req, req.params.id, '账号已被删除，请联系管理员', 'USER_NOT_FOUND');
   res.json({ message: '用户已删除' });
 }));
 

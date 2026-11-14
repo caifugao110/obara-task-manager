@@ -269,6 +269,27 @@ const getMonthYearFromDate = (dateStr) => {
   return { month: d.getMonth() + 1, year: d.getFullYear() };
 };
 
+// 查找口径：英文不区分大小写（中文无大小写，等价按字面匹配）。
+// 只把两侧转小写后比对，返回的是「出现次数」，原始文本不被改动。
+const countLiteralInsensitive = (value, findText) => {
+  if (typeof value !== 'string' || !value || !findText) return 0;
+  const haystack = value.toLowerCase();
+  const needle = String(findText).toLowerCase();
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const idx = haystack.indexOf(needle, from);
+    if (idx === -1) break;
+    count += 1;
+    from = idx + needle.length;
+  }
+  return count;
+};
+
+// 替换口径：仍按字面精确匹配（区分大小写）。
+// 查找放宽到大小写不敏感是为了「输入 srtc 也能找到 SRTC」，但替换是写操作，
+// 用不区分大小写去改写会把用户没打算动的 `SRTC`/`srtc` 一起改掉，风险更大。
 const countLiteral = (value, findText) => {
   if (typeof value !== 'string' || !value.includes(findText)) return 0;
   return value.split(findText).length - 1;
@@ -294,7 +315,7 @@ const findBatchReplaceMatches = (targetSheets, designers, findText) => {
 
       items.forEach(item => {
         const fields = [];
-        const taskNameCount = countLiteral(item.taskName, findText);
+        const taskNameCount = countLiteralInsensitive(item.taskName, findText);
         if (taskNameCount > 0) {
           fields.push({ field: 'taskName', label: '任务名', text: item.taskName, count: taskNameCount });
           matchCount += taskNameCount;
@@ -302,7 +323,7 @@ const findBatchReplaceMatches = (targetSheets, designers, findText) => {
 
         if (Array.isArray(item.guns)) {
           item.guns.forEach((gun, index) => {
-            const gunNameCount = countLiteral(gun.name, findText);
+            const gunNameCount = countLiteralInsensitive(gun.name, findText);
             if (gunNameCount > 0) {
               fields.push({ field: 'gunName', label: `枪名${index + 1}`, text: gun.name, count: gunNameCount });
               matchCount += gunNameCount;
@@ -583,15 +604,11 @@ router.post('/item', authMiddleware, asyncHandler(async (req, res) => {
   res.status(201).json({ sheetId: sheet.id, designerId, month, year, date, item, sheet });
 }));
 
+// 查找：所有登录用户可用（只读扫描，不改任何数据）；批量替换执行接口仍限管理员
 router.post('/batch-replace/search', authMiddleware, asyncHandler(async (req, res) => {
   const { error, value: validated } = batchReplaceSchema.validate(req.body, { stripUnknown: true });
   if (error) {
     return res.status(400).json({ message: '输入格式不正确', details: error.details });
-  }
-
-  const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
-  if (!isAdmin) {
-    return res.status(403).json({ message: '只有管理员可以编辑表格' });
   }
 
   const { findText, allTable, month, year } = validated;

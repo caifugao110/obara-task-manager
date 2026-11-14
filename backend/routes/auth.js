@@ -9,6 +9,7 @@ const { ipKeyGenerator } = rateLimit;
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const { authMiddleware, isSessionValid, getSessionInvalidationMessage, getSessionEntryId, isSessionEntryExpired } = require('../middleware/auth');
+const { userSockets, disconnectSocketWithReason, disconnectSessionSockets } = require('../utils/socketRooms');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
@@ -359,6 +360,21 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
 
   await db.writeDb(data);
 
+  // 改密 = 吊销其它设备会话，因此其它设备的实时连接必须同步断开，
+  // 否则它们会以「已吊销的会话」继续接收广播（HTTP 已 401、Socket 仍存活）。
+  // 当前设备例外：把这条连接就地切到新会话，避免把正在改密的本人踢下线。
+  const io = req.app.get('io');
+  if (io) {
+    userSockets(io, user.id).forEach((socket) => {
+      if (req.user.sessionId && socket.data.sessionId === req.user.sessionId) {
+        socket.data.sessionId = newSessionId;
+        socket.data.tokenExpiresAt = newSessionExpiresAt;
+        return;
+      }
+      disconnectSocketWithReason(socket, '密码已修改，请使用新密码重新登录', 'SESSION_INVALIDATED');
+    });
+  }
+
   res.json({ message: '密码修改成功', token: newToken });
 }));
 
@@ -386,6 +402,23 @@ router.post('/logout', authMiddleware, asyncHandler(async (req, res) => {
       targetUser.sessionTokens = [];
     }
     await db.writeDb(data);
+  }
+
+  // 退出登录同样要落到实时连接上：
+  // - 多设备模式只吊销本设备的会话 → 只断本设备那条连接（客户端正在自行关闭，静默处理）
+  // - 单设备模式会重新生成 sessionToken、吊销全部会话 → 该账号所有连接都必须断开，
+  //   否则被顶掉/已登出的连接仍能继续收广播
+  const io = req.app.get('io');
+  if (io) {
+    const allowMultiDevice = data.settings?.system?.allowMultiDevice !== false;
+    if (allowMultiDevice) {
+      disconnectSessionSockets(io, req.user.id, req.user.sessionId);
+    } else {
+      userSockets(io, req.user.id).forEach((socket) => {
+        const isCurrent = req.user.sessionId && socket.data.sessionId === req.user.sessionId;
+        disconnectSocketWithReason(socket, isCurrent ? '' : '您的账号已在其他设备登录', 'SESSION_INVALIDATED');
+      });
+    }
   }
 
   res.json({ message: '退出成功' });

@@ -11,11 +11,13 @@ import {
   Clock,
   Cpu,
   Database,
+  FolderTree,
   Gauge,
   HardDrive,
   Info,
   RefreshCw,
   Server,
+  ShieldCheck,
   Timer,
   TrendingUp,
   Wifi,
@@ -186,6 +188,63 @@ interface StorageData {
     bytesPerDay: number | null;
     projectedFullBytes: number | null;
   };
+}
+
+/** 单个共享路径的探测结果（后端 shareStatus.js） */
+interface SharePathInfo {
+  key: string;
+  /** 配置来源的环境变量名，如 SPEC_SHARE_PATH */
+  env: string;
+  label: string;
+  /** 该路径对应的业务用途 */
+  scope: string;
+  kind: 'directory' | 'file';
+  path: string;
+  configured: boolean;
+  shareRoot: string;
+  host: string;
+  ok: boolean | null;
+  state: 'ok' | 'fail' | 'timeout' | 'unreachable' | 'unconfigured' | string;
+  reason: string;
+  hint: string;
+  elapsedMs: number;
+  checkedAtMs: number;
+  cached?: boolean;
+  lastOkAtMs: number | null;
+  lastFailAtMs: number | null;
+  /** 连续失败次数：区分偶发抖动与持续掉线 */
+  failStreak: number;
+  hostProbe: { ok: boolean; port: number; elapsedMs: number; code: string } | null;
+  error: { code: string; message: string } | null;
+  detail: { isDirectory?: boolean; isFile?: boolean; sizeBytes?: number; mtimeMs?: number } | null;
+  share: {
+    shareRoot: string;
+    credentialConfigured: boolean;
+    lastEnsure: {
+      at: string;
+      ok: boolean;
+      user: string;
+      errorNo: string;
+      message: string;
+      connections: string[];
+      connectionsError?: string;
+    } | null;
+  } | null;
+  /** 仅大日程：最近一次成功解析与熔断状态 */
+  runtime?: {
+    lastSuccessAt: string | null;
+    loadedAt: string | null;
+    entryCount: number;
+    breakerOpen: boolean;
+    breakerReason: string | null;
+    lastError: { code: string; message: string } | null;
+  };
+}
+
+interface ShareAccessData {
+  serverTimeMs: number;
+  probeTimeoutMs: number;
+  paths: SharePathInfo[];
 }
 
 /* ------------------------------------------------------------------ *
@@ -621,11 +680,171 @@ const SectionCard: React.FC<{ title: React.ReactNode; subtitle?: React.ReactNode
   </div>
 );
 
+const SHARE_STATE_META: Record<string, {
+  label: string;
+  box: string;
+  badge: string;
+  dot: string;
+  text: string;
+}> = {
+  ok: {
+    label: '可访问',
+    box: 'border-emerald-100 bg-white',
+    badge: 'bg-emerald-50 text-emerald-600 ring-emerald-100',
+    dot: 'bg-emerald-500',
+    text: 'text-emerald-600'
+  },
+  fail: {
+    label: '不可访问',
+    box: 'border-rose-200 bg-rose-50/40',
+    badge: 'bg-rose-100 text-rose-600 ring-rose-200',
+    dot: 'bg-rose-500',
+    text: 'text-rose-600'
+  },
+  unreachable: {
+    label: '主机不可达',
+    box: 'border-rose-200 bg-rose-50/40',
+    badge: 'bg-rose-100 text-rose-600 ring-rose-200',
+    dot: 'bg-rose-500',
+    text: 'text-rose-600'
+  },
+  timeout: {
+    label: '访问超时',
+    box: 'border-amber-200 bg-amber-50/40',
+    badge: 'bg-amber-100 text-amber-700 ring-amber-200',
+    dot: 'bg-amber-500',
+    text: 'text-amber-700'
+  },
+  unconfigured: {
+    label: '未配置',
+    box: 'border-gray-100 bg-gray-50/60',
+    badge: 'bg-slate-100 text-slate-500 ring-slate-200',
+    dot: 'bg-slate-400',
+    text: 'text-gray-500'
+  }
+};
+
+const ShareMetaItem: React.FC<{ label: string; value: React.ReactNode; tone?: string }> = ({ label, value, tone }) => (
+  <div className="min-w-0">
+    <div className="text-[10px] text-gray-400">{label}</div>
+    <div className={`truncate text-[11px] font-bold tabular-nums ${tone || 'text-gray-700'}`} title={typeof value === 'string' ? value : undefined}>{value}</div>
+  </div>
+);
+
+/** 单个共享路径的状态行：结论（能不能访问）+ 证据（耗时/端口/凭据/net use） */
+const SharePathRow: React.FC<{ info: SharePathInfo }> = ({ info }) => {
+  const meta = SHARE_STATE_META[info.state] || SHARE_STATE_META.fail;
+  const hostProbe = info.hostProbe;
+  const lastEnsure = info.share?.lastEnsure;
+
+  return (
+    <div className={`rounded-xl border px-4 py-3.5 shadow-sm ${meta.box}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${meta.badge}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+          {meta.label}
+        </span>
+        <span className="text-xs font-bold text-gray-800">{info.label}</span>
+        <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">{info.env}</span>
+        <span className="text-[11px] text-gray-400">{info.scope}</span>
+        <span className="ml-auto flex items-center gap-2 text-[11px] text-gray-400">
+          <span>探测耗时 <b className={`tabular-nums ${info.ok ? 'text-gray-600' : meta.text}`}>{formatNumber(info.elapsedMs)} ms</b></span>
+          {info.cached && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold text-gray-400">缓存</span>}
+        </span>
+      </div>
+
+      <div className="mt-2 break-all font-mono text-[11px] text-gray-600">
+        {info.path || '（未配置路径）'}
+      </div>
+
+      <div className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-black/5 pt-2.5 sm:grid-cols-3 lg:grid-cols-5">
+        <ShareMetaItem label="最近探测" value={formatTime(info.checkedAtMs, 'MM-dd HH:mm:ss')} />
+        <ShareMetaItem
+          label="最近成功"
+          value={info.lastOkAtMs ? formatTime(info.lastOkAtMs, 'MM-dd HH:mm:ss') : '无记录'}
+          tone={info.lastOkAtMs ? 'text-gray-700' : 'text-gray-400'}
+        />
+        <ShareMetaItem
+          label="连续失败"
+          value={info.failStreak ? `${info.failStreak} 次` : '0 次'}
+          tone={info.failStreak >= 3 ? 'text-rose-600' : info.failStreak ? 'text-amber-600' : 'text-emerald-600'}
+        />
+        <ShareMetaItem
+          label={`SMB 端口${hostProbe?.port ? `（${hostProbe.port}）` : ''}`}
+          value={hostProbe ? (hostProbe.ok ? `通 · ${formatNumber(hostProbe.elapsedMs)} ms` : `不通 · ${hostProbe.code || 'ETIMEDOUT'}`) : '本地路径'}
+          tone={hostProbe && !hostProbe.ok ? 'text-rose-600' : 'text-gray-700'}
+        />
+        <ShareMetaItem
+          label="共享凭据"
+          value={info.share?.credentialConfigured ? '已配置 UNC_CREDENTIALS' : '用运行账户凭据'}
+        />
+      </div>
+
+      {info.detail && (info.detail.sizeBytes !== undefined || info.detail.mtimeMs !== undefined) && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
+          <span>文件体积 <b className="text-gray-700">{formatBytes(info.detail.sizeBytes)}</b></span>
+          {info.detail.mtimeMs ? <span>最后修改 <b className="text-gray-700">{formatTime(info.detail.mtimeMs, 'yyyy-MM-dd HH:mm')}</b></span> : null}
+        </div>
+      )}
+
+      {info.runtime && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
+          <span>最近成功解析 <b className={info.runtime.lastSuccessAt ? 'text-gray-700' : 'text-gray-400'}>
+            {info.runtime.lastSuccessAt ? format(new Date(info.runtime.lastSuccessAt), 'MM-dd HH:mm:ss') : '无记录'}
+          </b></span>
+          <span>已解析条目 <b className="text-gray-700">{formatNumber(info.runtime.entryCount)}</b></span>
+          {info.runtime.breakerOpen && (
+            <span className="flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 font-bold text-amber-700 ring-1 ring-amber-100">
+              <AlertTriangle size={11} />熔断中，暂停访问共享
+            </span>
+          )}
+          {info.runtime.lastError && (
+            <span className="text-rose-600">上次读取失败：{info.runtime.lastError.code}
+              {info.runtime.lastError.message ? ` · ${info.runtime.lastError.message}` : ''}
+            </span>
+          )}
+        </div>
+      )}
+
+      {lastEnsure && (
+        <div className={`mt-2 flex items-start gap-1.5 text-[11px] ${lastEnsure.ok ? 'text-gray-500' : 'text-rose-600'}`}>
+          <Info size={12} className="mt-0.5 shrink-0" />
+          <span>
+            net use {lastEnsure.ok ? '已建立共享连接' : '重建连接失败'}
+            （{lastEnsure.user || '当前进程凭据'} · {format(new Date(lastEnsure.at), 'MM-dd HH:mm')}
+            {lastEnsure.errorNo ? ` · 错误码 ${lastEnsure.errorNo}` : ''}）
+            {!lastEnsure.ok && lastEnsure.message ? `：${lastEnsure.message}` : ''}
+          </span>
+        </div>
+      )}
+
+      {!info.ok && info.hint && (
+        <div className={`mt-2 flex items-start gap-1.5 rounded-lg bg-white/70 px-2.5 py-2 text-[11px] ${meta.text}`}>
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          <span>
+            {info.error?.code && <b className="mr-1 font-mono">{info.error.code}</b>}
+            {info.hint}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
 /* ------------------------------------------------------------------ *
  * 主面板
  * ------------------------------------------------------------------ */
 
-const SystemStatusMonitor: React.FC = () => {
+interface SystemStatusMonitorProps {
+  /**
+   * 是否允许写操作（清理 / 压缩监测数据）。
+   * 状态监测对一般管理员开放，但只读：写接口在后端仍是超级管理员专属，
+   * 这里把按钮一并禁用，避免管理员点了才发现 403。
+   */
+  canManage?: boolean;
+}
+
+const SystemStatusMonitor: React.FC<SystemStatusMonitorProps> = ({ canManage = false }) => {
   const [preset, setPreset] = useState<Preset>('today');
   const [day, setDay] = useState<string>(toDayInputValue(new Date()));
   const [data, setData] = useState<OverviewData | null>(null);
@@ -639,6 +858,9 @@ const SystemStatusMonitor: React.FC = () => {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   // 存储占用：与总览分开请求，失败不影响整页
   const [storage, setStorage] = useState<StorageData | null>(null);
+  // 共享路径访问状态（仕样书共享 / 各产品大日程）：后端带缓存，失败同样不影响主面板
+  const [shares, setShares] = useState<ShareAccessData | null>(null);
+  const [sharesProbing, setSharesProbing] = useState(false);
   // 待确认的清理动作（清理不可恢复，必须二次确认）
   const [pendingAction, setPendingAction] = useState<{ mode: 'retention' | 'days' | 'vacuum'; days?: number } | null>(null);
   const [cleanupRunning, setCleanupRunning] = useState(false);
@@ -688,8 +910,32 @@ const SystemStatusMonitor: React.FC = () => {
     void fetchStorage();
   }, [fetchStorage]);
 
+  const fetchShares = useCallback(async (force = false) => {
+    if (force) setSharesProbing(true);
+    try {
+      const response = await axiosInstance.get('/system/monitor/shares', {
+        params: force ? { force: '1' } : undefined
+      });
+      setShares(response.data);
+    } catch {
+      // 共享路径探测失败不覆盖整页错误：监测页其余部分仍然可用
+    } finally {
+      if (force) setSharesProbing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchShares();
+  }, [fetchShares]);
+
   const runCleanup = useCallback(async () => {
     if (!pendingAction || cleanupRunning) return;
+    // 兜底：只读模式（一般管理员）不应该走到这里，即便 UI 被绕过也不发写请求
+    if (!canManage) {
+      setPendingAction(null);
+      setCleanupMessage({ tone: 'error', text: '仅超级管理员可清理监测数据' });
+      return;
+    }
     setCleanupRunning(true);
     setCleanupMessage(null);
     try {
@@ -717,7 +963,7 @@ const SystemStatusMonitor: React.FC = () => {
     } finally {
       setCleanupRunning(false);
     }
-  }, [pendingAction, cleanupRunning, fetchOverview]);
+  }, [pendingAction, cleanupRunning, canManage, fetchOverview]);
 
   useEffect(() => {
     setLoading(true);
@@ -732,9 +978,9 @@ const SystemStatusMonitor: React.FC = () => {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = setInterval(() => { void fetchOverview(true); }, 30000);
+    const timer = setInterval(() => { void fetchOverview(true); void fetchShares(); }, 30000);
     return () => clearInterval(timer);
-  }, [autoRefresh, fetchOverview]);
+  }, [autoRefresh, fetchOverview, fetchShares]);
 
   const availability = data?.availability;
   const traffic = data?.traffic;
@@ -766,6 +1012,18 @@ const SystemStatusMonitor: React.FC = () => {
     : '尚未开始采集';
 
   const liveOnline = live !== null && (live.sampleAgeSec === null || live.sampleAgeSec <= 120);
+
+  // 共享路径概览：放在控制条上，一眼就能看出「进程活着但共享盘掉了」
+  const shareSummary = useMemo(() => {
+    const paths = shares?.paths || [];
+    if (!paths.length) return null;
+    return {
+      total: paths.length,
+      ok: paths.filter((item) => item.ok).length,
+      down: paths.filter((item) => item.configured && !item.ok),
+      unconfigured: paths.filter((item) => !item.configured).length
+    };
+  }, [shares]);
 
   // ---- 存储占用与清理 ----
   const dbInfo = storage?.db;
@@ -849,7 +1107,7 @@ const SystemStatusMonitor: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => { void fetchOverview(); void fetchLive(); void fetchStorage(true); }}
+            onClick={() => { void fetchOverview(); void fetchLive(); void fetchStorage(true); void fetchShares(true); }}
             disabled={refreshing}
             className="flex items-center gap-1.5 rounded-xl border border-gray-200 px-3 py-2 text-xs font-bold text-gray-600 transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50"
           >
@@ -902,6 +1160,18 @@ const SystemStatusMonitor: React.FC = () => {
               <span>在线前端 <span className="font-bold text-gray-600">{live.socketCount}</span></span>
               <span>近 1 分钟请求 <span className="font-bold text-gray-600">{formatNumber(live.requestsLastMinute)}</span></span>
             </>
+          )}
+          {shareSummary && (
+            <span className="flex items-center gap-1.5" title={shareSummary.down.map((item) => `${item.label}：${item.hint || item.error?.message || '不可访问'}`).join('\n') || '全部共享路径可访问'}>
+              <span className={`h-2 w-2 rounded-full ${shareSummary.down.length ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+              共享路径
+              <span className={`font-bold ${shareSummary.down.length ? 'text-rose-600' : 'text-emerald-600'}`}>
+                {shareSummary.ok}/{shareSummary.total} 可用
+              </span>
+              {shareSummary.down.length > 0 && (
+                <span className="text-rose-500">（{shareSummary.down.map((item) => item.label).join('、')} 异常）</span>
+              )}
+            </span>
           )}
           {lastUpdatedAt && <span className="ml-auto">更新于 {format(new Date(lastUpdatedAt), 'HH:mm:ss')}</span>}
         </div>
@@ -1173,6 +1443,41 @@ const SystemStatusMonitor: React.FC = () => {
               <MiniAreaChart points={lagPoints} granularity={data.range.granularity} color="#f59e0b" gradientId="lagGradient" unit=" ms" threshold={50} />
             </SectionCard>
           </div>
+
+          {/* 共享路径访问：进程活着但共享盘掉了，是这里最常见的「业务整体不可用」 */}
+          <SectionCard
+            title={<><FolderTree size={16} className="text-slate-600" />共享路径访问</>}
+            subtitle={`后端进程对 SPEC_SHARE_PATH / PRODUCTION_SCHEDULE_PATH 的只读探测 · 超过 ${formatNumber(shares?.probeTimeoutMs ?? 2500)} ms 记为超时 · 成功缓存 30 秒、失败 10 秒`}
+            right={
+              <button
+                type="button"
+                onClick={() => void fetchShares(true)}
+                disabled={sharesProbing}
+                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] font-bold text-gray-600 transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50"
+              >
+                <RefreshCw size={12} className={sharesProbing ? 'animate-spin' : ''} />
+                重新探测
+              </button>
+            }
+          >
+            {!shares ? (
+              <div className="py-6 text-center text-xs text-gray-300">正在探测共享路径…</div>
+            ) : (
+              <div className="space-y-2.5">
+                {shares.paths.map((info) => (
+                  <SharePathRow key={info.key} info={info} />
+                ))}
+                <div className="flex items-start gap-1.5 rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-gray-500">
+                  <Info size={12} className="mt-0.5 shrink-0" />
+                  <span>
+                    探测只做 <span className="font-mono">stat + 权限检查</span>，不读取文件内容，也不改动共享上的任何文件。
+                    主机不可达时不再发起 UNC 调用（一次失败的 SMB stat 要等 Windows 自身 30 秒超时），
+                    改用 445/139 端口先做快速判定。
+                  </span>
+                </div>
+              </div>
+            )}
+          </SectionCard>
 
           {/* 断开事件 */}
           <SectionCard
@@ -1638,7 +1943,13 @@ const SystemStatusMonitor: React.FC = () => {
 
                 {/* 操作 */}
                 <div className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50/70 px-3 py-2.5">
-                  {!canPruneRetention && !hasDataOlderThan(7) && reclaimableBytes === 0 && (
+                  {!canManage && (
+                    <span className="flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-[10px] font-bold text-gray-500 ring-1 ring-gray-200">
+                      <ShieldCheck size={12} className="text-gray-400" />
+                      只读模式 · 仅超级管理员可清理监测数据
+                    </span>
+                  )}
+                  {canManage && !canPruneRetention && !hasDataOlderThan(7) && reclaimableBytes === 0 && (
                     <span className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-600 ring-1 ring-emerald-100">
                       <CheckCircle2 size={12} />
                       当前无需清理
@@ -1646,36 +1957,36 @@ const SystemStatusMonitor: React.FC = () => {
                   )}
                   <button
                     type="button"
-                    disabled={!canPruneRetention || cleanupRunning}
+                    disabled={!canManage || !canPruneRetention || cleanupRunning}
                     onClick={() => { setCleanupMessage(null); setPendingAction({ mode: 'retention' }); }}
-                    title={canPruneRetention ? '删除超出保留期的监测数据' : '当前没有超出保留期的数据'}
+                    title={!canManage ? '仅超级管理员可清理监测数据' : canPruneRetention ? '删除超出保留期的监测数据' : '当前没有超出保留期的数据'}
                     className="rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                   >
                     按保留期清理
                   </button>
                   <button
                     type="button"
-                    disabled={!hasDataOlderThan(30) || cleanupRunning}
+                    disabled={!canManage || !hasDataOlderThan(30) || cleanupRunning}
                     onClick={() => { setCleanupMessage(null); setPendingAction({ mode: 'days', days: 30 }); }}
-                    title={hasDataOlderThan(30) ? '删除 30 天之前的监测数据' : '没有 30 天前的数据'}
+                    title={!canManage ? '仅超级管理员可清理监测数据' : hasDataOlderThan(30) ? '删除 30 天之前的监测数据' : '没有 30 天前的数据'}
                     className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-gray-600 transition hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-300"
                   >
                     清理 30 天前
                   </button>
                   <button
                     type="button"
-                    disabled={!hasDataOlderThan(7) || cleanupRunning}
+                    disabled={!canManage || !hasDataOlderThan(7) || cleanupRunning}
                     onClick={() => { setCleanupMessage(null); setPendingAction({ mode: 'days', days: 7 }); }}
-                    title={hasDataOlderThan(7) ? '删除 7 天之前的监测数据' : '没有 7 天前的数据'}
+                    title={!canManage ? '仅超级管理员可清理监测数据' : hasDataOlderThan(7) ? '删除 7 天之前的监测数据' : '没有 7 天前的数据'}
                     className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-gray-600 transition hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-300"
                   >
                     清理 7 天前
                   </button>
                   <button
                     type="button"
-                    disabled={reclaimableBytes === 0 || cleanupRunning}
+                    disabled={!canManage || reclaimableBytes === 0 || cleanupRunning}
                     onClick={() => { setCleanupMessage(null); setPendingAction({ mode: 'vacuum' }); }}
-                    title={reclaimableBytes === 0 ? '没有可回收的空闲页' : '重建数据库文件，把空闲页归还磁盘'}
+                    title={!canManage ? '仅超级管理员可压缩数据库' : reclaimableBytes === 0 ? '没有可回收的空闲页' : '重建数据库文件，把空闲页归还磁盘'}
                     className="rounded-lg bg-violet-50 px-3 py-1.5 text-[11px] font-bold text-violet-600 ring-1 ring-violet-100 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-300 disabled:ring-gray-100"
                   >
                     压缩数据库{reclaimableBytes > 0 ? `（回收 ${formatBytes(reclaimableBytes)}）` : ''}

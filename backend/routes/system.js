@@ -30,6 +30,14 @@ const { buildTaskExportBuffer } = require('../utils/taskExportWorkbook');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
+// 本机延迟探测：主页面左下角状态栏显示「本机 → 服务器」往返耗时（每 10 秒一次）。
+// 刻意不加鉴权、不碰数据库、不做任何计算——它只负责尽早返回，测出来的才是链路延迟。
+// 走 GET，审计中间件只记录敏感读，因此不会污染操作日志。
+router.get('/ping', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true, serverTime: Date.now() });
+});
+
 // TOYOTA 分类专用工时：C01-C10 同 C01（确认图 1 / 确认图修改 1 / 设计 2），
 // X01-X12 同 X01（确认图 1 / 确认图修改 1 / 设计 2.5）
 const buildToyotaTableGunHours = () => {

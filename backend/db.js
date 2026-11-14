@@ -187,6 +187,99 @@ const clearAuditLogs = () => {
 };
 
 // ---------------------------------------------------------------------------
+// 仕样自愈操作记录（selfHealLogs）独立表
+//
+// 每次「一键更新」落一条：谁、什么时候、对哪个月、请求了哪些仕样号、实际改了哪些、
+// 动了多少条任务。与 audit_logs 同理独立成表——塞进 kv_store 的整库 JSON 会造成写放大。
+// 保留最近 SELF_HEAL_LOG_MAX_ROWS 条即可，超出的按 rowid 修剪。
+// ---------------------------------------------------------------------------
+const SELF_HEAL_LOG_MAX_ROWS = 500;
+
+const ensureSelfHealLogTable = () => {
+  const database = openDatabase();
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS self_heal_logs (
+      id TEXT PRIMARY KEY,
+      timestamp TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      userId TEXT,
+      username TEXT,
+      name TEXT,
+      specCount INTEGER,
+      requestedSpecs TEXT,
+      updatedSpecs TEXT,
+      updatedItems INTEGER,
+      sheetCount INTEGER,
+      durationMs INTEGER
+    );
+  `);
+  database.exec('CREATE INDEX IF NOT EXISTS idx_self_heal_logs_ts ON self_heal_logs(timestamp)');
+  return database;
+};
+
+const serializeSelfHealLog = (entry = {}) => ({
+  id: entry.id || crypto.randomUUID(),
+  timestamp: entry.timestamp || new Date().toISOString(),
+  year: Number(entry.year) || 0,
+  month: Number(entry.month) || 0,
+  userId: entry.userId ?? null,
+  username: entry.username ?? null,
+  name: entry.name ?? null,
+  specCount: Number.isFinite(Number(entry.specCount)) ? Number(entry.specCount) : 0,
+  requestedSpecs: JSON.stringify(Array.isArray(entry.requestedSpecs) ? entry.requestedSpecs : []),
+  updatedSpecs: JSON.stringify(Array.isArray(entry.updatedSpecs) ? entry.updatedSpecs : []),
+  updatedItems: Number.isFinite(Number(entry.updatedItems)) ? Number(entry.updatedItems) : 0,
+  sheetCount: Number.isFinite(Number(entry.sheetCount)) ? Number(entry.sheetCount) : 0,
+  durationMs: Number.isFinite(Number(entry.durationMs)) ? Number(entry.durationMs) : null
+});
+
+const parseSpecList = (value) => {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch (e) {
+    return [];
+  }
+};
+
+const deserializeSelfHealLog = (row) => {
+  if (!row) return row;
+  return {
+    ...row,
+    requestedSpecs: parseSpecList(row.requestedSpecs),
+    updatedSpecs: parseSpecList(row.updatedSpecs)
+  };
+};
+
+const appendSelfHealLog = (entry) => {
+  const database = ensureSelfHealLogTable();
+  const record = serializeSelfHealLog(entry);
+  database
+    .prepare(`
+      INSERT INTO self_heal_logs (id, timestamp, year, month, userId, username, name,
+        specCount, requestedSpecs, updatedSpecs, updatedItems, sheetCount, durationMs)
+      VALUES (@id, @timestamp, @year, @month, @userId, @username, @name,
+        @specCount, @requestedSpecs, @updatedSpecs, @updatedItems, @sheetCount, @durationMs)
+    `)
+    .run(record);
+  database
+    .prepare('DELETE FROM self_heal_logs WHERE rowid <= (SELECT MAX(rowid) FROM self_heal_logs) - ?')
+    .run(SELF_HEAL_LOG_MAX_ROWS);
+  return deserializeSelfHealLog(record);
+};
+
+const listSelfHealLogs = (limit = 50) => {
+  const database = ensureSelfHealLogTable();
+  const rows = Math.max(1, Math.min(500, Number(limit) || 50));
+  return database
+    .prepare('SELECT * FROM self_heal_logs ORDER BY timestamp DESC, rowid DESC LIMIT ?')
+    .all(rows)
+    .map(deserializeSelfHealLog);
+};
+
+// ---------------------------------------------------------------------------
 // 登录日志（loginLogs）独立表
 //
 // 与 audit_logs 同样的写放大问题：登录日志原先塞在 kv_store 的整库 JSON 里，
@@ -844,6 +937,9 @@ module.exports = {
   listAuditLogs,
   countAuditLogs,
   clearAuditLogs,
+  // 仕样自愈操作记录
+  appendSelfHealLog,
+  listSelfHealLogs,
   // 登录日志独立表
   appendLoginLogEntry,
   listLoginLogs,

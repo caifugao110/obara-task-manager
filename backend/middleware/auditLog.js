@@ -121,6 +121,8 @@ const READ_ONLY_POST_PATHS = new Set([
   '/api/spec/spec-info',
   '/api/spec/delivery-date',
   '/api/spec/spec-raw-text',
+  // 仕样自愈的扫描：只解析仕样书并生成本次比对的 job，不写任务数据（真正写库的 /self-heal/apply 仍留痕）
+  '/api/spec/self-heal/scan',
   '/api/design-standards/search',
   '/api/design-standards/chat',
   '/api/tasks/batch-replace/search',
@@ -231,6 +233,7 @@ const getActionDescription = (method, path, body) => {
     'spec/spec-info': '查询仕样信息',
     'spec/delivery-date': '查询交期',
     'spec/spec-raw-text': '查询仕样原文',
+    'spec/self-heal': '仕样自愈更新',
     'design-standards/status': '查看知识库状态',
     'design-standards/knowledge-bases': method === 'POST' ? '关联知识库' : method === 'DELETE' ? '删除知识库' : '查看知识库列表',
     'design-standards/search': '检索设计规范',

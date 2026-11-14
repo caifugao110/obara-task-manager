@@ -12,13 +12,13 @@ import {
   ChevronUp,
   Clock,
   Download,
-  LogOut,
   RefreshCw,
   Shield,
   Users
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
+import LogoutButton from '../components/LogoutButton';
 import LoadingScreen from '../components/LoadingScreen';
 import { getEffectiveIsWeekend, normalizeWorkdayOverrides, WorkdayOverrides } from '../utils/workdayOverrides';
 
@@ -88,7 +88,7 @@ const ACCENT_STYLES = {
 
 
 const WorkHours = () => {
-  const { user, token, logout } = useAuth();
+  const { user, token } = useAuth();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [designers, setDesigners] = useState<DesignerData[]>([]);
   const [workHoursData, setWorkHoursData] = useState<WorkHoursData[]>([]);
@@ -539,10 +539,7 @@ const WorkHours = () => {
             <span>返回工作台</span>
           </Link>
           {user && (
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={isOffline} />
           )}
         </header>
         <div className="flex-1 flex items-center justify-center">
@@ -567,10 +564,7 @@ const WorkHours = () => {
             <span>返回工作台</span>
           </Link>
           {user && (
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={isOffline} />
           )}
         </header>
         <div className="flex-1 flex items-center justify-center">
@@ -747,10 +741,7 @@ const WorkHours = () => {
         {user && (
           <div className="flex items-center space-x-4">
             <span className="text-sm font-bold text-amber-700">{user.name}</span>
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={isOffline} />
           </div>
         )}
       </header>

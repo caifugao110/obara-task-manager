@@ -113,6 +113,31 @@ function getNetBinary() {
 }
 
 /**
+ * net use 失败时的兜底文案。
+ *
+ * execFile 失败且没有 stdout/stderr 时（Windows 常把错误直接写在退出码上），
+ * error.message 会把**整条命令行**拼进来，其中含 `/user:账号 密码`。
+ * 这段文字会进 console.warn、也会经诊断接口返回给前端，等于把共享密码
+ * 明文写进日志与浏览器——必须换成固定文案。
+ * @param {string} message error.message
+ * @returns {string}
+ */
+function sanitizeNetUseMessage(message) {
+  const value = String(message || '');
+  if (/\/user:/i.test(value) || /command failed/i.test(value)) {
+    return 'net use 执行失败（无输出，多为共享不可达或凭据被拒）';
+  }
+  return value.slice(0, 300);
+}
+
+/** 把已经落进错误的明文密码抹掉：`/user:xxx pwd` -> `/user:xxx ***` */
+function maskNetUsePassword(text) {
+  return String(text || '')
+    .replace(/(\/user:\S+)\s+\S+/gi, '$1 ***')
+    .replace(/(password[=:]\s*)\S+/gi, '$1***');
+}
+
+/**
  * 执行 net use，把共享连接建立到当前进程所在的会话。
  * user 为空表示用进程当前凭据连接（服务会话里连接丢失时，这一步常能直接修好）。
  * @param {string} shareRoot
@@ -146,7 +171,8 @@ function runNetUse(shareRoot, user, password) {
     const codeMatch = raw.match(/\b(5|53|67|86|1326|1331|1909|2202|2250)\b/);
     return {
       ok: false,
-      message: (raw || error.message || 'net use 执行失败').slice(0, 300),
+      // raw 是 net.exe 自己的输出，不含命令行；为空时才回落 error.message（必须遮蔽密码）
+      message: (raw || sanitizeNetUseMessage(error.message)).slice(0, 300),
       errorNo: codeMatch ? codeMatch[1] : ''
     };
   }
@@ -345,9 +371,10 @@ function getShareStatus(filePath, options = {}) {
         ok: cached.ok,
         user: cached.user,
         errorNo: cached.errorNo,
-        message: cached.message,
-        connections: cached.connections || [],
-        connectionsError: cached.connectionsError
+        // 兜底再抹一次：确保任何历史记录（或新增的失败分支）都不会把密码带到接口响应里
+        message: maskNetUsePassword(cached.message),
+        connections: (cached.connections || []).map(maskNetUsePassword),
+        connectionsError: cached.connectionsError ? maskNetUsePassword(cached.connectionsError) : cached.connectionsError
       }
       : null
   };
@@ -427,7 +454,7 @@ async function runNetUseAsync(shareRoot, user, password) {
     const codeMatch = raw.match(/\b(5|53|67|86|1326|1331|1909|2202|2250)\b/);
     return {
       ok: false,
-      message: (raw || error.message || 'net use 执行失败').slice(0, 300),
+      message: (raw || sanitizeNetUseMessage(error.message)).slice(0, 300),
       errorNo: codeMatch ? codeMatch[1] : ''
     };
   }
@@ -589,6 +616,8 @@ module.exports = {
   _private: {
     AUTH_ERROR_CODES,
     ENSURE_COOLDOWN_MS,
-    ensureState
+    ensureState,
+    sanitizeNetUseMessage,
+    maskNetUsePassword
   }
 };

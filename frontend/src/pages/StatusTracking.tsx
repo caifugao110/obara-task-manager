@@ -6,7 +6,6 @@ import {
   AlertCircle,
   CheckCircle,
   ChevronLeft,
-  LogOut,
   Plus,
   RefreshCw,
   Shield,
@@ -30,6 +29,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
+import LogoutButton from '../components/LogoutButton';
 import { acquireSocket, getCurrentSocketId } from '../utils/socketClient';
 
 interface StatusItem {
@@ -1060,8 +1060,13 @@ const StatusTracking = () => {
   }, [fetchSettings, fetchLeaderRules, fetchFactoryRules, loadItems]);
 
   useEffect(() => {
+    // 切换纳期月份会重新拉全量：离线时下拉已禁用，这里再兜一层，
+    // 避免任何来源的月份变更打出一个必然失败的请求——失败分支会回落到
+    // localStorage 里的旧快照，把当前内存里的列表直接覆盖掉。
+    // 恢复在线后 offlineWarning 变 false，本 effect 会补拉一次最新数据。
+    if (offlineWarning) return;
     loadItems();
-  }, [deliveryMonth]);
+  }, [deliveryMonth, offlineWarning]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1475,10 +1480,7 @@ const StatusTracking = () => {
             <span>返回工作台</span>
           </Link>
           {user && (
-            <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-              <LogOut size={18} />
-              <span>退出</span>
-            </button>
+            <LogoutButton offline={offlineWarning} />
           )}
         </header>
         <div className="flex-1 flex items-center justify-center">
@@ -1570,10 +1572,7 @@ const StatusTracking = () => {
           {user && (
             <div className="flex items-center space-x-4">
               <span className="text-sm font-bold text-amber-700">{user.name}</span>
-              <button onClick={logout} className="flex items-center space-x-1.5 text-gray-600 hover:text-red-600 text-sm font-semibold transition">
-                <LogOut size={18} />
-                <span>退出</span>
-              </button>
+              <LogoutButton offline={offlineWarning} />
             </div>
           )}
         </div>
@@ -1636,18 +1635,24 @@ const StatusTracking = () => {
           <select
             value={deliveryMonth}
             onChange={(e) => {
+              // 离线时下拉已禁用，这里再兜一层：切月会触发 loadItems() 打后端
+              if (offlineWarning) return;
               setDeliveryMonth(e.target.value);
               // 换月份后同样按规则定位
               requestReposition();
             }}
-            title="按纳期月份筛选"
-            className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+            disabled={offlineWarning}
+            title={offlineWarning ? '当前离线，无法切换纳期月份' : '按纳期月份筛选'}
+            className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200 disabled:cursor-not-allowed"
           >
             {generateDeliveryMonthOptions(allItems).map(option => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
-          <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+          <ChevronDown
+            size={16}
+            className={`absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none ${offlineWarning ? 'text-gray-300' : 'text-gray-400'}`}
+          />
         </div>
 
         <div className="ml-auto flex items-center gap-3 text-xs text-gray-500">

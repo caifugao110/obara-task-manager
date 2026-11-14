@@ -1,6 +1,5 @@
 import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { RefreshCw, ChevronUp, ChevronDown, Trash2 } from 'lucide-react';
 import type { EditingSession, GunDropTargetState, SelectedTask, TaskItem } from '../types';
 import { hasStoredUserMarkColor, isWhiteTaskColor, taskSelectionKey } from '../utils';
@@ -8,6 +7,7 @@ import { getLeaveRowColors, getTaskDisplayColors } from '../../../utils/taskColo
 import { useSystemSettings } from '../../../context/SystemSettingsContext';
 import GunDragHandle from './GunDragHandle';
 import GunNameCopyButton from './GunNameCopyButton';
+import { getPageZoom } from '../../../utils/pageZoom';
 
 // 工时单元格显示：0 或空值不显示数字（避免「暂停/取消」等 0 工时任务满屏 0）
 const formatHoursCell = (value: number | string | null | undefined) => {
@@ -50,8 +50,13 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
     disabled: !isAdmin || !isSelected,
   });
 
+  // dnd-kit 给的位移是屏幕 px，而这一行在主页面的缩放层里，translate 要按倍率折成本地 px，
+  // 否则缩放不是 100% 时拖动会「跑得比光标快」（浮层本身已经在缩放层外，见 Dashboard 的 DragOverlay）
+  const pageZoom = getPageZoom();
   const style = {
-    transform: CSS.Translate.toString(transform),
+    transform: transform
+      ? `translate3d(${transform.x / pageZoom}px, ${transform.y / pageZoom}px, 0)`
+      : undefined,
     transition,
     backgroundColor: rowBackground,
     color: rowTextColor,
