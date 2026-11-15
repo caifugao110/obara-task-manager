@@ -47,7 +47,8 @@ import { useModalDrag } from '../../hooks/useModalDrag';
 import LoadingScreen from '../../components/LoadingScreen';
 import PageZoomViewport from '../../components/PageZoomViewport';
 import PageZoomIndicator from '../../components/PageZoomIndicator';
-import { getPageZoom, screenToLocal } from '../../utils/pageZoom';
+import { getPageZoom, screenToLocal, usePageZoom } from '../../utils/pageZoom';
+import { stopGunDragPointerTracking } from './gunDragState';
 import { MODAL_OVERLAY } from '../../utils/modalStyles';
 import { useTaskHistory } from './hooks/useTaskHistory';
 import { useGunDragDrop } from './hooks/useGunDragDrop';
@@ -2532,6 +2533,12 @@ const Dashboard = () => {
     currentDateRef,
   });
 
+  // 当前缩放倍率：拖拽浮层挂在缩放层外面，浮层里写的是本地 px，量出来的屏幕 px 要按倍率折回去。
+  // 必须用订阅版钩子而不是 getPageZoom()——缩放变化时 PageZoomViewport 只会自己重渲染，
+  // 本组件收到的 children 没变就会跳过重渲染，浮层会一直按旧的倍率缩放（表现为浮层与光标错位）。
+  // 注意：这是 hook，必须放在组件内所有提前 return 之前。
+  const pageZoom = usePageZoom();
+
   const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);
   const gunDropSelf = Boolean(gunDropTarget?.isSelf);
   // 目标主任务没有任何枪名：同样不可放置，浮层提示文案与「重复枪名」区分
@@ -3310,8 +3317,7 @@ const Dashboard = () => {
     ? selectedTaskType !== 'none'
     : !!editingItemLeaveType;
 
-  // 当前缩放倍率：拖拽浮层挂在缩放层外面，里面写的是本地 px，量出来的屏幕 px 要按倍率折回去
-  const pageZoom = getPageZoom();
+  // 当前缩放倍率见上方的 pageZoom（订阅版，缩放变化时本组件会跟着重渲染）
 
   return (
     <PageZoomViewport>
@@ -3528,7 +3534,7 @@ const Dashboard = () => {
         onDragStart={handleDragStart}
         onDragMove={handleDragMove}
         onDragEnd={handleDragEnd}
-        onDragCancel={() => { setGunDropTargetState(null); setTaskDropTargetState(null); taskDragCtrlRef.current = false; }}
+        onDragCancel={() => { setGunDropTargetState(null); setTaskDropTargetState(null); taskDragCtrlRef.current = false; stopGunDragPointerTracking(); }}
       >
 
 

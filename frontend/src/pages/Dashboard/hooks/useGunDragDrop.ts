@@ -14,7 +14,7 @@ import {
   DragMoveEvent,
 } from '@dnd-kit/core';
 import { axiosInstance } from '../../../services/api';
-import { gunRowDragState } from '../gunDragState';
+import { gunRowDragState, getGunDragPointer, startGunDragPointerTracking, stopGunDragPointerTracking } from '../gunDragState';
 import { isTaskContentIdentical } from '../utils';
 import type { GunItem, SelectedTask, TaskItem, TaskSheet } from '../types';
 
@@ -130,6 +130,15 @@ export const useGunDragDrop = ({
     if (data_current?.type === 'gun') {
       if (warnIfCellLocked(data_current.designerId, data_current.date, data_current.item?.id)) return;
       setGunDropTargetState(null);
+      // 落点判定统一用「真实指针坐标」：起点取激活事件（pointerdown）坐标，
+      // 之后由 window 上的 pointermove 持续更新。不要用 dnd-kit 的 active.rect 换算——
+      // 激活节点只是行末的小手柄，而浮层复刻的是整行，两者中心相差近一整列。
+      const activator = event.activatorEvent as PointerEvent | MouseEvent | undefined;
+      startGunDragPointerTracking(
+        activator && 'clientX' in activator && 'clientY' in activator
+          ? { x: activator.clientX, y: activator.clientY }
+          : null,
+      );
       // 优先使用 pointerDown 时量取的源枪名行尺寸；若丢失（如拖拽激活前重渲染），
       // 回退到保留的源 DOM 或事件坐标重新量取，最大限度保证 DragOverlay 与原行尺寸一致
       let measured = gunRowDragState.dims;
@@ -238,6 +247,19 @@ export const useGunDragDrop = ({
     return { x: ev.clientX + event.delta.x, y: ev.clientY + event.delta.y };
   };
 
+  // 落点判定用的指针坐标，按可信度依次退化：
+  // ① window pointermove 跟踪到的真实 clientX/clientY（最准，且不受缩放倍率影响）；
+  // ② 激活事件坐标 + dnd-kit 位移（无 pointermove 时的等价换算）；
+  // ③ 浮层矩形中心（仅兜底：浮层盒子是「整行」而非手柄，中心会偏离光标，不要依赖它）。
+  const getDropPointer = (event: DragMoveEvent | DragEndEvent): { x: number, y: number } | null => {
+    const tracked = getGunDragPointer();
+    if (tracked) return tracked;
+    const fromEvent = getDragPointer(event);
+    if (fromEvent) return fromEvent;
+    const rect = event.active.rect.current.translated;
+    return rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+  };
+
   // 指针位置同时命中单元格（data-cell-designer-id）与主任务容器；命中的主任务必须属于该单元格
   const hitTestCellAndTask = (cx: number, cy: number): { cellEl: HTMLElement | null, taskEl: HTMLElement | null } => {
     const stack = document.elementsFromPoint(cx, cy);
@@ -337,17 +359,15 @@ export const useGunDragDrop = ({
     }
 
     if (sourceData?.type !== 'gun') return;
-    const rect = active.rect.current.translated;
-    if (!rect) {
+    // 落点跟随指针（十字光标）实际位置。不能用 active.rect.current.translated 的中心：
+    // dnd-kit 量的是浮层内容盒（整行），而激活节点只是行末 18×18 的手柄，两者中心相差近一整列，
+    // 面板缩放后偏移量还会随倍率变化——这正是「拖动落点偏移」的根因。
+    const pointer = getDropPointer(event);
+    if (!pointer) {
       setGunDropTargetState(null);
       return;
     }
-    // 落点跟随指针（十字光标）实际位置：激活节点是枪名行右侧的拖动手柄，
-    // 其矩形中心即光标位置。不能用浮层整行中心——手柄偏向行右侧，整行中心
-    // 比光标偏左约半行宽，悬停在右格左半区时会误判到左侧相邻人员单元格。
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const { taskEl, cellEl, plusEl } = hitTestGunDropLayers(cx, cy);
+    const { taskEl, cellEl, plusEl } = hitTestGunDropLayers(pointer.x, pointer.y);
     if (!taskEl) {
       // 落点没有主任务：可新建主任务的位置有两种——
       // ① 整格没有任何主任务的空白单元格（整格预选中）；
@@ -412,6 +432,9 @@ export const useGunDragDrop = ({
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
+    // 松手瞬间的真实指针坐标要先取出来，再清理跟踪器（清理后坐标即失效）
+    const dropPointer = getDropPointer(event);
+    stopGunDragPointerTracking();
     setIsDragging(false);
     setActiveGun(null);
     setGunDropTargetState(null);
@@ -427,16 +450,10 @@ export const useGunDragDrop = ({
     // 枪名拖拽：可移动到任意人员的任意日期的任意主任务；
     // 命中某条枪名则插入到该枪名上面，否则追加到该主任务最下面
     if (sourceData?.type === 'gun') {
-      const translatedRect = active.rect.current.translated;
-      if (!translatedRect) return;
-      // 落点以指针（十字光标）实际位置为准：激活节点是枪名行右侧的拖动手柄，
-      // 其矩形中心即光标位置。不能用浮层整行中心——手柄偏向行右侧，整行中心
-      // 比光标偏左约半行宽，光标已进入右侧目标单元格时仍会误命中左边单元格。
-      // 注意：DragOverlay 浮层容器本身会出现在 elementsFromPoint 栈顶，但其无
-      // data-gun-index/data-task-id，closest 匹配为空后循环会继续穿透到下方真实行。
-      const cx = translatedRect.left + translatedRect.width / 2;
-      const cy = translatedRect.top + translatedRect.height / 2;
-      const layers = hitTestGunDropLayers(cx, cy);
+      // 落点以指针（十字光标）真实位置为准，理由同 handleDragMove：
+      // 浮层内容盒的中心不是光标位置（激活节点只是行末小手柄，浮层复刻的却是整行）。
+      if (!dropPointer) return;
+      const layers = hitTestGunDropLayers(dropPointer.x, dropPointer.y);
       let gunTargetEl = layers.gunEl;
       const taskTargetEl = layers.taskEl;
       const cellTargetEl = layers.cellEl;
