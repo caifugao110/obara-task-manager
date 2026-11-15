@@ -123,6 +123,9 @@ const READ_ONLY_POST_PATHS = new Set([
   '/api/spec/spec-raw-text',
   // 仕样自愈的扫描：只解析仕样书并生成本次比对的 job，不写任务数据（真正写库的 /self-heal/apply 仍留痕）
   '/api/spec/self-heal/scan',
+  // 台账仕样自愈同理：扫描/停止只动内存里的 job，真正写台账的 /self-heal/gun-ledger/apply 仍留痕
+  '/api/spec/self-heal/gun-ledger/scan',
+  '/api/spec/self-heal/gun-ledger/stop',
   '/api/design-standards/search',
   '/api/design-standards/chat',
   '/api/tasks/batch-replace/search',

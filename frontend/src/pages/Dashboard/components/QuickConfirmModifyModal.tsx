@@ -23,6 +23,7 @@ import {
   stripDeadlineSuffix,
 } from '../../../utils/specDeadline';
 import { getTaskBaseColor } from '../../../utils/taskColors';
+import { MODAL_OVERLAY } from '../../../utils/modalStyles';
 import {
   ALL_GROUPS,
   ALL_GROUPS_LABEL,
@@ -600,7 +601,7 @@ const QuickConfirmModifyModal: React.FC<QuickConfirmModifyModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/20" onClick={() => !submitting && onClose()} />
+      <div className={MODAL_OVERLAY} onClick={() => !submitting && onClose()} />
       <div
         ref={frameRef}
         style={{ transform: 'translate3d(0px, 0px, 0)' }}

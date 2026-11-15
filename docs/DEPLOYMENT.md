@@ -313,6 +313,9 @@ PRODUCTION_SCHEDULE_PATH=\\<server>\各产品大日程\各产品大日程.xls
 # SHARE_STATUS_OK_TTL_MS=30000
 # 不可访问状态缓存时长（毫秒，默认 10000，最小 1000）
 # SHARE_STATUS_FAIL_TTL_MS=10000
+# 「最近一次 net use 成功」当作可达证据的有效期（毫秒，默认 900000 即 15 分钟，最小 60000）
+# 端口探测不通但有效期内有成功的 net use 时，照常做一次 stat 并以访问结果为准
+# SHARE_STATUS_ENSURE_EVIDENCE_MS=900000
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX=20
 LOGIN_IP_RATE_LIMIT_MAX=300

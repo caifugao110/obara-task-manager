@@ -146,6 +146,8 @@ const routeActionDisplays = {
   'POST delivery-date': { label: '查询交期', description: '查询产品交期信息' },
   'POST spec/spec-raw-text': { label: '查询仕样原文', description: '查询产品仕样原始文本' },
   'POST spec-raw-text': { label: '查询仕样原文', description: '查询产品仕样原始文本' },
+  'POST spec/self-heal/apply': { label: '仕样自愈更新', description: '按仕样书校正当月任务的客户名与纳期' },
+  'POST spec/self-heal/gun-ledger/apply': { label: '台账仕样自愈更新', description: '按仕样书校正焊枪编号台账的客户名' },
 
   'POST batch-delete': { label: '批量删除', description: '批量删除记录' },
   'POST sync': { label: '同步数据', description: '同步数据到服务器' },

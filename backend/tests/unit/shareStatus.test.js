@@ -50,6 +50,18 @@ test('sanitizeNetUseMessage 不再回显整条命令行', () => {
   assert.strictEqual(uncShare._private.sanitizeNetUseMessage('EBUSY: resource busy'), 'EBUSY: resource busy');
 });
 
+test('端口探测被本地防火墙拦（EACCES）不算主机不可达', () => {
+  const { HOST_DOWN_CODES } = shareStatus._private;
+  // 实测 192.168.160.70 的 445 端口探测固定返回 EACCES，但 net use 会话与文件读写正常；
+  // 把它判成「主机不可达」会让监测页长期报红，与真实可用性相悖。
+  assert.strictEqual(HOST_DOWN_CODES.has('EACCES'), false);
+  assert.strictEqual(HOST_DOWN_CODES.has('EPERM'), false);
+  // 真正到不了主机的错误码仍要能直接判死，免得白等 SMB 的 30 秒超时
+  assert.strictEqual(HOST_DOWN_CODES.has('ETIMEDOUT'), true);
+  assert.strictEqual(HOST_DOWN_CODES.has('EHOSTUNREACH'), true);
+  assert.strictEqual(HOST_DOWN_CODES.has('ENETUNREACH'), true);
+});
+
 test('getShareAccess 对未配置路径返回 unconfigured 而不是报错', async () => {
   const securityConfig = require('../../config/security');
   const originalSpec = securityConfig.spec.sharePath;

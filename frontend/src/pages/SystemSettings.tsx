@@ -44,6 +44,7 @@ import OperationLogPanel from '../components/OperationLogPanel';
 import { useSystemSettings, SystemSettingsData } from '../context/SystemSettingsContext';
 import { getActionLabel, getBrowserLabel, getRoleClassName, getRoleLabel, LoginLog } from '../utils/loginLogs';
 import { clearOfflineSheetsCache } from '../utils/offlineSheetsCache';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 import {
   DEFAULT_TASK_COLOR_CONFIG,
   TASK_COLOR_FIELDS,
@@ -1587,8 +1588,9 @@ const SystemSettings = () => {
       </div>
 
       {pendingImportFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100">
               <h3 className="text-lg font-bold text-gray-800 flex items-center">
                 <Upload className="mr-2 text-blue-600" size={20} />
@@ -1648,8 +1650,9 @@ const SystemSettings = () => {
       )}
 
       {showCleanupTasksModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-bold text-gray-800 flex items-center">
@@ -1785,8 +1788,9 @@ const SystemSettings = () => {
       )}
 
       {showCleanupStModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative w-full max-w-lg rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-bold text-gray-800 flex items-center">
@@ -1909,7 +1913,7 @@ const SystemSettings = () => {
       {confirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
-            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            className={MODAL_OVERLAY}
             onClick={() => !confirmRunning && setConfirmDialog(null)}
           />
           <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">

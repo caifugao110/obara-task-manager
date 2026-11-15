@@ -435,6 +435,77 @@ async function probeHost(host, timeoutMs = 2000) {
   return { ok: false, port: 0, elapsedMs: Date.now() - startedAt, code: results[0].code || 'ETIMEDOUT' };
 }
 
+// ============================================================
+// SMB 会话探测（只读）
+// ------------------------------------------------------------
+// probeHost 只是「快速否定」的启发式，不能当成结论：
+//   - 本地防火墙 / 终端防护可能直接拒绝这条 TCP 探测（EACCES/EPERM），
+//     但到该共享的 SMB 会话早就建立并可正常读写；
+//   - 端口探测超时，也可能只是探测本身被拦，重定向器仍能复用已有会话。
+// 判断「共享还能不能用」最终要以会话与真实访问为准，这里提供
+// 「本机是否已有到该服务器的会话」这条廉价证据（net use 列表，只读）。
+// 列表 5 秒内复用：两个受监测路径往往指向同一台服务器，没必要起两次 net.exe。
+// ============================================================
+
+const SESSION_LIST_TTL_MS = 5000;
+let sessionListCache = { at: 0, ok: false, lines: [], message: '' };
+
+/**
+ * 读取本会话的全部 net use 连接（5 秒缓存）。
+ * net.exe 输出为 GBK，中文会乱码，但远程名（\\server\share）是 ASCII，够做匹配。
+ * @returns {Promise<{ ok: boolean, lines: string[], message: string, cached?: boolean }>}
+ */
+async function listAllConnectionsAsync() {
+  if (!isWindows()) return { ok: false, lines: [], message: '非 Windows 环境，无法读取会话列表' };
+
+  const now = Date.now();
+  if (sessionListCache.at && now - sessionListCache.at < SESSION_LIST_TTL_MS) {
+    return { ...sessionListCache, cached: true };
+  }
+
+  try {
+    const { stdout } = await execFileAsync(getNetBinary(), ['use'], {
+      timeout: NET_TIMEOUT_MS,
+      windowsHide: true,
+      encoding: 'latin1'
+    });
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+    sessionListCache = { at: Date.now(), ok: true, lines, message: '' };
+  } catch (error) {
+    // 「列表是空的」在 Windows 上也是非零退出码，按「没有会话」处理而不是报错
+    const raw = `${error.stdout || ''} ${error.stderr || ''}`.replace(/\s+/g, ' ').trim();
+    sessionListCache = { at: Date.now(), ok: true, lines: [], message: raw.slice(0, 200) };
+  }
+  return { ...sessionListCache, cached: false };
+}
+
+/**
+ * 本机是否已有到该服务器的 SMB 会话。
+ * @param {string} host 服务器名或 IP
+ * @returns {Promise<{ ok: boolean, established: boolean, host: string, lines: string[], message: string }>}
+ */
+async function probeSession(host) {
+  const name = String(host || '').trim();
+  if (!name) return { ok: false, established: false, host: '', lines: [], message: '未提供主机名' };
+  if (!isWindows()) return { ok: false, established: false, host: name, lines: [], message: '非 Windows 环境' };
+
+  const listing = await listAllConnectionsAsync();
+  if (!listing.ok) return { ok: false, established: false, host: name, lines: [], message: listing.message };
+
+  const needle = `\\\\${name.toLowerCase()}\\`;
+  const lines = listing.lines.filter(line => line.toLowerCase().includes(needle));
+  return {
+    ok: true,
+    established: lines.length > 0,
+    host: name,
+    lines: lines.slice(0, 10),
+    message: ''
+  };
+}
+
 async function runNetUseAsync(shareRoot, user, password) {
   const args = user
     ? ['use', shareRoot, `/user:${user}`, password || '', '/persistent:no']
@@ -611,6 +682,7 @@ module.exports = {
   withShareRetry,
   getShareStatus,
   probeHost,
+  probeSession,
   ensureShareAccessAsync,
   withShareRetryAsync,
   _private: {

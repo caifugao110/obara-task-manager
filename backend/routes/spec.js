@@ -3,13 +3,16 @@ const router = express.Router();
 const path = require('path');
 const fs2 = require('fs');
 const asyncHandler = require('express-async-handler');
-const { authMiddleware, adminMiddleware, superAdminMiddleware } = require('../middleware/auth');
+const { authMiddleware, adminMiddleware, superAdminMiddleware, hasAccessSettings } = require('../middleware/auth');
 const securityConfig = require('../config/security');
 const db = require('../db');
 const taskStore = require('../taskStore');
 const specPdfParser = require('../utils/specPdfParser');
 const productionSchedule = require('../utils/productionSchedule');
+const gunTableLocks = require('../utils/gunTableLocks');
+const { emitToPage } = require('../utils/socketRooms');
 const { readPdfTextOffThread } = require('../utils/pdfTextPool');
+const { buildGunHealSpecEntry, collapseSpace } = require('../utils/gunHealEntry');
 
 // 获取系统配置的仕样号位数（默认 5，可配置为 5 或 6）
 function getConfiguredSpecDigits() {
@@ -760,8 +763,6 @@ const HEAL_SPEC_TIMEOUT_MS = 20000;       // 单个仕样号「找文件 + 解�
 const HEAL_MAX_ITEMS_PER_SPEC = 200;      // 单个仕样号回传的明细条数上限（UI 只用于预览）
 const selfHealJobs = new Map();
 
-const collapseSpace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-
 // 从任务名取仕样号：只认「与系统设置位数一致」的数字段。
 // 与前端 extractSpecNumber 的差别：这里优先取位数正确的那个，避免
 // 「G2621 58645」这类任务名把项目代码当成仕样号去做无意义的仕样书查询。
@@ -844,7 +845,10 @@ function buildSelfHealTaskName(taskName, expectedClient, expectedDelivery) {
 
 // 解析单个仕样号 → 期望的客户名与纳期。任何一步失败都返回可展示的原因，
 // 而不是抛错：一个仕样书解析不了不该让整次扫描失败。
-async function resolveSelfHealSpec(specNumber) {
+// modificationPrefix=false 时「修改仕样书」不加 M 前缀——焊枪台账的客户列取自
+// /spec/spec-info 的 clientName（本就无 M 前缀），加了会与真实客户名永久对不上。
+async function resolveSelfHealSpec(specNumber, options = {}) {
+  const useModificationPrefix = options.modificationPrefix !== false;
   const share = await checkSpecShare();
   if (!share.ok) {
     return { resolved: false, code: 'SHARE_UNREACHABLE', message: SPEC_SHARE_UNAVAILABLE_MESSAGE };
@@ -860,11 +864,10 @@ async function resolveSelfHealSpec(specNumber) {
   const info = parsed.value;
   if (!info) return { resolved: false, code: 'PARSE_FAILED', message: '仕样书解析失败' };
 
-  const clientName = applySelfHealModificationPrefix(
-    composeSelfHealClientName(specNumber, info),
-    info,
-    specNumber
-  );
+  const composed = composeSelfHealClientName(specNumber, info);
+  const clientName = useModificationPrefix
+    ? applySelfHealModificationPrefix(composed, info, specNumber)
+    : composed;
   const deliverySuffix = composeSelfHealDeliverySuffix(info);
 
   if (!clientName && !deliverySuffix) {
@@ -1216,5 +1219,441 @@ router.get('/self-heal/logs', [authMiddleware, superAdminMiddleware], (req, res)
   const logs = db.listSelfHealLogs(Number.isFinite(limit) && limit > 0 ? limit : 30);
   res.json({ success: true, logs });
 });
+
+// ============================================================================
+// 焊枪编号台账 · 仕样自愈（只校准「客户」列，不校验纳期）
+//
+// 与主页面仕样自愈的两点本质差异，决定了这里的接口形态：
+// 1. 台账没有「月份 / 任务名」，比对对象是每行的客户列，产物是「现客户名 → 仕样书客户名」；
+// 2. 台账里累计的仕样号可达几万个（一行一个枪名），扫描一轮要十几分钟。
+//    因此扫描结果**不进轮询响应**：进度接口只回计数与当前仕样号，明细走分页接口，
+//    否则每 1 秒推几 MB JSON，浏览器会被自己的重渲染拖死。
+//
+// 另外：扫描全程打的是共享盘上的仕样书，属于重活，所以支持「停止」——已扫完的部分仍可更新；
+// 同一仕样号 30 分钟内只解析一次（模块级缓存），重复检测与多张表共用同一份结果。
+// ============================================================================
+
+const GUN_HEAL_JOB_TTL_MS = 45 * 60 * 1000;
+// 低于全局 PDF 解析上限（12），避免把正常查仕样号的请求挤掉
+const GUN_HEAL_SPEC_CONCURRENCY = 5;
+const GUN_HEAL_CACHE_TTL_MS = 30 * 60 * 1000;
+const gunHealJobs = new Map();
+/** specNumber -> { clientName, at }：跨 job 的解析结果缓存 */
+const gunHealClientCache = new Map();
+
+// 台账页本身受 gunLedger 访问设置约束，自愈会真实改写台账数据，必须用同一把尺子
+const requireGunLedgerAccess = (req, res, next) => {
+  if (hasAccessSettings(req.user, 'gunLedger')) return next();
+  return res.status(403).json({ success: false, message: '无权访问焊枪编号台账' });
+};
+
+function pruneGunHealJobs() {
+  const now = Date.now();
+  for (const [id, job] of gunHealJobs) {
+    if (now - job.createdAt > GUN_HEAL_JOB_TTL_MS) gunHealJobs.delete(id);
+  }
+  if (gunHealClientCache.size > 60000) gunHealClientCache.clear();
+}
+
+// 按检测范围收集「仕样号 → 台账行」分组。同步执行（几万行也只是遍历），
+// 这样 202 响应里就能带上总数，用户点下「开始检测」立刻看到分母。
+function collectGunHealGroups(scope) {
+  const ledger = db.readGunLedger();
+  const categories = ledger && ledger.categories && typeof ledger.categories === 'object'
+    ? ledger.categories
+    : {};
+  const digits = getConfiguredSpecDigits();
+  const groups = new Map();
+  const tableNames = [];
+  let totalRows = 0;
+  let skippedRows = 0;
+
+  Object.keys(categories).forEach(category => {
+    if (scope.type === 'category' && category !== scope.category) return;
+    const tables = Array.isArray(categories[category]) ? categories[category] : [];
+    tables.forEach(table => {
+      if (!table) return;
+      if (scope.type === 'table' && table.id !== scope.tableId) return;
+      tableNames.push(`${category} / ${table.name}`);
+      const rows = Array.isArray(table.rows) ? table.rows : [];
+      rows.forEach(row => {
+        if (!row) return;
+        const customer = String(row.customer || '').trim();
+        if (!customer) return;
+        totalRows += 1;
+        const specNumber = extractSelfHealSpecNumber(customer, digits);
+        if (!specNumber) {
+          skippedRows += 1;   // 手写客户名，认不出仕样号：只在汇总里计数
+          return;
+        }
+        if (!groups.has(specNumber)) groups.set(specNumber, []);
+        groups.get(specNumber).push({
+          tableId: table.id,
+          tableName: table.name,
+          category,
+          serialNumber: row.serialNumber,
+          gunName: String(row.gunName || '').trim(),
+          customer
+        });
+      });
+    });
+  });
+
+  return { groups, tableNames, totalRows, skippedRows };
+}
+
+async function resolveGunHealSpec(specNumber) {
+  const cached = gunHealClientCache.get(specNumber);
+  if (cached && Date.now() - cached.at < GUN_HEAL_CACHE_TTL_MS) {
+    return { resolved: true, clientName: cached.clientName };
+  }
+  const resolution = await resolveSelfHealSpec(specNumber, { modificationPrefix: false });
+  if (resolution && resolution.resolved && resolution.clientName) {
+    gunHealClientCache.set(specNumber, { clientName: resolution.clientName, at: Date.now() });
+  }
+  return resolution;
+}
+
+function recomputeGunHealSummary(job) {
+  const specs = job.specs;
+  job.summary = {
+    specCount: specs.length,
+    outdatedSpecs: specs.filter(s => s.status === 'outdated').length,
+    okSpecs: specs.filter(s => s.status === 'ok').length,
+    unresolvedSpecs: specs.filter(s => s.status === 'unresolved').length,
+    outdatedItems: specs.reduce((sum, s) => sum + (s.status === 'outdated' ? s.itemCount : 0), 0),
+    totalSpecs: job.total,
+    totalRows: job.totalRows,
+    skippedRows: job.skippedRows
+  };
+  return job.summary;
+}
+
+function getGunHealCounts(job) {
+  let outdated = 0;
+  let ok = 0;
+  let unresolved = 0;
+  for (const entry of job.specs) {
+    if (entry.status === 'outdated') outdated += 1;
+    else if (entry.status === 'ok') ok += 1;
+    else unresolved += 1;
+  }
+  return { all: job.specs.length, outdated, ok, unresolved };
+}
+
+function getGunHealJobSnapshot(job) {
+  return {
+    jobId: job.id,
+    scope: job.scope,
+    scopeLabel: job.scopeLabel,
+    status: job.status,
+    message: job.message || '',
+    total: job.total,
+    done: job.done,
+    current: job.current,
+    totalRows: job.totalRows,
+    skippedRows: job.skippedRows,
+    summary: job.summary,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    cancelRequested: job.cancelRequested
+  };
+}
+
+async function runGunHealScan(job, groups) {
+  try {
+    const share = await checkSpecShare();
+    if (!share.ok) {
+      job.status = 'failed';
+      job.message = SPEC_SHARE_UNAVAILABLE_MESSAGE;
+      job.finishedAt = Date.now();
+      return;
+    }
+
+    const specNumbers = [...groups.keys()].sort();
+    await forEachWithConcurrency(specNumbers, GUN_HEAL_SPEC_CONCURRENCY, async (specNumber) => {
+      if (job.cancelRequested) return;
+      job.current = specNumber;
+      let resolution;
+      try {
+        resolution = await resolveGunHealSpec(specNumber);
+      } catch (e) {
+        console.warn('[spec] 台账仕样自愈解析失败:', specNumber, e.message);
+        resolution = { resolved: false, code: 'ERROR', message: '解析仕样书失败' };
+      }
+      job.specs.push(buildGunHealSpecEntry(specNumber, groups.get(specNumber), resolution));
+      job.done += 1;
+    });
+
+    job.specs.sort((a, b) => a.specNumber.localeCompare(b.specNumber));
+    recomputeGunHealSummary(job);
+    job.status = job.cancelRequested ? 'cancelled' : 'completed';
+    job.current = '';
+    job.finishedAt = Date.now();
+
+    console.log(
+      `[spec] 台账仕样自愈扫描${job.status === 'cancelled' ? '（已停止）' : '完成'}（${job.scopeLabel}）：`
+      + `${job.summary.specCount}/${job.total} 个仕样号，需更新 ${job.summary.outdatedSpecs} 个 / ${job.summary.outdatedItems} 行，`
+      + `无仕样书 ${job.summary.unresolvedSpecs} 个`
+    );
+  } catch (e) {
+    job.status = 'failed';
+    job.message = '检测失败，请稍后重试或检查仕样书共享连接';
+    job.finishedAt = Date.now();
+    console.warn('[spec] 台账仕样自愈扫描失败:', e.message);
+  }
+}
+
+// 开始检测。scope: { type: 'all' } | { type: 'category', category } | { type: 'table', tableId }
+router.post('/self-heal/gun-ledger/scan', [authMiddleware, adminMiddleware, requireGunLedgerAccess], asyncHandler(async (req, res) => {
+  const raw = (req.body && req.body.scope) || {};
+  const type = ['all', 'category', 'table'].includes(raw.type) ? raw.type : 'all';
+  const scope = { type, category: String(raw.category || '').trim(), tableId: String(raw.tableId || '') };
+  if (type === 'category' && !scope.category) {
+    return res.status(400).json({ success: false, message: '请指定要检测的分类' });
+  }
+  if (type === 'table' && !scope.tableId) {
+    return res.status(400).json({ success: false, message: '请指定要检测的台账表' });
+  }
+
+  pruneGunHealJobs();
+
+  const collected = collectGunHealGroups(scope);
+  if (collected.groups.size === 0) {
+    return res.status(400).json({
+      success: false,
+      message: collected.totalRows === 0
+        ? '该范围内还没有填写客户名的台账行'
+        : '该范围内的客户名都认不出仕样号，无法按仕样书比对'
+    });
+  }
+
+  const scopeLabel = type === 'all'
+    ? `全部台账（${collected.tableNames.length} 张表）`
+    : type === 'category'
+      ? `${scope.category}（${collected.tableNames.length} 张表）`
+      : collected.tableNames[0] || '当前表';
+
+  const job = {
+    id: `gunheal-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+    scope,
+    scopeLabel,
+    status: 'running',
+    message: '',
+    total: collected.groups.size,
+    done: 0,
+    current: '',
+    totalRows: collected.totalRows,
+    skippedRows: collected.skippedRows,
+    summary: null,
+    specs: [],
+    cancelRequested: false,
+    createdAt: Date.now(),
+    startedAt: Date.now(),
+    finishedAt: null
+  };
+  gunHealJobs.set(job.id, job);
+
+  // 后台跑，立刻把 jobId 与总数交给前端去轮询
+  runGunHealScan(job, collected.groups);
+
+  res.status(202).json({ success: true, ...getGunHealJobSnapshot(job) });
+}));
+
+// 进度（刻意只回计数，不回明细）
+router.get('/self-heal/gun-ledger/scan/:jobId', [authMiddleware, adminMiddleware, requireGunLedgerAccess], (req, res) => {
+  const job = gunHealJobs.get(String(req.params.jobId || ''));
+  if (!job) return res.status(404).json({ success: false, message: '检测结果不存在或已过期，请重新检测' });
+  res.json({ success: true, ...getGunHealJobSnapshot(job) });
+});
+
+// 停止检测：已扫完的仕样号保留，可继续执行更新
+// （jobId 走请求体而不是路径，这样是一条固定路径，审计侧更容易按「只读请求」处理）
+router.post('/self-heal/gun-ledger/stop', [authMiddleware, adminMiddleware, requireGunLedgerAccess], (req, res) => {
+  const job = gunHealJobs.get(String((req.body && req.body.jobId) || ''));
+  if (!job) return res.status(404).json({ success: false, message: '检测结果不存在或已过期，请重新检测' });
+  if (job.status === 'running') {
+    job.cancelRequested = true;
+    return res.json({ success: true, message: '已请求停止，正在收尾' });
+  }
+  res.json({ success: true, message: '检测已结束' });
+});
+
+// 分页明细：几万个仕样号必须让后端分页，前端只拿当前页
+router.get('/self-heal/gun-ledger/scan/:jobId/specs', [authMiddleware, adminMiddleware, requireGunLedgerAccess], (req, res) => {
+  const job = gunHealJobs.get(String(req.params.jobId || ''));
+  if (!job) return res.status(404).json({ success: false, message: '检测结果不存在或已过期，请重新检测' });
+
+  const filterValues = ['all', 'outdated', 'ok', 'unresolved'];
+  const filter = filterValues.includes(String(req.query.filter || '')) ? String(req.query.filter) : 'all';
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const pageSize = Math.min(200, Math.max(20, Number(req.query.pageSize) || 50));
+  const counts = getGunHealCounts(job);
+
+  let list = job.specs;
+  if (filter !== 'all') list = list.filter(entry => entry.status === filter);
+  if (q) {
+    list = list.filter(entry =>
+      entry.specNumber.includes(q)
+      || entry.expectedClient.toLowerCase().includes(q)
+      || entry.message.toLowerCase().includes(q)
+      || entry.samples.some(sample => sample.from.toLowerCase().includes(q))
+      || entry.gunNames.some(name => name.toLowerCase().includes(q))
+    );
+  }
+
+  const total = list.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(totalPages, Math.max(1, Number(req.query.page) || 1));
+  const start = (page - 1) * pageSize;
+
+  res.json({
+    success: true,
+    jobId: job.id,
+    status: job.status,
+    counts,
+    filter,
+    total,
+    page,
+    pageSize,
+    totalPages,
+    items: list.slice(start, start + pageSize)
+  });
+});
+
+// 写回台账客户列。重新读一遍台账再比对（检测到点击之间可能有人改过客户名），
+// 只改确实不一致的行；被别人锁着编辑的表跳过，避免把编辑中的本地状态冲掉。
+router.post('/self-heal/gun-ledger/apply', [authMiddleware, adminMiddleware, requireGunLedgerAccess], asyncHandler(async (req, res) => {
+  const job = gunHealJobs.get(String((req.body && req.body.jobId) || ''));
+  if (!job) return res.status(404).json({ success: false, message: '检测结果不存在或已过期，请重新检测' });
+  if (job.status === 'failed') {
+    return res.status(409).json({ success: false, message: job.message || '检测失败，请重新检测后再更新' });
+  }
+  if (job.status !== 'completed' && job.status !== 'cancelled') {
+    return res.status(409).json({ success: false, message: '检测尚未结束，请稍候再试' });
+  }
+
+  const outdated = job.specs.filter(s => s.status === 'outdated' && s.resolved && s.expectedClient);
+  const requested = Array.isArray(req.body && req.body.specNumbers)
+    ? req.body.specNumbers.map(value => String(value || '').trim()).filter(Boolean)
+    : [];
+  const excluded = new Set(Array.isArray(req.body && req.body.excludeSpecs)
+    ? req.body.excludeSpecs.map(value => String(value || '').trim()).filter(Boolean)
+    : []);
+
+  // all=true：全选「需更新」再减去用户取消勾选的；否则只处理显式勾选的仕样号
+  let targets;
+  if (req.body && req.body.all === true) {
+    targets = outdated.filter(entry => !excluded.has(entry.specNumber));
+  } else if (requested.length > 0) {
+    const requestedSet = new Set(requested);
+    targets = outdated.filter(entry => requestedSet.has(entry.specNumber));
+  } else {
+    return res.status(400).json({ success: false, message: '请先选择需要更新的仕样号' });
+  }
+
+  if (targets.length === 0) {
+    return res.json({ success: true, updatedItems: 0, updatedSpecs: [], tableCount: 0, skippedTables: [], message: '没有需要更新的仕样号' });
+  }
+
+  const expectedBySpec = new Map(targets.map(entry => [entry.specNumber, entry.expectedClient]));
+  const data = db.readDb();
+  if (!data.gunLedger || !data.gunLedger.categories) {
+    return res.status(404).json({ success: false, message: '焊枪台账数据未找到' });
+  }
+
+  const startedAt = Date.now();
+  const digits = getConfiguredSpecDigits();
+  const meta = req.user ? { id: req.user.id, username: req.user.username, name: req.user.name || req.user.username } : null;
+  const nowIso = new Date().toISOString();
+  const updatedSpecs = new Set();
+  const changedTables = new Set();
+  const skippedTables = [];
+  let updatedItems = 0;
+
+  Object.keys(data.gunLedger.categories).forEach(category => {
+    const tables = Array.isArray(data.gunLedger.categories[category]) ? data.gunLedger.categories[category] : [];
+    tables.forEach(table => {
+      if (!table || !Array.isArray(table.rows)) return;
+      const holder = gunTableLocks.get(table.id);
+      const lockedByOther = holder && (!req.user || holder.userId !== req.user.id);
+      let tableChanged = 0;
+      table.rows.forEach(row => {
+        if (!row) return;
+        const customer = String(row.customer || '').trim();
+        if (!customer) return;
+        const specNumber = extractSelfHealSpecNumber(customer, digits);
+        if (!specNumber) return;
+        const expected = expectedBySpec.get(specNumber);
+        if (!expected) return;
+        if (collapseSpace(customer) === collapseSpace(expected)) return;
+        tableChanged += 1;
+        if (lockedByOther) return;   // 锁在别人手上：只统计，不写入
+        row.customer = expected;
+        row.updatedAt = nowIso;
+        row.updatedBy = meta;
+        updatedItems += 1;
+        updatedSpecs.add(specNumber);
+      });
+      if (tableChanged > 0) {
+        if (lockedByOther) {
+          skippedTables.push({
+            category,
+            tableName: table.name,
+            rows: tableChanged,
+            holder: holder.name || holder.username || ''
+          });
+        } else {
+          changedTables.add(table.id);
+        }
+      }
+    });
+  });
+
+  if (updatedItems > 0) {
+    await db.writeDb(data);
+  }
+
+  // 已写回的仕样号在服务端也标记为「已最新」：同一个检测结果反复点击更新时不会重复统计
+  if (updatedSpecs.size > 0) {
+    job.specs.forEach(entry => {
+      if (!updatedSpecs.has(entry.specNumber)) return;
+      entry.status = 'ok';
+      entry.itemCount = 0;
+      entry.distinctCurrent = 0;
+      entry.samples = [];
+      entry.gunNames = [];
+      entry.tableNames = [];
+    });
+    recomputeGunHealSummary(job);
+  }
+
+  const io = req.app.get('io');
+  if (io && updatedItems > 0) {
+    // 台账数据量很大，不把整表塞进广播：通知持有台账页面的连接自行刷新
+    emitToPage(io, 'gunLedger', 'gun_ledger_updated', {
+      action: 'customer_heal',
+      updatedItems,
+      specCount: updatedSpecs.size,
+      tableCount: changedTables.size,
+      by: meta ? meta.name : ''
+    });
+  }
+
+  console.log(
+    `[spec] 台账仕样自愈更新（${job.scopeLabel}）：${updatedSpecs.size} 个仕样号 / ${updatedItems} 行`
+    + `（操作人 ${meta ? meta.username : '未知'}，跳过锁定表 ${skippedTables.length} 张，耗时 ${Date.now() - startedAt}ms）`
+  );
+
+  res.json({
+    success: true,
+    updatedItems,
+    updatedSpecs: [...updatedSpecs].sort(),
+    tableCount: changedTables.size,
+    skippedTables,
+    summary: job.summary,
+    message: `已更新 ${updatedItems} 行台账的客户名`
+  });
+}));
 
 module.exports = router;

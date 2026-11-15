@@ -37,6 +37,7 @@ import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import LogoutButton from '../components/LogoutButton';
 import { acquireSocket } from '../utils/socketClient';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 
 /* ==================== 类型 ==================== */
 
@@ -1561,12 +1562,10 @@ const DesignStandards: React.FC = () => {
 
             {/* 关联知识库弹窗（通过知识库 ID 关联） */}
             {showLinkKb && (
-              <div
-                className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-                onClick={() => !linkingKb && setShowLinkKb(false)}
-              >
+              <div className="fixed inset-0 z-50 flex items-center justify-center">
+                <div className={MODAL_OVERLAY} onClick={() => !linkingKb && setShowLinkKb(false)} />
                 <div
-                  className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6"
+                  className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6"
                   onClick={e => e.stopPropagation()}
                 >
                   <div className="flex items-center justify-between mb-4">
@@ -1677,15 +1676,16 @@ const DesignStandards: React.FC = () => {
 
         {/* 超级管理员：答复约束提示词设置模态框（点击右上角按钮，在页面中央静态弹出） */}
         {isSuperAdmin && showPromptModal && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-            onClick={() => {
-              // 保存同步过程中不允许误关
-              if (!promptSaving) setShowPromptModal(false);
-            }}
-          >
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div
-              className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col"
+              className={MODAL_OVERLAY}
+              onClick={() => {
+                // 保存同步过程中不允许误关
+                if (!promptSaving) setShowPromptModal(false);
+              }}
+            />
+            <div
+              className="relative bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col"
               onClick={e => e.stopPropagation()}
             >
               {/* 模态头部：标题 + 全局启停开关 + 关闭按钮 */}
@@ -1881,7 +1881,7 @@ const DesignStandards: React.FC = () => {
         {/* 取消关联知识库确认弹窗（与系统其他确认弹窗风格一致） */}
         {unlinkKbId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !unlinkingKb && setUnlinkKbId('')} />
+            <div className={MODAL_OVERLAY} onClick={() => !unlinkingKb && setUnlinkKbId('')} />
             <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
               <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
                 <div className="flex items-center gap-2 font-bold text-lg">
@@ -1934,7 +1934,7 @@ const DesignStandards: React.FC = () => {
         {/* 清除答复约束提示词确认弹窗（嵌套在提示词模态框之上，故 z-[60]） */}
         {clearPromptKbId && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !promptSaving && setClearPromptKbId('')} />
+            <div className={MODAL_OVERLAY} onClick={() => !promptSaving && setClearPromptKbId('')} />
             <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
               <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
                 <div className="flex items-center gap-2 font-bold text-lg">

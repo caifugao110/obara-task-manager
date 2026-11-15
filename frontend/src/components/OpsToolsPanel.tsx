@@ -21,6 +21,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 
 // ==================== 类型 ====================
 
@@ -823,7 +824,7 @@ const OpsToolsPanel: React.FC = () => {
       {/* 二次确认 */}
       {confirming && detail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !running && setConfirming(false)} />
+          <div className={MODAL_OVERLAY} onClick={() => !running && setConfirming(false)} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[480px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">

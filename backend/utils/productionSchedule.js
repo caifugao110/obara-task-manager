@@ -352,18 +352,19 @@ function countEntries(index) {
 let inflightLoad = null;
 
 // 共享服务器可达性结果缓存：主机彻底不通时不能每次请求都花 2 秒探一遍
-let reachability = { host: '', ok: true, at: 0, code: '', port: 0, elapsedMs: 0 };
+let reachability = { host: '', ok: true, at: 0, code: '', port: 0, elapsedMs: 0, inconclusive: false };
 const REACHABILITY_TTL_MS = 60 * 1000;
 
 // 这些错误码说明「主机层面就到不了」，后面再 stat / net use 只是把已经确定的结论
 // 重新等一遍（stat 等 SMB 的 30 秒，net use 再等 15 秒）。EACCES / EPERM 不在此列：
-// 那是「探测失败但共享可能仍可用」，必须继续尝试凭据连接（见 getScheduleIndex 注释）。
+// 那是「探测被本地防火墙拦了，但共享可能仍可用」，必须继续尝试凭据连接
+// （见 getScheduleIndex 注释）；这类结果标记为 inconclusive，不能当成「不可达」用。
 const HOST_UNREACHABLE_CODES = new Set(['ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN']);
 
 async function checkReachability(filePath) {
   const host = uncShare.getShareHost(filePath);
   // 本地磁盘路径（非 UNC）不需要探测
-  if (!host) return { ok: true, host: '', code: '', port: 0, elapsedMs: 0 };
+  if (!host) return { ok: true, host: '', code: '', port: 0, elapsedMs: 0, inconclusive: false };
 
   const now = Date.now();
   if (reachability.host === host && now - reachability.at < REACHABILITY_TTL_MS) {
@@ -379,10 +380,15 @@ async function checkReachability(filePath) {
     at: Date.now(),
     code: probe.code || '',
     port: probe.port || 0,
-    elapsedMs: probe.elapsedMs || 0
+    elapsedMs: probe.elapsedMs || 0,
+    // 探测失败但错误码说明「不是主机层面到不了」（EACCES/EPERM 等，多为本地防火墙
+    // 拦了这条 TCP）：只能当作「不知道」，不能当作「不可达」——否则会误关掉取号
+    // 的表格兜底，也会在日志里留下与事实相反的「无法读取大日程文件（EACCES）」
+    inconclusive: !probe.ok && !HOST_UNREACHABLE_CODES.has(probe.code || '')
   };
   if (!probe.ok) {
-    console.warn(`[productionSchedule] 共享服务器 ${host} 不可达（${probe.code}，探测耗时 ${probe.elapsedMs}ms）`);
+    console.warn(`[productionSchedule] 共享服务器 ${host} 端口探测失败（${probe.code}，探测耗时 ${probe.elapsedMs}ms）`
+      + (reachability.inconclusive ? '，结果不可信，继续尝试真实访问' : '，主机整体不可达'));
   }
   return { ...reachability };
 }
@@ -579,16 +585,20 @@ async function getScheduleIndex(now = new Date(), options = {}) {
       const hostUnreachable = HOST_UNREACHABLE_CODES.has(reach.code);
       console.warn(
         `[productionSchedule] 快速探测 ${reach.host} 失败（${reach.code || 'ETIMEDOUT'}，耗时 ${reach.elapsedMs}ms）` +
-        (hostUnreachable ? '，主机整体不可达，本次跳过共享访问' : '，继续尝试凭据连接...')
+        (hostUnreachable ? '，主机整体不可达，本次跳过共享访问' : '，探测结果不可信，继续尝试真实访问...')
       );
-      // 探测结果写入 runtime.lastError 作为诊断信息；真实的失败原因（net use 还是 fs.stat）
-      // 会在 withShareRetryAsync 的 recordFailure 里被覆盖，所以这里只写不 return
-      // ——但「主机整体不可达」是个已经确定的结论，再等 45 秒毫无意义。
-      // 时间戳必须用「现在」而不是本次请求的起始时刻：否则一次耗时超过
-      // FAILURE_RETRY_MS 的失败，写进缓存的 loadedAt 就已经是过期的，
+      // 「主机整体不可达」是个已经确定的结论，再等 45 秒毫无意义：写失败记录并与门，
+      // 让失败节流也生效。时间戳必须用「现在」而不是本次请求的起始时刻：否则一次
+      // 耗时超过 FAILURE_RETRY_MS 的失败，写进缓存的 loadedAt 就已经是过期的，
       // 失败节流永远不生效，每次请求都要重新吃满一轮超时。
-      recordFailure(filePath, Date.now(), reach.code || 'EHOSTUNREACH', new Error(`快速探测 ${reach.host} 失败（${reach.code || 'ETIMEDOUT'}）`));
-      if (hostUnreachable) return null;
+      //
+      // 探测不可信（EACCES/EPERM 等）时**不能**记成失败：文件往往读得到，
+      // 记了会在日志里留下「无法读取大日程文件（EACCES）」这种与事实相反的记录，
+      // 还会推高熔断计数。真实结果交给下面的子进程读取决定。
+      if (hostUnreachable) {
+        recordFailure(filePath, Date.now(), reach.code || 'EHOSTUNREACH', new Error(`快速探测 ${reach.host} 失败（${reach.code || 'ETIMEDOUT'}）`));
+        return null;
+      }
     }
 
     // 实际触达共享盘的 stat / readFile / XLSX 解析都在子进程里完成（方案 2）。
@@ -720,11 +730,16 @@ async function getAllScheduleEntries(options = {}) {
  *
  * 用途：普通入口（主页面/台账/快速取号）的仕样号查询默认不碰大日程，
  * 只有「PDF 未命中」时才值得回退问一次表格。但回退绝不能把大日程的故障面
- * 带回来——所以调用方先用这个函数判断「70 现在是否已知可达」：
- * 缓存为空（不知道）或已知不可达时，直接放弃回退，零延迟代价。
+ * 带回来——所以调用方先用这个函数判断「现在值不值得试一次」：
+ * 缓存为空（不知道）或**确认**不可达时，直接放弃回退，零延迟代价。
+ *
+ * 注意这里的 `ok` 语义是「值得尝试访问」，不是「一定可达」：
+ * 端口探测报 EACCES/EPERM（本地防火墙拦了这条 TCP）时结果不可信，
+ * 只要不是明确的「主机整体不可达」就仍然返回 true——调用方的读取本身
+ * 有 3 秒硬时限，试一次比直接放弃掉表格数据划算。
  *
  * @param {string} [filePath] 默认取配置中的大日程路径
- * @returns {{ known: boolean, ok: boolean, host: string }}
+ * @returns {{ known: boolean, ok: boolean, host: string, inconclusive?: boolean }}
  */
 function getReachabilityHint(filePath) {
   const target = filePath || getScheduleFilePath();
@@ -733,7 +748,13 @@ function getReachabilityHint(filePath) {
   if (!host) return { known: true, ok: true, host: '' };
 
   const fresh = reachability.host === host && Date.now() - reachability.at < REACHABILITY_TTL_MS;
-  return { known: fresh, ok: fresh ? reachability.ok : false, host };
+  if (!fresh) return { known: false, ok: false, host };
+  return {
+    known: true,
+    ok: reachability.ok || Boolean(reachability.inconclusive),
+    host,
+    inconclusive: Boolean(reachability.inconclusive)
+  };
 }
 
 function getScheduleStatus() {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 import {
   AlertTriangle,
   Check,
@@ -736,7 +737,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     {/* 页脚「为今日取号安排确认图」入口：浮层数据还在拉取时，别先闪一下取号界面 */}
     {!assignOpen && entryView === 'assign' && (
       <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-        <div className="absolute inset-0 bg-black/20" onClick={() => !assignLoading && onClose()} />
+        <div className={MODAL_OVERLAY} onClick={() => !assignLoading && onClose()} />
         <div className="relative flex items-center gap-2 px-5 py-3 rounded-xl bg-white shadow-2xl border border-gray-200 text-[12px] font-bold text-gray-600">
           <Loader2 size={14} className="animate-spin text-[#2563eb]" />
           正在读取今日取号记录…
@@ -746,7 +747,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     {/* 打开「为今日取号安排确认图」浮层时，本弹窗整体隐藏（关闭浮层后自动恢复） */}
     {!assignOpen && entryView !== 'assign' && (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/20" onClick={() => !submitting && onClose()} />
+      <div className={MODAL_OVERLAY} onClick={() => !submitting && onClose()} />
       <div
         ref={frameRef}
         style={{ transform: 'translate3d(0px, 0px, 0)' }}
@@ -1239,7 +1240,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     {/* 取号结果：独立模态框，叠在取号弹窗之上、确认图浮层之下，不再挤占右栏 */}
     {!assignOpen && lastTaken && resultOpen && (
       <div className="fixed inset-0 z-[55] flex items-center justify-center px-4" role="dialog" aria-modal="true" aria-label="取号成功">
-        <div className="absolute inset-0 bg-black/20" onClick={closeResult} />
+        <div className={MODAL_OVERLAY} onClick={closeResult} />
         <div className="relative w-[480px] max-w-full max-h-[88vh] flex flex-col overflow-hidden rounded-xl border border-emerald-100 bg-white shadow-2xl">
           {/* 头部：成功语义（绿），与取号弹窗的蓝区分开 */}
           <div className="relative flex items-center gap-2.5 px-4 py-3.5 bg-gradient-to-r from-[#047857] via-[#059669] to-[#10b981] text-white shrink-0">

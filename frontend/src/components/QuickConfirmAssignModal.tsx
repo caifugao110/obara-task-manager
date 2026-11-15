@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 import {
   AlertTriangle,
   CalendarDays,
@@ -515,7 +516,7 @@ const QuickConfirmAssignModal: React.FC<QuickConfirmAssignModalProps> = ({
 
   return (
     <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center`} role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/20" onClick={() => !submitting && onClose()} />
+      <div className={MODAL_OVERLAY} onClick={() => !submitting && onClose()} />
       <div
         ref={frameRef}
         style={{ transform: 'translate3d(0px, 0px, 0)' }}

@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { axiosInstance } from '../../../services/api';
+import { MODAL_OVERLAY } from '../../../utils/modalStyles';
 import { useModalDrag } from '../../../hooks/useModalDrag';
 
 /**
@@ -516,7 +517,7 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div
-        className="absolute inset-0 bg-black/20"
+        className={MODAL_OVERLAY}
         onClick={() => { if (!applying) onClose(); }}
       />
       <div
@@ -970,7 +971,7 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
 
         {/* ===== 更新二次确认 ===== */}
         {confirmOpen && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/20">
+          <div className={`${MODAL_OVERLAY} z-10 flex items-center justify-center`}>
             <div className="w-[420px] max-w-[90%] bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
               <div className="px-5 py-3.5 bg-gradient-to-r from-amber-50 to-white border-b border-amber-100 flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-amber-100 border border-amber-200 flex items-center justify-center shrink-0">

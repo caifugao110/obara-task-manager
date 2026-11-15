@@ -48,6 +48,7 @@ import LoadingScreen from '../../components/LoadingScreen';
 import PageZoomViewport from '../../components/PageZoomViewport';
 import PageZoomIndicator from '../../components/PageZoomIndicator';
 import { getPageZoom, screenToLocal } from '../../utils/pageZoom';
+import { MODAL_OVERLAY } from '../../utils/modalStyles';
 import { useTaskHistory } from './hooks/useTaskHistory';
 import { useGunDragDrop } from './hooks/useGunDragDrop';
 import { defaultAccessSettings } from './constants';
@@ -4252,7 +4253,7 @@ const Dashboard = () => {
 
       {helpGuideOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/20" onClick={() => setHelpGuideOpen(false)} />
+          <div className={MODAL_OVERLAY} onClick={() => setHelpGuideOpen(false)} />
           <div
             ref={helpGuideFrameRef}
             style={{ transform: 'translate3d(0px, 0px, 0)' }}
@@ -4436,7 +4437,7 @@ const Dashboard = () => {
 
       {modalOpen && modalDate && modalDesignerId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/20" onClick={() => { setModalOpen(false); stopEditingCell(modalDesignerId, modalDate); }} />
+          <div className={MODAL_OVERLAY} onClick={() => { setModalOpen(false); stopEditingCell(modalDesignerId, modalDate); }} />
           <div
             ref={taskModalRef}
             style={{ transform: 'translate3d(0px, 0px, 0)' }}
@@ -5848,7 +5849,7 @@ const Dashboard = () => {
         const taskName = (gunDeleteTarget.item.taskName || '').trim();
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setGunDeleteTarget(null)} />
+            <div className={MODAL_OVERLAY} onClick={() => setGunDeleteTarget(null)} />
             <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
               <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
                 <div className="flex items-center gap-2 font-bold text-lg">
@@ -5912,7 +5913,7 @@ const Dashboard = () => {
           style={findModalTop !== null ? { paddingTop: findModalTop } : undefined}
         >
           <div
-            className="absolute inset-0 bg-black/20"
+            className={MODAL_OVERLAY}
             onClick={() => setBatchReplaceOpen(false)}
           />
           <div
@@ -6127,7 +6128,7 @@ const Dashboard = () => {
             aria-labelledby="workday-override-confirm-title"
           >
             <div
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className={MODAL_OVERLAY}
               onClick={() => { if (!saving) setWorkdayOverrideConfirm(null); }}
             />
             <div className="relative w-[440px] max-w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
@@ -6214,7 +6215,7 @@ const Dashboard = () => {
       {changePasswordOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
-            className="pwd-modal-overlay absolute inset-0 bg-slate-900/50 backdrop-blur-[2px]"
+            className={`${MODAL_OVERLAY} pwd-modal-overlay`}
             onClick={() => { if (!changePasswordLoading) setChangePasswordOpen(false); }}
           />
           <div

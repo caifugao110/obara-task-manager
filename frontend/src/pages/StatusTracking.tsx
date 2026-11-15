@@ -31,6 +31,7 @@ import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import LogoutButton from '../components/LogoutButton';
 import { acquireSocket, getCurrentSocketId } from '../utils/socketClient';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 
 interface StatusItem {
   id: string;
@@ -2153,7 +2154,7 @@ const StatusTracking = () => {
       {scheduleSyncStats && isAdmin && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
-            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            className={MODAL_OVERLAY}
             onClick={() => !scheduleSyncing && setScheduleSyncStats(null)}
           />
           <div className="relative bg-white rounded-xl shadow-2xl w-[480px] max-w-[92vw] border border-gray-200 overflow-hidden">
@@ -2269,8 +2270,9 @@ const StatusTracking = () => {
           return null;
         }
         return (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className={MODAL_OVERLAY} onClick={() => setDeleteConfirmId(null)} />
+            <div className="relative bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
               <div className="flex items-center gap-3 mb-4">
                 <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
                   <AlertTriangle className="text-red-600" size={22} />
@@ -2308,7 +2310,7 @@ const StatusTracking = () => {
 
       {showLeaderRulesModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !resettingRules && setShowLeaderRulesModal(false)} />
+          <div className={MODAL_OVERLAY} onClick={() => !resettingRules && setShowLeaderRulesModal(false)} />
           <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-4xl mx-4 max-h-[85vh] flex flex-col border border-gray-200 overflow-hidden">
             {/* 头部 */}
             <div className="px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0">
@@ -2555,7 +2557,7 @@ const StatusTracking = () => {
       {/* 重置为默认规则确认弹窗 */}
       {showResetRulesConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !resettingRules && setShowResetRulesConfirm(false)} />
+          <div className={MODAL_OVERLAY} onClick={() => !resettingRules && setShowResetRulesConfirm(false)} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">

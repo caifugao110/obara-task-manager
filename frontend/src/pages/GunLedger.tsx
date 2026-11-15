@@ -27,12 +27,15 @@ import {
   FolderOpen,
   Clock,
   RotateCcw,
+  Wand2,
 } from 'lucide-react';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import LogoutButton from '../components/LogoutButton';
 import QuickConfirmAssignModal, { QuickConfirmGunRow } from '../components/QuickConfirmAssignModal';
+import GunLedgerSelfHealModal, { GunHealScopeStat } from '../components/GunLedgerSelfHealModal';
 import { useModalDrag } from '../hooks/useModalDrag';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 import { appendDeadlineSuffix, resolveTextDeadlineSuffix } from '../utils/specDeadline';
 import { useAuth } from '../context/AuthContext';
 import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsContext';
@@ -387,6 +390,8 @@ const GunLedger: React.FC = () => {
   const [hoursSaving, setHoursSaving] = useState(false);
   // 默认工时规则恢复内置二次确认：'all' 全部恢复；字符串为分类名；null 关闭
   const [confirmHoursReset, setConfirmHoursReset] = useState<'all' | string | null>(null);
+  // 台账仕样自愈弹窗：按仕样书校准「客户」列（管理员可用，检测走服务端 job + 分页明细）
+  const [showHealPanel, setShowHealPanel] = useState(false);
   const [, setSpecLookupLoading] = useState(false);
   // 已被主任务使用的焊枪名集合：命中者枪名显示天蓝色
   const [usedGunNames, setUsedGunNames] = useState<Set<string>>(new Set());
@@ -627,6 +632,33 @@ const GunLedger: React.FC = () => {
 
   // 当前表是否处于只读打开状态（表被他人锁定时的只读模式：不申请表级锁、禁用所有编辑）
   const activeTableReadOnly = Boolean(activeTable && readonlyTableId === activeTable.id);
+
+  // 台账仕样自愈的范围估算：仕样号去重 + 有客户名的行数 + 表数。
+  // 只在弹窗打开时算——「全部台账」几万行，每次渲染都跑一遍正则没有意义。
+  const gunHealScopeStats = useMemo<{
+    all: GunHealScopeStat;
+    category: GunHealScopeStat;
+    table: GunHealScopeStat | null;
+  }>(() => {
+    const empty: GunHealScopeStat = { specs: 0, rows: 0, tables: 0 };
+    if (!showHealPanel || !ledger) return { all: empty, category: empty, table: null };
+    const statOf = (list: GunTable[]): GunHealScopeStat => {
+      const specs = new Set<string>();
+      let rows = 0;
+      list.forEach(table => (table.rows || []).forEach(row => {
+        const customer = String(row.customer || '').trim();
+        if (!customer) return;
+        rows += 1;
+        extractSpecNumbers(customer).forEach(spec => specs.add(spec));
+      }));
+      return { specs: specs.size, rows, tables: list.length };
+    };
+    return {
+      all: statOf(Object.keys(ledger.categories || {}).flatMap(cat => ledger.categories[cat] || [])),
+      category: statOf(ledger.categories[activeCategory] || []),
+      table: activeTable ? statOf([activeTable]) : null,
+    };
+  }, [showHealPanel, ledger, activeCategory, activeTable, extractSpecNumbers]);
 
   // 切换表或进入只读模式时重置任务分配状态
   useEffect(() => {
@@ -926,7 +958,7 @@ const GunLedger: React.FC = () => {
       return !!el && !!el.closest('input, textarea, select, [contenteditable="true"]');
     };
     const anyModalOpen = quickAssignOpen || showAssignPanel || showPersonPanel || showAccessPanel
-      || showInitPanel || showExportPanel || addCategoryOpen || addTableOpen
+      || showInitPanel || showExportPanel || showHealPanel || addCategoryOpen || addTableOpen
       || Boolean(deleteCategoryTarget) || Boolean(deleteTableTarget) || Boolean(restoreTarget)
       || Boolean(confirmBatch) || Boolean(confirmClearId);
 
@@ -969,7 +1001,7 @@ const GunLedger: React.FC = () => {
     };
   }, [
     isAdmin, canAccess, addToast, quickAssignOpen, showAssignPanel, showPersonPanel, showAccessPanel,
-    showInitPanel, showExportPanel, addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget,
+    showInitPanel, showExportPanel, showHealPanel, addCategoryOpen, addTableOpen, deleteCategoryTarget, deleteTableTarget,
     restoreTarget, confirmBatch, confirmClearId,
   ]);
 
@@ -2189,7 +2221,7 @@ const GunLedger: React.FC = () => {
     handle.on('gun_ledger_edit_blocked', (s: EditingSession) => {
       addToast(`${s.name || s.username} 正在编辑该行`, 'error');
     });
-    handle.on('gun_ledger_updated', (data: { action: string; tableId?: string; rows?: GunRow[]; category?: string; table?: GunTable; name?: string; defaultResponsiblePersons?: string[]; order?: string[]; rule?: GunNameRule }) => {
+    handle.on('gun_ledger_updated', (data: { action: string; tableId?: string; rows?: GunRow[]; category?: string; table?: GunTable; name?: string; defaultResponsiblePersons?: string[]; order?: string[]; rule?: GunNameRule; by?: string; updatedItems?: number }) => {
       if (!data) return;
       if (data.action === 'add_category' && data.category) {
         setLedger(prev => prev && !(data.category! in prev.categories) ? { ...prev, categories: { ...prev.categories, [data.category!]: [] } } : prev);
@@ -2262,6 +2294,14 @@ const GunLedger: React.FC = () => {
         if (activeTableId === data.tableId) setActiveTableId(null);
       } else if (data.action === 'default_persons' && Array.isArray(data.defaultResponsiblePersons)) {
         setLedger(prev => prev ? { ...prev, defaultResponsiblePersons: data.defaultResponsiblePersons! } : prev);
+      } else if (data.action === 'customer_heal') {
+        // 仕样自愈写回：台账可能被改了几千行，重新拉一次比逐行合并更可靠
+        fetchLedger();
+        const by = String(data.by || '').trim();
+        const me = String(user?.name || user?.username || '').trim();
+        if (!by || by !== me) {
+          addToast(`台账客户名已由「${by || '管理员'}」自愈更新 ${data.updatedItems || 0} 行，已刷新`, 'success');
+        }
       } else if (data.action === 'reorder_categories' && Array.isArray(data.order)) {
         setLedger(prev => {
           if (!prev) return prev;
@@ -2691,6 +2731,16 @@ const GunLedger: React.FC = () => {
         </div>
         {user && (
           <div className="flex items-center space-x-4">
+            {/* 仕样自愈：按仕样书校准台账客户名（管理员可用，只改「客户」列） */}
+            {isAdmin && (
+              <button
+                onClick={() => { if (warnIfOffline()) return; setShowHealPanel(true); }}
+                className="flex items-center space-x-1.5 text-white hover:text-emerald-200 text-sm font-semibold transition"
+                title="仕样自愈：读取仕样书校验并修正台账「客户」列（不校验纳期），支持按表/分类分批检测"
+              >
+                <Wand2 size={18} /><span>仕样自愈</span>
+              </button>
+            )}
             {/* 默认工时规则：按台账表配置专用工时，超管专用 */}
             {isSuperAdmin && (
               <button
@@ -3295,7 +3345,7 @@ const GunLedger: React.FC = () => {
         const customerSet = new Set(selectedRows.map(r => String(r.customer || '').trim() || '未命名'));
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/20" onClick={() => !assigning && setShowAssignPanel(false)} />
+            <div className={MODAL_OVERLAY} onClick={() => !assigning && setShowAssignPanel(false)} />
             <div
               ref={assignPanelRef}
               style={{ transform: 'translate3d(0px, 0px, 0)' }}
@@ -3502,7 +3552,7 @@ const GunLedger: React.FC = () => {
       {/* 新增分类弹窗 */}
       {addCategoryOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeAddModals} />
+          <div className={MODAL_OVERLAY} onClick={closeAddModals} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -3557,7 +3607,7 @@ const GunLedger: React.FC = () => {
       {/* 分类导出弹窗 */}
       {showExportPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!exporting) setShowExportPanel(false); }} />
+          <div className={MODAL_OVERLAY} onClick={() => { if (!exporting) setShowExportPanel(false); }} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[480px] max-w-[92vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -3639,7 +3689,7 @@ const GunLedger: React.FC = () => {
       {/* 新增表弹窗 */}
       {addTableOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeAddModals} />
+          <div className={MODAL_OVERLAY} onClick={closeAddModals} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -3700,7 +3750,7 @@ const GunLedger: React.FC = () => {
       {/* 删除分类确认弹窗 */}
       {deleteCategoryTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeDeleteModals} />
+          <div className={MODAL_OVERLAY} onClick={closeDeleteModals} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -3752,7 +3802,7 @@ const GunLedger: React.FC = () => {
       {/* 恢复默认排序确认弹窗（仅超管） */}
       {restoreTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!restoring) setRestoreTarget(null); }} />
+          <div className={MODAL_OVERLAY} onClick={() => { if (!restoring) setRestoreTarget(null); }} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -3807,7 +3857,7 @@ const GunLedger: React.FC = () => {
       {/* 删除表确认弹窗 */}
       {deleteTableTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeDeleteModals} />
+          <div className={MODAL_OVERLAY} onClick={closeDeleteModals} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -3854,7 +3904,7 @@ const GunLedger: React.FC = () => {
       {/* 台账初始化弹窗：先选分类，再进入该分类逐表设置；分类选择界面支持一键初始化全部表格 */}
       {showInitPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40" onClick={() => { if (!batchInitializing) setShowInitPanel(false); }} />
+          <div className={MODAL_OVERLAY} onClick={() => { if (!batchInitializing) setShowInitPanel(false); }} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[840px] max-w-[94vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2 font-bold text-lg min-w-0">
@@ -3985,10 +4035,22 @@ const GunLedger: React.FC = () => {
         </div>
       )}
 
+      {/* 仕样自愈弹窗：按仕样书校准台账「客户」列（管理员），只改客户名、不校验纳期 */}
+      <GunLedgerSelfHealModal
+        open={showHealPanel}
+        onClose={() => setShowHealPanel(false)}
+        addToast={addToast}
+        onApplied={() => { fetchLedger(); }}
+        activeCategory={activeCategory}
+        activeTableId={activeTableId}
+        activeTableName={activeTable ? activeTable.name : null}
+        scopeStats={gunHealScopeStats}
+      />
+
       {/* 默认工时规则弹窗：先选分类，再逐表编辑专用工时；首页可编辑 C/X 回退规则 */}
       {showHoursPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!hoursSaving) setShowHoursPanel(false); }} />
+          <div className={MODAL_OVERLAY} onClick={() => { if (!hoursSaving) setShowHoursPanel(false); }} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[860px] max-w-[94vw] max-h-[86vh] flex flex-col border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2 font-bold text-lg min-w-0">
@@ -4272,7 +4334,7 @@ const GunLedger: React.FC = () => {
       {/* 一键初始化二次确认弹窗（全部 / 某分类） */}
       {confirmBatch && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!batchInitializing) setConfirmBatch(null); }} />
+          <div className={MODAL_OVERLAY} onClick={() => { if (!batchInitializing) setConfirmBatch(null); }} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -4329,7 +4391,7 @@ const GunLedger: React.FC = () => {
       {/* 默认工时规则恢复内置二次确认弹窗（全部 / 某分类） */}
       {confirmHoursReset !== null && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setConfirmHoursReset(null)} />
+          <div className={MODAL_OVERLAY} onClick={() => setConfirmHoursReset(null)} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[460px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-orange-500 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -4384,7 +4446,7 @@ const GunLedger: React.FC = () => {
       {/* 权限设置弹窗 */}
       {showAccessPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowAccessPanel(false)} />
+          <div className={MODAL_OVERLAY} onClick={() => setShowAccessPanel(false)} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[440px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-purple-600 to-purple-700 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -4434,7 +4496,7 @@ const GunLedger: React.FC = () => {
       {/* 默认担当人员管理弹窗 */}
       {showPersonPanel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowPersonPanel(false)} />
+          <div className={MODAL_OVERLAY} onClick={() => setShowPersonPanel(false)} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[480px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">
@@ -4527,7 +4589,7 @@ const GunLedger: React.FC = () => {
       {/* 重置为默认人员确认弹窗 */}
       {showResetConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => !resettingPersons && setShowResetConfirm(false)} />
+          <div className={MODAL_OVERLAY} onClick={() => !resettingPersons && setShowResetConfirm(false)} />
           <div className="relative bg-white rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-lg">

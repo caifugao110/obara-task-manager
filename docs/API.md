@@ -32,6 +32,8 @@ Authorization: Bearer <token>
 - [系统设置接口](#系统设置接口)
 - [工时管理表接口](#工时管理表接口)
 - [仕样号搜索接口](#仕样号搜索接口)
+- [仕样自愈接口](#仕样自愈接口)
+- [台账仕样自愈接口](#台账仕样自愈接口)
 - [前端批量导入模板](#前端批量导入模板)
 - [Socket.IO](#socketio)
 - [常见错误码](#常见错误码)
@@ -3239,7 +3241,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
   - `GET` 只记敏感读取：各类导出（`/export`、`/export-all`、`/export-xls`）与 `GET /api/system/db-stats`；
   - 常规读接口不记：`GET /api/settings/*`、`/api/system/settings`、`/api/system/version`、`/api/designers`、`/api/tasks` 等页面初始化请求均不入库；
   - 会话心跳 `GET /api/auth/validate` 不记；
-  - 语义为只读的 `POST` 不记：`/api/spec/spec-info`、`/api/spec/delivery-date`、`/api/spec/spec-raw-text`、`/api/spec/self-heal/scan`（只解析仕样书、生成本次比对的 job，不写任务；真正写库的 `/api/spec/self-heal/apply` 记为「仕样自愈更新」）、`/api/design-standards/search`、`/api/design-standards/chat`、`/api/tasks/batch-replace/search`、`/api/status-tracking/import/check`。
+  - 语义为只读的 `POST` 不记：`/api/spec/spec-info`、`/api/spec/delivery-date`、`/api/spec/spec-raw-text`、`/api/spec/self-heal/scan`、`/api/spec/self-heal/gun-ledger/scan`、`/api/spec/self-heal/gun-ledger/stop`（只解析仕样书/打停止标记、生成本次比对的 job，不写业务数据；真正写库的 `/api/spec/self-heal/apply` 记为「仕样自愈更新」、`/api/spec/self-heal/gun-ledger/apply` 记为「台账仕样自愈更新」）、`/api/design-standards/search`、`/api/design-standards/chat`、`/api/tasks/batch-replace/search`、`/api/status-tracking/import/check`。
 - `GET /api/system/login-logs`、`GET /api/system/audit-logs`、`GET /api/system/audit-logs/filter-options` 本身不记录；`GET /api/system/audit-logs/export` 作为导出操作正常记录。
 - GET 请求不记录响应消息，POST/PUT/DELETE 请求记录请求体（脱敏后最大 2000 字符；DELETE 的请求体用于说明删除了哪条记录，如 `DELETE /api/tasks/item`、`DELETE /api/users/:id`）。
 - 请求体在入库前递归脱敏：嵌套对象与数组中的字段名只要匹配 `password`、`passwd`、`secret`、`token`、`api_key`/`apikey`、`authorization`（不区分大小写），值一律替换为 `[REDACTED]`。
@@ -3661,9 +3663,12 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 探测顺序与代价控制：
 
-1. 先探 SMB 端口（445/139，1.5 秒超时）。主机都不通就直接判定 `host-unreachable`，**不再发起 UNC 调用**——共享服务器掉线时一次 SMB `stat` 要等 Windows 自身 30 秒超时，还会占住 libuv 线程池的一个线程。
-2. 真正访问文件系统时套硬时限（默认 2.5 秒，`SHARE_STATUS_PROBE_TIMEOUT_MS` 可调），超时只报告 `timeout`，不无限等。目录做 `stat + access(R_OK)`（只 stat 成功不代表能列目录，权限被拒时取号会全部失败），文件额外返回体积与修改时间。
-3. 全部异步实现，避免同步 `stat` 把事件循环整段占住。
+1. 先探 SMB 端口（445/139，1.5 秒超时）。**只有端口探测返回明确的不可达错误码（`ETIMEDOUT` / `EHOSTUNREACH` / `ENETUNREACH` / `EHOSTDOWN` / `ECONNREFUSED` / `ENOTFOUND`）且本机没有到该主机的 `net use` 连接时**才判定 `host-unreachable`，不再发起 UNC 调用——共享服务器掉线时一次 SMB `stat` 要等 Windows 自身 30 秒超时，还会占住 libuv 线程池的一个线程。
+2. 端口探测只是「快速否定」的启发式，不是结论。以下两种情况会继续做真实访问，以访问结果为准（`note` 字段说明原因）：
+   - 探测返回 `EACCES` / `EPERM`：本地防火墙或终端防护拒绝了这条 TCP 探测，共享本身通常仍可读写（实测 `192.168.160.70` 即如此）；
+   - 探测失败但存在会话证据：`net use` 列表里有到该主机的连接，或最近（`SHARE_STATUS_ENSURE_EVIDENCE_MS`，默认 15 分钟）有一次成功的 `net use` 重建记录。`net use` 已建立共享连接本身就是可达证据，不能被判成不可达。
+3. 真正访问文件系统时套硬时限（默认 2.5 秒，`SHARE_STATUS_PROBE_TIMEOUT_MS` 可调），超时只报告 `timeout`，不无限等。目录做 `stat + access(R_OK)`（只 stat 成功不代表能列目录，权限被拒时取号会全部失败），文件额外返回体积与修改时间。
+4. 全部异步实现，避免同步 `stat` 把事件循环整段占住。
 
 响应（节选，其中一个目标异常）：
 
@@ -3693,6 +3698,8 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
       "lastFailAtMs": null,
       "failStreak": 0,
       "hostProbe": { "ok": true, "port": 445, "elapsedMs": 3, "code": "" },
+      "session": null,
+      "note": "",
       "error": null,
       "detail": { "isDirectory": true },
       "share": { "shareRoot": "\\\\192.168.160.6\\仕样书$", "credentialConfigured": false, "lastEnsure": null }
@@ -3702,29 +3709,37 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
       "env": "PRODUCTION_SCHEDULE_PATH",
       "label": "各产品大日程",
       "path": "\\\\192.168.160.70\\各产品大日程\\各产品大日程.xls",
-      "ok": false,
-      "state": "unreachable",
-      "reason": "host-unreachable",
-      "hint": "无法连接 192.168.160.70 的 445/139 端口（ETIMEDOUT）：共享服务器离线、网段不通或端口被防火墙拦截",
-      "elapsedMs": 1508,
-      "failStreak": 5,
-      "hostProbe": { "ok": false, "port": 0, "elapsedMs": 1508, "code": "ETIMEDOUT" },
-      "error": { "code": "ETIMEDOUT", "message": "端口探测失败（192.168.160.70）" },
+      "ok": true,
+      "state": "ok",
+      "reason": "ok",
+      "hint": "",
+      "elapsedMs": 51,
+      "failStreak": 0,
+      "hostProbe": { "ok": false, "port": 0, "elapsedMs": 1200, "code": "EACCES" },
+      "session": {
+        "ok": true,
+        "established": true,
+        "host": "192.168.160.70",
+        "lines": [],
+        "source": "net-use-record"
+      },
+      "note": "SMB 端口探测不通（EACCES），但本机已有到 192.168.160.70 的共享连接，且路径可正常访问，判定为可用",
+      "error": null,
       "share": {
         "credentialConfigured": true,
         "lastEnsure": {
-          "at": "2026-11-14T11:15:49.600Z",
-          "ok": false,
+          "at": "2026-11-15T07:54:12.000Z",
+          "ok": true,
           "user": "gaoj@obaranj.com",
           "errorNo": "",
-          "message": "net use 执行失败（无输出，多为共享不可达或凭据被拒）",
+          "message": "共享连接建立成功",
           "connections": []
         }
       },
       "runtime": {
-        "lastSuccessAt": null,
-        "loadedAt": null,
-        "entryCount": 0,
+        "lastSuccessAt": "2026-11-15T07:57:47.000Z",
+        "loadedAt": "2026-11-15T07:57:47.000Z",
+        "entryCount": 319,
         "breakerOpen": false,
         "breakerReason": null,
         "lastError": null
@@ -3736,12 +3751,15 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 | 字段 | 说明 |
 |------|------|
-| `state` | `ok` 可访问 \| `fail` 访问失败 \| `timeout` 超过探测时限 \| `unreachable` 主机端口不通 \| `unconfigured` 未配置该环境变量 |
-| `reason` | 细分归因：`access-denied`（权限/会话）、`locked`（文件被独占）、`not-found`、`not-directory`、`timeout`、`unreachable`、`host-unreachable` |
+| `state` | `ok` 可访问 \| `fail` 访问失败 \| `timeout` 超过探测时限 \| `unreachable` 主机端口不通且无可用会话 \| `unconfigured` 未配置该环境变量 |
+| `reason` | 细分归因：`access-denied`（权限/会话）、`session-failed`（端口通或探测不可信但访问仍失败，多为 SMB 会话/凭据问题）、`locked`（文件被独占）、`not-found`、`not-directory`、`timeout`、`unreachable`、`host-unreachable` |
 | `hint` | 针对 `reason` 的处置建议，直接展示在页面上（「无法访问共享」这类无信息量提示已被替换） |
+| `session` | 端口探测失败时才会去查的会话证据：`established` 是否已有到该主机的连接，`source` 为 `net-use-list`（`net use` 列表里现在就有）或 `net-use-record`（最近一次 `net use` 成功）。有会话证据时不判「主机不可达」 |
+| `note` | 结论的补充说明，例如「端口探测不通但路径访问正常，判定为可用」。只解释不改变可用性判定，页面上以灰字提示 |
 | `failStreak` | 连续失败次数：偶发抖动与持续掉线在页面上颜色不同（≥3 次标红） |
 | `share.lastEnsure` | 最近一次 `net use` 兜底重建连接的结果。`errorNo=1219` 表示该服务器已有使用其他凭据的连接，是排查 Session 0 认证问题的关键证据 |
 | `runtime` | 仅大日程：最近一次成功解析时间、条目数、熔断状态。**文件读得到但 XLSX 解析失败**（结构改版、被写坏）只有这里能看出来 |
+
 
 安全说明：`net use` 失败时 `execFile` 会把整条命令行（含 `/user:账号 密码`）拼进 `error.message`，接口在返回前统一遮蔽为 `/user:账号 ***`，失败兜底文案也不再回显命令行，避免共享密码出现在接口响应与日志里。
 
@@ -5066,6 +5084,193 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 - 存储为独立表 `self_heal_logs`（不写入 `kv_store` 整库 JSON，避免每次执行触发全库序列化），**最多保留 500 条**，超出按 `rowid` 从旧到新修剪。
 - 与操作日志（`/api/system/audit-logs`）互补：审计日志记的是「谁调了 `apply` 接口」，这里记的是「这次执行实际改了多少条任务、涉及哪些仕样号与工时表」。`GET` 请求本身不进审计日志。
 - 不传 `limit` 或传入非法值时回落到 30 条；`limit` 超过 500 按 500 处理。
+
+## 台账仕样自愈接口
+
+> 焊枪编号台账顶栏「仕样自愈」按钮（管理员可见，另需台账访问权限）背后的五个接口。
+> 用途：按仕样书校正台账**「客户」列的客户名**——与主页面仕样自愈同源（同一套 PDF 解析与客户名组合规则），
+> 但**不校验纳期、也不改写其它列**；写回的是 `gunLedger.categories[分类][表].rows[].customer`。
+>
+> 台账里的仕样号可达几万个，因此与主页面实现有两点不同：
+> 1. **进度接口只回计数**，明细走独立的分页接口——否则每秒推几 MB JSON，浏览器会被自己拖死；
+> 2. 支持**停止检测**，已扫完的仕样号仍可更新；同一仕样号 30 分钟内只解析一次（进程内缓存）。
+
+### 建立台账仕样自愈扫描任务
+
+`POST /api/spec/self-heal/gun-ledger/scan`
+
+权限：`admin`、`superadmin`，且需通过台账访问设置（`gunLedger`，与台账页同一把尺子）。
+
+请求（三选一范围）：
+
+```json
+{ "scope": { "type": "table", "tableId": "tbl-xxx" } }
+```
+
+```json
+{ "scope": { "type": "category", "category": "X2C" } }
+```
+
+```json
+{ "scope": { "type": "all" } }
+```
+
+说明：
+
+- 只统计**填了客户名**的台账行；客户名里认不出 `specNumberDigits` 位仕样号的行计入 `skippedRows`。
+- 按仕样号归并：同一仕样号在多少张表、多少行出现，共用一次 PDF 解析结果。
+- 接口**立即返回** `202` 与 job 快照（含已算好的 `total`，进页面就能看到分母），扫描在后台继续；job 在内存保留 45 分钟。
+- 该接口本身只生成内存 job，不写台账，因此**不进审计日志**（真正写库的 `apply` 才留痕）。
+- 范围内没有可检测的仕样号时返回 `400`。
+
+响应（`202`）：
+
+```json
+{
+  "success": true,
+  "jobId": "gunheal-mwg6mvudyvs4kv",
+  "scopeLabel": "X2C / SRTC",
+  "status": "running",
+  "total": 4382,
+  "done": 0,
+  "current": "",
+  "totalRows": 4420,
+  "skippedRows": 12,
+  "summary": null
+}
+```
+
+### 查询台账仕样自愈进度
+
+`GET /api/spec/self-heal/gun-ledger/scan/:jobId`
+
+权限：同上。
+
+响应（`200`）：job 快照，**不含明细**。
+
+```json
+{
+  "success": true,
+  "jobId": "gunheal-mwg6mvudyvs4kv",
+  "status": "completed",
+  "total": 4382,
+  "done": 4382,
+  "current": "",
+  "summary": {
+    "specCount": 4382,
+    "outdatedSpecs": 37,
+    "okSpecs": 4300,
+    "unresolvedSpecs": 45,
+    "outdatedItems": 96,
+    "totalSpecs": 4382,
+    "totalRows": 4420,
+    "skippedRows": 12
+  }
+}
+```
+
+- `status`：`running` / `completed` / `failed` / `cancelled`（用户中途停止；`summary.specCount` 只统计已扫完的部分，仍可执行更新）。
+- 单个仕样号 `status`：`outdated`（需更新）/ `ok`（已最新）/ `unresolved`（无法核对，`code` 与 `message` 说明原因：`PDF_MISSING`、`PARSE_FAILED`、`NO_CLIENT`、`TIMEOUT`、`SHARE_UNREACHABLE`）。
+
+### 停止台账仕样自愈检测
+
+`POST /api/spec/self-heal/gun-ledger/stop`
+
+请求：`{ "jobId": "gunheal-mwg6mvudyvs4kv" }`
+
+说明：只打停止标记，正在解析的那一份会跑完；随后 job 状态变为 `cancelled`。已扫完的结果保留可更新。
+
+### 分页查询台账仕样自愈明细
+
+`GET /api/spec/self-heal/gun-ledger/scan/:jobId/specs?filter=outdated&page=1&pageSize=50&q=58249`
+
+权限：同上。
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+|------|------|------|------|------|
+| `filter` | string | 否 | `all` | `all` / `outdated` / `ok` / `unresolved` |
+| `page` | number | 否 | `1` | 超出总页数时夹到最后一页 |
+| `pageSize` | number | 否 | `50` | 夹在 `20`–`200` |
+| `q` | string | 否 | - | 模糊匹配仕样号 / 客户名 / 无法核对原因 / 样本枪名 |
+
+响应（`200`）：
+
+```json
+{
+  "success": true,
+  "status": "completed",
+  "counts": { "all": 4382, "outdated": 37, "ok": 4300, "unresolved": 45 },
+  "filter": "outdated",
+  "total": 37,
+  "page": 1,
+  "pageSize": 50,
+  "totalPages": 1,
+  "items": [
+    {
+      "specNumber": "58249",
+      "status": "outdated",
+      "resolved": true,
+      "expectedClient": "58249>O/IND_客户A-项目一",
+      "code": "",
+      "message": "",
+      "itemCount": 6,
+      "rowCount": 8,
+      "distinctCurrent": 1,
+      "samples": [{ "from": "58249>O/IND_旧写法", "count": 6 }],
+      "gunNames": ["SRTC-2C15015", "SRTC-2C15016"],
+      "tableNames": ["X2C / SRTC"]
+    }
+  ]
+}
+```
+
+- `itemCount` 是**全量**待改写行数；`samples`（最多 3 种旧写法）/ `gunNames`（最多 6 个）/ `tableNames` 只是便于判断的样本，被截断也不影响写回范围。
+
+### 执行台账仕样自愈更新
+
+`POST /api/spec/self-heal/gun-ledger/apply`
+
+权限：同上。操作日志记为「台账仕样自愈更新」。
+
+请求（全选「需更新」，可排除少量）：
+
+```json
+{ "jobId": "gunheal-mwg6mvudyvs4kv", "all": true, "excludeSpecs": ["58249"] }
+```
+
+请求（只更新勾选的仕样号）：
+
+```json
+{ "jobId": "gunheal-mwg6mvudyvs4kv", "specNumbers": ["58249", "58645"] }
+```
+
+说明：
+
+- 写回规则：`新客户名 = 仕样书客户名`（与 `/api/spec/spec-info` 的 `clientName` 完全一致，修改仕样书**不加** `M` 前缀），只动 `customer`，并刷新该行的 `updatedAt` / `updatedBy`。
+- 执行前重新读取台账再比对（检测到点击之间可能有人改过客户名），只改确实不一致的行，重复执行幂等。
+- 正在被**其他用户**锁定编辑的表自动跳过并在 `skippedTables` 中返回（只统计不写入），避免冲掉对方编辑中的本地状态。
+- 成功后通过 socket 广播 `gun_ledger_updated { action: "customer_heal", updatedItems, specCount, tableCount, by }`，在线台账页据此重新拉取；广播不带整表行数据。
+- 已写回的仕样号在 job 内同步标记为 `ok`，同一份检测结果重复点击不会重复统计。
+
+响应（`200`）：
+
+```json
+{
+  "success": true,
+  "updatedItems": 96,
+  "updatedSpecs": ["58249", "58645"],
+  "tableCount": 2,
+  "skippedTables": [{ "category": "X2C", "tableName": "SRTX", "rows": 4, "holder": "张三" }],
+  "summary": { "outdatedSpecs": 0, "outdatedItems": 0 },
+  "message": "已更新 96 行台账的客户名"
+}
+```
+
+| 场景 | 响应 |
+|------|------|
+| job 不存在或已过期 | `404 { "success": false, "message": "检测结果不存在或已过期，请重新检测" }` |
+| 检测未结束 | `409 { "success": false, "message": "检测尚未结束，请稍候再试" }` |
+| 未提交任何仕样号 | `400 { "success": false, "message": "请先选择需要更新的仕样号" }` |
 
 ## 前端批量导入模板
 

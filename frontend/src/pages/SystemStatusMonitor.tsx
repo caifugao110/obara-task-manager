@@ -215,6 +215,18 @@ interface SharePathInfo {
   /** 连续失败次数：区分偶发抖动与持续掉线 */
   failStreak: number;
   hostProbe: { ok: boolean; port: number; elapsedMs: number; code: string } | null;
+  /** 端口探测失败时才会去查的证据：本机是否已有到该主机的 SMB 会话（net use） */
+  session: {
+    ok: boolean;
+    established: boolean;
+    host: string;
+    lines: string[];
+    message?: string;
+    /** net-use-list 现在就有这条连接；net-use-record 最近一次 net use 成功 */
+    source?: string;
+  } | null;
+  /** 结论的补充说明（如「端口探测被拦但路径访问正常」），只解释不改变可用性判定 */
+  note?: string;
   error: { code: string; message: string } | null;
   detail: { isDirectory?: boolean; isFile?: boolean; sizeBytes?: number; mtimeMs?: number } | null;
   share: {
@@ -771,14 +783,26 @@ const SharePathRow: React.FC<{ info: SharePathInfo }> = ({ info }) => {
         />
         <ShareMetaItem
           label={`SMB 端口${hostProbe?.port ? `（${hostProbe.port}）` : ''}`}
-          value={hostProbe ? (hostProbe.ok ? `通 · ${formatNumber(hostProbe.elapsedMs)} ms` : `不通 · ${hostProbe.code || 'ETIMEDOUT'}`) : '本地路径'}
-          tone={hostProbe && !hostProbe.ok ? 'text-rose-600' : 'text-gray-700'}
+          value={hostProbe
+            ? (hostProbe.ok
+              ? `通 · ${formatNumber(hostProbe.elapsedMs)} ms`
+              : `不通 · ${hostProbe.code || 'ETIMEDOUT'}${info.session?.established ? ' · 已有会话' : ''}`)
+            : '本地路径'}
+          // 端口探测不通但共享可用（已有会话 / 被本地防火墙拦）只是提示，不该整片飘红
+          tone={hostProbe && !hostProbe.ok ? (info.ok ? 'text-amber-600' : 'text-rose-600') : 'text-gray-700'}
         />
         <ShareMetaItem
           label="共享凭据"
           value={info.share?.credentialConfigured ? '已配置 UNC_CREDENTIALS' : '用运行账户凭据'}
         />
       </div>
+
+      {info.note && (
+        <div className="mt-2 flex items-start gap-1.5 text-[11px] text-gray-500">
+          <Info size={12} className="mt-0.5 shrink-0" />
+          <span>{info.note}</span>
+        </div>
+      )}
 
       {info.detail && (info.detail.sizeBytes !== undefined || info.detail.mtimeMs !== undefined) && (
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
@@ -1471,8 +1495,9 @@ const SystemStatusMonitor: React.FC<SystemStatusMonitorProps> = ({ canManage = f
                   <Info size={12} className="mt-0.5 shrink-0" />
                   <span>
                     探测只做 <span className="font-mono">stat + 权限检查</span>，不读取文件内容，也不改动共享上的任何文件。
-                    主机不可达时不再发起 UNC 调用（一次失败的 SMB stat 要等 Windows 自身 30 秒超时），
-                    改用 445/139 端口先做快速判定。
+                    445/139 端口只用来做快速判定：仅在<span className="font-bold">确认</span>主机不可达（且本机没有该共享的连接）时才跳过 UNC 调用
+                    （一次失败的 SMB stat 要等 Windows 自身 30 秒超时）；端口被本地防火墙拦成 <span className="font-mono">EACCES</span>
+                    或本机已有共享连接时，仍以真实访问结果为准，并在下方注明原因。
                   </span>
                 </div>
               </div>

@@ -3,6 +3,7 @@ import { axiosInstance } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Link } from 'react-router-dom';
 import { buildLoginUrl } from '../utils/redirect';
+import { MODAL_OVERLAY } from '../utils/modalStyles';
 import LogoutButton from '../components/LogoutButton';
 import { UserPlus, Trash2, Shield, User, Users, ChevronLeft, ChevronDown, AlertCircle, CheckCircle, RefreshCw, EyeOff, Eye, Key, Edit2, X, ToggleLeft, ToggleRight, Upload, Download, Settings, Search, Plus, MoreHorizontal, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
@@ -1184,7 +1185,7 @@ const Admin = () => {
       {resetPasswordUserId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div 
-            className="absolute inset-0 bg-black/40" 
+            className={MODAL_OVERLAY} 
             onClick={() => {
               if (resetPasswordSubmitting) return;
               setResetPasswordUserId(null);
@@ -1288,7 +1289,7 @@ const Admin = () => {
       {batchResetModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
-            className="absolute inset-0 bg-black/40"
+            className={MODAL_OVERLAY}
             onClick={closeBatchResetModal}
           />
           <div className="relative bg-white rounded-lg shadow-2xl w-[520px] max-w-[92vw] border border-gray-200 overflow-hidden">
@@ -1392,7 +1393,7 @@ const Admin = () => {
       {setRoleUserId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
-            className="absolute inset-0 bg-black/40"
+            className={MODAL_OVERLAY}
             onClick={() => {
               if (setRoleSubmitting) return;
               setSetRoleUserId(null);
@@ -1466,7 +1467,7 @@ const Admin = () => {
       {bulkImportType && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
-            className="absolute inset-0 bg-black/40"
+            className={MODAL_OVERLAY}
             onClick={() => {
               if (bulkImportSubmitting) return;
               setBulkImportType(null);
@@ -2059,7 +2060,7 @@ const Admin = () => {
         {drawerMode && (
           <div className="fixed inset-0 z-[55] flex justify-end">
             <div
-              className="absolute inset-0 bg-black/40"
+              className={MODAL_OVERLAY}
               onClick={() => { if (!bulkImportSubmitting) setDrawerMode(null); }}
             />
             <aside className="relative flex h-full w-full max-w-[440px] flex-col bg-white shadow-2xl">
@@ -2230,8 +2231,9 @@ const Admin = () => {
 
       {/* 禁用/启用确认弹窗（单个与批量通用，应用内居中，替代浏览器原生 confirm） */}
       {disableConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative w-full max-w-md overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
             <div className="flex items-start gap-3 px-6 py-5">
               <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${disableConfirm.disabled ? 'bg-amber-100' : 'bg-emerald-100'}`}>
                 {disableConfirm.disabled
@@ -2290,8 +2292,9 @@ const Admin = () => {
 
       {/* 删除确认弹窗（登录用户/设计人员共用，单个与批量通用，应用内居中，替代浏览器原生 confirm） */}
       {batchDeleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
             <div className="px-6 py-5 flex items-start gap-3">
               <div className="shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
                 <Trash2 size={20} className="text-red-600" />
@@ -2345,8 +2348,9 @@ const Admin = () => {
 
       {/* 初始化设计人员确认弹窗（应用内居中，替代浏览器原生 confirm） */}
       {confirmInitDesigners && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
             <div className="px-6 py-5 flex items-start gap-3">
               <div className="shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
                 <AlertCircle size={20} className="text-amber-600" />
@@ -2384,8 +2388,9 @@ const Admin = () => {
 
       {/* 初始化登录用户确认弹窗（应用内居中，替代浏览器原生 confirm） */}
       {confirmInitUsers && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
             <div className="px-6 py-5 flex items-start gap-3">
               <div className="shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
                 <AlertCircle size={20} className="text-amber-600" />
@@ -2423,8 +2428,9 @@ const Admin = () => {
 
       {/* 初始密码一次性展示弹窗（置于 main 外，避免 space-y-8 的 margin-top 使遮罩下移偏离视口中心） */}
       {initialCredentials.length > 0 && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className={MODAL_OVERLAY} />
+          <div className="relative bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-2xl max-h-[90vh] flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
