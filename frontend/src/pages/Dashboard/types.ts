@@ -85,6 +85,12 @@ export type BatchReplaceMatch = {
   date: string;
   itemId: string;
   taskName: string;
+  // 状态配色的原始字段（后端一并返回）：前端按 getTaskDisplayColors 同一套规则还原
+  // 单元格状态色（已完成白 / 加急黄 / 暂停红 / 请假出差固定色），用于结果行上的状态标记
+  color?: string;
+  urgent?: boolean;
+  paused?: boolean;
+  leaveType?: string | null;
   fields: { field: string; label: string; text: string; count: number }[];
 };
 

@@ -338,6 +338,12 @@ const findBatchReplaceMatches = (targetSheets, designers, findText) => {
             date,
             itemId: item.id,
             taskName: item.taskName || '',
+            // 状态标记用的配色字段：查找结果要显示与表格单元格一致的状态色，
+            // 前端拿这几个字段按 getTaskDisplayColors 同一套规则还原（已完成白 / 加急黄 / 暂停红 / 请假出差固定色）
+            color: item.color || '',
+            urgent: Boolean(item.urgent),
+            paused: Boolean(item.paused),
+            leaveType: item.leaveType || null,
             fields
           });
         }

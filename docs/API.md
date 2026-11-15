@@ -1170,6 +1170,10 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
       "date": "2026-07-01",
       "itemId": "task-1",
       "taskName": "设计计划 12345",
+      "color": "#fef9c3",
+      "urgent": false,
+      "paused": false,
+      "leaveType": null,
       "fields": [
         { "field": "taskName", "label": "任务名", "text": "设计计划 12345", "count": 1 },
         { "field": "gunName", "label": "枪名1", "text": "SRTC-2C00001", "count": 2 }
@@ -1189,6 +1193,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 返回匹配的任务条目列表及每个条目中的匹配字段详情。
 - `fields[].field` 为 `gunName` 时，`label` 格式为 `枪名N`（N 为枪名在条目内的序号，从 1 开始）。
 - 每条匹配包含 `designerId`、`date`、`itemId`，前端「查找」弹窗据此实现点击查找结果定位到底部表格中的目标任务。
+- 每条匹配还带 `color` / `urgent` / `paused` / `leaveType`（原样取自任务条目）。前端据此用与表格单元格**同一套规则**（`getTaskDisplayColors` / `getLeaveRowColors`）还原状态色，在结果行上显示状态色块：请假/出差固定色 > 暂停纯红 > 已完成白底 > 任务内容配色（加急为亮黄底 + 红字）。
 - `itemCount` 表示匹配的任务条目数，`matchCount` 表示总匹配次数。
 
 ### 批量替换执行

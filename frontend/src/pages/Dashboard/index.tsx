@@ -6,7 +6,7 @@ import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Check, ShieldCheck, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap, Wand2, Search, Loader2, Hash } from 'lucide-react';
+import { UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Check, ShieldCheck, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap, Wand2, Search, Loader2, Hash, CalendarDays } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
@@ -26,6 +26,7 @@ import {
   TASK_CONTENT_TYPES,
   TASK_TEXT_COLOR,
   TASK_URGENT_TEXT_COLOR,
+  type TaskColorConfig,
 } from '../../utils/taskColors';
 import {
     DndContext,
@@ -104,6 +105,64 @@ const findTaskNode = (designerId: string, date: string, itemId: string) => {
 };
 
 const taskLocateKey = (target: TaskLocateTarget) => `${target.designerId}|${target.date}|${target.itemId}`;
+
+// 日期短标签：2026-10-27 → 周二（查找弹窗的日期筛选器展示用）
+const weekDayLabel = (dateStr: string) => {
+  const [y, m, d] = String(dateStr || '').split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(y, m - 1, d).getDay()] || '';
+};
+
+// 请假/出差类型 → 中文标签（查找结果的状态标记用，文案与表格里的标记一致）
+const LEAVE_TYPE_LABELS: Record<string, string> = { sick: '事假', vacation: '休假', illness: '病假', trip: '出差' };
+// 状态标记的描边：白色（已完成）在白底上会看不见，统一用同一道淡描边保证任何底色都成块
+const STATUS_CHIP_BORDER = 'rgba(15, 23, 42, 0.18)';
+
+// 查找结果的完成状态筛选项：done = 已完成（白色标记），todo = 未完成
+type BatchCompletionFilter = 'done' | 'todo';
+const BATCH_COMPLETION_OPTIONS: { key: BatchCompletionFilter; label: string }[] = [
+  { key: 'done', label: '已完成' },
+  { key: 'todo', label: '未完成' },
+];
+// 完成状态判定：白色标记 = 已完成（与表格单元格、leaderboard 同一口径）
+const isBatchMatchCompleted = (match: BatchReplaceMatch) => isWhiteTaskColor(match.color);
+
+/**
+ * 查找结果的状态标记：口径与表格单元格完全一致（见 utils/taskColors）——
+ * 请假/出差固定色 > 暂停纯红 > 已完成白底 > 任务内容配色（加急另换亮黄底 + 红字）。
+ */
+const resolveBatchMatchStatus = (match: BatchReplaceMatch, colorConfig: TaskColorConfig) => {
+  const leaveColors = getLeaveRowColors(match.leaveType);
+  if (leaveColors) {
+    return {
+      bg: leaveColors.bg,
+      text: leaveColors.text || TASK_TEXT_COLOR,
+      label: LEAVE_TYPE_LABELS[String(match.leaveType)] || '请假',
+      urgent: false,
+    };
+  }
+  const display = getTaskDisplayColors(colorConfig, match);
+  if (display.paused) return { bg: display.bg, text: display.text, label: PAUSED_TASK_SUFFIX, urgent: false };
+  if (display.completed) return { bg: display.bg, text: display.text, label: '已完成', urgent: false };
+  if (display.urgent) return { bg: display.bg, text: display.text, label: '加急', urgent: true };
+  const typeLabel = TASK_CONTENT_TYPES.find(type => type.key === display.type)?.label;
+  return { bg: display.bg, text: display.text, label: typeLabel || '未标记', urgent: false };
+};
+
+// 查找结果行上的状态色块：底色/文字色直接取表格同一套配色，右侧跟一段中文状态标签
+const BatchMatchStatusChip = ({ match, colorConfig }: { match: BatchReplaceMatch; colorConfig: TaskColorConfig }) => {
+  const status = resolveBatchMatchStatus(match, colorConfig);
+  return (
+    <span
+      className="shrink-0 mt-[2px] inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded border text-[10px] font-bold leading-[15px] whitespace-nowrap"
+      style={{ backgroundColor: status.bg, color: status.text, borderColor: STATUS_CHIP_BORDER }}
+      title={`任务状态：${status.label}（底色与表格单元格一致）`}
+    >
+      {status.urgent && <Zap size={9} />}
+      {status.label}
+    </span>
+  );
+};
 
 // 主任务「任务内容」复选框对应的类型（6 个并列选项）：
 // 确认图 / 设计 / 确认图修改 按枪名规则取工时，且支持「任务加急」；
@@ -326,6 +385,176 @@ const Dashboard = () => {
   const [batchMatches, setBatchMatches] = useState<BatchReplaceMatch[]>([]);
   const [batchMatchCount, setBatchMatchCount] = useState(0);
   const [batchSearchDone, setBatchSearchDone] = useState(false);
+  // 查找结果的日期筛选（多选，空数组 = 全部日期）：与 /leaderboard「仕样进度管理」的日期筛选同口径，
+  // 只对已命中的结果做二次筛选，不改变查找范围，也不影响后端返回的命中数
+  const [batchDateFilters, setBatchDateFilters] = useState<string[]>([]);
+  const [batchDateOpen, setBatchDateOpen] = useState(false);
+  // 日历当前展示的月份（'YYYY-MM'），仅在日历刚展开时定位一次
+  const [batchCalendarMonth, setBatchCalendarMonth] = useState('');
+  const batchDateRef = useRef<HTMLDivElement | null>(null);
+  // 查找结果的完成状态筛选：已完成 / 未完成，默认两个都选（= 不过滤），至少保留一个
+  const [batchCompletionFilters, setBatchCompletionFilters] = useState<BatchCompletionFilter[]>(['done', 'todo']);
+
+  // ── 查找弹窗：按日期 / 完成状态二次筛选 ──────────────────────────
+  const showCompleted = batchCompletionFilters.includes('done');
+  const showTodo = batchCompletionFilters.includes('todo');
+  const hasBatchCompletionFilter = !(showCompleted && showTodo);
+
+  // 完成状态过滤后的结果：日历的「可选日期」与每日计数都以它为准（看不到的任务不占日期）
+  const batchStatusFilteredMatches = useMemo(
+    () => (hasBatchCompletionFilter
+      ? batchMatches.filter(match => (isBatchMatchCompleted(match) ? showCompleted : showTodo))
+      : batchMatches),
+    [batchMatches, hasBatchCompletionFilter, showCompleted, showTodo]
+  );
+
+  // 命中结果里实际出现的日期（升序）：日历只让「有任务的日期」可点，避免选出空结果
+  const batchResultDates = useMemo(
+    () => Array.from(new Set(batchStatusFilteredMatches.map(match => match.date).filter(Boolean))).sort(),
+    [batchStatusFilteredMatches]
+  );
+  // 每天的任务数（日历日期下方的小圆点与 tooltip 依据）
+  const batchDateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    batchStatusFilteredMatches.forEach(match => {
+      if (!match.date) return;
+      counts.set(match.date, (counts.get(match.date) || 0) + 1);
+    });
+    return counts;
+  }, [batchStatusFilteredMatches]);
+  // 结果覆盖的月份（升序）：限制日历翻月范围，翻不到没有任务的月份
+  const batchResultMonths = useMemo(
+    () => Array.from(new Set(batchResultDates.map(date => date.slice(0, 7)))).sort(),
+    [batchResultDates]
+  );
+  // 当前展示月份：优先用户翻到的月份，失效时回落到最早有任务的月份
+  const batchActiveMonth = batchResultMonths.includes(batchCalendarMonth)
+    ? batchCalendarMonth
+    : (batchResultMonths[0] || '');
+  const batchCalendarMonthIndex = batchResultMonths.indexOf(batchActiveMonth);
+  // 日期多选：已选日期集合（结果列表与日历单元格共用）
+  const batchSelectedDateSet = useMemo(() => new Set(batchDateFilters), [batchDateFilters]);
+  const hasBatchDateFilter = batchDateFilters.length > 0;
+
+  // 日历网格：周日开头
+  const batchCalendarCells = useMemo(() => {
+    const month = batchActiveMonth;
+    if (!month) return [] as ({ date: string; day: number; count: number } | null)[];
+    const [year, monthIndex] = month.split('-').map(Number);
+    const startPad = new Date(year, monthIndex - 1, 1).getDay();
+    const daysInMonth = new Date(year, monthIndex, 0).getDate();
+    const cells: ({ date: string; day: number; count: number } | null)[] = Array.from({ length: startPad }, () => null);
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const date = `${year}-${String(monthIndex).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      cells.push({ date, day, count: batchDateCounts.get(date) || 0 });
+    }
+    return cells;
+  }, [batchActiveMonth, batchDateCounts]);
+
+  // 切换某个日期的选中状态（多选，保持升序）
+  const toggleBatchDateFilter = useCallback((date: string) => {
+    setBatchDateFilters(prev => (
+      prev.includes(date) ? prev.filter(item => item !== date) : [...prev, date].sort()
+    ));
+  }, []);
+
+  // 结果集变化后剔除已无命中任务的已选日期（重新查找后旧日期不会残留成「筛掉全部结果」）；
+  // 结果被清空（改关键字/切范围会先清空结果）时保留已选日期，方便用户直接再查一次
+  useEffect(() => {
+    if (batchResultDates.length === 0) return;
+    setBatchDateFilters(prev => {
+      const next = prev.filter(date => batchResultDates.includes(date));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [batchResultDates]);
+
+  // 仅在「日历刚展开」时定位月份：多选过程中继续翻月不会被拉回已选日期所在月份
+  const batchDateWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (batchDateOpen && !batchDateWasOpenRef.current) {
+      const target = (batchDateFilters[0] || batchResultDates[0] || '').slice(0, 7);
+      setBatchCalendarMonth(target || batchResultMonths[0] || '');
+    }
+    batchDateWasOpenRef.current = batchDateOpen;
+  }, [batchDateOpen, batchDateFilters, batchResultDates, batchResultMonths]);
+
+  /**
+   * 日历的展开方向：默认朝下，下方放不下（弹窗被拖到窗口底部、或页面缩放过）就朝上。
+   * 弹窗本身不再裁剪溢出内容（见下面 batchFindFrameRef 的类名），但窗口边缘还是要避让：
+   * 日历高约 340px，量按钮的 rect 换算成「屏幕 px」判断剩余空间即可（与页面缩放无关）。
+   */
+  const BATCH_DATE_PANEL_HEIGHT = 340;
+  const [batchDatePlacement, setBatchDatePlacement] = useState<'down' | 'up'>('down');
+  useEffect(() => {
+    if (!batchDateOpen) return;
+    const measure = () => {
+      const rect = batchDateRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      setBatchDatePlacement(spaceBelow >= BATCH_DATE_PANEL_HEIGHT || spaceBelow >= spaceAbove ? 'down' : 'up');
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+    // 只按「展开 + 窗口尺寸变化」量一次：拖动弹窗时日历跟着按钮走（绝对定位），不需要重新判断
+  }, [batchDateOpen]);
+
+  // 点击日历外部收起（点弹窗遮罩、关闭按钮都不受影响）
+  useEffect(() => {
+    if (!batchDateOpen) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (batchDateRef.current && !batchDateRef.current.contains(event.target as Node)) {
+        setBatchDateOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, [batchDateOpen]);
+
+  // 关闭查找弹窗时收起日历，下次打开不带着上次的展开态
+  useEffect(() => {
+    if (!batchReplaceOpen) setBatchDateOpen(false);
+  }, [batchReplaceOpen]);
+
+  // 日期筛选后的可见结果：未选日期时就是完成状态过滤后的全部命中
+  const batchDateFilteredMatches = useMemo(
+    () => (batchDateFilters.length === 0
+      ? batchStatusFilteredMatches
+      : batchStatusFilteredMatches.filter(match => batchSelectedDateSet.has(match.date))),
+    [batchStatusFilteredMatches, batchDateFilters, batchSelectedDateSet]
+  );
+
+  // 切换完成状态：至少保留一个（点掉最后一个时给提示，不生效）
+  const toggleBatchCompletionFilter = (key: BatchCompletionFilter) => {
+    if (batchCompletionFilters.length === 1 && batchCompletionFilters.includes(key)) {
+      addToast('至少要保留「已完成」或「未完成」中的一个', 'error');
+      return;
+    }
+    setBatchCompletionFilters(prev => (
+      prev.includes(key) ? prev.filter(item => item !== key) : [...prev, key]
+    ));
+  };
+
+  // 是否有任何二次筛选（用于右侧统计文案与空态）
+  const hasBatchFilter = hasBatchDateFilter || hasBatchCompletionFilter;
+
+  // 筛选条件摘要：空态里告诉用户「命中了但为什么看不到」
+  const batchFilterSummary = [
+    hasBatchDateFilter ? `已选 ${batchDateFilters.length} 天` : null,
+    hasBatchCompletionFilter ? `只看${showCompleted ? '已完成' : '未完成'}` : null,
+  ].filter(Boolean).join(' · ');
+
+  // 筛选器文案：未选 → 按日期筛选；单选 → 日期 + 星期；多选 → 已选 N 天
+  const batchDateFilterLabel = batchDateFilters.length === 0
+    ? '按日期筛选'
+    : batchDateFilters.length === 1
+      ? `${batchDateFilters[0].slice(5)} ${weekDayLabel(batchDateFilters[0])}`
+      : `已选 ${batchDateFilters.length} 天`;
   // 顶部绿条（header）的实测高度：查找弹窗默认停靠在它下面，不遮挡月份切换与导航。
   // 用测量而不是写死像素，字号/缩放/换行变化时位置自动跟随。
   // 注意：组件首次挂载时处于 loading 态，header 还没渲染（见下方 early return），
@@ -2077,6 +2306,11 @@ const Dashboard = () => {
       if (e.key !== 'Escape') return;
 
       if (batchReplaceOpen) {
+        // 日期日历展开时，Esc 先收日历，再按一次才关弹窗
+        if (batchDateOpen) {
+          setBatchDateOpen(false);
+          return;
+        }
         setBatchReplaceOpen(false);
         return;
       }
@@ -2103,7 +2337,7 @@ const Dashboard = () => {
       window.removeEventListener('keydown', handleEsc);
     };
   }, [
-    batchReplaceOpen, modalOpen, modalDesignerId, modalDate, stopEditingCell,
+    batchReplaceOpen, batchDateOpen, modalOpen, modalDesignerId, modalDate, stopEditingCell,
     quickModifyOpen, quickGunTakeOpen, helpGuideOpen, changePasswordOpen, specSelfHealOpen,
   ]);
 
@@ -5928,12 +6162,12 @@ const Dashboard = () => {
               transform: 'translate3d(0px, 0px, 0)',
               maxHeight: findModalMaxHeight ?? undefined,
             }}
-            className="relative w-[680px] max-w-full max-h-[88vh] bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col"
+            className="relative w-[680px] max-w-full max-h-[88vh] bg-white rounded-xl shadow-2xl border border-gray-200 flex flex-col"
           >
             {/* 头部（按住可拖动窗口） */}
             <div
               {...batchFindHeaderProps}
-              className={`relative flex items-center justify-between gap-3 px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0 select-none touch-none ${batchFindDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+              className={`relative flex items-center justify-between gap-3 px-5 py-3.5 bg-gradient-to-r from-[#1c6638] via-[#217346] to-[#2a8a57] text-white shrink-0 select-none touch-none rounded-t-[11px] ${batchFindDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
             >
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-8 h-8 rounded-lg bg-white/15 border border-white/25 flex items-center justify-center shrink-0">
@@ -5991,34 +6225,260 @@ const Dashboard = () => {
                 </button>
               </div>
 
-              <div className="mt-2.5 flex items-center justify-between gap-3">
-                {/* 搜索范围：当前查看月份 / 全部月份 */}
-                <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 rounded-lg">
-                  {[
-                    { key: false, label: `当前月份（${format(currentDate, 'yyyy年MM月')}）` },
-                    { key: true, label: '全部月份' },
-                  ].map(option => (
-                    <button
-                      key={String(option.key)}
-                      type="button"
+              <div className="mt-2.5 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {/* 搜索范围：当前查看月份 / 全部月份 */}
+                  <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 rounded-lg shrink-0">
+                    {[
+                      { key: false, label: `当前月份（${format(currentDate, 'yyyy年MM月')}）` },
+                      { key: true, label: '全部月份' },
+                    ].map(option => (
+                      <button
+                        key={String(option.key)}
+                        type="button"
+                        onClick={() => {
+                          if (batchReplaceAllTable === option.key) return;
+                          setBatchReplaceAllTable(option.key);
+                          resetBatchSearchResults();
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
+                          batchReplaceAllTable === option.key
+                            ? 'bg-white text-[#217346] shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 结果日期筛选：多选日历，只对命中结果做二次筛选，不改变上面的查找范围 */}
+                  <div ref={batchDateRef} className="relative shrink-0">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-disabled={batchMatches.length === 0}
                       onClick={() => {
-                        if (batchReplaceAllTable === option.key) return;
-                        setBatchReplaceAllTable(option.key);
-                        resetBatchSearchResults();
+                        if (batchMatches.length === 0) return;
+                        setBatchDateOpen(open => !open);
                       }}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
-                        batchReplaceAllTable === option.key
-                          ? 'bg-white text-[#217346] shadow-sm'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        if (batchMatches.length === 0) return;
+                        setBatchDateOpen(open => !open);
+                      }}
+                      title={
+                        batchMatches.length === 0
+                          ? '先查找出结果，再按日期筛选'
+                          : '按日期筛选命中结果，支持多选（点击任意位置展开日历）'
+                      }
+                      className={`flex items-center gap-1.5 h-7 pl-2 pr-1.5 rounded-lg border-2 transition select-none outline-none ${
+                        batchMatches.length === 0
+                          ? 'border-gray-100 bg-gray-50 text-gray-300 cursor-not-allowed'
+                          : hasBatchDateFilter
+                            ? 'border-emerald-400 bg-emerald-50 cursor-pointer'
+                            : 'border-gray-200 bg-white hover:border-emerald-300 cursor-pointer'
+                      } ${batchDateOpen ? 'ring-2 ring-emerald-200 border-emerald-400' : ''}`}
                     >
-                      {option.label}
-                    </button>
-                  ))}
+                      <CalendarDays
+                        size={13}
+                        className={`shrink-0 ${
+                          batchMatches.length === 0
+                            ? 'text-gray-300'
+                            : hasBatchDateFilter || batchDateOpen ? 'text-emerald-600' : 'text-emerald-500'
+                        }`}
+                      />
+                      <span className={`text-[11px] font-bold whitespace-nowrap ${
+                        batchMatches.length === 0
+                          ? 'text-gray-300'
+                          : hasBatchDateFilter || batchDateOpen ? 'text-emerald-700' : 'text-gray-500'
+                      }`}>
+                        {batchDateFilterLabel}
+                      </span>
+                      {hasBatchDateFilter && (
+                        <>
+                          <span
+                            className="px-1 py-[1px] rounded bg-[#217346] text-white text-[10px] font-bold leading-none tabular-nums"
+                            title={`已选日期内共 ${batchDateFilteredMatches.length} 个任务`}
+                          >
+                            {batchDateFilteredMatches.length}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setBatchDateFilters([]);
+                            }}
+                            className="w-4 h-4 flex items-center justify-center rounded-full text-emerald-500 hover:bg-emerald-200/70 hover:text-emerald-700 transition"
+                            title="清除全部已选日期，显示全部命中任务"
+                          >
+                            <X size={11} />
+                          </button>
+                        </>
+                      )}
+                      <ChevronDown
+                        size={12}
+                        className={`shrink-0 text-gray-400 transition-transform ${batchDateOpen ? 'rotate-180' : ''}`}
+                      />
+                    </div>
+
+                    {batchDateOpen && (
+                      <div
+                        className={`absolute left-0 z-50 w-[252px] rounded-xl border border-gray-200 bg-white shadow-2xl p-2 ${
+                          batchDatePlacement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <button
+                            type="button"
+                            disabled={batchCalendarMonthIndex <= 0}
+                            onClick={() => setBatchCalendarMonth(batchResultMonths[batchCalendarMonthIndex - 1])}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-[#217346] transition disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                            title="上个月"
+                          >
+                            <ChevronLeft size={15} />
+                          </button>
+                          <span className="text-xs font-bold text-gray-700">
+                            {batchActiveMonth
+                              ? `${batchActiveMonth.slice(0, 4)} 年 ${Number(batchActiveMonth.slice(5, 7))} 月`
+                              : '无结果'}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={batchCalendarMonthIndex < 0 || batchCalendarMonthIndex >= batchResultMonths.length - 1}
+                            onClick={() => setBatchCalendarMonth(batchResultMonths[batchCalendarMonthIndex + 1])}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-[#217346] transition disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                            title="下个月"
+                          >
+                            <ChevronRight size={15} />
+                          </button>
+                        </div>
+
+                        {/* 已选日期：可逐个移除（日期可能跨月，故在此统一展示） */}
+                        {hasBatchDateFilter && (
+                          <div className="mb-1.5 flex flex-wrap gap-1 max-h-[60px] overflow-y-auto">
+                            {batchDateFilters.map(date => (
+                              <span
+                                key={`picked-${date}`}
+                                className="inline-flex items-center gap-0.5 pl-1.5 pr-0.5 py-0.5 rounded-md bg-[#217346] text-white text-[10px] font-bold leading-none"
+                              >
+                                {date.slice(5)} {weekDayLabel(date)}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleBatchDateFilter(date)}
+                                  className="w-4 h-4 flex items-center justify-center rounded-full hover:bg-white/25 transition"
+                                  title={`移除 ${date}`}
+                                >
+                                  <X size={10} />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-7 gap-0.5 mb-0.5">
+                          {['日', '一', '二', '三', '四', '五', '六'].map(week => (
+                            <span key={week} className="h-6 flex items-center justify-center text-[10px] font-bold text-gray-400">
+                              {week}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-7 gap-0.5">
+                          {batchCalendarCells.map((cell, cellIndex) => {
+                            if (!cell) return <span key={`blank-${cellIndex}`} />;
+                            const selected = batchSelectedDateSet.has(cell.date);
+                            const available = cell.count > 0;
+                            return (
+                              <button
+                                key={cell.date}
+                                type="button"
+                                disabled={!available}
+                                onClick={() => toggleBatchDateFilter(cell.date)}
+                                title={
+                                  available
+                                    ? `${cell.date} ${weekDayLabel(cell.date)}：${cell.count} 个任务（点击${selected ? '取消选择' : '加入选择'}）`
+                                    : `${cell.date} 无命中任务`
+                                }
+                                className={`relative h-8 rounded-lg text-xs transition ${
+                                  selected
+                                    ? 'bg-[#217346] text-white font-bold'
+                                    : available
+                                      ? 'text-emerald-700 font-bold hover:bg-emerald-100'
+                                      : 'text-gray-300 cursor-not-allowed'
+                                }`}
+                              >
+                                {cell.day}
+                                {available && !selected && (
+                                  <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-emerald-400"></span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <p className="mt-1.5 text-[10px] text-gray-400 leading-tight">可点击多个日期，再次点击取消</p>
+
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={!hasBatchDateFilter}
+                            onClick={() => setBatchDateFilters([])}
+                            className="flex-1 h-8 rounded-lg text-xs font-bold text-gray-600 bg-gray-50 hover:bg-emerald-50 hover:text-[#217346] transition disabled:opacity-40 disabled:hover:bg-gray-50 disabled:hover:text-gray-600 disabled:cursor-not-allowed"
+                          >
+                            全部日期
+                            <span className="ml-1 font-normal text-gray-400">共 {batchStatusFilteredMatches.length} 个</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBatchDateOpen(false)}
+                            className="h-8 px-3 rounded-lg text-xs font-bold text-white bg-[#217346] hover:bg-[#1b5f3a] transition"
+                          >
+                            完成
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 完成状态筛选：已完成 / 未完成，默认都选（= 不过滤），至少保留一个 */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    {BATCH_COMPLETION_OPTIONS.map(option => {
+                      const active = batchCompletionFilters.includes(option.key);
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          disabled={batchMatches.length === 0}
+                          onClick={() => toggleBatchCompletionFilter(option.key)}
+                          title={
+                            batchMatches.length === 0
+                              ? '先查找出结果，再按完成状态筛选'
+                              : active
+                                ? `正在显示${option.label}任务，点击隐藏（至少保留一个状态）`
+                                : `点击重新显示${option.label}任务`
+                          }
+                          className={`flex items-center gap-1 h-7 px-1.5 rounded-lg border-2 text-[11px] font-bold transition select-none ${
+                            batchMatches.length === 0
+                              ? 'border-gray-100 bg-gray-50 text-gray-300 cursor-not-allowed'
+                              : active
+                                ? 'border-emerald-400 bg-emerald-50 text-emerald-700 cursor-pointer'
+                                : 'border-gray-200 bg-white text-gray-400 cursor-pointer hover:border-emerald-300 hover:text-gray-500'
+                          }`}
+                        >
+                          {active && <Check size={11} className="shrink-0" />}
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-                <span className="text-[11px] text-gray-400 tabular-nums">
+
+                <span className="ml-auto min-w-0 truncate text-right text-[11px] text-gray-400 tabular-nums">
                   {batchSearchDone
-                    ? `命中 ${batchMatches.length} 个任务 · ${batchMatchCount} 处字符`
+                    ? (hasBatchFilter
+                        ? `筛选出 ${batchDateFilteredMatches.length} / ${batchMatches.length} 个`
+                        : `命中 ${batchMatches.length} 个任务 · ${batchMatchCount} 处字符`)
                     : '支持任务名与枪名，英文不区分大小写'}
                 </span>
               </div>
@@ -6047,9 +6507,29 @@ const Dashboard = () => {
                     换个关键字试试，或把范围切到「全部月份」
                   </p>
                 </div>
+              ) : batchDateFilteredMatches.length === 0 ? (
+                <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-8">
+                  <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center mb-3">
+                    <CalendarDays size={20} className="text-amber-500" />
+                  </div>
+                  <div className="text-[13px] font-bold text-gray-600">当前筛选条件下没有命中的任务</div>
+                  <p className="text-[11px] text-gray-400 mt-1.5">
+                    命中 {batchMatches.length} 个任务，但都不满足：{batchFilterSummary}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBatchDateFilters([]);
+                      setBatchCompletionFilters(['done', 'todo']);
+                    }}
+                    className="mt-3 h-8 px-3 rounded-lg text-[11px] font-bold text-[#217346] bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition"
+                  >
+                    清除筛选条件，看全部 {batchMatches.length} 个
+                  </button>
+                </div>
               ) : (
                 <div className="divide-y divide-gray-100">
-                  {batchMatches.map(match => (
+                  {batchDateFilteredMatches.map(match => (
                     <button
                       type="button"
                       key={`${match.designerId}-${match.date}-${match.itemId}`}
@@ -6059,8 +6539,12 @@ const Dashboard = () => {
                     >
                       <div className="flex items-start gap-3">
                         <div className="flex-1 min-w-0">
-                          <div className="text-[13px] font-bold text-gray-800 leading-snug break-all">
-                            {highlightMatch(match.taskName || '无任务名')}
+                          <div className="flex items-start gap-1.5">
+                            {/* 状态标记：底色与表格单元格一致（已完成白 / 加急黄 / 暂停红 / 请假出差固定色） */}
+                            <BatchMatchStatusChip match={match} colorConfig={systemSettings.taskColorConfig} />
+                            <div className="flex-1 min-w-0 text-[13px] font-bold text-gray-800 leading-snug break-all">
+                              {highlightMatch(match.taskName || '无任务名')}
+                            </div>
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5">
                             <span className="text-[11px] font-semibold text-gray-600">{match.designerName}</span>
@@ -6100,7 +6584,7 @@ const Dashboard = () => {
             </div>
 
             {/* 底部 */}
-            <div className="shrink-0 px-5 py-3 border-t border-gray-200 bg-white flex items-center justify-between gap-3">
+            <div className="shrink-0 px-5 py-3 border-t border-gray-200 bg-white rounded-b-[11px] flex items-center justify-between gap-3">
               <span className="text-[11px] text-gray-400 flex items-center gap-1.5 min-w-0">
                 <Crosshair size={12} className="shrink-0" />
                 <span className="truncate">点击结果定位到表格；弹窗保持打开，被定位的任务自动选中并滚动到视图中央</span>
