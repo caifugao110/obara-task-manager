@@ -119,6 +119,40 @@ function makeSpecMonthKeys(item) {
 const FACTORY_DEFAULT_SHEET = { 'O/NJG': '南京焊钳', 'O/SHA': '上海焊钳' };
 const getItemSheetName = (item) => (item && item.sheetName) || FACTORY_DEFAULT_SHEET[item && item.factory] || '';
 
+// 表头列筛选里「该字段为空」的占位值，与前端 EMPTY_FILTER_VALUE 保持一致
+const EMPTY_COLUMN_FILTER_VALUE = '__EMPTY__';
+const COLUMN_FILTER_FIELDS = {
+  factory: 'factory',
+  clientName: 'clientName',
+  deliveryDate: 'deliveryDate',
+  salesPerson: 'salesPerson',
+  leader: 'leader'
+};
+
+// 前端把各列已选值以 JSON 传入（{ 列名: 值数组 }），空数组/缺省表示该列不过滤
+function applyColumnFilters(items, columnFiltersJson) {
+  if (!columnFiltersJson) return items;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(columnFiltersJson);
+  } catch (err) {
+    return items;
+  }
+  if (!parsed || typeof parsed !== 'object') return items;
+
+  let result = items;
+  Object.entries(COLUMN_FILTER_FIELDS).forEach(([key, field]) => {
+    const selected = Array.isArray(parsed[key]) ? parsed[key].map(value => String(value)) : [];
+    if (!selected.length) return;
+    const allowed = new Set(selected);
+    result = result.filter(item => {
+      const value = String(item[field] || '').trim() || EMPTY_COLUMN_FILTER_VALUE;
+      return allowed.has(value);
+    });
+  });
+  return result;
+}
+
 router.get('/items', [authMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
   const data = db.readDb();
   const items = (data.statusTrackingItems || []).map(withDynamicDesignDeliveryDays);
@@ -348,15 +382,20 @@ router.post('/sync-schedule', [authMiddleware, adminMiddleware, scheduleSyncPerm
     emitStatusTrackingBulk(io, (data.statusTrackingItems || []).map(withDynamicDesignDeliveryDays));
   }
 
+  const parts = [`新增 ${stats.added} 条`, `更新 ${stats.updated} 条`];
+  if (stats.moved) parts.push(`顺延旧行 ${stats.moved} 条`);
+  if (stats.cleanupRemoved) parts.push(`清理重复行 ${stats.cleanupRemoved} 条`);
+  parts.push(`补全营业担当 ${stats.salesFilled} 条`);
+
   res.json({
     success: true,
     ...stats,
-    message: `同步完成：新增 ${stats.added} 条，更新 ${stats.updated} 条，补全营业担当 ${stats.salesFilled} 条`
+    message: `同步完成：${parts.join('，')}`
   });
 }));
 
 router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware('statusTracking')], asyncHandler(async (req, res) => {
-  const { deliveryMonth, factory, sheetName, searchTerm, fullTableSearch, showOutdatedDelivery } = req.query;
+  const { deliveryMonth, factory, sheetName, searchTerm, fullTableSearch, showOutdatedDelivery, columnFilters } = req.query;
 
   const data = db.readDb();
   const items = data.statusTrackingItems || [];
@@ -401,6 +440,9 @@ router.get('/export', [authMiddleware, adminMiddleware, accessSettingsMiddleware
     );
   }
   
+  // 表头列筛选（工厂/客户/纳期/营业担当/组长）：让「导出显示结果」与页面显示一致
+  filteredItems = applyColumnFilters(filteredItems, columnFilters);
+
   if (filteredItems.length === 0) {
     return res.status(404).json({ message: '没有可导出的数据' });
   }

@@ -313,3 +313,186 @@ test('老记录没有 sheetName → 同步时补上表名（用于按表筛选�
   assert.strictEqual(changes[0].fields.factory, 'O/NJG');
   assert.strictEqual(changes[0].fields.salesPerson, '茅舒');
 });
+
+// ─── 跨月份认领 + 旧月份遗留行清理 ───────────────────────────────────────────
+// 现场问题：大日程按月份块组织，订单改期后会从 11 月块挪到 12 月块。
+// 若只按「仕样号 + 月份」判等，每次挪动都会新增一行、旧行永远留在原月份，
+// 页面上就会出现两行一模一样（同仕样号、同纳期、同数量）的记录。
+
+test('同仕样号同纳期的旧月份记录 → 顺延到新月份，不再新增重复行', () => {
+  const items = [{
+    id: 'old',
+    specNumber: '58073',
+    productionPlanMonths: ['2026-09'],
+    factory: 'O/SHA',
+    sheetName: '上海焊钳',
+    clientName: '58073>旧客户名',
+    quantity: '12',
+    deliveryDate: '2026-11-05',
+    shippedCount: 12,
+    salesPerson: '吴露鹭',
+    leader: '张明'
+  }];
+  const { changes, stats, cleanup } = buildScheduleSyncPlan({
+    entries: [entry({ specNumber: '58073', factory: 'O/SHA', month: '2026-11', quantity: '12', deliveryDate: '2026-11-05', shippedCount: 12 })],
+    items,
+    specDigits: 5
+  });
+  assert.strictEqual(stats.added, 0);
+  assert.strictEqual(stats.updated, 1);
+  assert.strictEqual(stats.moved, 1);
+  assert.strictEqual(changes[0].action, 'update');
+  assert.strictEqual(changes[0].itemId, 'old');
+  assert.strictEqual(changes[0].moveMonth, true);
+  // 认领过的记录不能再当遗留行清掉
+  assert.strictEqual(cleanup.removals.length, 0);
+});
+
+test('纳期也变了的旧记录不认领（保守策略）→ 新增一行，旧行进入清理计划', () => {
+  const items = [{
+    id: 'old',
+    specNumber: '58073',
+    productionPlanMonths: ['2026-09'],
+    quantity: '12',
+    deliveryDate: '2026-11-05',
+    salesPerson: '吴露鹭'
+  }];
+  const { changes, stats, cleanup } = buildScheduleSyncPlan({
+    entries: [entry({ specNumber: '58073', month: '2026-11', quantity: '12', deliveryDate: '2026-11-20' })],
+    items,
+    specDigits: 5
+  });
+  assert.strictEqual(stats.added, 1);
+  assert.strictEqual(stats.moved, 0);
+  // 旧行已被新月份记录取代，同仕样号仍在表里 → 清理
+  assert.strictEqual(cleanup.removals.length, 1);
+  assert.strictEqual(cleanup.removals[0].id, 'old');
+  assert.deepStrictEqual(cleanup.removals[0].months, ['2026-09']);
+  assert.strictEqual(changes[0].action, 'add');
+});
+
+test('清理遗留行时把旧行的人工字段并到保留行', () => {
+  const items = [
+    {
+      id: 'live',
+      specNumber: '57639',
+      productionPlanMonths: ['2026-11'],
+      quantity: '21',
+      deliveryDate: '2026-11-16',
+      shippedCount: 21,
+      salesPerson: '',
+      leader: '',
+      confirmedQuantity: 0,
+      feedbackPlan: ''
+    },
+    {
+      id: 'stale',
+      specNumber: '57639',
+      productionPlanMonths: ['2026-10'],
+      quantity: '21',
+      deliveryDate: '2026-11-16',
+      shippedCount: 0,
+      salesPerson: '许华俊',
+      leader: '张明',
+      confirmedQuantity: 5,
+      feedbackPlan: '3号反馈'
+    }
+  ];
+  const { cleanup } = buildScheduleSyncPlan({
+    entries: [entry({ specNumber: '57639', month: '2026-11', quantity: '21', deliveryDate: '2026-11-16', shippedCount: 21 })],
+    items,
+    specDigits: 5
+  });
+  assert.strictEqual(cleanup.removals.length, 1);
+  assert.strictEqual(cleanup.removals[0].id, 'stale');
+  const merge = cleanup.merges.find(m => m.fromId === 'stale');
+  assert.ok(merge, '应生成从旧行到保留行的字段合并');
+  assert.strictEqual(merge.targetId, 'live');
+  assert.strictEqual(merge.fields.salesPerson, '许华俊');
+  assert.strictEqual(merge.fields.leader, '张明');
+  assert.strictEqual(merge.fields.confirmedQuantity, 5);
+  assert.strictEqual(merge.fields.feedbackPlan, '3号反馈');
+});
+
+test('保留行已有的人工字段不会被旧行覆盖', () => {
+  const items = [
+    { id: 'live', specNumber: '58073', productionPlanMonths: ['2026-11'], quantity: '12', deliveryDate: '2026-11-05', salesPerson: '吴露鹭', confirmedQuantity: 8 },
+    { id: 'stale', specNumber: '58073', productionPlanMonths: ['2026-09'], quantity: '12', deliveryDate: '2026-11-05', salesPerson: '别人', confirmedQuantity: 3 }
+  ];
+  const { cleanup } = buildScheduleSyncPlan({
+    entries: [entry({ specNumber: '58073', month: '2026-11', quantity: '12', deliveryDate: '2026-11-05' })],
+    items,
+    specDigits: 5
+  });
+  assert.strictEqual(cleanup.removals.length, 1);
+  const merge = cleanup.merges.find(m => m.fromId === 'stale');
+  // 保留行已有值，不做任何合并
+  assert.strictEqual(merge, undefined);
+});
+
+test('仕样号已完全不在大日程里 → 遗留行保留（历史数据，不清）', () => {
+  const items = [
+    { id: 'a1', specNumber: '57419', productionPlanMonths: ['2026-07'], quantity: '7', deliveryDate: '2026-08-18', salesPerson: '旧担当' },
+    { id: 'a2', specNumber: '57419', productionPlanMonths: ['2026-08'], quantity: '7', deliveryDate: '2026-08-18' }
+  ];
+  const { cleanup, stats } = buildScheduleSyncPlan({
+    entries: [entry({ specNumber: '58249', month: '2026-11' })],
+    items,
+    specDigits: 5
+  });
+  assert.strictEqual(cleanup.removals.length, 0);
+  assert.strictEqual(cleanup.merges.length, 0);
+  assert.strictEqual(stats.cleanupRemoved, 0);
+});
+
+test('本次新增行的仕样号有旧行时，旧行人工字段并到新行（targetKey 定位）', () => {
+  const items = [{
+    id: 'old',
+    specNumber: '58249',
+    productionPlanMonths: ['2026-09'],
+    quantity: '8',
+    deliveryDate: '2026-09-30',
+    salesPerson: '许华俊',
+    leader: '张明'
+  }];
+  const { changes, cleanup } = buildScheduleSyncPlan({
+    entries: [entry({ month: '2026-11', deliveryDate: '2026-11-02' })],
+    items,
+    specDigits: 5
+  });
+  assert.strictEqual(changes[0].action, 'add');
+  assert.strictEqual(cleanup.removals.length, 1);
+  assert.strictEqual(cleanup.removals[0].id, 'old');
+  const merge = cleanup.merges.find(m => m.fromId === 'old');
+  assert.ok(merge, '应生成到新增行的字段合并');
+  assert.strictEqual(merge.targetKey, '58249__2026-11');
+  assert.strictEqual(merge.fields.salesPerson, '许华俊');
+});
+
+test('保留行被行锁占用时遗留行先留着（人工字段没地方并）', () => {
+  const items = [
+    { id: 'live', specNumber: '58073', productionPlanMonths: ['2026-11'], quantity: '12', deliveryDate: '2026-11-05', salesPerson: '' },
+    { id: 'stale', specNumber: '58073', productionPlanMonths: ['2026-09'], quantity: '12', deliveryDate: '2026-11-05', salesPerson: '吴露鹭' }
+  ];
+  const { cleanup } = buildScheduleSyncPlan({
+    entries: [entry({ specNumber: '58073', month: '2026-11', quantity: '12', deliveryDate: '2026-11-05' })],
+    items,
+    specDigits: 5,
+    isLocked: itemId => itemId === 'live'
+  });
+  assert.strictEqual(cleanup.removals.length, 0);
+});
+
+test('行锁中的遗留行不清（等下次同步再处理）', () => {
+  const items = [
+    { id: 'live', specNumber: '58073', productionPlanMonths: ['2026-11'], quantity: '12', deliveryDate: '2026-11-05' },
+    { id: 'stale', specNumber: '58073', productionPlanMonths: ['2026-09'], quantity: '12', deliveryDate: '2026-11-05' }
+  ];
+  const { cleanup } = buildScheduleSyncPlan({
+    entries: [entry({ specNumber: '58073', month: '2026-11', quantity: '12', deliveryDate: '2026-11-05' })],
+    items,
+    specDigits: 5,
+    isLocked: itemId => itemId === 'stale'
+  });
+  assert.strictEqual(cleanup.removals.length, 0);
+});

@@ -1724,6 +1724,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `skipped` | 不符合有效仕样号条件被忽略的行数 |
 | `salesFilled` | 本次会自动补全营业担当的条数 |
 | `leaderFilled` | 本次会自动补全组长的条数 |
+| `moved` | 本次按「仕样号 + 纳期」认领、把旧月份记录顺延到本次月份的条数（已计入 `updated`，不新增行） |
+| `cleanupRemoved` | 本次将清理的「旧月份遗留行」条数（同仕样号已有新月份记录，人工字段先并过去再删除） |
 
 读取失败（如共享目录不可访问、文件被 Excel 独占）时返回 `503`：
 
@@ -1752,7 +1754,11 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 
 按预览结果落库：新增记录写入 `factory`、`sheetName`（来源工作表）、`clientName`、`specNumber`、`productionPlanMonths`、`quantity`、`deliveryDate`、`shippedCount`；已有记录只覆盖这些来源字段（`sheetName` 同时用于补齐历史记录），`salesPerson`、`leader`、确认类等人工维护字段保留。营业担当只在原记录为空时补全（取自仕样书），组长由 `leaderRules` 按营业担当推出、同样只补空值，人工改过的值不会被覆盖。表格的客户或纳期为空时保留原值，不会被清空。被他人锁定（行锁）的记录跳过。
 
-成功后广播 `status_tracking_bulk` 事件，响应中包含 `message` 与上述统计字段。同一份文件重复执行结果幂等（第二次 `added`、`updated` 均为 0）。
+月份顺延（去重）：大日程按月份块组织，订单改期后会从 11 月块挪到 12 月块。若只按「仕样号 + 月份」判等，每次挪动都会新增一行、旧行留在原月份，页面上就会出现两行一模一样（同仕样号、同纳期、同数量）的记录。因此新条目在「仕样号 + 月份」上找不到记录时，会先找同仕样号、同纳期、且月份已不在本次大日程里的旧记录，命中就把那条记录顺延到本次月份（计入 `updated` 与 `moved`），不再插入新行。
+
+旧月份遗留行清理：同仕样号仍在大日程里出现、但某条记录的所有月份都已不在本次大日程里的，视为被新月份记录取代，先把它的人工字段（营业担当、组长、反馈计划、下图计划及状态、反馈种数、确认数量/种数、下图种数）并到月份最接近的现行记录上，再删除该行（计入 `cleanupRemoved`）。仕样号已完全不在大日程里的记录不动——那是历史数据，没有现行记录可对照。行锁中的记录跳过，等下次同步再处理。
+
+成功后广播 `status_tracking_bulk` 事件，响应中包含 `message` 与上述统计字段。同一份文件重复执行结果幂等（第二次 `added`、`updated`、`moved`、`cleanupRemoved` 均为 0）。
 
 ### 导出状态跟踪表
 
@@ -1771,6 +1777,7 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 | `searchTerm` | 否 | 搜索关键词，匹配客户名、仕样号、营业担当、组长 |
 | `fullTableSearch` | 否 | 是否全表搜索，`true` 时忽略 `deliveryMonth` 参数 |
 | `showOutdatedDelivery` | 否 | 仅在 `fullTableSearch=true` 时生效。默认 `false`：**剔除设计纳期已过期或缺失的记录**（`designDeliveryDays < 1`，即纳期早于今天或 `deliveryDate` 为空）；传 `true` 才导出全部记录 |
+| `columnFilters` | 否 | 表头列筛选，JSON 字符串：`{"factory":["O/NJG"],"clientName":["..."],"deliveryDate":["2026-11-16"],"salesPerson":["..."],"leader":["..."]}`。各键的值为该列已选中的值数组，空数组或缺省表示该列不过滤；值为 `__EMPTY__` 代表该字段为空。用于让「导出显示结果」与页面所见一致 |
 
 响应：`.xls` 文件流，文件名格式为 `status-tracking-YYYYMMDDHHmmss.xls`。
 

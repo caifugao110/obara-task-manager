@@ -106,6 +106,7 @@ async function buildSyncPlan({ isLocked } = {}) {
     data,
     entries,
     changes: final.changes,
+    cleanup: final.cleanup,
     stats: {
       ...final.stats,
       salesLookup: {
@@ -162,13 +163,17 @@ const buildNewItem = (change, nowIso) => {
  *   - 营业担当/组长写库前再判一次空值，避免覆盖这几秒内人工输入的值；
  *   - 行锁再判一次，跳过正在被编辑的行。
  *
+ * 落库顺序：合并旧行人工字段 → 应用变更（含月份顺延）→ 删除旧月份遗留行。
+ * 先合并再变更，是为了让变更里「营业担当只在原值为空时补」的判断看到并过来的值。
+ *
  * @param {{ isLocked?: (itemId: string) => boolean }} [options]
  */
 async function applySyncPlan({ isLocked } = {}) {
   const plan = await buildSyncPlan({ isLocked });
   const { changes, stats } = plan;
+  const cleanup = plan.cleanup || { merges: [], removals: [] };
 
-  if (!stats.added && !stats.updated) {
+  if (!stats.added && !stats.updated && cleanup.removals.length === 0) {
     return { ...plan, applied: false };
   }
 
@@ -197,6 +202,20 @@ async function applySyncPlan({ isLocked } = {}) {
     if (leader && !String(target.leader || '').trim()) target.leader = leader;
   };
 
+  // ① 旧月份遗留行里的人工字段并到保留行
+  //    targetId 的合并现在就能做；targetKey 指向本次新增的行，要等它落库后再合并（见 ③）
+  const mergeByKey = [];
+  cleanup.merges.forEach((merge) => {
+    if (merge.targetKey) {
+      mergeByKey.push(merge);
+      return;
+    }
+    const target = byId.get(merge.targetId);
+    if (!target || lockedCheck(target.id)) return;
+    Object.assign(target, merge.fields, { updatedAt: nowIso });
+  });
+
+  // ② 应用新增/更新；moveMonth 的变更还要把月份顺延到本次月份
   for (const change of changes) {
     if (change.action !== 'add' && change.action !== 'update') continue;
     const key = makeSpecMonthKey(change.specNumber, change.month);
@@ -219,6 +238,35 @@ async function applySyncPlan({ isLocked } = {}) {
     if (!target) continue;
     if (lockedCheck(target.id)) continue;
     applyFields(target, change.fields);
+    if (change.moveMonth && change.month) {
+      getItemPlanMonths(target).forEach(month => {
+        const oldKey = makeSpecMonthKey(target.specNumber, month);
+        if (byKey.get(oldKey) === target) byKey.delete(oldKey);
+      });
+      target.productionPlanMonth = change.month;
+      target.productionPlanMonths = [change.month];
+      byKey.set(makeSpecMonthKey(target.specNumber, change.month), target);
+    }
+  }
+
+  // ③ 本次新增的行落库后再合并旧行的人工字段（targetKey 用「仕样号__月份」定位）
+  mergeByKey.forEach((merge) => {
+    const target = byKey.get(merge.targetKey);
+    if (!target || lockedCheck(target.id)) return;
+    Object.assign(target, merge.fields, { updatedAt: nowIso });
+  });
+
+  // ④ 删除不在本次大日程里的记录（旧月份遗留行 + 历史订单行；行锁中的跳过，等下次同步再清）
+  if (cleanup.removals.length) {
+    const removedIds = new Set();
+    cleanup.removals.forEach((removal) => {
+      if (lockedCheck(removal.id)) return;
+      removedIds.add(removal.id);
+    });
+    if (removedIds.size) {
+      data.statusTrackingItems = data.statusTrackingItems.filter(item => !removedIds.has(item.id));
+      removedIds.forEach(id => byId.delete(id));
+    }
   }
 
   await db.writeDb(data);

@@ -16,8 +16,6 @@ import {
   UserPlus,
   Users,
   ChevronDown,
-  Lock,
-  AlertTriangle,
   Download,
   Eye,
   RotateCcw,
@@ -30,6 +28,8 @@ import { useAuth } from '../context/AuthContext';
 import { axiosInstance } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import LogoutButton from '../components/LogoutButton';
+import ColumnFilterDropdown from '../components/ColumnFilterDropdown';
+import type { ColumnFilterOption } from '../components/ColumnFilterDropdown';
 import { acquireSocket, getCurrentSocketId } from '../utils/socketClient';
 import { MODAL_OVERLAY } from '../utils/modalStyles';
 
@@ -67,24 +67,6 @@ interface Toast {
   id: number;
 }
 
-interface SpecInfoResponse {
-  success: boolean;
-  message?: string;
-  specNumber?: string;
-  clientName?: string;
-  middleMan?: string;
-  finalClient?: string;
-  projectName?: string;
-  quantity?: string;
-  deliveryDate?: string;
-  salesPerson?: string;
-  factory?: string;
-  shippedCount?: number | null;
-  /** 命中的工作表名，用于按表筛选 */
-  scheduleSheet?: string;
-  scheduleMonth?: string;
-}
-
 interface LeaderRule {
   leader: string;
   members: string[];
@@ -104,6 +86,10 @@ interface ScheduleSyncStats {
   leaderFilled?: number;
   /** 仕样书里也拿不到营业担当的记录数 */
   salesMissing?: number;
+  /** 本次按「仕样号+纳期」认领、把旧月份记录顺延到新月份的条数（已计入 updated） */
+  moved?: number;
+  /** 本次将清理的「旧月份遗留行」条数（同仕样号已被新月份记录取代） */
+  cleanupRemoved?: number;
   salesLookup?: {
     specs: number;
     resolved: number;
@@ -239,17 +225,6 @@ const getCurrentMonthValue = (): string => {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 };
 
-const getItemPlanMonths = (item: StatusItem): string[] => {
-  const months = Array.isArray(item.productionPlanMonths)
-    ? item.productionPlanMonths.filter(Boolean)
-    : [];
-  if (months.length > 0) {
-    return Array.from(new Set(months)).sort();
-  }
-  const fallbackMonth = item.productionPlanMonth || item.deliveryDate?.substring(0, 7) || '';
-  return fallbackMonth ? [fallbackMonth] : [];
-};
-
 const generateDeliveryMonthOptions = (items: StatusItem[]) => {
   const monthSet = new Set<string>();
 
@@ -300,15 +275,59 @@ const resolveScrollContainer = (
   return preferred;
 };
 
+// ── 表头列筛选（工厂 / 客户 / 纳期 / 营业担当 / 组长）──────────────────────────
+// 只做「值多选」。多列可叠加，且是级联的：勾了一列之后，其他列的选项只在剩下的记录里统计。
+type ColumnFilterKey = 'factory' | 'clientName' | 'deliveryDate' | 'salesPerson' | 'leader';
+
+/** 空值（营业担当未设置、无纳期等）在筛选面板里的占位值，避免和空字符串混淆 */
+const EMPTY_FILTER_VALUE = '__EMPTY__';
+const EMPTY_FILTER_LABEL = '（空）';
+
+const emptyColumnFilters: Record<ColumnFilterKey, string[]> = {
+  factory: [],
+  clientName: [],
+  deliveryDate: [],
+  salesPerson: [],
+  leader: []
+};
+
+const getColumnFilterRawValue = (item: StatusItem, key: ColumnFilterKey): string => {
+  const raw = key === 'factory'
+    ? item.factory
+    : key === 'clientName'
+      ? item.clientName
+      : key === 'deliveryDate'
+        ? item.deliveryDate
+        : key === 'salesPerson'
+          ? item.salesPerson
+          : item.leader;
+  return (raw || '').trim();
+};
+
+const getColumnFilterValue = (item: StatusItem, key: ColumnFilterKey): string =>
+  getColumnFilterRawValue(item, key) || EMPTY_FILTER_VALUE;
+
 const StatusTracking = () => {
   const { user, token, logout } = useAuth();
   const [settings, setSettings] = useState(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [allItems, setAllItems] = useState<StatusItem[]>([]);
-  const [updatingItemId, setUpdatingItemId] = useState<string | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  // 全表搜索：默认开启。勾选后只要输入了搜索词就不受「纳期月份」限制，
+  // 可以把其他月份的匹配记录一并搜出来（对齐排行榜页的同一开关）。
+  const [fullTableSearch, setFullTableSearch] = useState(true);
+  // 表头列筛选：值为空数组表示该列不过滤
+  const [columnFilters, setColumnFilters] = useState<Record<ColumnFilterKey, string[]>>(emptyColumnFilters);
+  // 勾了「全表搜索」并且正在搜索时，纳期月份不再参与过滤（列表与导出用同一判断）
+  const monthFilterBypassed = fullTableSearch && Boolean(searchTerm.trim());
+  const updateColumnFilter = useCallback((key: ColumnFilterKey, next: string[]) => {
+    setColumnFilters(prev => ({ ...prev, [key]: next }));
+  }, []);
+  const hasColumnFilter = useMemo(
+    () => (Object.keys(columnFilters) as ColumnFilterKey[]).some(key => columnFilters[key].length > 0),
+    [columnFilters]
+  );
   const [leaderRules, setLeaderRules] = useState<LeaderRule[]>(defaultLeaderRules);
   const [factoryRulesConfig, setFactoryRulesConfig] = useState<FactoryRulesConfig>(defaultFactoryRulesConfig);
   const [showLeaderRulesModal, setShowLeaderRulesModal] = useState(false);
@@ -631,10 +650,6 @@ const StatusTracking = () => {
     }
   }, [token, commitItems]);
 
-  const saveItems = useCallback((newItems: StatusItem[]) => {
-    commitItems(newItems);
-  }, [commitItems]);
-
   // 写接口带上当前连接 id：服务端据此判断行锁是否属于本窗口，
   // 避免同一账号的另一个窗口绕过前端锁定，改动别人正在编辑的行。
   const writeAuthHeader = useCallback(() => {
@@ -782,141 +797,6 @@ const StatusTracking = () => {
     });
   }, [applyItemPatch, isOffline, isAdmin]);
 
-  const deleteItem = useCallback(async (id: string) => {
-    if (!isAdmin) {
-      addToast('无权限删除记录', 'error');
-      return;
-    }
-    if (isOffline) {
-      addToast('当前离线，禁止编辑', 'error');
-      return;
-    }
-    const updated = itemsRef.current.filter(item => item.id !== id);
-    // 该行可能还有没来得及落库的输入，删掉时一并丢弃
-    const timer = saveTimerRef.current.get(id);
-    if (timer) {
-      clearTimeout(timer);
-      saveTimerRef.current.delete(id);
-    }
-    pendingSaveRef.current.delete(id);
-    saveItems(updated);
-    
-    if (!token) {
-      addToast('删除服务器记录失败，已重新加载服务器数据', 'error');
-      loadItems();
-      return;
-    }
-
-    try {
-      const authHeader = writeAuthHeader();
-      await axios.delete(`/api/status-tracking/items/${id}`, authHeader);
-    } catch (err) {
-      console.error('Error deleting item:', err);
-      addToast('删除服务器记录失败，已重新加载服务器数据', 'error');
-      loadItems();
-      return;
-    }
-    
-    addToast('记录已删除', 'success');
-  }, [token, isAdmin, saveItems, isOffline, loadItems, writeAuthHeader]);
-
-  const updateItemInfo = useCallback(async (id: string) => {
-    if (!isAdmin) {
-      addToast('无权限更新记录', 'error');
-      return;
-    }
-    if (isOffline) {
-      addToast('当前离线，禁止编辑', 'error');
-      return;
-    }
-    const item = itemsRef.current.find(i => i.id === id);
-    if (!item || !item.specNumber) {
-      addToast('无法更新，缺少仕样号', 'error');
-      return;
-    }
-
-    setUpdatingItemId(id);
-    try {
-      const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
-      // 传入该行的添加时间月份，让后端取「各产品大日程」对应月份块的数据。
-      // includeSchedule 必须显式声明：大日程（\\192.168.160.70）只有本页需要，
-      // 后端默认不查，否则那台服务器一挂，主页面/台账/快速取号的仕样号查询会被一起拖死
-      const planMonths = getItemPlanMonths(item);
-      const currentMonthValue = getCurrentMonthValue();
-      const preferredMonth = planMonths.includes(currentMonthValue) ? currentMonthValue : (planMonths[0] || '');
-      const res = await axios.post('/api/spec/spec-info', {
-        specNumber: item.specNumber,
-        productionPlanMonth: preferredMonth,
-        includeSchedule: true
-      }, { ...authHeader, timeout: 15000 });
-
-      if (!res.data.success) {
-        addToast(res.data.message || '获取仕样信息失败', 'error');
-        return;
-      }
-
-      // 大日程没取到（共享不可达，后端 3 秒内放弃）：本次数量/纳期来自仕样书，
-      // 工厂与已发图保持原值，必须让用户知道，否则会被当成数据同步失败
-      if (res.data.scheduleUnavailable) {
-        addToast('生产大日程共享暂不可用，本次数量/纳期取自仕样书', 'error');
-      }
-
-      const specInfo: SpecInfoResponse = res.data;
-      const effectiveDeliveryDate = specInfo.deliveryDate || item.deliveryDate;
-      const designDeliveryDays = effectiveDeliveryDate ? calculateDesignDeliveryDays(effectiveDeliveryDate) : 0;
-      const leader = specInfo.salesPerson ? getLeaderBySalesPerson(specInfo.salesPerson, leaderRules) : item.leader;
-      // 大日程工作表命中的工厂优先，其次按营业担当规则，最后保留原值
-      const factory = specInfo.factory
-        || (specInfo.salesPerson ? getFactoryBySalesPerson(specInfo.salesPerson, factoryRulesConfig) : item.factory);
-      const matchedSchedule = Boolean(specInfo.scheduleMonth);
-
-      let updatedItem: StatusItem | null = null;
-      // 以当前本地镜像为基准：await 期间用户可能又改了别的单元格
-      const updated = itemsRef.current.map(i => {
-        if (i.id === id) {
-          updatedItem = {
-            ...i,
-            clientName: specInfo.clientName || i.clientName,
-            quantity: specInfo.quantity || i.quantity,
-            deliveryDate: effectiveDeliveryDate,
-            designDeliveryDays,
-            salesPerson: specInfo.salesPerson || i.salesPerson,
-            leader,
-            factory,
-            // 命中大日程时更新「来自哪张表」，未命中保留原值
-            sheetName: specInfo.scheduleSheet || i.sheetName,
-            // 命中大日程时已发图以表格为准（表格为空则显示空），未命中保留原值
-            shippedCount: matchedSchedule ? (specInfo.shippedCount ?? 0) : i.shippedCount
-          };
-          return updatedItem;
-        }
-        return i;
-      });
-
-      // 丢弃该行还没落库的旧快照，否则 700ms 后它会把刚刷新的信息覆盖回去
-      const staleTimer = saveTimerRef.current.get(id);
-      if (staleTimer) {
-        clearTimeout(staleTimer);
-        saveTimerRef.current.delete(id);
-      }
-      pendingSaveRef.current.delete(id);
-
-      saveItems(updated);
-      if (updatedItem) {
-        await updateItemOnServer(updatedItem);
-      }
-      addToast('信息已更新', 'success');
-    } catch (err: any) {
-      if (axios.isAxiosError(err) && err.code === 'ECONNABORTED') {
-        addToast('获取仕样信息超时(超过15秒)', 'error');
-      } else {
-        addToast('获取仕样信息失败: ' + (err.response?.data?.message || err.message), 'error');
-      }
-    } finally {
-      setUpdatingItemId(null);
-    }
-  }, [token, saveItems, updateItemOnServer, leaderRules, factoryRulesConfig, isOffline, isAdmin]);
-
   const startEditing = useCallback((itemId: string) => {
     if (!isAdmin) {
       addToast('无权限编辑记录，只有管理员可以修改状态跟踪', 'error');
@@ -975,7 +855,14 @@ const StatusTracking = () => {
     setExporting(true);
     try {
       const params = new URLSearchParams();
-      params.append('deliveryMonth', deliveryMonth);
+      if (monthFilterBypassed) {
+        // 「全表搜索」生效时后端不按月份过滤；showOutdatedDelivery=true 表示
+        // 连纳期已过期的记录也一并导出，保持与页面显示一致
+        params.append('fullTableSearch', 'true');
+        params.append('showOutdatedDelivery', 'true');
+      } else {
+        params.append('deliveryMonth', deliveryMonth);
+      }
       if (sheetFilter) {
         // 合并项（焊钳 / 焊钳修改）会一次传多个 sheetName，后端按「任一命中」筛选
         const sheets = getSheetFilter(sheetFilter)?.sheets || [sheetFilter];
@@ -983,6 +870,10 @@ const StatusTracking = () => {
       }
       if (searchTerm.trim()) {
         params.append('searchTerm', searchTerm.trim());
+      }
+      // 表头列筛选也一并带上，否则「导出显示结果」会和页面上看到的行不一致
+      if (hasColumnFilter) {
+        params.append('columnFilters', JSON.stringify(columnFilters));
       }
       
       const res = await axios.get(`/api/status-tracking/export?${params.toString()}`, {
@@ -1009,7 +900,7 @@ const StatusTracking = () => {
     } finally {
       setExporting(false);
     }
-  }, [token, deliveryMonth, sheetFilter, searchTerm]);
+  }, [token, deliveryMonth, sheetFilter, searchTerm, monthFilterBypassed]);
 
   // 同步生产大日程：先从服务端取预览（新增/更新/未变/被锁条数），确认后再落库。
   // 大日程在网络共享盘上，预览还要顺带解析仕样书补全营业担当，
@@ -1280,9 +1171,13 @@ const StatusTracking = () => {
     };
   }, [token, logout]);
 
-  const filteredItems = useMemo(() => {
+  // 第一层筛选：纳期月份 + 产品表 + 搜索词。
+  const scopedItems = useMemo(() => {
     let result = allItems;
-    result = result.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
+    // 「全表搜索」勾选且输入了搜索词时跳过月份过滤：搜索范围扩到整表
+    if (!monthFilterBypassed) {
+      result = result.filter(item => !item.deliveryDate || item.deliveryDate.startsWith(deliveryMonth));
+    }
     if (sheetFilter) {
       const sheets = getSheetFilter(sheetFilter)?.sheets || [sheetFilter];
       result = result.filter(item => sheets.includes(getItemSheetName(item)));
@@ -1296,6 +1191,75 @@ const StatusTracking = () => {
         item.leader.toLowerCase().includes(term)
       );
     }
+    return result;
+  }, [allItems, monthFilterBypassed, deliveryMonth, sheetFilter, searchTerm]);
+
+  // 各列筛选面板的候选项（含条数）——级联计算：某列的选项只统计「已经过其他列筛选」剩下的记录，
+  // 所以先勾工厂、再打开客户，客户面板里只剩该工厂下的客户；多列叠加时还能组合出结果的值。
+  // 本列自身的筛选不参与统计，否则勾了一个值后面板里就只剩它自己，没法再选别的。
+  // 已选值即使被其他列筛掉也保留（条数显示 0），否则用户没法在面板里把它取消勾选。
+  const columnFilterOptions = useMemo(() => {
+    const allKeys = Object.keys(emptyColumnFilters) as ColumnFilterKey[];
+    const activeSets = allKeys.reduce((acc, key) => {
+      if (columnFilters[key].length > 0) acc[key] = new Set(columnFilters[key]);
+      return acc;
+    }, {} as Partial<Record<ColumnFilterKey, Set<string>>>);
+
+    const build = (key: ColumnFilterKey, format?: (value: string) => string): ColumnFilterOption[] => {
+      const otherKeys = allKeys.filter(k => k !== key && activeSets[k]);
+      const source = otherKeys.length === 0
+        ? scopedItems
+        : scopedItems.filter(item =>
+            otherKeys.every(k => activeSets[k]!.has(getColumnFilterValue(item, k)))
+          );
+
+      const counts = new Map<string, number>();
+      source.forEach(item => {
+        const value = getColumnFilterValue(item, key);
+        counts.set(value, (counts.get(value) || 0) + 1);
+      });
+      columnFilters[key].forEach(value => {
+        if (!counts.has(value)) counts.set(value, 0);
+      });
+
+      const list = Array.from(counts.entries()).map(([value, count]) => ({
+        value,
+        label: value === EMPTY_FILTER_VALUE ? EMPTY_FILTER_LABEL : (format ? format(value) : value),
+        count
+      }));
+      if (format) {
+        // 日期等按原始值排序（ISO 字符串比较即时间顺序），避免 1/5 排在 11/16 之后
+        list.sort((a, b) => {
+          if (a.value === EMPTY_FILTER_VALUE) return 1;
+          if (b.value === EMPTY_FILTER_VALUE) return -1;
+          return a.value.localeCompare(b.value);
+        });
+      } else {
+        list.sort((a, b) => {
+          if (a.value === EMPTY_FILTER_VALUE) return 1;
+          if (b.value === EMPTY_FILTER_VALUE) return -1;
+          return a.label.localeCompare(b.label, 'zh-Hans-CN', { numeric: true });
+        });
+      }
+      return list;
+    };
+    return {
+      factory: build('factory'),
+      clientName: build('clientName'),
+      deliveryDate: build('deliveryDate', formatDeliveryDate),
+      salesPerson: build('salesPerson'),
+      leader: build('leader')
+    };
+  }, [scopedItems, columnFilters]);
+
+  const filteredItems = useMemo(() => {
+    let result = scopedItems;
+    (Object.keys(columnFilters) as ColumnFilterKey[]).forEach(key => {
+      const selected = columnFilters[key];
+      if (!selected.length) return;
+      const allowed = new Set(selected);
+      result = result.filter(item => allowed.has(getColumnFilterValue(item, key)));
+    });
     if (sortConfig) {
       result = [...result].sort((a, b) => {
         if (sortConfig.key === 'deliveryDate') {
@@ -1316,7 +1280,7 @@ const StatusTracking = () => {
       });
     }
     return result;
-  }, [allItems, searchTerm, sheetFilter, deliveryMonth, sortConfig]);
+  }, [scopedItems, columnFilters, sortConfig]);
 
   // 「设计纳期」格显示的是纳期距今天数，<=0（无纳期或已过期）时留空。
   // 列表默认按纳期升序，所以「第一行非空」自然就是纳期最近、设计纳期最小的那一行。
@@ -1518,15 +1482,30 @@ const StatusTracking = () => {
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
           <h2 className="text-xl font-bold text-blue-600">状态跟踪表</h2>
           <div className="h-6 w-[1px] bg-gray-200 mx-2"></div>
-          <div className="relative">
-            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              type="text"
-              placeholder="搜索客户、仕样号、营业担当..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 pr-4 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                placeholder="搜索客户、仕样号、营业担当..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 pr-4 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            {/* 全表搜索：勾选后搜索不受纳期月份限制，默认开启 */}
+            <label
+              className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs font-bold text-gray-600 transition hover:border-blue-400 hover:text-blue-600"
+              title="勾选后搜索不限月份：输入搜索词时会把其他纳期月份的匹配记录也显示出来"
+            >
+              <input
+                type="checkbox"
+                checked={fullTableSearch}
+                onChange={(e) => setFullTableSearch(e.target.checked)}
+                className="h-3.5 w-3.5 cursor-pointer accent-blue-600"
+              />
+              <span>全表搜索</span>
+            </label>
           </div>
         </div>
 
@@ -1631,8 +1610,8 @@ const StatusTracking = () => {
 
         <div className="h-5 w-[1px] bg-gray-200"></div>
 
-        {/* 只按纳期月份筛选 */}
-        <div className="relative">
+        {/* 只按纳期月份筛选；「全表搜索」生效时月份不参与过滤，给个明确提示 */}
+        <div className={`relative ${monthFilterBypassed ? 'opacity-50' : ''}`}>
           <select
             value={deliveryMonth}
             onChange={(e) => {
@@ -1643,7 +1622,13 @@ const StatusTracking = () => {
               requestReposition();
             }}
             disabled={offlineWarning}
-            title={offlineWarning ? '当前离线，无法切换纳期月份' : '按纳期月份筛选'}
+            title={
+              offlineWarning
+                ? '当前离线，无法切换纳期月份'
+                : monthFilterBypassed
+                  ? '「全表搜索」已开启，搜索时不限制纳期月份；清空搜索词后本月份筛选重新生效'
+                  : '按纳期月份筛选'
+            }
             className="appearance-none pl-3 pr-8 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200 disabled:cursor-not-allowed"
           >
             {generateDeliveryMonthOptions(allItems).map(option => (
@@ -1655,6 +1640,12 @@ const StatusTracking = () => {
             className={`absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none ${offlineWarning ? 'text-gray-300' : 'text-gray-400'}`}
           />
         </div>
+
+        {monthFilterBypassed && (
+          <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-700">
+            全表搜索：不限月份
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-3 text-xs text-gray-500">
           {sheetFilter && (
@@ -1670,6 +1661,15 @@ const StatusTracking = () => {
               显示全部
             </button>
           )}
+          {hasColumnFilter && (
+            <button
+              type="button"
+              onClick={() => setColumnFilters(emptyColumnFilters)}
+              className="font-medium text-amber-600 hover:text-amber-800 hover:underline"
+            >
+              清除列筛选
+            </button>
+          )}
           <span>
             共 <span className="font-bold text-gray-700">{filteredItems.length}</span> 条
           </span>
@@ -1681,8 +1681,9 @@ const StatusTracking = () => {
         <div className="w-fit min-w-full bg-white rounded-2xl shadow-xl border border-gray-100">
             <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
               <colgroup>
+                {/* 「操作」列已移除，腾出的 96px 全部并给「客户」列（274 → 370） */}
                 <col style={{ width: '80px' }} />
-                <col style={{ width: '274px' }} />
+                <col style={{ width: '370px' }} />
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '60px' }} />
                 <col style={{ width: '45px' }} />
@@ -1700,24 +1701,59 @@ const StatusTracking = () => {
                 <col style={{ width: '45px' }} />
                 <col style={{ width: '80px' }} />
                 <col style={{ width: '80px' }} />
-                <col style={{ width: '96px' }} />
               </colgroup>
               <thead className="sticky top-0 z-20">
                 <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
-                  <th className="px-2 py-1.5 text-center border-r border-white rounded-tl-2xl" rowSpan={2}>工厂</th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>客户</th>
+                  <th className="px-2 py-1.5 text-center border-r border-white rounded-tl-2xl" rowSpan={2}>
+                    <div className="flex flex-col items-center gap-1.5 leading-tight">
+                      <span>工厂</span>
+                      <ColumnFilterDropdown
+                        label="工厂"
+                        options={columnFilterOptions.factory}
+                        selected={columnFilters.factory}
+                        onChange={(next) => updateColumnFilter('factory', next)}
+                      />
+                    </div>
+                  </th>
+                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
+                    <div className="flex flex-col items-center gap-1.5 leading-tight">
+                      <span>客户</span>
+                      <ColumnFilterDropdown
+                        label="客户"
+                        options={columnFilterOptions.clientName}
+                        selected={columnFilters.clientName}
+                        onChange={(next) => updateColumnFilter('clientName', next)}
+                        // 客户名很长（形如「57349&gt;江西康杰_江铃专用车…」），面板加宽才看得清
+                        panelWidth={460}
+                      />
+                    </div>
+                  </th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
                     <VerticalHeader text="数量" />
                   </th>
                   <th
-                    className={`px-2 py-1.5 text-center border-r border-white cursor-pointer select-none hover:bg-blue-700 transition ${
-                      sortConfig?.key === 'deliveryDate' ? 'bg-blue-800' : ''
+                    className={`px-2 py-1.5 text-center border-r border-white transition ${
+                      sortConfig?.key === 'deliveryDate' ? 'bg-blue-800' : 'hover:bg-blue-700'
                     }`}
                     rowSpan={2}
-                    onClick={() => toggleSort('deliveryDate')}
-                    title="点击排序"
                   >
-                    纳期<SortIcon columnKey="deliveryDate" />
+                    <div className="flex flex-col items-center gap-1.5">
+                      {/* 排序只绑在「纳期 + 箭头」这一块上：漏斗和单元格空白处不触发排序，
+                          否则点了筛选顺手就把顺序切了 */}
+                      <span
+                        className="flex cursor-pointer select-none items-center"
+                        onClick={() => toggleSort('deliveryDate')}
+                        title="点击排序"
+                      >
+                        纳期<SortIcon columnKey="deliveryDate" />
+                      </span>
+                      <ColumnFilterDropdown
+                        label="纳期"
+                        options={columnFilterOptions.deliveryDate}
+                        selected={columnFilters.deliveryDate}
+                        onChange={(next) => updateColumnFilter('deliveryDate', next)}
+                      />
+                    </div>
                   </th>
                   <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
                     <VerticalHeader text="已发图" />
@@ -1747,21 +1783,44 @@ const StatusTracking = () => {
                     <VerticalHeader text="未确认数" />
                   </th>
                   <th
-                    className={`px-2 py-1.5 text-center border-r border-white cursor-pointer select-none hover:bg-blue-700 transition ${
-                      sortConfig?.key === 'designDeliveryDays' ? 'bg-blue-800' : ''
+                    className={`px-2 py-1.5 text-center border-r border-white transition ${
+                      sortConfig?.key === 'designDeliveryDays' ? 'bg-blue-800' : 'hover:bg-blue-700'
                     }`}
                     rowSpan={2}
-                    onClick={() => toggleSort('designDeliveryDays')}
-                    title="点击排序"
                   >
-                    <div className="flex flex-col items-center gap-0.5">
+                    {/* 排序只绑在「竖排标题 + 箭头」上，与「纳期」一致：
+                        点单元格空白处不再切换排序 */}
+                    <span
+                      className="inline-flex cursor-pointer select-none flex-col items-center gap-0.5"
+                      onClick={() => toggleSort('designDeliveryDays')}
+                      title="点击排序"
+                    >
                       <VerticalHeader text="设计纳期" />
                       <SortIcon columnKey="designDeliveryDays" />
+                    </span>
+                  </th>
+                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>
+                    <div className="flex flex-col items-center gap-1.5 leading-tight">
+                      <span>营业担当</span>
+                      <ColumnFilterDropdown
+                        label="营业担当"
+                        options={columnFilterOptions.salesPerson}
+                        selected={columnFilters.salesPerson}
+                        onChange={(next) => updateColumnFilter('salesPerson', next)}
+                      />
                     </div>
                   </th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>营业担当</th>
-                  <th className="px-2 py-1.5 text-center border-r border-white" rowSpan={2}>组长</th>
-                  <th className="px-2 py-1.5 text-center rounded-tr-2xl" rowSpan={2}>操作</th>
+                  <th className="px-2 py-1.5 text-center rounded-tr-2xl" rowSpan={2}>
+                    <div className="flex flex-col items-center gap-1.5 leading-tight">
+                      <span>组长</span>
+                      <ColumnFilterDropdown
+                        label="组长"
+                        options={columnFilterOptions.leader}
+                        selected={columnFilters.leader}
+                        onChange={(next) => updateColumnFilter('leader', next)}
+                      />
+                    </div>
+                  </th>
                 </tr>
                 <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
                   <th className="px-2 py-1.5 text-center border-r border-white bg-green-600">
@@ -1777,13 +1836,13 @@ const StatusTracking = () => {
               <tbody>
                 {filteredItems.length === 0 ? (
                   <tr>
-                    <td colSpan={20} className="px-4 py-12 text-center text-gray-400">
+                    <td colSpan={19} className="px-4 py-12 text-center text-gray-400">
                       <Shield size={48} className="mx-auto mb-4 opacity-50" />
                       {allItems.length > 0 ? (
                         <>
                           <div className="text-lg font-medium">当前筛选条件下没有记录</div>
                           <div className="text-sm mt-2">
-                            换个月份或点筛选条右侧的「显示全部」试试
+                            换个月份、清除表头列筛选或点筛选条右侧的「显示全部」试试
                           </div>
                         </>
                       ) : (
@@ -2064,34 +2123,6 @@ const StatusTracking = () => {
                             ))}
                           </select>
                         </td>
-                        <td className="px-2 py-2 border-b border-gray-200 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            {isLocked ? (
-                              <div className="flex items-center gap-1 text-gray-400">
-                                <Lock size={14} />
-                                <span className="text-xs">{lockedBySameAccount ? '你的其他窗口' : editingSession?.username}正在编辑</span>
-                              </div>
-                            ) : isAdmin ? (
-                              <>
-                                <button
-                                  onClick={() => updateItemInfo(item.id)}
-                                  disabled={updatingItemId === item.id}
-                                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition disabled:opacity-50 disabled:cursor-wait"
-                                  title="更新信息"
-                                >
-                                  <RefreshCw size={16} className={updatingItemId === item.id ? 'animate-spin' : ''} />
-                                </button>
-                                <button
-                                  onClick={() => setDeleteConfirmId(item.id)}
-                                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition"
-                                  title="删除"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </>
-                            ) : null}
-                          </div>
-                        </td>
                       </tr>
                     );
                   })
@@ -2178,7 +2209,9 @@ const StatusTracking = () => {
                 <span className="font-semibold text-gray-800">南京焊钳、上海焊钳、南京焊钳修改、上海焊钳修改</span>
                 四张工作表的全部有效仕样号（位数符合系统配置且数量&gt;0），按所属月份写入状态跟踪。
                 已有记录只覆盖工厂、客户、数量、纳期、已发图；营业担当与组长按仕样书自动补全，
-                但只填空缺，人工改过的值不会被覆盖。
+                但只填空缺，人工改过的值不会被覆盖。同一仕样号同一纳期若已存在旧月份记录，
+                会顺延到本次月份（不新增重复行），其余旧月份遗留行会一并清理，
+                仕样号已不在大日程里的历史记录保留不动。
               </p>
 
               <div className="grid grid-cols-3 gap-2">
@@ -2240,6 +2273,18 @@ const StatusTracking = () => {
                     {scheduleSyncStats.locked} 条将被跳过，请保存后再同步
                   </div>
                 )}
+                {(scheduleSyncStats.moved || 0) > 0 && (
+                  <div className="text-blue-600">
+                    <span className="text-blue-500">月份顺延：</span>
+                    {scheduleSyncStats.moved} 条旧月份记录将被改到本次月份，不新增重复行
+                  </div>
+                )}
+                {(scheduleSyncStats.cleanupRemoved || 0) > 0 && (
+                  <div className="text-rose-600">
+                    <span className="text-rose-500">清理重复行：</span>
+                    {scheduleSyncStats.cleanupRemoved} 条旧月份遗留行将被删除（同仕样号仍有现行记录，人工字段会先并过去）
+                  </div>
+                )}
               </div>
 
               <div className="flex space-x-3 pt-1">
@@ -2252,7 +2297,7 @@ const StatusTracking = () => {
                 </button>
                 <button
                   onClick={handleScheduleSyncConfirm}
-                  disabled={scheduleSyncing || (scheduleSyncStats.added === 0 && scheduleSyncStats.updated === 0)}
+                  disabled={scheduleSyncing || (scheduleSyncStats.added === 0 && scheduleSyncStats.updated === 0 && (scheduleSyncStats.cleanupRemoved || 0) === 0)}
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {scheduleSyncing ? <RefreshCw size={16} className="animate-spin" /> : null}
@@ -2263,50 +2308,6 @@ const StatusTracking = () => {
           </div>
         </div>
       )}
-
-      {deleteConfirmId && isAdmin && (() => {
-        const targetItem = allItems.find(item => item.id === deleteConfirmId);
-        if (!targetItem) {
-          return null;
-        }
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className={MODAL_OVERLAY} onClick={() => setDeleteConfirmId(null)} />
-            <div className="relative bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
-                  <AlertTriangle className="text-red-600" size={22} />
-                </div>
-                <h3 className="text-lg font-bold text-gray-800">确认删除</h3>
-              </div>
-              <p className="text-gray-600 mb-1">确定要删除这条记录吗？此操作不可撤销。</p>
-              <div className="text-sm text-gray-500 bg-gray-50 rounded-lg p-3 mt-3 space-y-1">
-                <div className="truncate"><span className="text-gray-400">客户：</span>{targetItem.clientName || '未填写'}</div>
-                <div className="truncate"><span className="text-gray-400">仕样号：</span>{targetItem.specNumber || '未填写'}</div>
-              </div>
-              <div className="flex space-x-3 mt-6">
-                <button
-                  onClick={() => setDeleteConfirmId(null)}
-                  className="flex-1 px-4 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg transition"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={() => {
-                    const id = deleteConfirmId;
-                    setDeleteConfirmId(null);
-                    deleteItem(id);
-                  }}
-                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition"
-                >
-                  删除
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
 
       {showLeaderRulesModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
