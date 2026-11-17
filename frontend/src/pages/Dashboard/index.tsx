@@ -73,6 +73,9 @@ import {
   buildTaskMetadataTitle,
   syncGunsWithTaskColor,
   splitTypedPausedSuffix,
+  parseDesignChangeName,
+  composeDesignChangeName,
+  CHANGE_NOTICE_PLACEHOLDER,
 } from './utils';
 import type {
   GunItem,
@@ -1418,9 +1421,11 @@ const Dashboard = () => {
   // 任务加急：勾选后整行改用加急配色；确认图 / 设计 / 确认图修改 的文字同时变红
   const [urgentDraft, setUrgentDraft] = useState(false);
   const [addModeTaskType, setAddModeTaskType] = useState<DesignTaskType>('none');
+  // 新增模式：「设计变更」的更改通知单号（可留空，填了拼在任务名末尾）
+  const [addModeChangeNo, setAddModeChangeNo] = useState<string>('');
   // 新增模式是否勾选了「暂停/取消」：勾选后沿用当前工时（新建空白任务默认 0）
   const addModePaused = addModeTaskType === 'paused';
-  const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: DesignTaskType }>>({});
+  const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: DesignTaskType; changeNo?: string }>>({});
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const addModeSpecLookupSeqRef = useRef(0);
 
@@ -1538,6 +1543,7 @@ const Dashboard = () => {
     setAddModeGuns([]);
     setUrgentDraft(false);
     setAddModeTaskType('none');
+    setAddModeChangeNo('');
     // 新增任务默认勾选「显示纳期」：任务名里能提取到仕样号时自动带上 [M/D]
     setShowDeadline(true);
     setAddModeDeadlineTag(null);
@@ -4893,6 +4899,18 @@ const Dashboard = () => {
                                   </label>
                                 );
                               })}
+                              {/* 勾选「设计变更」时在「暂停/取消」右侧出现更改通知单号输入框（可留空）；
+                                  填了会拼在任务名末尾（纳期之前），保存后表格里直接可见 */}
+                              {addModeTaskType === 'designChange' && (
+                                <input
+                                  type="text"
+                                  className="ml-auto shrink-0 w-28 h-8 px-2 text-xs font-medium text-gray-800 bg-white border border-orange-300 rounded-md outline-none focus:ring-2 focus:ring-orange-300 focus:border-orange-400 placeholder:text-gray-400 placeholder:font-normal"
+                                  value={addModeChangeNo}
+                                  onChange={(e) => setAddModeChangeNo(e.target.value)}
+                                  placeholder={CHANGE_NOTICE_PLACEHOLDER}
+                                  title="更改通知单号：可填可不填；以 FY 开头（如 FY26-0035），填写后显示在任务名称末尾（「设计变更」之后、纳期之前）"
+                                />
+                              )}
                             </div>
                             {/* 第二行：任务名 + 纳期 + 总工时 + 删除 */}
                             <div className="flex items-center gap-1.5 min-w-0">
@@ -5192,6 +5210,31 @@ const Dashboard = () => {
                           return name.endsWith('出差') ? name.slice(0, -2) : name;
                         })();
                         const itemDraft = taskTypeDrafts[currentItem.id] || {};
+                        // 「设计变更」可能带更改通知单号（任务名结构：`<主体> 设计变更 <单号> [M/D]`）。
+                        // 这里把主体 / 单号 / 纳期拆开，任务名输入框只改主体、通知单号输入框只改单号，
+                        // 任何一边发生变化都按「主体 + 单号 + 纳期」重拼，避免互相把对方吃掉。
+                        const itemIsDesignChange = !itemPaused && !currentItem.leaveType
+                          && getTaskTypeFromName(currentItem.taskName) === 'designChange';
+                        const itemNameParts = (() => {
+                          if (!itemIsDesignChange) return null;
+                          const parts = parseDesignChangeName(currentItem.taskName);
+                          // 拆出来的三段必须能原样拼回去，才认为这条任务用的是「主体 + 设计变更 + 单号」结构；
+                          // 主体里恰好含「设计变更」四个字的老任务（如「…设计变更说明 设计」）继续走原来的剥离规则
+                          return composeDesignChangeName(parts.base, parts.changeNo, parts.deadline)
+                            === String(currentItem.taskName || '').trim()
+                            ? parts
+                            : null;
+                        })();
+                        const itemChangeNo = itemNameParts
+                          ? (itemDraft.changeNo !== undefined ? itemDraft.changeNo : itemNameParts.changeNo)
+                          // 拆不出单号结构的老任务（见上面的兜底）：输入框只认草稿里的值，避免受控输入框被锁死
+                          : (itemDraft.changeNo ?? '');
+                        const itemNameDeadlineMatch = (currentItem.taskName || '').match(/(\[\d+\/\d+\])$/);
+                        const itemNameDeadline = itemNameDeadlineMatch ? itemNameDeadlineMatch[1] : '';
+                        // 任务名输入框显示的「主体」：设计变更直接取拆出来的主体，其余沿用原来的后缀剥离规则
+                        const itemBaseName = itemNameParts
+                          ? itemNameParts.base
+                          : currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消)?\s*(\[\d+\/\d+\])?$/, '');
                         const rememberCurrentTypeDraft = () => {
                           setTaskTypeDrafts(prev => {
                             const nextDraft = { ...(prev[currentItem.id] || {}) };
@@ -5303,7 +5346,7 @@ const Dashboard = () => {
                               <div className="flex items-center gap-2.5 flex-nowrap overflow-x-auto pb-0.5">
                                 <label className="text-sm font-bold text-gray-500 uppercase shrink-0">任务内容</label>
                                 {(() => {
-                                  const baseName = currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消)?\s*(\[\d+\/\d+\])?$/, '');
+                                  const baseName = itemBaseName;
                                   const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                   const deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                   // 暂停/取消 是独立状态：任务名后缀 + paused 标记（兼容历史只带标记的数据）
@@ -5319,67 +5362,111 @@ const Dashboard = () => {
                                       drawingReview: currentItem.taskName.includes('既制审图'),
                                       paused: false,
                                     };
-                                  return TASK_CONTENT_TYPES.map(({ key, label }) => {
-                                    // 标签做成和表格单元格一样的小色块：底色 = 该任务内容的表格填充色
-                                    const swatchColor = getTaskBaseColor(systemSettings.taskColorConfig, key, urgentDraft);
-                                    const checked = checkedState[key];
-                                    // 勾选「任务加急」后，三种可加急的任务内容（确认图/设计/确认图修改）文字统一变红，
-                                    // 不只是当前勾选的那一个
-                                    const labelTextColor = urgentDraft && supportsUrgent(key) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
-                                    return (
-                                      <label
-                                        key={key}
-                                        className="flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
-                                        title={key === 'paused' ? '工时沿用切换前的值（新增默认 0），0 也能保存；不为 0 时计入工时统计。任务名后缀显示为「暂停/取消」' : undefined}
-                                      >
+                                  return (
+                                    <>
+                                      {TASK_CONTENT_TYPES.map(({ key, label }) => {
+                                        // 标签做成和表格单元格一样的小色块：底色 = 该任务内容的表格填充色
+                                        const swatchColor = getTaskBaseColor(systemSettings.taskColorConfig, key, urgentDraft);
+                                        const checked = checkedState[key];
+                                        // 勾选「任务加急」后，三种可加急的任务内容（确认图/设计/确认图修改）文字统一变红，
+                                        // 不只是当前勾选的那一个
+                                        const labelTextColor = urgentDraft && supportsUrgent(key) ? TASK_URGENT_TEXT_COLOR : TASK_TEXT_COLOR;
+                                        return (
+                                          <label
+                                            key={key}
+                                            className="flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
+                                            title={key === 'paused' ? '工时沿用切换前的值（新增默认 0），0 也能保存；不为 0 时计入工时统计。任务名后缀显示为「暂停/取消」' : undefined}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={checked}
+                                              onChange={(e) => {
+                                                const nextType: DesignTaskType = e.target.checked ? key : 'none';
+                                                // 任务名里残留的「暂停」文字先清掉（用户可能在末尾直接敲过「暂停」），
+                                                // 否则会拼出「…项目暂停 暂停/取消」这种重复内容
+                                                const cleanBaseName = baseName.replace(/\s*暂停$/, '');
+                                                let newName = cleanBaseName + deadline;
+                                                if (e.target.checked) {
+                                                  newName = `${cleanBaseName} ${label}${deadline}`;
+                                                }
+                                                setTaskTypeDrafts(prev => ({
+                                                  ...prev,
+                                                  [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: cleanBaseName, designGuns: currentItem.guns || [], taskType: nextType }
+                                                }));
+                                                if (nextType === 'paused') {
+                                                  // 暂停/取消：只打标记 + 取消加急，任务名后缀改为「暂停/取消」。
+                                                  // 工时（含枪名工时）原样保留——从「设计」等类型改过来时沿用原有工时
+                                                  // （如设计枪名 3h，改暂停后仍是 3h），不为 0 时照常计入统计。
+                                                  if (urgentDraft) handleUrgentToggle(false);
+                                                  void applyPausedState(currentItem.id, true);
+                                                  handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                                  return;
+                                                }
+                                                // 离开暂停状态时清掉 paused 标记
+                                                if (itemPaused) void applyPausedState(currentItem.id, false);
+                                                if (nextType === 'none') {
+                                                  // 取消任务内容后加急失去意义，一并取消
+                                                  if (urgentDraft) handleUrgentToggle(false);
+                                                  handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                                } else {
+                                                  // 设计变更 / 既制审图 没有加急状态
+                                                  if (!supportsUrgent(nextType) && urgentDraft) handleUrgentToggle(false);
+                                                  void applyTaskTypeToItem(currentItem.id, nextType, currentItem.guns || [], newName);
+                                                }
+                                              }}
+                                              className="w-4 h-4 rounded border-gray-300 cursor-pointer accent-blue-600"
+                                            />
+                                            <span
+                                              className="text-sm font-bold px-1.5 py-0.5 rounded border border-black/5"
+                                              style={{ backgroundColor: swatchColor, color: labelTextColor }}
+                                            >
+                                              {label}
+                                            </span>
+                                          </label>
+                                        );
+                                      })}
+                                      {/* 勾选「设计变更」时在「暂停/取消」右侧出现更改通知单号输入框（可留空）；
+                                          填了拼在任务名末尾（纳期之前），保存后表格里直接可见 */}
+                                      {checkedState.designChange && (
                                         <input
-                                          type="checkbox"
-                                          checked={checked}
+                                          type="text"
+                                          className="ml-auto shrink-0 w-28 h-8 px-2 text-xs font-medium text-gray-800 bg-white border border-orange-300 rounded-md outline-none focus:ring-2 focus:ring-orange-300 focus:border-orange-400 placeholder:text-gray-400 placeholder:font-normal"
+                                          value={itemChangeNo}
                                           onChange={(e) => {
-                                            const nextType: DesignTaskType = e.target.checked ? key : 'none';
-                                            // 任务名里残留的「暂停」文字先清掉（用户可能在末尾直接敲过「暂停」），
-                                            // 否则会拼出「…项目暂停 暂停/取消」这种重复内容
-                                            const cleanBaseName = baseName.replace(/\s*暂停$/, '');
-                                            let newName = cleanBaseName + deadline;
-                                            if (e.target.checked) {
-                                              newName = `${cleanBaseName} ${label}${deadline}`;
-                                            }
+                                            const nextNo = e.target.value;
+                                            const base = itemNameParts?.base ?? itemBaseName;
                                             setTaskTypeDrafts(prev => ({
                                               ...prev,
-                                              [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: cleanBaseName, designGuns: currentItem.guns || [], taskType: nextType }
+                                              [currentItem.id]: {
+                                                ...(prev[currentItem.id] || {}),
+                                                designName: base,
+                                                designGuns: currentItem.guns || [],
+                                                taskType: 'designChange',
+                                                changeNo: nextNo,
+                                              },
                                             }));
-                                            if (nextType === 'paused') {
-                                              // 暂停/取消：只打标记 + 取消加急，任务名后缀改为「暂停/取消」。
-                                              // 工时（含枪名工时）原样保留——从「设计」等类型改过来时沿用原有工时
-                                              // （如设计枪名 3h，改暂停后仍是 3h），不为 0 时照常计入统计。
-                                              if (urgentDraft) handleUrgentToggle(false);
-                                              void applyPausedState(currentItem.id, true);
-                                              handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                              return;
-                                            }
-                                            // 离开暂停状态时清掉 paused 标记
-                                            if (itemPaused) void applyPausedState(currentItem.id, false);
-                                            if (nextType === 'none') {
-                                              // 取消任务内容后加急失去意义，一并取消
-                                              if (urgentDraft) handleUrgentToggle(false);
-                                              handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
-                                            } else {
-                                              // 设计变更 / 既制审图 没有加急状态
-                                              if (!supportsUrgent(nextType) && urgentDraft) handleUrgentToggle(false);
-                                              void applyTaskTypeToItem(currentItem.id, nextType, currentItem.guns || [], newName);
-                                            }
+                                            handleItemChange(
+                                              modalDesignerId,
+                                              modalDate,
+                                              currentItem.id,
+                                              'taskName',
+                                              composeDesignChangeName(base, nextNo, itemNameDeadline)
+                                            );
                                           }}
-                                          className="w-4 h-4 rounded border-gray-300 cursor-pointer accent-blue-600"
+                                          // 失焦时把输入框内容与任务名对齐（去掉多余的空白）
+                                          onBlur={() => setTaskTypeDrafts(prev => ({
+                                            ...prev,
+                                            [currentItem.id]: {
+                                              ...(prev[currentItem.id] || {}),
+                                              changeNo: parseDesignChangeName(currentItem.taskName).changeNo,
+                                            },
+                                          }))}
+                                          placeholder={CHANGE_NOTICE_PLACEHOLDER}
+                                          title="更改通知单号：可填可不填；以 FY 开头（如 FY26-0035），填写后显示在任务名称末尾（「设计变更」之后、纳期之前）"
                                         />
-                                        <span
-                                          className="text-sm font-bold px-1.5 py-0.5 rounded border border-black/5"
-                                          style={{ backgroundColor: swatchColor, color: labelTextColor }}
-                                        >
-                                          {label}
-                                        </span>
-                                      </label>
-                                    );
-                                  });
+                                      )}
+                                    </>
+                                  );
                                 })()}
                               </div>
                               {/* 第二行：任务名 + 纳期 + 总工时 + 操作 */}
@@ -5387,7 +5474,7 @@ const Dashboard = () => {
                                 <input
                                   ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
                                   className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                                  value={currentItem.taskName.replace(/\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消)?\s*(\[\d+\/\d+\])?$/, '')}
+                                  value={itemBaseName}
                                   onChange={(e) => {
                                     // 末尾直接输入「暂停」：自动勾选「暂停/取消」（复选框互斥，不再叠加其它任务内容），
                                     // 并把这两字从任务名里去掉——后缀统一由复选框写成「暂停/取消」
@@ -5409,6 +5496,16 @@ const Dashboard = () => {
                                       if (urgentDraft) handleUrgentToggle(false);
                                       void applyPausedState(currentItem.id, true);
                                       handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', pausedName);
+                                      return;
+                                    }
+                                    // 「设计变更」带更改通知单号：只改主体，后缀和单号原样接在后面
+                                    if (itemNameParts) {
+                                      const newName = composeDesignChangeName(typedName, itemNameParts.changeNo, deadline.trim());
+                                      setTaskTypeDrafts(prev => ({
+                                        ...prev,
+                                        [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: typedName, designGuns: currentItem.guns || [], taskType: 'designChange' }
+                                      }));
+                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
                                       return;
                                     }
                                     const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消))?\s*(\[\d+\/\d+\])?$/);
@@ -5534,12 +5631,18 @@ const Dashboard = () => {
                                       }
 
                                       let updatedCount = 0;
+                                      let skippedCount = 0;
                                       sheets.forEach(sheet => {
                                         Object.entries(sheet.days || {}).forEach(([date, items]) => {
                                           (items || []).forEach(item => {
                                             const itemSpecNo = extractSpecNumber(item.taskName);
                                             if (itemSpecNo === specNo) {
                                               const newName = buildSyncedSpecTaskName(item.taskName || '', specInfo, specNo, deliverySuffix);
+                                              // 后缀认不出来的任务不改写（否则会把「设计变更 ECO1234」这类内容删掉）
+                                              if (!newName) {
+                                                skippedCount++;
+                                                return;
+                                              }
                                               handleItemChange(sheet.designerId, date, item.id, 'taskName', newName);
                                               updatedCount++;
                                             }
@@ -5547,7 +5650,11 @@ const Dashboard = () => {
                                         });
                                       });
 
-                                      addToast(`相同仕样号同步完成: ${deliverySuffix}（已更新 ${updatedCount} 个任务）`, 'success');
+                                      addToast(
+                                        `相同仕样号同步完成: ${deliverySuffix}（已更新 ${updatedCount} 个任务`
+                                        + `${skippedCount > 0 ? `，跳过 ${skippedCount} 个任务内容后缀认不出的任务` : ''}）`,
+                                        'success',
+                                      );
                                     }}
                                     className="px-2 py-1 text-[10px] bg-violet-50 text-violet-600 rounded hover:bg-violet-100 transition font-bold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                                     title="按仕样号同步更新所有相同仕样号任务的客户名与纳期"
@@ -5900,7 +6007,9 @@ const Dashboard = () => {
                         } else if (addModeTaskType === 'confirmModify') {
                           taskName += ' 确认图修改';
                         } else if (addModeTaskType === 'designChange') {
-                          taskName += ' 设计变更';
+                          // 更改通知单号可留空：填了就拼在「设计变更」后面（纳期由下面统一补在末尾）
+                          const changeNo = addModeChangeNo.trim();
+                          taskName += changeNo ? ` 设计变更 ${changeNo}` : ' 设计变更';
                         } else if (addModeTaskType === 'drawingReview') {
                           taskName += ' 既制审图';
                         } else if (addModeTaskType === 'paused') {

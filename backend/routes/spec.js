@@ -13,6 +13,7 @@ const gunTableLocks = require('../utils/gunTableLocks');
 const { emitToPage } = require('../utils/socketRooms');
 const { readPdfTextOffThread } = require('../utils/pdfTextPool');
 const { buildGunHealSpecEntry, collapseSpace } = require('../utils/gunHealEntry');
+const { hasNamedGunRows, hasUnparsedTypeSuffix, buildSkippedSpecEntry, describeTaskNameDiff, splitHealTaskName, buildHealTaskName } = require('../utils/specHealEntry');
 
 // 获取系统配置的仕样号位数（默认 5，可配置为 5 或 6）
 function getConfiguredSpecDigits() {
@@ -755,6 +756,11 @@ router.post('/spec-info', [authMiddleware, adminMiddleware], asyncHandler(async 
 //   扫描结果留在服务端，一键更新只传 jobId + 勾选的仕样号。
 //
 // 更新时重新读当月任务再比对（扫描到点击之间可能有人改过任务），只改确实不一致的条目。
+//
+// 范围限定：只有**含枪名行**的任务参与自愈（真实排产单位是枪名行）。
+// 不含枪名行的主任务属于计划占位，客户名/纳期由人工维护——
+// 扫描阶段把它们排除在比对之外，更新阶段同样不碰；
+// 只在这类任务里出现过的仕样号状态为 skipped（已跳过），不解析仕样书、不可选中更新。
 // ============================================================================
 
 const HEAL_JOB_TTL_MS = 30 * 60 * 1000;   // 扫描结果保留时长
@@ -776,25 +782,8 @@ function extractSelfHealSpecNumber(taskName, digits) {
   return null;
 }
 
-// 拆分任务名：主体（客户名） + 尾部任务类型 + 尾部纳期 [M/D]
-// 口径必须与前端 Dashboard/utils.splitDesignTaskName 完全一致，否则「检测」与
-// 手工「相同仕样号同步更新」会给出不同结果。
-function splitSelfHealTaskName(taskName) {
-  const trimmed = String(taskName || '').trim();
-  const deadlineMatch = trimmed.match(/\s*(\[\d{1,2}\/\d{1,2}\])$/);
-  const withoutDeadline = deadlineMatch && typeof deadlineMatch.index === 'number'
-    ? trimmed.slice(0, deadlineMatch.index).trim()
-    : trimmed;
-  const typeMatch = withoutDeadline.match(/\s+(确认图修改|确认图|设计变更|既制审图|暂停\/取消|设计)$/);
-  const baseName = typeMatch && typeof typeMatch.index === 'number'
-    ? withoutDeadline.slice(0, typeMatch.index).trim()
-    : withoutDeadline;
-  return {
-    baseName,
-    typeSuffix: typeMatch ? ` ${typeMatch[1]}` : '',
-    deliverySuffix: deadlineMatch ? deadlineMatch[1] : ''
-  };
-}
+// 拆分任务名与拼装的实现在 utils/specHealEntry.js（纯函数，便于单测）：
+// 主体（客户名） + 尾部任务类型（含「设计变更 更改通知单号」） + 尾部纳期 [M/D]
 
 // 客户名组合规则与 /spec-info 保持一致（仕样号>中间商_终端客户-项目名）
 function composeSelfHealClientName(specNumber, info) {
@@ -836,12 +825,7 @@ function composeSelfHealDeliverySuffix(info) {
   return `[${Number(d.month)}/${Number(d.day)}]`;
 }
 
-function buildSelfHealTaskName(taskName, expectedClient, expectedDelivery) {
-  const parts = splitSelfHealTaskName(taskName);
-  const clientPart = expectedClient || parts.baseName;
-  const deliveryPart = expectedDelivery || parts.deliverySuffix;
-  return `${clientPart}${parts.typeSuffix}${deliveryPart ? ` ${deliveryPart}` : ''}`.trim();
-}
+// 拼装同样在 utils/specHealEntry.js（buildHealTaskName）
 
 // 解析单个仕样号 → 期望的客户名与纳期。任何一步失败都返回可展示的原因，
 // 而不是抛错：一个仕样书解析不了不该让整次扫描失败。
@@ -895,19 +879,15 @@ function buildSelfHealSpecEntry(specNumber, entries, resolution, designerNames) 
 
   const changeFlags = new Set();
   for (const item of entries) {
-    const parts = splitSelfHealTaskName(item.taskName);
-    const clientChanged = entry.expectedClient !== ''
-      && collapseSpace(parts.baseName) !== collapseSpace(entry.expectedClient);
-    const deliveryChanged = entry.expectedDelivery !== ''
-      && parts.deliverySuffix !== entry.expectedDelivery;
-    if (!clientChanged && !deliveryChanged) continue;
+    const parts = splitHealTaskName(item.taskName);
+    const diff = describeTaskNameDiff(parts, entry.expectedClient, entry.expectedDelivery);
+    if (!diff.clientChanged && !diff.deliveryChanged) continue;
 
-    const newTaskName = buildSelfHealTaskName(item.taskName, entry.expectedClient, entry.expectedDelivery);
+    const newTaskName = buildHealTaskName(item.taskName, entry.expectedClient, entry.expectedDelivery);
     if (!newTaskName || collapseSpace(newTaskName) === collapseSpace(item.taskName)) continue;
 
     entry.itemCount += 1;
-    if (clientChanged) changeFlags.add('client');
-    if (deliveryChanged) changeFlags.add('delivery');
+    diff.flags.forEach(flag => changeFlags.add(flag));
     if (entry.items.length >= HEAL_MAX_ITEMS_PER_SPEC) {
       entry.itemsTruncated = true;
       continue;
@@ -919,17 +899,15 @@ function buildSelfHealSpecEntry(specNumber, entries, resolution, designerNames) 
       date: item.date,
       taskName: item.taskName,
       newTaskName,
-      changes: [
-        ...(clientChanged ? ['client'] : []),
-        ...(deliveryChanged ? ['delivery'] : [])
-      ],
+      changes: diff.flags,
       currentClient: parts.baseName,
       currentDelivery: parts.deliverySuffix
     });
   }
 
   entry.status = entry.itemCount > 0 ? 'outdated' : 'ok';
-  entry.changes = ['client', 'delivery'].filter(flag => changeFlags.has(flag));
+  // 固定顺序输出，前端按标签渲染；同一仕样号下「纳期」与「增加纳期」并存时由前端收窄为「纳期」
+  entry.changes = ['client', 'delivery', 'delivery-add'].filter(flag => changeFlags.has(flag));
   return entry;
 }
 
@@ -966,6 +944,8 @@ function getSelfHealJobSnapshot(job) {
     current: job.current,
     totalItems: job.totalItems,
     skippedItems: job.skippedItems,
+    noGunItems: job.noGunItems,
+    unparsedItems: job.unparsedItems,
     summary: job.summary,
     specs: job.specs,
     startedAt: job.startedAt,
@@ -989,8 +969,14 @@ async function runSelfHealScan(job) {
 
     // 先按仕样号归并当月任务：扫描以仕样号为单位，同一仕样号的所有任务共用一次解析结果
     const groups = new Map();
+    // 只在不含枪名行的任务里出现的仕样号：记次数，稍后直接标为「已跳过」
+    const noGunSpecCounts = new Map();
+    // 只在「任务内容后缀认不出来」的任务里出现的仕样号：同样标为「已跳过」
+    const unparsedSpecCounts = new Map();
     let totalItems = 0;
     let skippedItems = 0;
+    let noGunItems = 0;
+    let unparsedItems = 0;
 
     sheets.forEach(sheet => {
       Object.entries(sheet.days || {}).forEach(([date, items]) => {
@@ -1003,6 +989,20 @@ async function runSelfHealScan(job) {
           const specNumber = extractSelfHealSpecNumber(taskName, digits);
           if (!specNumber) {
             skippedItems += 1;                            // 认不出仕样号的任务，只在汇总里计数
+            return;
+          }
+          // 没有枪名行的主任务属于计划占位，真实排产单位是枪名行：
+          // 不比对、不写回，连仕样书都不必解析，只在汇总里计一条「已跳过」
+          if (!hasNamedGunRows(item)) {
+            noGunItems += 1;
+            noGunSpecCounts.set(specNumber, (noGunSpecCounts.get(specNumber) || 0) + 1);
+            return;
+          }
+          // 任务名里有任务内容后缀但认不出来（典型：更改通知单号不是 FY 开头）：
+          // 按客户名比对必然「不一致」，写回就会把这段删掉，所以整条任务不参与自愈
+          if (hasUnparsedTypeSuffix(splitHealTaskName(taskName))) {
+            unparsedItems += 1;
+            unparsedSpecCounts.set(specNumber, (unparsedSpecCounts.get(specNumber) || 0) + 1);
             return;
           }
           if (!groups.has(specNumber)) groups.set(specNumber, []);
@@ -1018,7 +1018,19 @@ async function runSelfHealScan(job) {
 
     job.totalItems = totalItems;
     job.skippedItems = skippedItems;
+    job.noGunItems = noGunItems;
+    job.unparsedItems = unparsedItems;
     job.total = groups.size;
+
+    // 只在「不含枪名行」或「后缀认不出来」的任务里出现过的仕样号：直接标为已跳过，不进解析队列
+    const skippedSpecNumbers = new Set([...noGunSpecCounts.keys(), ...unparsedSpecCounts.keys()]);
+    [...skippedSpecNumbers].forEach(specNumber => {
+      if (groups.has(specNumber)) return;   // 同一仕样号还有可核对的任务，照常核对
+      job.specs.push(buildSkippedSpecEntry(specNumber, {
+        noGunItemCount: noGunSpecCounts.get(specNumber) || 0,
+        unparsedItemCount: unparsedSpecCounts.get(specNumber) || 0
+      }));
+    });
 
     const specNumbers = [...groups.keys()].sort();
     await forEachWithConcurrency(specNumbers, HEAL_SPEC_CONCURRENCY, async (specNumber) => {
@@ -1039,10 +1051,13 @@ async function runSelfHealScan(job) {
       specCount: job.specs.length,
       outdatedSpecs: job.specs.filter(s => s.status === 'outdated').length,
       okSpecs: job.specs.filter(s => s.status === 'ok').length,
+      skippedSpecs: job.specs.filter(s => s.status === 'skipped').length,
       unresolvedSpecs: job.specs.filter(s => s.status === 'unresolved').length,
       outdatedItems: job.specs.reduce((sum, s) => sum + (s.status === 'outdated' ? s.itemCount : 0), 0),
       totalItems,
-      skippedItems
+      skippedItems,
+      noGunItems,
+      unparsedItems
     };
     job.status = 'completed';
     job.current = '';
@@ -1051,6 +1066,7 @@ async function runSelfHealScan(job) {
     console.log(
       `[spec] 仕样自愈扫描完成 ${job.year}-${String(job.month).padStart(2, '0')}：`
       + `${job.summary.specCount} 个仕样号，需更新 ${job.summary.outdatedSpecs} 个 / ${job.summary.outdatedItems} 条任务，`
+      + `已跳过 ${job.summary.skippedSpecs} 个（任务不含枪名行 ${noGunItems} 条、任务内容后缀认不出 ${unparsedItems} 条），`
       + `无仕样书 ${job.summary.unresolvedSpecs} 个`
     );
   } catch (e) {
@@ -1081,6 +1097,8 @@ router.post('/self-heal/scan', [authMiddleware, adminMiddleware], asyncHandler(a
     current: '',
     totalItems: 0,
     skippedItems: 0,
+    noGunItems: 0,
+    unparsedItems: 0,
     summary: null,
     specs: [],
     createdAt: Date.now(),
@@ -1142,6 +1160,8 @@ router.post('/self-heal/apply', [authMiddleware, adminMiddleware], asyncHandler(
   const updatedSpecs = new Set();
   const designerIds = new Set();
   let updatedItems = 0;
+  let skippedNoGunItems = 0;
+  let skippedUnparsedItems = 0;
 
   sheets.forEach(sheet => {
     Object.entries(sheet.days || {}).forEach(([date, items]) => {
@@ -1155,7 +1175,18 @@ router.post('/self-heal/apply', [authMiddleware, adminMiddleware], asyncHandler(
         const expected = bySpec.get(specNumber);
         if (!expected) return;
 
-        const newTaskName = buildSelfHealTaskName(item.taskName, expected.expectedClient, expected.expectedDelivery);
+        // 与扫描口径一致：不含枪名行的主任务不参与自愈（扫描到点击之间可能有人删光了枪名行）
+        if (!hasNamedGunRows(item)) {
+          skippedNoGunItems += 1;
+          return;
+        }
+        // 同口径：任务内容后缀认不出来（如单号不是 FY 开头）就不改写，避免把这段内容删掉
+        if (hasUnparsedTypeSuffix(splitHealTaskName(item.taskName))) {
+          skippedUnparsedItems += 1;
+          return;
+        }
+
+        const newTaskName = buildHealTaskName(item.taskName, expected.expectedClient, expected.expectedDelivery);
         if (!newTaskName || collapseSpace(newTaskName) === collapseSpace(item.taskName)) return;
 
         item.taskName = newTaskName;
@@ -1199,7 +1230,9 @@ router.post('/self-heal/apply', [authMiddleware, adminMiddleware], asyncHandler(
 
   console.log(
     `[spec] 仕样自愈更新 ${job.year}-${String(job.month).padStart(2, '0')}：`
-    + `${updatedSpecs.size} 个仕样号 / ${updatedItems} 条任务（操作人 ${userMeta.username}）`
+    + `${updatedSpecs.size} 个仕样号 / ${updatedItems} 条任务（操作人 ${userMeta.username}`
+    + `${skippedNoGunItems > 0 ? `，跳过不含枪名行 ${skippedNoGunItems} 条` : ''}`
+    + `${skippedUnparsedItems > 0 ? `，跳过后缀认不出 ${skippedUnparsedItems} 条` : ''}）`
   );
 
   res.json({
@@ -1208,6 +1241,8 @@ router.post('/self-heal/apply', [authMiddleware, adminMiddleware], asyncHandler(
     updatedSpecs: updatedSpecList,
     designerIds: [...designerIds],
     sheetCount: changedSheets.size,
+    skippedNoGunItems,
+    skippedUnparsedItems,
     message: `已更新 ${updatedItems} 条任务`
   });
 }));

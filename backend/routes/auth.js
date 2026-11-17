@@ -10,6 +10,7 @@ const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const { authMiddleware, isSessionValid, getSessionInvalidationMessage, getSessionEntryId, isSessionEntryExpired } = require('../middleware/auth');
 const { userSockets, disconnectSocketWithReason, disconnectSessionSockets } = require('../utils/socketRooms');
+const { canChangeOwnPassword } = require('../utils/passwordPolicy');
 const securityConfig = require('../config/security');
 
 const JWT_SECRET = securityConfig.jwt.secret;
@@ -305,9 +306,17 @@ router.get('/session-policy', (req, res) => {
 });
 
 router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHandler(async (req, res) => {
-  // 「允许用户自主改密」关闭时（默认关闭），拒绝所有用户自助改密
-  const systemSettings = db.readDb().settings?.system || {};
-  if (systemSettings.allowUserChangePassword !== true) {
+  const data = db.readDb();
+  const userIndex = data.users.findIndex(u => u.id === req.user.id);
+  if (userIndex === -1) {
+    return res.status(404).json({ message: '用户不存在' });
+  }
+  const user = data.users[userIndex];
+
+  // 「允许用户自主改密」默认开启，仅当管理员显式关闭时才拒绝；
+  // 处于强制改密流程的账号一律放行——否则「下次登录必须先改密」与「禁止自主改密」
+  // 同时成立会把账号锁死在改密页，既改不了密也做不了任何其他操作。
+  if (!canChangeOwnPassword(user, data.settings?.system)) {
     return res.status(403).json({ message: '系统已禁用自主修改密码，请联系管理员' });
   }
 
@@ -318,14 +327,6 @@ router.post('/change-password', authMiddleware, changePasswordLimiter, asyncHand
 
   const { oldPassword, newPassword } = req.body;
 
-  const data = db.readDb();
-  const userIndex = data.users.findIndex(u => u.id === req.user.id);
-  
-  if (userIndex === -1) {
-    return res.status(404).json({ message: '用户不存在' });
-  }
-
-  const user = data.users[userIndex];
   const isMatch = bcrypt.compareSync(oldPassword, user.password);
   
   if (!isMatch) {

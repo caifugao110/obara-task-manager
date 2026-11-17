@@ -54,7 +54,7 @@ const defaultSettings: SystemSettingsData = {
   allowMultiDevice: true,
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTaskColor: true,
-  allowUserChangePassword: false,
+  allowUserChangePassword: true,
   specNumberDigits: 5,
   auditLogMaxRows: 5000,
   logAutoTrimEnabled: true,

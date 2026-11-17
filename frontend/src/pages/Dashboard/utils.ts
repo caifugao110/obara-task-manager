@@ -38,12 +38,116 @@ export const extractSpecNumber = (taskName: string): string | null => {
   return match ? match[1] : null;
 };
 
+/** 「设计变更」任务内容后缀 */
+export const DESIGN_CHANGE_SUFFIX = '设计变更';
+/** 「设计变更」的更改通知单号输入框占位提示（短文案，配合窄输入框，避免被裁断） */
+export const CHANGE_NOTICE_PLACEHOLDER = '更改通知单号';
+/** 任务名末尾的纳期后缀：[M/D] */
+const TASK_DEADLINE_SUFFIX_RE = /\s*(\[\d{1,2}\/\d{1,2}\])$/;
+
+/**
+ * 「设计变更」任务名结构：`<任务主体> 设计变更 <更改通知单号> [M/D]`
+ * —— 通知单号可空（空时任务名就是 `<任务主体> 设计变更`），纳期始终留在最末尾，
+ * 保证各处按 `$` 取纳期的解析（显示纳期、手动纳期、同步仕样号…）不受影响。
+ */
+export interface DesignChangeNameParts {
+  /** 任务主体（去掉任务内容后缀与纳期） */
+  base: string;
+  /** 更改通知单号，未填写时为空串 */
+  changeNo: string;
+  /** 纳期后缀，如 "[9/15]"；没有纳期时为空串 */
+  deadline: string;
+}
+
+/** 拆出「设计变更」任务名的三段：主体 / 更改通知单号 / 纳期 */
+export const parseDesignChangeName = (taskName?: string | null): DesignChangeNameParts => {
+  const raw = String(taskName ?? '').trim();
+  const deadlineMatch = raw.match(TASK_DEADLINE_SUFFIX_RE);
+  const deadline = deadlineMatch ? deadlineMatch[1] : '';
+  const withoutDeadline = deadline ? raw.slice(0, raw.length - (deadlineMatch?.[0].length || 0)).trim() : raw;
+  // 只认「空格 + 设计变更」这种后缀写法：任务主体里本来带「设计变更」四个字也不会被误拆
+  const suffix = ` ${DESIGN_CHANGE_SUFFIX}`;
+  const suffixIndex = withoutDeadline.lastIndexOf(suffix);
+  if (suffixIndex >= 0) {
+    return {
+      base: withoutDeadline.slice(0, suffixIndex).trim(),
+      changeNo: withoutDeadline.slice(suffixIndex + suffix.length).trim(),
+      deadline,
+    };
+  }
+  // 没有空格的写法（或整段就是「设计变更」）：去掉末尾这四个字，单号为空
+  if (withoutDeadline.endsWith(DESIGN_CHANGE_SUFFIX)) {
+    return {
+      base: withoutDeadline.slice(0, withoutDeadline.length - DESIGN_CHANGE_SUFFIX.length).trim(),
+      changeNo: '',
+      deadline,
+    };
+  }
+  return { base: withoutDeadline, changeNo: '', deadline };
+};
+
+/** 按「主体 + 通知单号（可空）+ 纳期（可空）」重新拼出「设计变更」任务名 */
+export const composeDesignChangeName = (base: string, changeNo?: string | null, deadline?: string | null) => {
+  const head = [String(base ?? '').trim(), DESIGN_CHANGE_SUFFIX, String(changeNo ?? '').trim()]
+    .filter(Boolean)
+    .join(' ');
+  const tail = String(deadline ?? '').trim();
+  return tail ? `${head} ${tail}` : head;
+};
+
+/**
+ * 是否是一个「更改通知单号」：**必须以 FY 开头**，如 FY26-0035 / FY26-0035-01 / FY26-0035A
+ *
+ * 规则：`FY` + 两位年份 + `-` + 数字，后面可再续字母数字与 `-`；不含空格与中文。
+ * 收紧到 FY 前缀是为了不误伤「X 设计变更 讨论 L243」这类正常文字——
+ * 认不出来就整段留在客户名里，宁可不动也不拆坏任务名。
+ * 与后端 `utils/specHealEntry.js` 的 isChangeNoticeNo 同一口径。
+ */
+const CHANGE_NOTICE_NO_RE = /^FY\d{2}-\d+[A-Za-z0-9-]*$/i;
+const isChangeNoticeNo = (text?: string | null) => CHANGE_NOTICE_NO_RE.test(String(text ?? '').trim());
+
+/**
+ * 后缀监测词：与后端 `SUFFIX_MONITOR_KEYWORDS` 同一份。
+ * 刻意不含「设计」「暂停」这类单字/常用词，避免把「XX设计院」当成任务内容后缀。
+ */
+const SUFFIX_MONITOR_KEYWORDS = ['确认图修改', '确认图', '设计变更', '既制审图', '暂停/取消'];
+
+/**
+ * 任务名里明明有任务内容后缀，却没被拆出来
+ *
+ * 典型场景：「X 设计变更 ECO1234」——单号不是 FY 开头（或写法不规范），整段留在 baseName 里。
+ * 此时按客户名改写就会把这段删掉，调用方应跳过该任务而不是硬写。
+ * 与后端 `hasUnparsedTypeSuffix` 同一口径。
+ */
+export const hasUnparsedTaskSuffix = (taskName?: string | null) => {
+  const { baseName, typeSuffix } = splitDesignTaskName(String(taskName ?? ''));
+  if (typeSuffix) return false;
+  return SUFFIX_MONITOR_KEYWORDS.some(keyword => {
+    const index = baseName.lastIndexOf(` ${keyword}`);
+    if (index < 0) return false;
+    return baseName.slice(index + keyword.length + 1).trim() !== '';
+  });
+};
+
 export const splitDesignTaskName = (taskName: string) => {
   const trimmed = taskName.trim();
   const deadlineMatch = trimmed.match(/\s*(\[\d{1,2}\/\d{1,2}\])$/);
   const withoutDeadline = deadlineMatch && typeof deadlineMatch.index === 'number'
     ? trimmed.slice(0, deadlineMatch.index).trim()
     : trimmed;
+  // 「设计变更」可能带着更改通知单号（`<主体> 设计变更 FY26-0035`）：单号属于任务内容后缀的一部分，
+  // 认出来整段一起带走，避免同步仕样号 / 改名时把单号丢掉
+  const changeIndex = withoutDeadline.lastIndexOf(` ${DESIGN_CHANGE_SUFFIX}`);
+  if (changeIndex >= 0) {
+    const changeNo = withoutDeadline.slice(changeIndex + DESIGN_CHANGE_SUFFIX.length + 1).trim();
+    // 只认 FY 开头的通知单号；认不出来就把整段留在主体里，不猜
+    if (isChangeNoticeNo(changeNo)) {
+      return {
+        baseName: withoutDeadline.slice(0, changeIndex).trim(),
+        typeSuffix: ` ${DESIGN_CHANGE_SUFFIX} ${changeNo}`,
+      };
+    }
+  }
   const typeMatch = withoutDeadline.match(/\s+(确认图修改|确认图|设计变更|既制审图|暂停\/取消|设计)$/);
   const baseName = typeMatch && typeof typeMatch.index === 'number'
     ? withoutDeadline.slice(0, typeMatch.index).trim()
@@ -88,7 +192,14 @@ export const getDesignPlanClientName = (specInfo: SpecInfoResponse, fallbackSpec
   return `M${specNumber}>${clientName}`;
 };
 
+/**
+ * 按仕样书重拼任务名（「相同仕样号同步更新」用）
+ *
+ * 认不出任务内容后缀时返回空串：调用方据此跳过该任务，
+ * 否则改写会把「设计变更 ECO1234」这类认不出来的内容删掉。
+ */
 export const buildSyncedSpecTaskName = (originalTaskName: string, specInfo: SpecInfoResponse, specNumber: string, deliverySuffix: string) => {
+  if (hasUnparsedTaskSuffix(originalTaskName)) return '';
   const { baseName, typeSuffix } = splitDesignTaskName(originalTaskName);
   const clientName = getDesignPlanClientName(specInfo, specNumber) || baseName;
   return `${clientName}${typeSuffix} ${deliverySuffix}`.trim();

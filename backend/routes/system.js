@@ -18,6 +18,7 @@ const { getAuditActionDisplay, getBrowserLabel } = require('../utils/auditLogDis
 const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('../utils/workday');
 const { validateFileType, validateWorkbookStructure, scanForMaliciousContent, sanitizeWorkbook, sanitizeAoaRows } = require('../utils/fileUploadSecurity');
 const maintenance = require('../utils/dbMaintenance');
+const { isSelfPasswordChangeEnabled } = require('../utils/passwordPolicy');
 const logFiles = require('../utils/logFiles');
 const offlineBackupToken = require('../utils/offlineBackupToken');
 const productionSchedule = require('../utils/productionSchedule');
@@ -111,7 +112,7 @@ const defaultSystemSettings = {
   allowMultiDevice: true,
   allowUserDesignPlanColorMark: true,
   allowUserEditOwnTask: true,
-  allowUserChangePassword: false,
+  allowUserChangePassword: true,
   specNumberDigits: 5,
   // 操作日志保留条数（超限自动清理最旧记录）
   auditLogMaxRows: 5000,
@@ -328,7 +329,8 @@ const normalizeSystemSettings = (settings = {}) => {
     logAutoTrimEnabled: merged.logAutoTrimEnabled !== false,
     logMaxSizeMb,
     allowUserEditOwnTaskColor: allowOwnDesignPlanColor,
-    allowUserChangePassword: merged.allowUserChangePassword === true,
+    // 缺省视为开启（与 change-password 接口口径一致），显式 false 才关闭
+    allowUserChangePassword: isSelfPasswordChangeEnabled(merged),
     defaultGunHours: {
       confirm: normalizeGunHours(rawGunHours.confirm, fallbackGunHours.confirm),
       design: normalizeGunHours(rawGunHours.design, fallbackGunHours.design),

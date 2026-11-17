@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const { disconnectUserSockets } = require('../utils/socketRooms');
+const { shouldForcePasswordChange } = require('../utils/passwordPolicy');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 
@@ -133,7 +134,9 @@ router.post('/', [authMiddleware, adminMiddleware], asyncHandler(async (req, res
     name: name || username,
     group: group || '',
     disabled: false,
-    forcePasswordChange: true
+    // 与「允许用户自主改密」联动：开关关闭时不置强制改密，
+    // 否则新账号首次登录会被押在改密页，而改密接口已被禁用，账号直接锁死
+    forcePasswordChange: shouldForcePasswordChange(data.settings?.system)
   };
 
   data.users.push(newUser);
@@ -208,12 +211,11 @@ router.put('/:id', [authMiddleware, adminMiddleware, maybeSelfServicePasswordLim
       }
     }
     targetUser.password = bcrypt.hashSync(password, 10);
-    // 超级管理员重置密码后可直接用新密码登录，不强制改密；其他场景仍要求下次登录修改密码
-    if (req.user.role !== 'superadmin') {
-      targetUser.forcePasswordChange = true;
-    } else {
-      targetUser.forcePasswordChange = false;
-    }
+    // 超级管理员重置密码后可直接用新密码登录，不强制改密；其他场景（一般管理员
+    // 重置他人密码）仅在「允许用户自主改密」开启时才要求下次登录修改——关闭时
+    // 改密入口不可用，再置强制改密会把被重置的账号锁死在改密页
+    targetUser.forcePasswordChange = req.user.role !== 'superadmin'
+      && shouldForcePasswordChange(data.settings?.system);
     // 重置密码后吊销该账号已签发的令牌，旧会话立即失效（对齐改密接口的行为）
     targetUser.sessionToken = crypto.randomUUID();
     targetUser.sessionTokens = [];

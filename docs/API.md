@@ -244,8 +244,8 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 旧密码不正确时返回 `400`（消息 `旧密码不正确`），而非 `401`——避免被前端全局拦截器误判为「会话过期」而强制登出。
 - 参数校验失败返回 `400`，`message` 为单条中文提示（如 `请输入当前密码`、`请输入新密码`、`新密码长度不能少于 6 位`）。
 - 接口受独立速率限制（按「用户 ID」计数，15 分钟内最多 5 次尝试），超限返回 HTTP `429` 与消息 `密码修改尝试过于频繁，请15分钟后再试`。
-- 受系统设置「允许用户自主改密」开关（`allowUserChangePassword`，默认 `false`）控制：开关未开启时任何角色调用本接口均返回 `403` 与消息 `系统已禁用自主修改密码，请联系管理员`。注意：强制改密中间件在 `forcePasswordChange` 期间仅放行本接口与登出接口，因此部署时若使用强制改密流程，应同时开启该开关（或由超管通过 `PUT /api/users/:id` 处理）；`PUT /api/users/:id` 的本人改密不受该开关限制。
-- 超级管理员在用户管理中重置密码（单个 `PUT /api/users/:id` 或批量 `POST /api/users/batch-reset-password`）后，账号可直接用新密码登录（不强制改密），但旧会话立即失效，旧会话校验时会收到「密码已被管理员重置」提示；一般管理员修改自己的密码会设置 `forcePasswordChange` 为 `true`，下次登录需修改密码。任何角色通过 `PUT /api/users/:id` 修改**本人**密码时均须提供当前密码（`oldPassword`）。
+- 受系统设置「允许用户自主改密」开关（`allowUserChangePassword`，默认 `true`）控制：仅当管理员**显式关闭**（`false`）时，普通账号调用本接口才返回 `403` 与消息 `系统已禁用自主修改密码，请联系管理员`。**强制改密账号豁免**：`forcePasswordChange=true` 的账号无论开关是否关闭都能调用本接口——强制改密中间件在此期间只放行本接口与登出接口，若这里再拒绝，「必须先改密」与「禁止改密」互斥会把账号彻底锁死（全新库首次启动的超级管理员即处于该处境）；`PUT /api/users/:id` 的本人改密不受该开关限制。
+- 超级管理员在用户管理中重置密码（单个 `PUT /api/users/:id` 或批量 `POST /api/users/batch-reset-password`）后，账号可直接用新密码登录（不强制改密），但旧会话立即失效，旧会话校验时会收到「密码已被管理员重置」提示；一般管理员修改（含修改自己的）密码会设置 `forcePasswordChange` 为 `true`，下次登录需修改密码——该标记仅在「允许用户自主改密」开启时设置，开关关闭时不设置（否则账号会被锁在改密页）。任何角色通过 `PUT /api/users/:id` 修改**本人**密码时均须提供当前密码（`oldPassword`）。
 
 ### 登出
 
@@ -2710,7 +2710,7 @@ PUT 请求：
   "allowMultiDevice": true,
   "allowUserDesignPlanColorMark": true,
   "allowUserEditOwnTaskColor": true,
-  "allowUserChangePassword": false,
+  "allowUserChangePassword": true,
   "specNumberDigits": 5,
   "auditLogMaxRows": 5000,
   "taskColorConfig": {
@@ -2747,7 +2747,7 @@ PUT 请求：
 - 所有页面和接口均需登录，不提供未登录查看。
 - `allowUserDesignPlanColorMark` / `allowUserEditOwnTaskColor` 为兼容字段，含义相同。
 - 缺失这两个字段时，系统默认允许登录用户修改本人设计计划完成状态。
-- `allowUserChangePassword` 为「允许用户自主改密」开关，缺失时默认 `false`：关闭时 `POST /api/auth/change-password` 返回 `403`（`系统已禁用自主修改密码，请联系管理员`）；该开关不影响超管经 `PUT /api/users/:id` 重置密码。
+- `allowUserChangePassword` 为「允许用户自主改密」开关，缺失时默认 `true`：关闭（显式 `false`）时普通账号调用 `POST /api/auth/change-password` 返回 `403`（`系统已禁用自主修改密码，请联系管理员`），处于强制改密流程的账号除外；该开关不影响超管经 `PUT /api/users/:id` 重置密码。
 - `specNumberDigits` 为仕样号位数配置，取值 `5` 或 `6`，缺失时默认为 `5`，影响仕样号搜索、纳期提取和状态追踪等所有仕样号输入与校验。
 - `auditLogMaxRows` 为操作日志保留条数，取值 `100` ~ `100000` 的整数，缺失或非法时默认为 `5000`；操作日志条数超过该值时自动清理最旧的记录。由「系统设置 → 操作日志」维护。
 - `logAutoTrimEnabled` 为「磁盘日志超过阈值自动截断」开关，缺失时默认 `true`；`logMaxSizeMb` 为单文件阈值（`5` ~ `2048` 的整数，缺失或非法时默认 `50`）。两者都由「系统设置 → 日志文件管理」维护，后台每 30 分钟按阈值检查一次 `logs/` 下的 `*.log`，超过就保留末尾（阈值的 10%，64KB ~ 512KB）并清掉前面内容，具体见 `POST /api/system/log-files/trim`。
@@ -2807,7 +2807,7 @@ PUT 请求：
 - `specNumberDigits` 取值 `5` 或 `6`，可选；传入其他值会被忽略并使用默认值 `5`。
 - `auditLogMaxRows` 取值 `100` ~ `100000` 的整数，可选；传入其他值会被忽略并使用默认值 `5000`。
 - `taskColorConfig` 可选：10 个键都可省略，每个值为 `#rgb` / `#rrggbb` 颜色串，也兼容历史 `{ bg, text }` 对象（`text` 被忽略）。传入的配色**整体替换**该字段（未传的配色键回退内置默认值），但不会影响其它设置项；已下线的 `urgentDesignChange` / `urgentDrawingReview` 会被 `stripUnknown` 过滤；色值格式非法返回 `400`（`message=输入格式不正确`）。保存成功后前端会回读归一化结果，主页面下次渲染即用新配色。
-- `allowUserChangePassword` 可选，布尔值（自主改密开关仅在显式传 `true` 时开启）。
+- `allowUserChangePassword` 可选，布尔值（缺省与缺失均视为开启，仅显式传 `false` 时关闭自主改密）。
 - `defaultGunHours` 可选，结构同 GET 响应（每类 C/X 数值 0-24），未传时保留库中现有值，库中不存在时使用内置默认值。
 - `tableGunHours` 可选，结构为 `{ 分类名: { 表名: { confirm, confirmModify, design } } }`（分类名 1-30 字符、表名 1-50 字符、各工时 0-24 且必填）；保存时以内置表规则为底合并：合法单元格采用提交值（即提交完整的内置表项即视为覆盖/重置），非法单元格回退内置值、无内置值则丢弃。
 - 请求体经 Joi 校验（`stripUnknown`），未声明字段自动过滤；校验失败返回 `400`（`message=输入格式不正确`，附 `details`）。
@@ -4928,6 +4928,9 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 说明：
 
 - 仕样号按 `specNumberDigits` 识别，只认位数一致的纯数字段；任务名中先出现项目代码（如 `G2621`）时不会被误认。
+- **只处理含枪名行的任务**：任务单元格里挂了至少一条真实枪名（非空、非「未命名」）才参与比对与写回；不含枪名行的主任务属于计划占位，既不比对也不写回，计入 `noGunItems`。
+- 只在不含枪名行的任务里出现过的仕样号，状态直接记为 `skipped`（已跳过，`code: "NO_GUN_ROWS"`），**不解析仕样书、不可选中更新**；同一仕样号若还有含枪名行的任务，则照常比对。
+- **认不出任务内容后缀的任务也不参与**：任务名里明明有 `确认图 / 确认图修改 / 设计变更 / 既制审图 / 暂停取消` 却没被拆成尾部后缀（典型是更改通知单号不是 `FY` 开头，如 `… 设计变更 ECO1234`），按客户名比对必然「不一致」、写回会把这段删掉，因此整条任务跳过并计入 `unparsedItems`。只在这样的任务里出现过的仕样号同样记为 `skipped`，`code: "UNPARSED_TYPE_SUFFIX"`；两种原因并存时 `code: "NO_GUN_ROWS_AND_UNPARSED"`。
 - 请假/出差行、任务名为空、认不出仕样号的任务跳过（后者计入 `skippedItems`）。
 - 同一仕样号当月所有任务共用一次 PDF 解析结果；同时最多解析 3 份，单个仕样号「找文件 + 解析」限时 20 秒。
 - 接口**立即返回** `202` 与 job 快照，扫描在后台继续；结果在内存保留 30 分钟。
@@ -4965,14 +4968,19 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
   "total": 2,
   "done": 2,
   "current": "",
+  "noGunItems": 2,
+  "unparsedItems": 0,
   "summary": {
     "specCount": 2,
     "outdatedSpecs": 1,
     "okSpecs": 1,
+    "skippedSpecs": 1,
     "unresolvedSpecs": 0,
     "outdatedItems": 2,
     "totalItems": 6,
-    "skippedItems": 1
+    "skippedItems": 1,
+    "noGunItems": 2,
+    "unparsedItems": 0
   },
   "specs": [
     {
@@ -5004,8 +5012,11 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 }
 ```
 
-- `status`：`running` / `completed` / `failed`；`done` / `total` 为已解析 / 待解析的仕样号数，`current` 为正在解析的仕样号。
-- 单个仕样号 `status`：`outdated`（需更新）/ `ok`（已最新）/ `unresolved`（无法核对，`code` 与 `message` 说明原因：`PDF_MISSING`、`PARSE_FAILED`、`NO_DATA`、`TIMEOUT`、`SHARE_UNREACHABLE`）。
+- `status`：`running` / `completed` / `failed`；`done` / `total` 为已解析 / 待解析的仕样号数，`current` 为正在解析的仕样号。`total` 只计需要解析仕样书的仕样号（已跳过的仕样号不进解析队列）。
+- 单个仕样号 `status`：`outdated`（需更新）/ `ok`（已最新）/ `skipped`（已跳过：只在不含枪名行、或任务内容后缀认不出来的任务里出现过；`code` 为 `NO_GUN_ROWS` / `UNPARSED_TYPE_SUFFIX` / `NO_GUN_ROWS_AND_UNPARSED`，附 `noGunItemCount`、`unparsedItemCount` 说明各类涉及任务条数）/ `unresolved`（无法核对，`code` 与 `message` 说明原因：`PDF_MISSING`、`PARSE_FAILED`、`NO_DATA`、`TIMEOUT`、`SHARE_UNREACHABLE`）。
+- `summary.noGunItems`：因不含枪名行而未参与自愈的任务条数；`summary.unparsedItems`：因任务内容后缀认不出来而未参与自愈的任务条数；`summary.skippedSpecs`：已跳过的仕样号数（两种原因合计）。
+- `changes`（仕样号级与任务级同一套取值）：`client`（客户名不一致）/ `delivery`（纳期有值但被改写）/ `delivery-add`（原任务名没有 `[M/D]`、这次补上，即「增加纳期」）。任务级精确到该条任务；仕样号级是并集，固定顺序 `client` → `delivery` → `delivery-add`，前端在两者并存时只显示「纳期」。
+- **任务名拆分口径**（`splitHealTaskName` / `buildHealTaskName`，与前端 `splitDesignTaskName` 一致）：拆成「主体（客户名） + 尾部任务类型 + 尾部纳期」。「设计变更」后面跟着的**更改通知单号**归入任务类型后缀整段保留，因此 `<主体> 设计变更 FY26-0035 [11/26]` 这类任务不会被误判成「客户名不一致」，改写时也不会把单号删掉。单号**必须以 `FY` 开头**（`FY` + 两位年份 + `-` + 数字，可续字母数字与 `-`，如 `FY26-0035`、`FY26-0035-01`，大小写不敏感）；`ECO1234`、`A-12`、`260035` 以及含空格或中文的尾串都不算单号，一律整段留在主体里不拆走。除客户名与纳期外，任务类型后缀（含单号）一律不改。
 - `items` 仅回传「确实需要改写」的任务明细，单仕样号最多 200 条（超出时 `itemsTruncated: true`，`itemCount` 仍是全量）。
 - job 不存在或超过 30 分钟：`404 { "success": false, "message": "扫描结果不存在或已过期，请重新检测" }`。
 
@@ -5031,7 +5042,8 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 - 写回规则：`新任务名 = 仕样书客户名 + 原尾部任务类型 + 仕样书纳期[M/D]`；仕样书缺客户名时保留原主体，缺纳期时保留任务原有的 `[M/D]`。客户名组合规则与 `/api/spec/spec-info` 一致（修改仕样书带 `M` 前缀）。
 - 更新前重新读取当月任务再比对（扫描到点击之间可能有人改过任务），只改确实不一致的条目；重复执行幂等。
-- `unresolved` 的仕样号不参与更新；只写 `taskName`，并更新 `updatedAt` / `updatedBy`，操作日志记为「仕样自愈更新」。
+- 与扫描同一口径：**不含枪名行的任务一律不写回**（即使扫描后被删空了枪名行），这类条目计入响应的 `skippedNoGunItems`；**任务内容后缀认不出来的任务同样不写回**（认不出后缀时 `buildHealTaskName` 直接返回空串），计入 `skippedUnparsedItems`。
+- `unresolved` 与 `skipped` 的仕样号不参与更新；只写 `taskName`，并更新 `updatedAt` / `updatedBy`，操作日志记为「仕样自愈更新」。
 
 响应（`200`）：
 
@@ -5042,6 +5054,8 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
   "updatedSpecs": ["57475", "58645"],
   "designerIds": ["uuid"],
   "sheetCount": 1,
+  "skippedNoGunItems": 0,
+  "skippedUnparsedItems": 0,
   "message": "已更新 3 条任务"
 }
 ```
@@ -5596,7 +5610,7 @@ socket.emit('task_updated', {
 7. **跨域保护**：配置 CORS 限制跨域请求（可通过 `CORS_ORIGIN` 配置；通配符模式下自动不启用 credentials）。**生产环境强制要求显式白名单**，未配置将导致服务启动失败（`process.exit(1)`），开发环境未配置才允许回退为通配符 `*`
 8. **账号禁用**：支持禁用账号，禁用后无法登录
 9. **多设备登录控制**：可配置是否允许同一账号多设备同时在线
-10. **强制修改密码与会话吊销**：新建用户首次登录需修改密码，一般管理员修改自己密码后下次登录需再次修改；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`）。超级管理员重置用户密码（单个或批量）后不强制改密，但会吊销旧令牌并记录一次性失效原因，旧会话校验时收到「密码已被管理员重置」提示
+10. **强制修改密码与会话吊销**：新建用户首次登录需修改密码（「允许用户自主改密」关闭时不设置该标记），一般管理员修改自己密码后下次登录需再次修改；标记未清除前，除「修改密码」「退出登录」外的所有接口一律返回 `403`（`FORCE_PASSWORD_CHANGE`），但「修改密码」接口本身对强制改密账号始终放行。超级管理员重置用户密码（单个或批量）后不强制改密，但会吊销旧令牌并记录一次性失效原因，旧会话校验时收到「密码已被管理员重置」提示
 11. **操作审计**：记录已登录用户的**数据变更与敏感操作**（写操作全记；`GET` 仅记导出与数据库统计；心跳与页面初始化读接口不记，避免刷新页面产生大量日志），默认最多保留 5000 条（可在系统设置 → 操作日志中调整）；记录时递归脱敏（支持嵌套对象与数组），字段名匹配 `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`authorization`（不区分大小写）一律显示为 `[REDACTED]`
 12. **登录失败全量留痕与防枚举**：登录成功与失败均写登录日志，失败日志含 `reason`（`用户不存在` / `账号已禁用` / `密码错误`）；对客户端统一返回 `用户名或密码错误`，不暴露用户名是否存在
 13. **Excel 依赖本地化**：Excel 解析使用随仓库分发的 `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，`file:` 协议安装），修复旧版 0.18.5 的 CVE-2023-30533 与 CVE-2024-22363

@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const securityConfig = require('./config/security');
 const { DEFAULT_LEADER_RULES } = require('./utils/leaderRules');
+const { shouldForcePasswordChange } = require('./utils/passwordPolicy');
 
 const sqlitePath = path.resolve(__dirname, securityConfig.database.sqlitePath);
 
@@ -625,7 +626,7 @@ const getInitialDb = () => ({
     workdayOverrides: {},
     designStandardsLinkedKbIds: [],
     designStandardsPrompt: { enabled: false, knowledgeBases: {} },
-    system: { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5 }
+    system: { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: true, specNumberDigits: 5 }
   }
 });
 
@@ -729,7 +730,7 @@ const applySettingsDefaults = (parsed) => {
     parsed.settings.designStandardsPrompt.knowledgeBases = {};
   }
   if (!parsed.settings.system) {
-    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: false, specNumberDigits: 5, auditLogMaxRows: DEFAULT_AUDIT_LOG_MAX_ROWS, logAutoTrimEnabled: DEFAULT_LOG_AUTO_TRIM_ENABLED, logMaxSizeMb: DEFAULT_LOG_MAX_SIZE_MB };
+    parsed.settings.system = { allowMultiDevice: true, allowUserDesignPlanColorMark: true, allowUserEditOwnTaskColor: true, allowUserChangePassword: true, specNumberDigits: 5, auditLogMaxRows: DEFAULT_AUDIT_LOG_MAX_ROWS, logAutoTrimEnabled: DEFAULT_LOG_AUTO_TRIM_ENABLED, logMaxSizeMb: DEFAULT_LOG_MAX_SIZE_MB };
   }
   // IP 黑名单：{ enabled: boolean, entries: [{ id, ip, note, createdAt, createdBy }] }
   if (!parsed.settings.ipBlacklist || typeof parsed.settings.ipBlacklist !== 'object' || Array.isArray(parsed.settings.ipBlacklist)) {
@@ -892,7 +893,9 @@ const initAdmin = async () => {
       role: 'superadmin',
       name: '超级管理员',
       disabled: false,
-      forcePasswordChange: true
+      // 与「允许用户自主改密」联动（默认开启）：开关被显式关闭时不置强制改密，
+      // 否则首个超管登录后既不能改密也进不了系统设置，形成无法自救的死锁
+      forcePasswordChange: shouldForcePasswordChange(_cache.settings?.system)
     });
     await writeDb(_cache);
     if (generatedPassword) {

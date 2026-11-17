@@ -11,6 +11,7 @@ import {
   FileSearch,
   History,
   Loader2,
+  Minus,
   RefreshCw,
   ScanLine,
   Sparkles,
@@ -29,13 +30,24 @@ import { useModalDrag } from '../../../hooks/useModalDrag';
  *    列出哪些仕样号需要更新、会改动哪些任务。
  * 2. 一键更新：把选中的仕样号涉及的当月任务名按仕样书写回（客户名 + 纳期）。
  *
+ * 范围：只处理含枪名行的任务。不含枪名行的主任务属于计划占位，
+ * 既不比对也不写回；只在这类任务里出现过的仕样号状态为「已跳过」（skipped）。
+ * 同理，任务内容后缀认不出来（如更改通知单号不是 FY 开头）的任务也不动——
+ * 按客户名比对必然不一致，写回会把那段内容删掉。
+ *
  * 扫描走服务端 job + 轮询进度：一份仕样书要读共享盘再解析，几十个仕样号必须异步，
  * 同步接口一定会撞上前端超时，而超时会被误判成「后端离线」。
  */
 
-type HealSpecStatus = 'ok' | 'outdated' | 'unresolved';
-type HealChangeFlag = 'client' | 'delivery';
-type HealFilter = 'all' | 'outdated' | 'ok' | 'unresolved';
+type HealSpecStatus = 'ok' | 'outdated' | 'unresolved' | 'skipped';
+/**
+ * 差异标签：
+ * - client       客户名不一致
+ * - delivery     纳期有值但被改写
+ * - delivery-add 原来没有纳期、这次补上（「增加纳期」，不要与「纳期」混为一个标签）
+ */
+type HealChangeFlag = 'client' | 'delivery' | 'delivery-add';
+type HealFilter = 'all' | 'outdated' | 'ok' | 'unresolved' | 'skipped';
 
 interface HealChangeItem {
   itemId: string;
@@ -58,6 +70,10 @@ interface HealSpecEntry {
   code: string;
   message: string;
   itemCount: number;
+  /** 仅 skipped：只在不含枪名行的任务里出现过，这里记真实任务条数 */
+  noGunItemCount?: number;
+  /** 仅 skipped：只在「任务内容后缀认不出来」的任务里出现过，这里记真实任务条数 */
+  unparsedItemCount?: number;
   /** 该仕样号涉及的全部任务里出现过的差异类型（客户名 / 纳期） */
   changes: HealChangeFlag[];
   items: HealChangeItem[];
@@ -68,10 +84,16 @@ interface HealSummary {
   specCount: number;
   outdatedSpecs: number;
   okSpecs: number;
+  skippedSpecs: number;
   unresolvedSpecs: number;
   outdatedItems: number;
   totalItems: number;
+  /** 认不出仕样号的任务条数 */
   skippedItems: number;
+  /** 不含枪名行、因此不参与自愈的任务条数 */
+  noGunItems: number;
+  /** 任务内容后缀认不出来（如单号不是 FY 开头）、因此不参与自愈的任务条数 */
+  unparsedItems: number;
 }
 
 interface HealJob {
@@ -85,6 +107,8 @@ interface HealJob {
   current: string;
   totalItems: number;
   skippedItems: number;
+  noGunItems?: number;
+  unparsedItems?: number;
   summary: HealSummary | null;
   specs: HealSpecEntry[];
   finishedAt?: number | null;
@@ -151,25 +175,54 @@ const STATUS_META: Record<HealSpecStatus, { label: string; cls: string; dot: str
     cls: 'bg-gray-100 text-gray-500 border-gray-200',
     dot: 'bg-gray-400',
   },
+  skipped: {
+    label: '已跳过',
+    cls: 'bg-slate-50 text-slate-500 border-slate-200',
+    dot: 'bg-slate-400',
+  },
 };
 
 const SPEC_FILTERS: Array<{ key: HealFilter; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'outdated', label: '需更新' },
   { key: 'ok', label: '已最新' },
+  { key: 'skipped', label: '已跳过' },
   { key: 'unresolved', label: '无法核对' },
 ];
 
-const ChangePill: React.FC<{ children: React.ReactNode; tone: 'blue' | 'violet' }> = ({ children, tone }) => (
-  <span
-    className={`shrink-0 text-[10px] font-bold px-1.5 py-[1px] rounded border ${
-      tone === 'blue'
-        ? 'bg-sky-50 text-sky-600 border-sky-200'
-        : 'bg-violet-50 text-violet-600 border-violet-200'
-    }`}
-  >
-    {children}
-  </span>
+// 「纳期」与「增加纳期」共用紫色系（同一个字段），实心表示这次是「补上纳期」
+const ChangePill: React.FC<{ children: React.ReactNode; tone: 'blue' | 'violet' | 'violet-solid' }> = ({ children, tone }) => {
+  const toneCls = tone === 'blue'
+    ? 'bg-sky-50 text-sky-600 border-sky-200'
+    : tone === 'violet-solid'
+      ? 'bg-violet-500 text-white border-violet-500'
+      : 'bg-violet-50 text-violet-600 border-violet-200';
+  return (
+    <span className={`shrink-0 text-[10px] font-bold px-1.5 py-[1px] rounded border ${toneCls}`}>
+      {children}
+    </span>
+  );
+};
+
+const CHANGE_META: Record<HealChangeFlag, { label: string; tone: 'blue' | 'violet' | 'violet-solid' }> = {
+  client: { label: '客户名', tone: 'blue' },
+  delivery: { label: '纳期', tone: 'violet' },
+  'delivery-add': { label: '增加纳期', tone: 'violet-solid' },
+};
+
+// 「纳期」与「增加纳期」同时出现时只留「纳期」：单个标签已能说明纳期会变，避免一行堆两个同义标记
+const visibleChangeFlags = (flags: HealChangeFlag[] | undefined) => {
+  const set = new Set(flags || []);
+  if (set.has('delivery')) set.delete('delivery-add');
+  return (['client', 'delivery', 'delivery-add'] as HealChangeFlag[]).filter(flag => set.has(flag));
+};
+
+const ChangePills: React.FC<{ flags: HealChangeFlag[] | undefined }> = ({ flags }) => (
+  <>
+    {visibleChangeFlags(flags).map(flag => (
+      <ChangePill key={flag} tone={CHANGE_META[flag].tone}>{CHANGE_META[flag].label}</ChangePill>
+    ))}
+  </>
 );
 
 // ISO 时间 → yyyy-MM-dd HH:mm（记录列表里按本地时区展示）
@@ -373,10 +426,13 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
           specCount: specs.length,
           outdatedSpecs: specs.filter(s => s.status === 'outdated').length,
           okSpecs: specs.filter(s => s.status === 'ok').length,
+          skippedSpecs: specs.filter(s => s.status === 'skipped').length,
           unresolvedSpecs: specs.filter(s => s.status === 'unresolved').length,
           outdatedItems: specs.reduce((sum, s) => sum + (s.status === 'outdated' ? s.itemCount : 0), 0),
           totalItems: prev.summary?.totalItems ?? prev.totalItems,
           skippedItems: prev.summary?.skippedItems ?? prev.skippedItems,
+          noGunItems: prev.summary?.noGunItems ?? prev.noGunItems ?? 0,
+          unparsedItems: prev.summary?.unparsedItems ?? prev.unparsedItems ?? 0,
         };
         return { ...prev, specs, summary };
       });
@@ -437,8 +493,14 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
               .filter(entry => entry.status === 'outdated')
               .map(entry => entry.specNumber);
             setSelected(new Set(outdated));
+            const skippedCount = snapshot.summary?.skippedSpecs ?? 0;
             if (outdated.length === 0) {
-              addToast('本月任务里的客户名与纳期都是最新的', 'success');
+              addToast(
+                skippedCount > 0
+                  ? `本月没有需要更新的仕样号，${skippedCount} 个已跳过（不含枪名行 / 后缀认不出）`
+                  : '本月任务里的客户名与纳期都是最新的',
+                'success',
+              );
             } else {
               addToast(`检测完成：${outdated.length} 个仕样号需要更新`, 'success');
             }
@@ -477,10 +539,20 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
     return specs.filter(entry => entry.status === filter);
   }, [specs, filter]);
 
+  // 「全选」作用于当前筛选下可勾选的条目：只有「需更新」能勾，
+  // 所以在「已最新 / 已跳过 / 无法核对」分类下全选按钮会置灰，避免产生看不见的勾选。
+  const selectableSpecs = useMemo(
+    () => filteredSpecs.filter(entry => entry.status === 'outdated'),
+    [filteredSpecs],
+  );
+  const allSelectableSelected = selectableSpecs.length > 0
+    && selectableSpecs.every(entry => selected.has(entry.specNumber));
+
   const filterCounts = useMemo(() => ({
     all: specs.length,
     outdated: outdatedSpecs.length,
     ok: specs.filter(entry => entry.status === 'ok').length,
+    skipped: specs.filter(entry => entry.status === 'skipped').length,
     unresolved: specs.filter(entry => entry.status === 'unresolved').length,
   }), [specs, outdatedSpecs]);
 
@@ -502,8 +574,13 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
     });
   };
 
-  const selectAllOutdated = () => setSelected(new Set(outdatedSpecs.map(entry => entry.specNumber)));
-  const clearSelection = () => setSelected(new Set());
+  const toggleSelectAll = () => {
+    if (allSelectableSelected) {
+      setSelected(new Set());
+      return;
+    }
+    setSelected(new Set(selectableSpecs.map(entry => entry.specNumber)));
+  };
 
   if (!open) return null;
 
@@ -512,7 +589,6 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
   const progressPct = progressTotal > 0
     ? Math.min(100, Math.round((progressDone / progressTotal) * 100))
     : 0;
-  const allOutdatedSelected = outdatedSpecs.length > 0 && selectedSpecs.length === outdatedSpecs.length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
@@ -608,7 +684,7 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                   检测 {monthLabel(scanYear, scanMonth)} 的仕样号
                 </div>
                 <div className="text-[11px] text-gray-500 truncate">
-                  逐个读取仕样书，比对任务名中的客户名与纳期 [M/D]
+                  逐个读取仕样书，比对含枪名行任务的客户名与纳期 [M/D]
                 </div>
               </div>
             </div>
@@ -660,16 +736,17 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
           )}
 
           {job?.summary && !scanning && (
-            <div className="mt-3 grid grid-cols-4 gap-2">
+            <div className="mt-3 grid grid-cols-5 gap-2">
               {[
                 { label: '本月仕样号', value: job.summary.specCount, tone: 'text-gray-800' },
                 { label: '需更新仕样号', value: job.summary.outdatedSpecs, tone: 'text-amber-600' },
                 { label: '需更新任务', value: job.summary.outdatedItems, tone: 'text-violet-600' },
+                { label: '已跳过', value: job.summary.skippedSpecs ?? 0, tone: 'text-slate-500' },
                 { label: '无法核对', value: job.summary.unresolvedSpecs, tone: 'text-gray-500' },
               ].map(card => (
-                <div key={card.label} className="rounded-lg border border-gray-200 bg-gray-50/70 px-3 py-2">
+                <div key={card.label} className="rounded-lg border border-gray-200 bg-gray-50/70 px-2.5 py-2">
                   <div className={`text-[17px] font-black leading-none tabular-nums ${card.tone}`}>{card.value}</div>
-                  <div className="text-[10px] text-gray-500 mt-1">{card.label}</div>
+                  <div className="text-[10px] text-gray-500 mt-1 whitespace-nowrap">{card.label}</div>
                 </div>
               ))}
             </div>
@@ -739,12 +816,52 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                 <p className="text-[12px] text-gray-500 mt-1.5 leading-relaxed max-w-[430px]">
                   点击右上角「开始检测」，系统会扫描 {monthLabel(scanYear, scanMonth)} 任务里的仕样号，
                   逐份读取仕样书，找出客户名或纳期与仕样书不一致的任务。
+                  不含枪名行的任务、以及任务内容后缀认不出来（如更改通知单号不是 FY 开头）的任务都不参与更新，
+                  涉及的仕样号标记为「已跳过」。
                 </p>
               </div>
             </div>
           ) : (
             <>
               <div className="shrink-0 flex items-center gap-1.5 px-5 py-2 border-b border-gray-200 bg-white">
+                <button
+                  type="button"
+                  disabled={selectableSpecs.length === 0}
+                  onClick={toggleSelectAll}
+                  title={
+                    selectableSpecs.length === 0
+                      ? '当前分类下没有可勾选的仕样号'
+                      : allSelectableSelected
+                        ? '取消勾选当前列表里的全部仕样号'
+                        : `勾选当前列表里 ${selectableSpecs.length} 个需更新的仕样号`
+                  }
+                  className={`flex items-center gap-1.5 shrink-0 pl-1 pr-2 py-1 mr-1 rounded-md border-r border-gray-200 text-[11px] font-bold transition ${
+                    selectableSpecs.length === 0
+                      ? 'text-gray-300 cursor-not-allowed'
+                      : allSelectableSelected
+                        ? 'text-[#217346] hover:bg-emerald-50'
+                        : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition ${
+                      selectedSpecs.length > 0
+                        ? selectableSpecs.length === 0
+                          ? 'bg-gray-300 border-gray-300 text-white'
+                          : 'bg-[#217346] border-[#217346] text-white'
+                        : selectableSpecs.length === 0
+                          ? 'border-gray-200 bg-gray-100'
+                          : 'border-gray-300 bg-white'
+                    }`}
+                  >
+                    {allSelectableSelected
+                      ? <Check size={11} strokeWidth={3} />
+                      : selectedSpecs.length > 0
+                        ? <Minus size={11} strokeWidth={3} />
+                        : null}
+                  </span>
+                  <span>{allSelectableSelected ? '取消全选' : '全选'}</span>
+                </button>
                 {SPEC_FILTERS.map(tab => {
                   const active = filter === tab.key;
                   return (
@@ -765,9 +882,17 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                     </button>
                   );
                 })}
-                <div className="ml-auto flex items-center gap-2 text-[11px] text-gray-400">
-                  <FileSearch size={12} />
-                  <span>共 {job?.summary?.totalItems ?? 0} 条任务，认不出仕样号 {job?.summary?.skippedItems ?? 0} 条</span>
+                <div className="ml-auto flex items-center gap-2 min-w-0 text-[11px] text-gray-400">
+                  <FileSearch size={12} className="shrink-0" />
+                  <span className="truncate">
+                    共 {job?.summary?.totalItems ?? 0} 条任务，认不出仕样号 {job?.summary?.skippedItems ?? 0} 条
+                    {(job?.summary?.noGunItems ?? 0) > 0
+                      ? ` · 不含枪名行 ${job?.summary?.noGunItems} 条`
+                      : ''}
+                    {(job?.summary?.unparsedItems ?? 0) > 0
+                      ? ` · 后缀认不出 ${job?.summary?.unparsedItems} 条`
+                      : ''}
+                  </span>
                   {canViewLogs && (
                     <button
                       type="button"
@@ -806,7 +931,13 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                           type="button"
                           disabled={!canSelect}
                           onClick={() => toggleSpec(entry.specNumber)}
-                          title={canSelect ? '勾选后参与本次更新' : '该仕样号无需更新'}
+                          title={
+                            canSelect
+                              ? '勾选后参与本次更新'
+                              : entry.status === 'skipped'
+                                ? entry.message
+                                : '该仕样号无需更新'
+                          }
                           className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition ${
                             checked
                               ? 'bg-[#217346] border-[#217346] text-white'
@@ -830,8 +961,7 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                         <div className="flex-1 min-w-0 flex items-center gap-1.5 flex-wrap">
                           {entry.status === 'outdated' && (
                             <>
-                              {entry.changes.includes('client') && <ChangePill tone="blue">客户名</ChangePill>}
-                              {entry.changes.includes('delivery') && <ChangePill tone="violet">纳期</ChangePill>}
+                              <ChangePills flags={entry.changes} />
                               <span className="text-[11px] text-gray-500">
                                 {entry.itemCount} 条任务待改写
                               </span>
@@ -844,6 +974,15 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                           )}
                           {entry.status === 'unresolved' && (
                             <span className="text-[11px] text-gray-400 truncate">{entry.message}</span>
+                          )}
+                          {entry.status === 'skipped' && (
+                            <span className="text-[11px] text-slate-500 truncate">
+                              {entry.message}
+                              {(entry.noGunItemCount ?? 0) > 0 ? `（${entry.noGunItemCount} 条任务不含枪名行）` : ''}
+                              {(entry.unparsedItemCount ?? 0) > 0
+                                ? `（${entry.unparsedItemCount} 条任务的后缀认不出来）`
+                                : ''}
+                            </span>
                           )}
                         </div>
 
@@ -870,8 +1009,7 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                               <div className="flex items-center gap-2 mb-1 text-[11px]">
                                 <span className="font-bold text-gray-700">{item.designerName || '未知设计员'}</span>
                                 <span className="text-gray-400 tabular-nums">{shortDate(item.date)}</span>
-                                {item.changes.includes('client') && <ChangePill tone="blue">客户名</ChangePill>}
-                                {item.changes.includes('delivery') && <ChangePill tone="violet">纳期</ChangePill>}
+                                <ChangePills flags={item.changes} />
                               </div>
                               <div className="flex items-start gap-1.5 text-[11px] leading-relaxed">
                                 <span className="text-gray-400 line-through break-all">{item.taskName}</span>
@@ -915,23 +1053,10 @@ const SpecSelfHealModal: React.FC<SpecSelfHealModalProps> = ({
                 <span>
                   预计改写 <b className="text-gray-800">{selectedItemCount}</b> 条任务
                 </span>
-                {!allOutdatedSelected && (
-                  <button
-                    type="button"
-                    onClick={selectAllOutdated}
-                    className="ml-1 text-[11px] font-bold text-[#217346] hover:underline"
-                  >
-                    全选本月需更新
-                  </button>
-                )}
-                {selectedSpecs.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={clearSelection}
-                    className="text-[11px] text-gray-400 hover:text-gray-600"
-                  >
-                    清空
-                  </button>
+                {selectedSpecs.length < outdatedSpecs.length && (
+                  <span className="text-gray-400">
+                    （共 {outdatedSpecs.length} 个需更新，可点列表上方「全选」）
+                  </span>
                 )}
               </>
             ) : (
