@@ -111,6 +111,7 @@ interface ActionLog {
   action?: string;
   method?: string;
   path?: string;
+  requestBody?: string | Record<string, unknown> | null;
 }
 
 const normalizeAuditPath = (path = '') => {
@@ -119,6 +120,82 @@ const normalizeAuditPath = (path = '') => {
     .replace(/^\/api\/?/, '')
     .replace(/^\/+/, '')
     .replace(/\/+$/, '');
+};
+
+// ---------- 任务更新动作细化（与后端 auditLogDisplay.js 保持同一套规则） ----------
+// PUT /api/tasks/item 同时承载「改内容 / 改工时 / 改完成状态」，
+// 只看方法 + 路径会把标记完成显示成「修改任务内容或工时」。
+// 这里按请求体里的 field/value 还原真实动作，历史日志也能一并纠正。
+const TASK_ITEM_UPDATE_PATHS = new Set(['tasks/item', 'item', 'tasks']);
+
+const parseRequestBody = (body: ActionLog['requestBody']) => {
+  if (!body) return null;
+  if (typeof body === 'object') return body;
+  const text = String(body).trim();
+  if (!text.startsWith('{')) return null;
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    // 请求体被截断时无法还原，退回通用文案
+    return null;
+  }
+};
+
+const isWhiteColorValue = (value: unknown) => {
+  const text = String(value ?? '').trim().toLowerCase();
+  return text === '#ffffff' || text === '#fff';
+};
+
+const isRestoreColorValue = (value: unknown) => String(value ?? '').trim() === '__restore__';
+
+interface ActionDisplay {
+  label: string;
+  description: string;
+}
+
+const getTaskItemUpdateDisplay = (log: ActionLog): ActionDisplay | null => {
+  const method = String(log.method || '').toUpperCase();
+  if (method !== 'PUT') return null;
+  if (!TASK_ITEM_UPDATE_PATHS.has(normalizeAuditPath(log.path || ''))) return null;
+
+  const payload = parseRequestBody(log.requestBody);
+  if (!payload) return null;
+
+  const field = payload.field;
+  const value = payload.value;
+
+  switch (field) {
+    case 'color':
+      if (isRestoreColorValue(value)) {
+        return { label: '取消任务完成标记', description: '取消任务的完成标记' };
+      }
+      if (isWhiteColorValue(value)) {
+        return { label: '标记任务完成', description: '将任务标记为已完成' };
+      }
+      return { label: '修改任务色标', description: '修改任务色标（按任务类型改色）' };
+    case 'gunColor':
+      if (isRestoreColorValue(value)) {
+        return { label: '取消枪名完成标记', description: '取消焊枪枪名的完成标记' };
+      }
+      if (isWhiteColorValue(value)) {
+        return { label: '标记枪名完成', description: '将焊枪枪名标记为已完成' };
+      }
+      return { label: '修改枪名色标', description: '修改焊枪枪名的色标' };
+    case 'hours':
+      return { label: '修改任务工时', description: '修改任务的计划工时' };
+    case 'taskName':
+      return { label: '修改任务名称', description: '修改任务名称' };
+    case 'guns':
+      return { label: '修改枪名工时', description: '修改任务下的枪名或枪名工时' };
+    case 'leaveType':
+      return { label: '修改任务类型', description: '修改任务类型（请假、出差等）' };
+    case 'urgent':
+      return { label: '修改任务加急标记', description: '标记或取消任务的加急状态' };
+    case 'paused':
+      return { label: '修改任务暂停标记', description: '标记或取消任务的暂停／取消状态' };
+    default:
+      return null;
+  }
 };
 
 const routeActionDescriptions: Record<string, { label: string; description: string }> = {
@@ -158,9 +235,9 @@ const routeActionDescriptions: Record<string, { label: string; description: stri
   'POST tasks/batch-replace': { label: '批量替换任务', description: '批量替换任务内容或枪名' },
   'POST batch-replace': { label: '批量替换任务', description: '批量替换任务内容或枪名' },
   'POST tasks': { label: '添加任务', description: '新增任务记录' },
-  'PUT tasks/item': { label: '更新任务', description: '修改任务内容或工时' },
-  'PUT item': { label: '更新任务', description: '修改任务内容或工时' },
-  'PUT tasks': { label: '更新任务', description: '修改任务内容或工时' },
+  'PUT tasks/item': { label: '更新任务', description: '修改任务信息（内容、工时或完成状态）' },
+  'PUT item': { label: '更新任务', description: '修改任务信息（内容、工时或完成状态）' },
+  'PUT tasks': { label: '更新任务', description: '修改任务信息（内容、工时或完成状态）' },
   'DELETE tasks/item': { label: '删除任务', description: '删除任务记录' },
   'DELETE item': { label: '删除任务', description: '删除任务记录' },
   'DELETE tasks': { label: '删除任务', description: '删除任务记录' },
@@ -267,7 +344,7 @@ const routeActionDescriptions: Record<string, { label: string; description: stri
   'PATCH gun-ledger/tables/order': { label: '调整表格排序', description: '调整焊枪编号台账表格的排列顺序' },
   'PATCH gun-ledger/tables/:tableId': { label: '修改台账表格', description: '修改焊枪编号台账表格信息（如表格名称）' },
   'DELETE gun-ledger/tables/:tableId': { label: '删除台账表格', description: '删除指定的焊枪编号台账表格' },
-  'PUT gun-ledger/tables/:tableId/rows': { label: '保存台账数据', description: '保存焊枪编号、责任人等台账行数据' },
+  'PUT gun-ledger/tables/:tableId/rows': { label: '保存台账数据', description: '保存台账行数据' },
   'PUT gun-ledger/tables/:tableId/gun-name-rule': { label: '更新焊枪名生成规则', description: '修改该表格的焊枪名自动生成规则' },
   'POST gun-ledger/tables/:tableId/initialize-gun-names': { label: '焊枪名初始化', description: '清空表格并按规则重新生成焊枪名' },
   'POST gun-ledger/tables/:tableId/clear-gun-names': { label: '清空焊枪名', description: '清空指定表格的焊枪名（旧版操作）' },
@@ -366,6 +443,12 @@ const getRouteActionLabel = (method?: string, path?: string) => {
 export const getActionTypeLabel = (actionOrLog: string | ActionLog) => {
   const log = typeof actionOrLog === 'string' ? { action: actionOrLog } : actionOrLog;
   const action = log.action || '';
+
+  // 任务更新先按请求体细化（标记完成 / 取消完成 / 改工时…），
+  // 只有拿不到 field 时才退回「更新任务」的通用描述
+  const taskUpdateDisplay = getTaskItemUpdateDisplay(log);
+  if (taskUpdateDisplay) return taskUpdateDisplay;
+
   const routeLabel = getRouteActionLabel(log.method, log.path);
   if (routeLabel) return routeLabel;
 
@@ -399,7 +482,20 @@ export const getActionTypeLabel = (actionOrLog: string | ActionLog) => {
     '管理设计员': { label: '管理设计员', description: '查看设计员管理列表' },
     '重新排序设计员': { label: '重新排序设计员', description: '重新排序设计员列表' },
     '添加任务': { label: '添加任务', description: '新增任务记录' },
-    '更新任务': { label: '更新任务', description: '修改任务信息' },
+    '更新任务': { label: '更新任务', description: '修改任务信息（内容、工时或完成状态）' },
+    '标记任务完成': { label: '标记任务完成', description: '将任务标记为已完成' },
+    '取消任务完成标记': { label: '取消任务完成标记', description: '取消任务的完成标记' },
+    '修改任务色标': { label: '修改任务色标', description: '修改任务色标（按任务类型改色）' },
+    '标记枪名完成': { label: '标记枪名完成', description: '将焊枪枪名标记为已完成' },
+    '取消枪名完成标记': { label: '取消枪名完成标记', description: '取消焊枪枪名的完成标记' },
+    '修改枪名色标': { label: '修改枪名色标', description: '修改焊枪枪名的色标' },
+    '修改枪名工时': { label: '修改枪名工时', description: '修改任务下的枪名或枪名工时' },
+    '修改任务工时': { label: '修改任务工时', description: '修改任务的计划工时' },
+    '修改任务名称': { label: '修改任务名称', description: '修改任务名称' },
+    '修改任务内容': { label: '修改任务名称', description: '修改任务名称' },
+    '修改任务类型': { label: '修改任务类型', description: '修改任务类型（请假、出差等）' },
+    '修改任务加急标记': { label: '修改任务加急标记', description: '标记或取消任务的加急状态' },
+    '修改任务暂停标记': { label: '修改任务暂停标记', description: '标记或取消任务的暂停／取消状态' },
     '删除任务': { label: '删除任务', description: '删除任务记录' },
     '查看任务': { label: '查看任务', description: '查看任务列表' },
     '批量添加任务': { label: '批量添加任务', description: '批量新增任务记录' },

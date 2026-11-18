@@ -1,6 +1,6 @@
 const db = require('../db');
 const crypto = require('crypto');
-const { getBrowserInfo, getRouteActionDisplay } = require('../utils/auditLogDisplay');
+const { getBrowserInfo, getRouteActionDisplay, getTaskItemUpdateDisplay } = require('../utils/auditLogDisplay');
 
 // 操作日志写入 audit_logs 独立表。
 // 早期实现把日志塞进 kv_store 的整库 JSON，每写一条都要 readDb()（整库深拷贝）
@@ -166,6 +166,11 @@ const getActionDescription = (method, path, body) => {
   const pathParts = path.split('/');
   const resource = pathParts[2] || '';
   const action = pathParts[3] || '';
+
+  // 任务更新要按请求体区分「改内容 / 改工时 / 改完成状态」，
+  // 否则标记完成会被笼统记成「修改任务内容或工时」
+  const taskUpdateDisplay = getTaskItemUpdateDisplay(method, path, body);
+  if (taskUpdateDisplay) return taskUpdateDisplay.label;
 
   const routeDisplay = getRouteActionDisplay(method, path);
   if (routeDisplay) return routeDisplay.label;

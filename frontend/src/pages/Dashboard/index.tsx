@@ -13,6 +13,7 @@ import { acquireSocket } from '../../utils/socketClient';
 import { OFFLINE_SHEETS_CACHE_KEY } from '../../utils/offlineSheetsCache';
 import { getEffectiveIsWeekend, getWorkdayOverrideLabel, normalizeWorkdayOverrides, WorkdayOverrides, WorkdayOverrideType } from '../../utils/workdayOverrides';
 import { resolveAutoFillHours, GunLocation } from '../../utils/gunHoursRules';
+import { createGunUsageChecker } from '../../utils/gunUsage';
 import { PWD_INPUT_CLASS, PWD_EYE_BTN_CLASS, PWD_STRENGTH_META, scorePassword } from '../../utils/passwordFieldStyles';
 import { copyTaskTableToClipboard } from '../../utils/taskCopy';
 import {
@@ -1618,10 +1619,13 @@ const Dashboard = () => {
           });
         });
       });
-      // 标记已被主任务使用的枪名（与台账页天蓝色标识含义一致）；拉取失败不影响匹配结果
+      // 标记已被主任务使用的枪名（与台账页天蓝色标识同口径：按编号比对，
+      // SRTC-2C15011 也算被 SRTC-2C15011-WL 使用）；拉取失败不影响匹配结果
       const usedRes = await axiosInstance.get('/tasks/used-gun-names').catch(() => null);
-      const usedSet = new Set<string>((usedRes?.data?.gunNames || []).map((n: string) => String(n).trim()));
-      matches.forEach(m => { m.used = usedSet.has(m.gunName); });
+      const isGunNameUsed = createGunUsageChecker(
+        (usedRes?.data?.gunNames || []).map((n: string) => String(n).trim())
+      );
+      matches.forEach(m => { m.used = isGunNameUsed(m.gunName); });
 
       // 当前任务里已存在的同名枪名（渲染时打「已存在」标签、禁止再添加，这里先算出来参与排序）
       const existingNames = new Set<string>();

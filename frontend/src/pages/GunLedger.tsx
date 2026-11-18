@@ -41,6 +41,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSystemSettings, DefaultGunHours } from '../context/SystemSettingsContext';
 import { useDebounce } from '../utils/debounce';
 import { acquireSocket } from '../utils/socketClient';
+import { createGunUsageChecker } from '../utils/gunUsage';
 import {
   ALL_GROUPS,
   ALL_GROUPS_LABEL,
@@ -393,7 +394,8 @@ const GunLedger: React.FC = () => {
   // 台账仕样自愈弹窗：按仕样书校准「客户」列（管理员可用，检测走服务端 job + 分页明细）
   const [showHealPanel, setShowHealPanel] = useState(false);
   const [, setSpecLookupLoading] = useState(false);
-  // 已被主任务使用的焊枪名集合：命中者枪名显示天蓝色
+  // 主任务使用过的焊枪名（原样收集）：命中者枪名显示天蓝色
+  // 比对不按整串，而是按「编号」——编号之后的后缀/备注不同也算使用，见 utils/gunUsage
   const [usedGunNames, setUsedGunNames] = useState<Set<string>>(new Set());
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
   const [addCategoryValue, setAddCategoryValue] = useState('');
@@ -569,7 +571,7 @@ const GunLedger: React.FC = () => {
     if (canAccess) fetchLedger();
   }, [canAccess, fetchLedger]);
 
-  // 拉取已被主任务使用的焊枪名集合（用于枪名天蓝色标识）
+  // 拉取主任务使用过的焊枪名（用于枪名天蓝色标识）
   const fetchUsedGunNames = useCallback(async () => {
     try {
       const res = await axiosInstance.get('/tasks/used-gun-names');
@@ -578,6 +580,9 @@ const GunLedger: React.FC = () => {
       // 拉取失败仅影响高亮，不打断台账本身的使用
     }
   }, [authHeader]);
+
+  // 枪名使用判定：按编号比对（SRTC-2C15011 视同被 SRTC-2C15011-WL 使用）
+  const isGunNameUsed = useMemo(() => createGunUsageChecker(usedGunNames), [usedGunNames]);
 
   useEffect(() => {
     if (canAccess) fetchUsedGunNames();
@@ -932,7 +937,7 @@ const GunLedger: React.FC = () => {
             category,
             tableName: table.name,
             hours: resolveGunHours('confirm', gunName, { category, tableName: table.name }, systemSettings) ?? 0,
-            used: usedGunNames.has(gunName),
+            used: isGunNameUsed(gunName),
           });
         });
       });
@@ -944,7 +949,7 @@ const GunLedger: React.FC = () => {
       seen.add(row.gunName);
       return true;
     });
-  }, [ledger, user, usedGunNames, systemSettings]);
+  }, [ledger, user, isGunNameUsed, systemSettings]);
 
   // 连按两次 Shift（间隔 400ms 内、光标不在输入框内）打开「快速确认图安排」
   useEffect(() => {
@@ -3044,7 +3049,7 @@ const GunLedger: React.FC = () => {
                         if (checked && activeTable) {
                           const hasAvailable = (activeTable.rows || []).some(r => {
                             const name = String(r.gunName || '').trim();
-                            return name && !usedGunNames.has(name);
+                            return name && !isGunNameUsed(name);
                           });
                           if (!hasAvailable) {
                             addToast('当前表没有可分配的枪名：所有已取号枪名均已被主任务使用，或尚未取号', 'error');
@@ -3203,10 +3208,10 @@ const GunLedger: React.FC = () => {
                                       onFocus={() => { if (previewOnly) { addToast(previewTitle, 'error'); return; } handleCellFocus(activeTable.id, row.serialNumber); }}
                                       onBlur={handleCellBlur}
                                       onKeyDown={e => handleKeyDown(e, rowIdx, colIdx)}
-                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${readOnly ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${previewOnly ? 'text-gray-400' : value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && !previewOnly && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && !previewOnly && usedGunNames.has(value.trim()) ? 'text-sky-600 font-bold' : ''}`}
+                                      className={`w-full ${assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !isGunNameUsed(value) ? 'pr-7' : ''} px-2 py-1.5 bg-transparent outline-none ${readOnly ? 'cursor-not-allowed bg-gray-100' : 'focus:bg-emerald-100'} ${previewOnly ? 'text-gray-400' : value ? 'text-gray-700' : 'text-gray-400'} ${field === 'gunName' && value && !previewOnly && duplicateGunNames.has(value.trim()) ? 'ring-2 ring-red-500 bg-red-50 text-red-700 font-bold' : field === 'gunName' && value && !previewOnly && isGunNameUsed(value) ? 'text-sky-600 font-bold' : ''}`}
                                     />
-                                    {/* 已被主任务使用的枪名不显示勾选框（不允许重复分配确认图任务） */}
-                                    {assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !usedGunNames.has(value.trim()) && (
+                                    {/* 已被主任务使用的枪名不显示勾选框（不允许重复分配确认图任务）；按编号判定 */}
+                                    {assignmentMode && !activeTableReadOnly && field === 'gunName' && !isPlaceholder && value.trim() && !isGunNameUsed(value) && (
                                       <input
                                         type="checkbox"
                                         checked={selectedGunRowIds.has(row.id)}

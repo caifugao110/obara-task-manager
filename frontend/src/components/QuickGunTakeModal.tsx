@@ -24,6 +24,7 @@ import { axiosInstance } from '../services/api';
 import { useSystemSettings } from '../context/SystemSettingsContext';
 import { acquireSocket } from '../utils/socketClient';
 import { resolveGunHours } from '../utils/gunHoursRules';
+import { createGunUsageChecker } from '../utils/gunUsage';
 import type { TaskSheet } from '../types';
 import QuickConfirmAssignModal, { type QuickConfirmGunRow } from './QuickConfirmAssignModal';
 import { useModalDrag } from '../hooks/useModalDrag';
@@ -116,13 +117,14 @@ interface QuickGunTakeModalProps {
 
 // 记住上次取号用的表：同一批料常连续取号，下次呼出直接停在原表
 const LAST_TABLE_KEY = 'quickGunTake.lastTableId';
-const LAST_COUNT_KEY = 'quickGunTake.count';
+// 取号数量不记忆：每次打开、每取完一批都回到默认 1，避免沿用上次的多号数量误取
+const DEFAULT_COUNT = 1;
 // 单次连续取号上限（与后端 QUICK_TAKE_MAX_COUNT 保持一致）
 const MAX_COUNT = 10;
 
 const clampCount = (value: number) => {
-  if (!Number.isFinite(value)) return 1;
-  return Math.min(MAX_COUNT, Math.max(1, Math.round(value)));
+  if (!Number.isFinite(value)) return DEFAULT_COUNT;
+  return Math.min(MAX_COUNT, Math.max(DEFAULT_COUNT, Math.round(value)));
 };
 
 const isLockedByOther = (table: QuickTakeTable | null | undefined) =>
@@ -321,13 +323,9 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     setAssignOpen(false);
     setAssignRows([]);
     setAssignScope('today');
-    // 数量沿用上次的值：同一批料连续取号时通常数量相同
-    const rememberedCount = (() => {
-      try { return Number(localStorage.getItem(LAST_COUNT_KEY) || '') || 1; } catch { return 1; }
-    })();
-    const initialCount = clampCount(rememberedCount);
-    setCount(initialCount);
-    setCountInput(String(initialCount));
+    // 数量每次打开都回到默认 1：不记忆上次的值，避免连续取号后误取多个
+    setCount(DEFAULT_COUNT);
+    setCountInput(String(DEFAULT_COUNT));
     void fetchOptions();
   }, [open, fetchOptions]);
 
@@ -525,12 +523,11 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     }
   }, [allTables, tableId, options]);
 
-  // 数量变化：写入 state 与本地记忆，输入框保留用户正在敲的原文
+  // 数量变化：写入 state，输入框保留用户正在敲的原文（不做本地记忆，下次打开仍从 1 开始）
   const commitCount = useCallback((next: number) => {
     const value = clampCount(next);
     setCount(value);
     setCountInput(String(value));
-    try { localStorage.setItem(LAST_COUNT_KEY, String(value)); } catch { /* 隐私模式忽略 */ }
   }, []);
 
   // 「−/+」按增量更新：连点时以最新 state 为基准，避免两次点击读到同一个旧值
@@ -539,7 +536,6 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       const next = clampCount(prev + delta);
       if (next === prev) return prev;
       setCountInput(String(next));
-      try { localStorage.setItem(LAST_COUNT_KEY, String(next)); } catch { /* 隐私模式忽略 */ }
       return next;
     });
   }, []);
@@ -613,11 +609,13 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
       });
       // 结果用独立模态框展示，不再在右栏堆一张绿色卡片；toast 也会与结果框重复，这里不再弹
       setResultOpen(true);
-      // 表单复位：客户清空、备注清空、担当/数量/前缀保留，关掉结果框即可继续取
+      // 表单复位：客户清空、数量回到默认 1（避免下一批沿用本次的多号数量误取），前缀保留
       setCustomer('');
       setResolvedClient(null);
       setSpecNotFound(false);
       setCopied(false);
+      setCount(DEFAULT_COUNT);
+      setCountInput(String(DEFAULT_COUNT));
       await fetchOptions(true);
     } catch (err: any) {
       addToast(err?.response?.data?.message || '取号失败，请重试', 'error');
@@ -649,11 +647,13 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
     }
     setAssignLoading(true);
     try {
-      // 已被主任务使用的枪名不能再分配确认图任务（与台账页一致）
-      let usedGunNames = new Set<string>();
+      // 已被主任务使用的枪名不能再分配确认图任务（与台账页同口径：按编号比对）
+      let isGunNameUsed = createGunUsageChecker([]);
       try {
         const usedRes = await axiosInstance.get('/tasks/used-gun-names');
-        usedGunNames = new Set((usedRes.data?.gunNames || []).map((n: string) => String(n).trim()));
+        isGunNameUsed = createGunUsageChecker(
+          (usedRes.data?.gunNames || []).map((n: string) => String(n).trim())
+        );
       } catch {
         // 拉取失败仅影响「已安排」标识，不阻断安排流程
       }
@@ -687,7 +687,7 @@ const QuickGunTakeModal: React.FC<QuickGunTakeModalProps> = ({
         category: row.category,
         tableName: row.tableName,
         hours: resolveGunHours('confirm', row.gunName, { category: row.category, tableName: row.tableName }, systemSettings) ?? 0,
-        used: usedGunNames.has(String(row.gunName).trim()),
+        used: isGunNameUsed(row.gunName),
       })));
       setAssignOpen(true);
       return true;

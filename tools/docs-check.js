@@ -24,7 +24,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const DOCS = ['README.md', 'CHANGELOG.md', 'docs/README.md', 'docs/API.md', 'docs/DEPLOYMENT.md', 'docs/DEVELOPMENT.md', 'docs/TOOLS.md', 'docs/USER-GUIDE.md', 'weknora/README.md'];
+const DOCS = ['README.md', 'docs/CHANGELOG.md', 'docs/README.md', 'docs/API.md', 'docs/DEPLOYMENT.md', 'docs/DEVELOPMENT.md', 'docs/TOOLS.md', 'docs/USER-GUIDE.md', 'weknora/README.md'];
 
 const problems = [];
 const report = [];

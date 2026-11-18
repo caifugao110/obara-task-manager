@@ -1,17 +1,35 @@
 # 变更记录
 
-> 其他文档：[README](README.md) · [文档中心](docs/README.md) · [开发者指南](docs/DEVELOPMENT.md) · [Windows 部署指南](docs/DEPLOYMENT.md)
+> 其他文档：[README](../README.md) · [文档中心](README.md) · [开发者指南](DEVELOPMENT.md) · [Windows 部署指南](DEPLOYMENT.md)
 
 本文件由 **git 提交历史**汇总生成（`git log --date=short --pretty=format:'%ad|%s'`），不是手工维护的流水账：
 
 - 按提交日期倒序、月份分组；条目内容与提交信息一致，未做改写，便于用 `git show` 回溯。
-- 条目前缀沿用 Conventional Commits 的 `type(scope):`，含义见 [开发者指南 · 提交与发版](docs/DEVELOPMENT.md#7-提交与发版)。
-- **系统版本号不来自本文件**：`GET /api/system/version` 按「最后一次提交日期 + 当日提交计数」动态计算（规则见 [DEPLOYMENT.md · 版本检查](docs/DEPLOYMENT.md#版本检查)）。
-- 控制台 EXE 的发布版本由 CI 按日期生成并打 tag，见 [README · CI/CD](README.md#cicd)。
+- 条目前缀沿用 Conventional Commits 的 `type(scope):`，含义见 [开发者指南 · 提交与发版](DEVELOPMENT.md#7-提交与发版)。
+- **系统版本号不来自本文件**：`GET /api/system/version` 按「最后一次提交日期 + 当日提交计数」动态计算（规则见 [DEPLOYMENT.md · 版本检查](DEPLOYMENT.md#版本检查)）。
+- 控制台 EXE 的发布版本由 CI 按日期生成并打 tag，见 [README · CI/CD](../README.md#cicd)。
 
 ---
 
 ## 2026-11
+
+### 2026-11-17
+
+- feat: 启用用户自主改密功能并完善策略逻辑
+
+### 2026-11-16
+
+- feat(tasks): 添加表头列筛选功能及月份顺延清理逻辑
+
+### 2026-11-15
+
+- feat(tasks): 为查找结果添加状态色块与二次筛选功能
+- feat(tasks): 优化枪名拖拽落点准确性
+- feat: 添加台账仕样自愈功能
+
+### 2026-11-14
+
+- feat: 新增页面等比缩放功能及相关优化
 
 ### 2026-11-13
 
