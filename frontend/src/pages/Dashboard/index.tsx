@@ -520,9 +520,30 @@ const Dashboard = () => {
     };
   }, [batchDateOpen]);
 
-  // 关闭查找弹窗时收起日历，下次打开不带着上次的展开态
+  // 关闭查找弹窗时把这一次的查找整条清掉：日历收起、关键字清空、结果与二次筛选复位。
+  // 查找记录不做留存——下次打开必须是空白输入框（用户要求：不带上一次的查找记录）。
+  // 放在「关闭时」而不是「打开时」清，避免重新打开瞬间先渲染出旧关键字再被 effect 抹掉。
+  const batchSearchReqRef = useRef(0);
+  const batchFindWasOpenRef = useRef(false);
   useEffect(() => {
-    if (!batchReplaceOpen) setBatchDateOpen(false);
+    if (batchReplaceOpen) {
+      batchFindWasOpenRef.current = true;
+      return;
+    }
+    // 只有「开过又关掉」才清：首次挂载本来就空，不做无意义的状态写回
+    if (!batchFindWasOpenRef.current) return;
+    batchFindWasOpenRef.current = false;
+    // 作废还在路上的查找响应，防止关掉弹窗后迟到的结果又写回 state
+    batchSearchReqRef.current += 1;
+    setBatchDateOpen(false);
+    setBatchFindText('');
+    setBatchMatches([]);
+    setBatchMatchCount(0);
+    setBatchSearchDone(false);
+    setBatchSearchLoading(false);
+    setBatchDateFilters([]);
+    setBatchCalendarMonth('');
+    setBatchCompletionFilters(['done', 'todo']);
   }, [batchReplaceOpen]);
 
   // 日期筛选后的可见结果：未选日期时就是完成状态过滤后的全部命中
@@ -624,10 +645,6 @@ const Dashboard = () => {
   const deferredRefreshTimerRef = useRef<number | null>(null);
   const pendingFullRefreshRef = useRef(false);
   const isOfflineModeRef = useRef(isOfflineMode);
-
-  // 「~」连按截图的时间戳：物理键上 ~ = Shift+`，连按 ~ 必然连按两次 Shift，
-  // 双击 Shift（快速确认图修改）的判定要据此避开误触，因此把最近一次 ~ 的时间提到外层 ref。
-  const lastTildePressAtRef = useRef(0);
 
   useEffect(() => {
     isOfflineModeRef.current = isOfflineMode;
@@ -1057,8 +1074,6 @@ const Dashboard = () => {
       if (e.key === 'Shift') {
         if (e.repeat || shiftComboUsed) return;
         if (isTypingTarget()) return;
-        // 刚按过 ~（截屏快捷键）时打断判定：~ 就是 Shift+`，连按 ~ 不该弹出「确认图修改」
-        if (Date.now() - lastTildePressAtRef.current < 500) { resetTap(); return; }
         const now = Date.now();
         if (lastShiftAt && now - lastShiftAt <= DOUBLE_SHIFT_INTERVAL) {
           resetTap();
@@ -1166,7 +1181,7 @@ const Dashboard = () => {
     helpGuideOpen, batchReplaceOpen, changePasswordOpen,
   ]);
 
-  // 复制选中主任务（连按两次 ~ 触发）：把主任务行 + 全部枪名写成一张 HTML 表格放进剪贴板，
+  // 复制选中主任务（连按两次 C 触发）：把主任务行 + 全部枪名写成一张 HTML 表格放进剪贴板，
   // 表里只有任务名/枪名一列（不带工时）；items 必须来自同一个人同一天，按表格里的先后顺序传入
   const copyTaskAsTable = useCallback(async (items: TaskItem[]) => {
     if (!isAdmin) {
@@ -1196,7 +1211,7 @@ const Dashboard = () => {
   }, [isAdmin, systemSettings.taskColorConfig, addToast]);
 
   // 支持多选，但**只能选同一个人同一天**（跨单元格复制出来没法排成一张表）。
-  // trigger 只影响提示文案：shortcut = 连按两次 ~（默认），button = 页脚「复制任务为表格」按钮
+  // trigger 只影响提示文案：shortcut = 连按两次 C（默认），button = 页脚「复制任务为表格」按钮
   const copySelectedTaskAsTable = useCallback(async (trigger: 'shortcut' | 'button' = 'shortcut') => {
     if (!isAdmin) {
       addToast('仅管理员可复制主任务表格', 'error');
@@ -1207,7 +1222,7 @@ const Dashboard = () => {
       addToast(
         trigger === 'button'
           ? '请先选中主任务，再点击「复制任务为表格」'
-          : '请先选中主任务，再连按两次 ~ 复制',
+          : '请先选中主任务，再连按两次 C 复制',
         'error',
       );
       return;
@@ -1229,20 +1244,20 @@ const Dashboard = () => {
     await copyTaskAsTable(items);
   }, [isAdmin, sheets, copyTaskAsTable, addToast]);
 
-  // 复制：连按两次 ~（间隔 400ms 内）= 把当前选中的主任务复制成表格。
-  // ~ 在物理键上是 Shift+`，所以这里不能像空格那样排除 shiftKey；
-  // 光标在输入框/可编辑区域内、或已有弹窗打开时不参与判定，避免录入时误触。
-  // 识别方式同时认 e.key（'~' / 全角 '～'）与物理键位 code === 'Backquote'：
-  // 中文输入法开着时 e.key 可能是 'Process'、全角模式下是 '～'，只认 e.key 会静默失效。
+  // 复制：连按两次 C（间隔 400ms 内）= 把当前选中的主任务复制成表格。
+  // C 是字母键：Ctrl+C / Cmd+C（浏览器复制）必须整体让行，Shift+C 视作录入字符也不参与判定；
+  // 光标在输入框/可编辑区域内、或已有弹窗打开时同样不参与判定，避免录入时误触。
+  // 识别方式同时认 e.key（'c' / 'C'）与物理键位 code === 'KeyC'：
+  // 中文输入法开着时 e.key 可能是 'Process'，只认 e.key 会静默失效。
   // 权限：与「快速取号」「确认图修改」一致，**仅管理员**注册该监听（普通用户按键无任何反应）。
   useEffect(() => {
     if (!isAdmin) return;
-    // 离线模式下整条快捷键停用（不注册监听，连按 ~ 无反应），仅保留 Ctrl×2 定位
+    // 离线模式下整条快捷键停用（不注册监听，连按 C 无反应），仅保留 Ctrl×2 定位
     if (isOfflineMode) return;
-    const DOUBLE_TILDE_INTERVAL = 400;
-    let lastTildeAt = 0;
+    const DOUBLE_C_INTERVAL = 400;
+    let lastCAt = 0;
 
-    const resetTap = () => { lastTildeAt = 0; };
+    const resetTap = () => { lastCAt = 0; };
 
     const isTypingTarget = () => {
       const el = document.activeElement as HTMLElement | null;
@@ -1250,42 +1265,45 @@ const Dashboard = () => {
       return !!el.closest('input, textarea, select, [contenteditable="true"]');
     };
 
-    const handleTildeKeyDown = (e: KeyboardEvent) => {
-      const isTilde = e.key === '~' || e.key === '～' || e.code === 'Backquote';
-      if (!isTilde) {
-        // 其它按键一律打断判定，避免「敲了别的键再按 ~」被误判成连按
+    const handleDoubleCKeyDown = (e: KeyboardEvent) => {
+      // 组合键先让行：Ctrl+C / Cmd+C 是浏览器复制，Alt+C 留给系统菜单
+      if (e.ctrlKey || e.metaKey || e.altKey) {
         resetTap();
         return;
       }
-      // 输入框内一律不参与判定（输入法正在拼字时也走这条）；isComposing 不再单独拦，
-      // 否则中文输入法激活时按 ~ 会被整段忽略
-      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget()) {
+      const isC = e.code === 'KeyC' || e.key === 'c' || e.key === 'C';
+      if (!isC) {
+        // 其它按键一律打断判定，避免「敲了别的键再按 C」被误判成连按
         resetTap();
         return;
       }
-      // 记下时间：双击 Shift 的判定据此避让（见 handleDoubleShiftKeyDown）
-      lastTildePressAtRef.current = Date.now();
+      // 输入框内一律不参与判定（输入法正在拼字时也走这条）；isComposing 不单独拦，
+      // 否则中文输入法激活时按 C 会被整段忽略
+      if (e.repeat || e.shiftKey || isTypingTarget()) {
+        resetTap();
+        return;
+      }
       e.preventDefault();
       const now = Date.now();
-      if (lastTildeAt && now - lastTildeAt <= DOUBLE_TILDE_INTERVAL) {
+      if (lastCAt && now - lastCAt <= DOUBLE_C_INTERVAL) {
         resetTap();
         if (modalOpen || quickModifyOpen || quickGunTakeOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
         void copySelectedTaskAsTable();
       } else {
-        lastTildeAt = now;
+        lastCAt = now;
         // 第一次按下就给个回执：既是操作提示，也用来判断「按键到底有没有被识别到」
-        addToast('再按一次 ~ 复制选中主任务为表格', 'success');
+        addToast('再按一次 C 复制选中主任务为表格', 'success');
       }
     };
 
-    // 鼠标点击（选任务、点单元格）打断判定，避免「点一下再按 ~」被误判为连按
-    const handleTildeMouseDown = () => { resetTap(); };
+    // 鼠标点击（选任务、点单元格）打断判定，避免「点一下再按 C」被误判为连按
+    const handleDoubleCMouseDown = () => { resetTap(); };
 
-    window.addEventListener('keydown', handleTildeKeyDown);
-    window.addEventListener('mousedown', handleTildeMouseDown);
+    window.addEventListener('keydown', handleDoubleCKeyDown);
+    window.addEventListener('mousedown', handleDoubleCMouseDown);
     return () => {
-      window.removeEventListener('keydown', handleTildeKeyDown);
-      window.removeEventListener('mousedown', handleTildeMouseDown);
+      window.removeEventListener('keydown', handleDoubleCKeyDown);
+      window.removeEventListener('mousedown', handleDoubleCMouseDown);
     };
   }, [
     isAdmin, isOfflineMode, copySelectedTaskAsTable, modalOpen, quickModifyOpen, quickGunTakeOpen,
@@ -3186,7 +3204,7 @@ const Dashboard = () => {
   /**
    * 页脚快捷入口（仕样自愈 / 快速取号 / 安排确认图 / 查找 / 复制任务为表格）的胶囊按钮样式。
    * 离线时这些功能多数依赖后端，点了也只会弹「当前离线」错误；「复制任务为表格」虽只用本地已加载数据，
-   * 但与「连按两次 ~」快捷键保持同一口径（离线一并停用），所以统一置灰 + disabled。
+   * 但与「连按两次 C」快捷键保持同一口径（离线一并停用），所以统一置灰 + disabled。
    * onlineClasses 里已包含边框色/背景色/文字色/悬停色，离线分支不能再叠同名工具类
    * （Tailwind 的生成顺序决定谁生效，叠了会时灵时不灵）。
    */
@@ -3208,53 +3226,36 @@ const Dashboard = () => {
     }
 
     setBatchSearchLoading(true);
+    const reqId = ++batchSearchReqRef.current;
     try {
       const res = await axiosInstance.post('/tasks/batch-replace/search', getBatchSearchPayload());
+      // 弹窗已关闭（或又发起了新的一次查找）时丢弃这次响应，避免旧结果被写回空白窗口
+      if (reqId !== batchSearchReqRef.current) return;
       setBatchMatches(Array.isArray(res.data.matches) ? res.data.matches : []);
       setBatchMatchCount(res.data.matchCount || 0);
       setBatchSearchDone(true);
     } catch (err: any) {
+      if (reqId !== batchSearchReqRef.current) return;
       addToast(getRequestErrorMessage(err, '查找失败'), 'error');
     } finally {
-      setBatchSearchLoading(false);
+      if (reqId === batchSearchReqRef.current) setBatchSearchLoading(false);
     }
   };
 
   // 点击查找结果时定位到底部表格中的目标任务：
-  // 确保行可见（人员筛选/分组折叠）、选中高亮并滚动到该单元格，批量操作模态框保持打开。
+  // 先选中（蓝色边框留作当前选中态），再走与新增/安排成功后完全相同的定位链路：
+  // 目标不在当前月份就切月份、分组折叠就展开、被人员筛选挡掉就放开筛选，
+  // 滚到视口中央后用一圈粗描边连闪几下（locateFlash），让用户在密集的表格里一眼看到。
+  // 查找范围可以是「全部月份」，所以必须能跨月定位，不能只在当前视图里找 DOM。
   const handleBatchLocate = (match: BatchReplaceMatch) => {
     const designer = designers.find(d => d.id === match.designerId);
     if (!designer) return;
 
-    // 若该人员当前被筛选条件隐藏（如"全部"下被隐藏，或筛选成了其他人/其他分组），则切换筛选到该人员
-    const rowVisible = selectedDesignerId === 'all'
-      ? !designer.hidden
-      : selectedDesignerId.startsWith('group:')
-        ? (designer.group || '未分组') === selectedDesignerId.slice('group:'.length) && !designer.hidden
-        : selectedDesignerId === match.designerId;
-    if (!rowVisible) setSelectedDesignerId(match.designerId);
-
-    // 展开该人员所在分组
-    const group = designer.group || '未分组';
-    if (collapsedGroups[group]) {
-      setCollapsedGroups(prev => {
-        const next = { ...prev, [group]: false };
-        localStorage.setItem('collapsedGroups', JSON.stringify(next));
-        return next;
-      });
-    }
-
     // 选中任务以蓝色边框高亮
     setSelectedTasks([{ itemId: match.itemId, designerId: match.designerId, date: match.date }]);
 
-    // 等待表格重渲染后滚动定位（查找弹窗保持原样，不做半透明处理）
-    window.setTimeout(() => {
-      const escapeSelector = globalThis.CSS?.escape || ((value: string) => value.replace(/"/g, '\\"'));
-      const target = document.querySelector(
-        `[data-task-id="${escapeSelector(match.itemId)}"][data-designer-id="${escapeSelector(match.designerId)}"][data-date="${escapeSelector(match.date)}"]`
-      ) as HTMLElement | null;
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-    }, 120);
+    // 定位 + 闪烁高亮（查找弹窗保持原样，不做半透明处理）
+    locateTask({ designerId: match.designerId, date: match.date, itemId: match.itemId });
   };
 
   // 处理任务项的字段变更，将更改存入 pendingChanges 并实时更新界面。
@@ -4405,7 +4406,7 @@ const Dashboard = () => {
             <Search size={11} strokeWidth={2.6} />
             <span>查找</span>
           </button>
-          {/* 复制任务为表格：把原先只藏在「连按两次 ~」快捷键里的功能显式声明出来（仅管理员可见/可用） */}
+          {/* 复制任务为表格：把原先只藏在「连按两次 C」快捷键里的功能显式声明出来（仅管理员可见/可用） */}
           {isAdmin && (
             <button
               type="button"
@@ -4414,7 +4415,7 @@ const Dashboard = () => {
               title={
                 isOfflineMode
                   ? '当前离线，复制任务表格不可用'
-                  : '把选中的主任务（含全部枪名）复制成表格，可直接粘贴到别处（等同连按两次 ~，仅支持同一人同一天）'
+                  : '把选中的主任务（含全部枪名）复制成表格，可直接粘贴到别处（等同连按两次 C，仅支持同一人同一天）'
               }
               className={footerActionChipClass('border-indigo-300 bg-white/70 text-indigo-700 cursor-pointer hover:bg-indigo-600 hover:border-indigo-600 hover:text-white focus:ring-2 focus:ring-indigo-300/60')}
             >
@@ -4683,7 +4684,7 @@ const Dashboard = () => {
                     { keys: 'Ctrl×2', text: '定位今日任务', title: '连按两次 Ctrl：滚动定位到今日任务列' },
                     { keys: 'Shift×2', text: '添加确认图修改', title: '连按两次 Shift：添加确认图修改（添加后自动定位）' },
                     { keys: 'Space×2', text: '新增 / 编辑 / 取号', title: '连按两次空格：选中加号→新增任务；选中任务→编辑；无选中时快速取号' },
-                    { keys: '~×2', text: '复制主任务表格', title: '连按两次 ~：复制选中主任务为表格（可直接粘贴）；也可点左下角「复制任务为表格」按钮' },
+                    { keys: 'C×2', text: '复制主任务表格', title: '连按两次 C：复制选中主任务为表格（可直接粘贴）；也可点左下角「复制任务为表格」按钮' },
                     { keys: 'F×2', text: '打开「查找」', title: '连按两次 F：打开「查找」弹窗（按任务名 / 枪名查找并定位）' },
                   ].map((item, index) => (
                     <div
@@ -6345,6 +6346,8 @@ const Dashboard = () => {
                       }
                     }}
                     placeholder="输入关键字，例如仕样号 58645、客户名片段或枪名"
+                    autoComplete="off"
+                    spellCheck={false}
                     className="w-full h-10 pl-9 pr-3 bg-gray-50 border-2 border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-300 focus:bg-white transition"
                   />
                 </div>
@@ -6611,13 +6614,15 @@ const Dashboard = () => {
                   </div>
                 </div>
 
-                <span className="ml-auto min-w-0 truncate text-right text-[11px] text-gray-400 tabular-nums">
-                  {batchSearchDone
-                    ? (hasBatchFilter
-                        ? `筛选出 ${batchDateFilteredMatches.length} / ${batchMatches.length} 个`
-                        : `命中 ${batchMatches.length} 个任务 · ${batchMatchCount} 处字符`)
-                    : '支持任务名与枪名，英文不区分大小写'}
-                </span>
+                {/* 右侧状态文案：只在查找完成后显示命中/筛选统计。
+                    查找前的「支持任务名与枪名，英文不区分大小写」提示已按需求去掉，不占位。 */}
+                {batchSearchDone && (
+                  <span className="ml-auto min-w-0 truncate text-right text-[11px] text-gray-400 tabular-nums">
+                    {hasBatchFilter
+                      ? `筛选出 ${batchDateFilteredMatches.length} / ${batchMatches.length} 个`
+                      : `命中 ${batchMatches.length} 个任务 · ${batchMatchCount} 处字符`}
+                  </span>
+                )}
               </div>
             </div>
 

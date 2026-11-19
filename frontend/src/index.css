@@ -472,34 +472,55 @@ input[type="number"] {
   animation: sk-shimmer 1.6s ease-in-out infinite;
 }
 
-/* 任务定位高亮：安排/添加成功后，刚落到表格里的那条任务闪一下再淡出
-   （2.6s 后由 React 卸载节点，这里只负责「亮→灭」的视觉过渡） */
+/* 任务定位高亮：找到目标行后用一圈大红色粗描边「连闪 3 下」再淡出。
+   单次淡入在密集的表格里很难被眼睛捕捉到，连闪才能把视线立刻钉到目标行上；
+   颜色用大红色（#dc2626），与任务底色、选中蓝框都不撞色。
+   2.8s 后由 React 卸载节点（见 Dashboard 的 flashLocatedTask），这里只负责明暗节奏。 */
 @keyframes task-locate-pulse {
   0% {
     opacity: 0;
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.6);
   }
-  14% {
+  6% {
     opacity: 1;
+    box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.34);
   }
-  58% {
+  /* 以下 3 组「亮 → 暗」= 连闪 3 下：暗的那一帧不全灭，保留一道淡边，看得出是同一圈框在闪 */
+  18% {
+    opacity: 0.1;
+    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.12);
+  }
+  30% {
     opacity: 1;
-    box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.14);
+    box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.34);
+  }
+  42% {
+    opacity: 0.1;
+    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.12);
+  }
+  54% {
+    opacity: 1;
+    box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.34);
+  }
+  /* 闪完再亮一下作为收尾，然后整体淡出 */
+  70% {
+    opacity: 1;
+    box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.2);
   }
   100% {
     opacity: 0;
-    box-shadow: 0 0 0 9px rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 12px rgba(220, 38, 38, 0);
   }
 }
 
 .task-locate-flash {
-  animation: task-locate-pulse 2.6s ease-in-out both;
+  animation: task-locate-pulse 2.4s ease-in-out both;
 }
 
+/* 关闭动画偏好时不闪（闪烁对光敏感人群不友好），改为整段保持一圈静态描边 */
 @media (prefers-reduced-motion: reduce) {
   .task-locate-flash {
-    animation-duration: 2.6s;
-    animation-timing-function: linear;
+    animation: none;
   }
 }
 

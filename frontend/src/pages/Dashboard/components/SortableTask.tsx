@@ -173,15 +173,17 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
           style={{ top: -2, height: 2, backgroundColor: '#6b7280' }}
         />
       )}
-      {/* 定位高亮：安排/添加成功后滚到本行，用一圈绿色脉冲标出「就是这一条」，
-          2.6s 后淡出（locateFlash 由调用方计时清除）。层级压在最上面，但完全不挡鼠标 */}
+      {/* 定位高亮：查找到 / 安排新增成功后滚到本行，用一圈大红色粗框连闪几下标出「就是这一条」，
+          2.8s 后由调用方卸载（locateFlash 由调用方计时清除）。
+          大红色（#dc2626）在任何任务底色/选中蓝框上都跳得出来，描边 3px + 外圈光晕更醒目；
+          层级最高但完全不挡鼠标 */}
       {locateFlash && (
         <div
           className="task-locate-flash absolute inset-0 z-30 pointer-events-none"
           style={{
-            border: '2px solid #10b981',
-            borderRadius: 3,
-            backgroundColor: 'rgba(16,185,129,0.16)',
+            border: '3px solid #dc2626',
+            borderRadius: 4,
+            backgroundColor: 'rgba(220,38,38,0.16)',
           }}
         />
       )}
