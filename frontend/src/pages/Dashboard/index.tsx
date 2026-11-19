@@ -1195,15 +1195,21 @@ const Dashboard = () => {
     }
   }, [isAdmin, systemSettings.taskColorConfig, addToast]);
 
-  // 连按两次 ~ 触发：支持多选，但**只能选同一个人同一天**（跨单元格复制出来没法排成一张表）
-  const copySelectedTaskAsTable = useCallback(async () => {
+  // 支持多选，但**只能选同一个人同一天**（跨单元格复制出来没法排成一张表）。
+  // trigger 只影响提示文案：shortcut = 连按两次 ~（默认），button = 页脚「复制任务为表格」按钮
+  const copySelectedTaskAsTable = useCallback(async (trigger: 'shortcut' | 'button' = 'shortcut') => {
     if (!isAdmin) {
       addToast('仅管理员可复制主任务表格', 'error');
       return;
     }
     const selections = selectedTasksRef.current;
     if (selections.length === 0) {
-      addToast('请先选中主任务，再连按两次 ~ 复制', 'error');
+      addToast(
+        trigger === 'button'
+          ? '请先选中主任务，再点击「复制任务为表格」'
+          : '请先选中主任务，再连按两次 ~ 复制',
+        'error',
+      );
       return;
     }
     const { designerId, date } = selections[0];
@@ -3178,8 +3184,9 @@ const Dashboard = () => {
   };
 
   /**
-   * 页脚四个快捷入口（仕样自愈 / 快速取号 / 安排确认图 / 查找）的胶囊按钮样式。
-   * 离线时这四个功能全部依赖后端，点了也只会弹「当前离线」错误，因此统一置灰 + disabled。
+   * 页脚快捷入口（仕样自愈 / 快速取号 / 安排确认图 / 查找 / 复制任务为表格）的胶囊按钮样式。
+   * 离线时这些功能多数依赖后端，点了也只会弹「当前离线」错误；「复制任务为表格」虽只用本地已加载数据，
+   * 但与「连按两次 ~」快捷键保持同一口径（离线一并停用），所以统一置灰 + disabled。
    * onlineClasses 里已包含边框色/背景色/文字色/悬停色，离线分支不能再叠同名工具类
    * （Tailwind 的生成顺序决定谁生效，叠了会时灵时不灵）。
    */
@@ -4398,6 +4405,23 @@ const Dashboard = () => {
             <Search size={11} strokeWidth={2.6} />
             <span>查找</span>
           </button>
+          {/* 复制任务为表格：把原先只藏在「连按两次 ~」快捷键里的功能显式声明出来（仅管理员可见/可用） */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => void copySelectedTaskAsTable('button')}
+              disabled={isOfflineMode}
+              title={
+                isOfflineMode
+                  ? '当前离线，复制任务表格不可用'
+                  : '把选中的主任务（含全部枪名）复制成表格，可直接粘贴到别处（等同连按两次 ~，仅支持同一人同一天）'
+              }
+              className={footerActionChipClass('border-indigo-300 bg-white/70 text-indigo-700 cursor-pointer hover:bg-indigo-600 hover:border-indigo-600 hover:text-white focus:ring-2 focus:ring-indigo-300/60')}
+            >
+              <FileSpreadsheet size={11} strokeWidth={2.6} />
+              <span>复制任务为表格</span>
+            </button>
+          )}
           <div className="w-[1px] h-3 bg-gray-300"></div>
           <div className="flex items-center gap-1.5">
             <span className="font-bold">本月任务条目:</span>
@@ -4659,7 +4683,7 @@ const Dashboard = () => {
                     { keys: 'Ctrl×2', text: '定位今日任务', title: '连按两次 Ctrl：滚动定位到今日任务列' },
                     { keys: 'Shift×2', text: '添加确认图修改', title: '连按两次 Shift：添加确认图修改（添加后自动定位）' },
                     { keys: 'Space×2', text: '新增 / 编辑 / 取号', title: '连按两次空格：选中加号→新增任务；选中任务→编辑；无选中时快速取号' },
-                    { keys: '~×2', text: '复制主任务表格', title: '连按两次 ~：复制选中主任务为表格（可直接粘贴）' },
+                    { keys: '~×2', text: '复制主任务表格', title: '连按两次 ~：复制选中主任务为表格（可直接粘贴）；也可点左下角「复制任务为表格」按钮' },
                     { keys: 'F×2', text: '打开「查找」', title: '连按两次 F：打开「查找」弹窗（按任务名 / 枪名查找并定位）' },
                   ].map((item, index) => (
                     <div
