@@ -34,12 +34,9 @@ import {
     DragOverlay,
   } from '@dnd-kit/core';
 import {
-  SortableContext,
-  verticalListSortingStrategy,
   arrayMove,
 } from '@dnd-kit/sortable';
-import SortableTask from './components/SortableTask';
-import DroppableCell from './components/DroppableCell';
+import TaskTable, { type TaskTableHandlers } from './components/TaskTable';
 import QuickConfirmModifyModal from './components/QuickConfirmModifyModal';
 import SpecSelfHealModal from './components/SpecSelfHealModal';
 import QuickGunTakeModal from '../../components/QuickGunTakeModal';
@@ -71,7 +68,6 @@ import {
   getGunHoursTotalInputValue,
   isMeaningfulTask,
   getTaskHours,
-  buildTaskMetadataTitle,
   syncGunsWithTaskColor,
   splitTypedPausedSuffix,
   parseDesignChangeName,
@@ -750,9 +746,8 @@ const Dashboard = () => {
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const {
+    editingSessions,
     setEditingSessions,
-    getCellSessions,
-    getBlockingEditingSession,
     warnIfCellLocked,
     startEditingCell,
     stopEditingCell,
@@ -761,21 +756,26 @@ const Dashboard = () => {
   const canViewEditingUser = user?.role === 'superadmin' || user?.role === 'admin';
 
   const daysInMonth = getDaysInMonth(currentDate);
-  const firstDayOfMonth = startOfMonth(currentDate);
 
-  const days = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => {
-    const date = addDays(firstDayOfMonth, i);
-    const fullDate = format(date, 'yyyy-MM-dd');
-    const naturalIsWeekend = isWeekend(date);
-    return {
-      fullDate,
-      dayNum: i + 1,
-      monthNum: date.getMonth() + 1,
-      naturalIsWeekend,
-      isWeekend: getEffectiveIsWeekend(fullDate, naturalIsWeekend, workdayOverrides),
-      dayName: `星期${'日一二三四五六'[date.getDay()]}`
-    };
-  }), [daysInMonth, firstDayOfMonth, workdayOverrides]);
+  const days = useMemo(() => {
+    // startOfMonth() 每次调用都返回新的 Date 对象，所以放在 useMemo 内部算，
+    // 依赖数组里只用稳定的 currentDate：否则 days 每渲染都换引用，
+    // 下面 memo 化的 TaskTable 会跟着整表重渲，输入卡顿会原样回来。
+    const firstDayOfMonth = startOfMonth(currentDate);
+    return Array.from({ length: daysInMonth }, (_, i) => {
+      const date = addDays(firstDayOfMonth, i);
+      const fullDate = format(date, 'yyyy-MM-dd');
+      const naturalIsWeekend = isWeekend(date);
+      return {
+        fullDate,
+        dayNum: i + 1,
+        monthNum: date.getMonth() + 1,
+        naturalIsWeekend,
+        isWeekend: getEffectiveIsWeekend(fullDate, naturalIsWeekend, workdayOverrides),
+        dayName: `星期${'日一二三四五六'[date.getDay()]}`
+      };
+    });
+  }, [daysInMonth, currentDate, workdayOverrides]);
 
   // 主表格列宽：**100% 缩放时**横向正好放 4 天（VISIBLE_DAY_COLUMNS）。
   // 做法是「可用宽度 ÷ 4 = 一天的整列宽度」，再扣掉固定 48px 的工时列，剩下的全给任务内容列——
@@ -1451,6 +1451,13 @@ const Dashboard = () => {
   // 新增模式是否勾选了「暂停/取消」：勾选后沿用当前工时（新建空白任务默认 0）
   const addModePaused = addModeTaskType === 'paused';
   const [taskTypeDrafts, setTaskTypeDrafts] = useState<Record<string, { designName?: string; designGuns?: GunItem[]; tripName?: string; taskType?: DesignTaskType; changeNo?: string }>>({});
+  // 编辑弹窗输入草稿：打字时只更新这里（保证字符即时上屏），停顿一小会儿才写回表格数据
+  // （停顿阈值按打字节奏自适应，见 scheduleEditDraftSave 的 getDraftSaveDelay）。
+  // 不这样做的话，任务名/枪名每敲一个字都会 handleItemChange → setSheets → 整张表重渲
+  // （600 个单元格 + 千余个拖拽节点），编辑时明显卡顿。
+  const [taskNameDraft, setTaskNameDraft] = useState<{ itemId: string; value: string } | null>(null);
+  // 枪名/工时共用一份数组草稿：两项都在同一行里输入，分开放会互相覆盖
+  const [gunDraft, setGunDraft] = useState<{ itemId: string; guns: GunItem[] } | null>(null);
   const addModeSpecLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const addModeSpecLookupSeqRef = useRef(0);
 
@@ -2807,6 +2814,12 @@ const Dashboard = () => {
   // 注意：这是 hook，必须放在组件内所有提前 return 之前。
   const pageZoom = usePageZoom();
 
+  // 主表格（TaskTable）的回调集合：用 ref 传递而不是逐个 props 传函数。
+  // 表格被 React.memo 包着，props 里只要有一个「每次渲染都新建」的函数，memo 就失效、
+  // 输入框每敲一个字又会把两千个拖拽节点全重渲一遍——ref 的引用恒定，内容每次渲染刷新，
+  // TaskTable 调用时读到的永远是最新闭包。
+  const taskTableHandlersRef = useRef<TaskTableHandlers>({} as TaskTableHandlers);
+
   const gunDropInvalid = Boolean(gunDropTarget?.invalid && !gunDropTarget?.isSelf);
   const gunDropSelf = Boolean(gunDropTarget?.isSelf);
   // 目标主任务没有任何枪名：同样不可放置，浮层提示文案与「重复枪名」区分
@@ -3343,6 +3356,98 @@ const Dashboard = () => {
     handleItemChange(modalDesignerId, modalDate, itemId, 'taskName', newName);
   };
 
+  // ── 编辑弹窗输入草稿的落库节奏 ─────────────────────────────────────
+  // scheduleEditDraftSave：输入时只记下"最后一次的值"，停顿超过自适应阈值（200–700ms）才真正写回 sheets；
+  // flushEditDrafts：弹窗关闭 / 切换编辑目标时把未落库的草稿补上，避免丢字；
+  // takeEditDrafts：点「保存」时同步取走草稿，直接并入本次保存的改动列表
+  //   （闭包里的 pendingChanges 读不到这次 state 更新，必须单独取）。
+  const editDraftTimerRef = useRef<number | null>(null);
+  const pendingTaskNameSaveRef = useRef<{ designerId: string; date: string; itemId: string; value: string } | null>(null);
+  const pendingGunSaveRef = useRef<{ designerId: string; date: string; itemId: string; guns: GunItem[] } | null>(null);
+  const handleItemChangeRef = useRef(handleItemChange);
+  handleItemChangeRef.current = handleItemChange;
+
+  const clearEditDraftTimer = () => {
+    if (editDraftTimerRef.current !== null) {
+      window.clearTimeout(editDraftTimerRef.current);
+      editDraftTimerRef.current = null;
+    }
+  };
+
+  const takeEditDrafts = (): PendingChange[] => {
+    clearEditDraftTimer();
+    const changes: PendingChange[] = [];
+    const taskPending = pendingTaskNameSaveRef.current;
+    if (taskPending) {
+      changes.push({ designerId: taskPending.designerId, date: taskPending.date, itemId: taskPending.itemId, field: 'taskName', value: taskPending.value });
+    }
+    const gunPending = pendingGunSaveRef.current;
+    if (gunPending) {
+      changes.push({ designerId: gunPending.designerId, date: gunPending.date, itemId: gunPending.itemId, field: 'guns', value: gunPending.guns });
+    }
+    pendingTaskNameSaveRef.current = null;
+    pendingGunSaveRef.current = null;
+    return changes;
+  };
+
+  const flushEditDrafts = () => {
+    takeEditDrafts().forEach(change => {
+      void handleItemChangeRef.current(change.designerId, change.date, change.itemId, change.field, change.value);
+    });
+  };
+
+  // 落库延迟按打字节奏自适应：记下相邻两次按键的间隔，取指数滑动平均，
+  // 把「停顿阈值」定在平均间隔的 1.6 倍左右，并限制在 200–700ms。
+  // - 打字快（间隔约 100ms）：约 200ms 无按键就落库，表格数据不会长时间滞后；
+  // - 打字慢（间隔约 400ms）：阈值放宽到约 640ms，避免落库的整表重渲插在两次按键之间造成顿挫。
+  const typingRhythmRef = useRef({ lastAt: 0, avgGap: 0 });
+  const getDraftSaveDelay = () => {
+    const now = performance.now();
+    const rhythm = typingRhythmRef.current;
+    const gap = rhythm.lastAt ? now - rhythm.lastAt : 0;
+    rhythm.lastAt = now;
+    // 超过 1.5s 视为重新开始输入（或换了输入框），不参与平均，避免把停顿算成打字间隔
+    if (gap > 0 && gap < 1500) {
+      rhythm.avgGap = rhythm.avgGap ? rhythm.avgGap * 0.6 + gap * 0.4 : gap;
+    }
+    if (!rhythm.avgGap) return 260;
+    return Math.min(700, Math.max(200, Math.round(rhythm.avgGap * 1.6)));
+  };
+
+  const scheduleEditDraftSave = (change: PendingChange) => {
+    // 任务名与枪名不会同时输入：后输入的那个生效，避免两份草稿互相覆盖
+    if (change.field === 'taskName') {
+      pendingTaskNameSaveRef.current = { designerId: change.designerId, date: change.date, itemId: change.itemId, value: change.value as string };
+      pendingGunSaveRef.current = null;
+    } else if (change.field === 'guns') {
+      pendingGunSaveRef.current = { designerId: change.designerId, date: change.date, itemId: change.itemId, guns: change.value as GunItem[] };
+      pendingTaskNameSaveRef.current = null;
+    }
+    clearEditDraftTimer();
+    editDraftTimerRef.current = window.setTimeout(() => {
+      editDraftTimerRef.current = null;
+      flushEditDrafts();
+    }, getDraftSaveDelay());
+  };
+
+  const flushEditDraftsRef = useRef(flushEditDrafts);
+  flushEditDraftsRef.current = flushEditDrafts;
+  const editTargetItemId = focusTarget?.itemId ?? null;
+
+  useEffect(() => {
+    if (modalOpen) return;
+    flushEditDraftsRef.current();
+    setTaskNameDraft(null);
+    setGunDraft(null);
+  }, [modalOpen]);
+
+  // 切换到另一条主任务：把上一条没等到定时器的草稿立刻落库
+  useEffect(() => {
+    flushEditDraftsRef.current();
+    setTaskNameDraft(null);
+    setGunDraft(null);
+  }, [editTargetItemId]);
+
   // 切换"显示纳期"复选框
   // - 新增模式：勾选时查询仕样号纳期并在输入框右侧预览显示；取消勾选则清除
   // - 编辑模式：勾选则查询仕样号纳期并追加 [M/D]；取消勾选则移除已有的 [M/D]
@@ -3570,6 +3675,37 @@ const Dashboard = () => {
     : !!editingItemLeaveType;
 
   // 当前缩放倍率见上方的 pageZoom（订阅版，缩放变化时本组件会跟着重渲染）
+
+  // 行选中：点击主任务行时记录选中、开编辑会话，并拦截「他人正在编辑该任务」
+  const handleRowSelect = (itemId: string, designerId: string, date: string, append: boolean) => {
+    if (!canEditTasks) return;
+    if (warnIfCellLocked(designerId, date, itemId)) return;
+    handleSelectTask(itemId, designerId, date, append);
+    setSelectedCell(null);
+    startEditingCell(designerId, date, itemId);
+  };
+
+  // 每次渲染把最新闭包写进**同一个** ref 对象（不是换新对象）：
+  // TaskTable 被 memo 跳过渲染时，它手里握着的仍是这个对象，字段已经是新的，不会拿到过期闭包
+  Object.assign(taskTableHandlersRef.current, {
+    toggleGroup,
+    onMoveDesigner,
+    onTaskClick,
+    onDeleteGun,
+    onMoveGun,
+    onMoveTask,
+    onDeleteTask,
+    onMarkColor: handleUserDesignPlanColorMark,
+    onMarkGunColor: handleGunColorMark,
+    selectTask: handleRowSelect,
+    warnIfCellLocked,
+    openModal,
+    stopEditingCell,
+    handlePaste,
+    setSelectedCell,
+    setSelectedTasks,
+    clipboardRef,
+  });
 
   return (
     <PageZoomViewport>
@@ -3837,270 +3973,28 @@ const Dashboard = () => {
                   <th className="sticky right-0 top-10 bg-[#f8f9fa] border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db] z-40"></th>
                 </tr>
               </thead>
-              {sortedGroups.map(group => (
-                <React.Fragment key={group}>
-                  <tbody>
-                    <tr className="group/grp cursor-pointer transition-colors bg-gray-200 group-hover/grp:bg-gray-300" onClick={() => toggleGroup(group)}>
-                      {/* td1: 固定列 + 固定分组名，高 z-index 让溢出内容盖在 td2 上 */}
-                      <td className="sticky left-0 top-[64px] z-[30] relative overflow-visible p-0 border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300 shadow-[1px_0_0_0_#d1d5db]">
-                        {/* 占位：撑出 td 高度，不参与列宽 */}
-                        <div style={{ height: 29 }} />
-                        {/* 实际内容：绝对定位，不撑宽 td1，允许溢出到右边 */}
-                        <div className="absolute left-0 top-0 flex items-center gap-2 whitespace-nowrap px-3 py-1.5 font-black text-gray-700 bg-gray-200 group-hover/grp:bg-gray-300">
-                          {collapsedGroups[group] ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-                          <span>{group}</span>
-                          <span className="text-[10px] font-normal opacity-60 ml-2">({designersByGroup[group].length} 人)</span>
-                        </div>
-                      </td>
-                      {/* td2: 剩余列，z-[25] 高于月总工时列(z-20)使其被分组行覆盖，但低于 td1(z-[30])不遮挡分组名溢出 */}
-                      <td colSpan={days.length * 2 + 1} className="sticky top-[64px] z-[25] border border-gray-300 bg-gray-200 group-hover/grp:bg-gray-300"></td>
-                    </tr>
-                  </tbody>
-
-                  {!collapsedGroups[group] && (
-                    designersByGroup[group].map((d, groupIndex) => {
-                      const groupMembers = designersByGroup[group];
-                      const canMoveDesigner = canEditTasks && (groupIndex > 0 || groupIndex < groupMembers.length - 1);
-                      const canMoveDesignerUp = canEditTasks && groupIndex > 0;
-                      const canMoveDesignerDown = canEditTasks && groupIndex < groupMembers.length - 1;
-                      return (
-                        <tbody key={d.id}>
-                              <tr className="align-top hover:bg-blue-50/20 group/row transition-colors">
-                                <td className="sticky left-0 z-20 bg-white border border-gray-300 px-2 py-3 min-w-[6rem] font-bold text-gray-800 text-center align-middle shadow-[1px_0_0_0_#d1d5db] group-hover/row:bg-blue-50">
-                                  {/* 姓名悬停时才显示上移/下移按钮（样式与显示逻辑同主任务行的上下移按钮）：
-                                      按钮绝对定位在姓名正下方（锚点是姓名自身，不是整个姓名格），不占布局，
-                                      姓名始终在格子正中、列宽不变；姓名格给最小高度，当天没有任何任务时行也不会太矮。
-                                      有按钮时底部预留 22px（按钮 18 + 间距 4），让「姓名+按钮」整体在格子里居中 */}
-                                  <div className={`group/designer inline-flex items-center justify-center min-h-[56px] ${canMoveDesigner ? 'pb-[22px]' : ''}`}>
-                                    <div className="relative inline-block text-base font-bold text-gray-900 whitespace-nowrap">
-                                      {d.name}
-                                      {canMoveDesigner && (
-                                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 flex items-center gap-1 whitespace-nowrap opacity-0 group-hover/designer:opacity-100 transition-opacity">
-                                          {canMoveDesignerUp && (
-                                            <button
-                                              type="button"
-                                              className="h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
-                                              title="上移"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                onMoveDesigner(d, 'up');
-                                              }}
-                                            >
-                                              <ChevronUp size={14} strokeWidth={3} />
-                                            </button>
-                                          )}
-                                          {canMoveDesignerDown && (
-                                            <button
-                                              type="button"
-                                              className="h-[18px] w-[18px] flex items-center justify-center rounded bg-blue-100 text-blue-600 border border-blue-300 shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-700 transition-colors"
-                                              title="下移"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                onMoveDesigner(d, 'down');
-                                              }}
-                                            >
-                                              <ChevronDown size={14} strokeWidth={3} />
-                                            </button>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                </td>
-                                {days.map(day => {
-                                  const items = getItems(d.id, day.fullDate);
-                                  // 单元格内全部编辑会话：按主任务粒度展示标记；itemId 为空的是旧版整格会话
-                                  const cellSessions = getCellSessions(d.id, day.fullDate);
-                                  const legacyCellSession = cellSessions.find(s => s.userId !== user?.id && s.itemId == null) || null;
-                                  const isCellLocked = Boolean(getBlockingEditingSession(d.id, day.fullDate));
-                                  const isCellSelected = selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate;
-                                  // 单元格内容一律顶部对齐：本格内容少、同行其他格子更高时，任务行贴着格子上沿排，
-                                  // 不做垂直居中（居中会让无任务内容的主任务悬在格子中间，与相邻格子的行位置错开）
-                                  // 主任务拖拽扫过本单元格时的预插入位置：itemId 命中某条主任务 → 其上方显示标记线；
-                                  // itemId 为 null → 最下方显示追加标记线；duplicate 时红色（复制内容重复）
-                                  const cellTaskDrop = taskDropTarget && taskDropTarget.designerId === d.id && taskDropTarget.date === day.fullDate ? taskDropTarget : null;
-                                  const showAppendMarker = Boolean(cellTaskDrop && cellTaskDrop.itemId === null);
-                                  // 枪名拖拽扫过本单元格：整格无主任务 → 整格高亮（松手新建）；
-                                  // 已有主任务但指针停在最下方加号上 → 只高亮加号（松手在该格最下面新建）
-                                  const gunCreate = gunDropTarget?.create && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate;
-                                  const isGunCreateCell = Boolean(gunCreate && !gunDropTarget?.append);
-                                  const isGunCreatePlus = Boolean(gunCreate && gunDropTarget?.append);
-                                  return (
-                                    <DroppableCell 
-                                      key={`${d.id}-${day.fullDate}`}
-                                      designerId={d.id}
-                                      date={day.fullDate}
-                                      colSpan={2}
-                                      style={{ minWidth: dayColWidth }}
-                                      className={`border border-gray-300 p-0 align-top ${day.isWeekend && items.length === 0 ? 'bg-indigo-50' : ''} min-h-[40px] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
-                                      onClick={(e: React.MouseEvent) => {
-                                        if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
-                                          setSelectedTasks([]);
-                                          setSelectedCell(null);
-                                          stopEditingCell();
-                                        }
-                                      }}
-                                    >
-                                      <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
-                                        <div className="task-cell-list flex flex-col min-h-[40px]">
-                                          {items.map((item, itemIndex) => {
-                                            const canMarkColor = Boolean(
-                                              token &&
-                                              !isOfflineMode &&
-                                              !item.leaveType &&
-                                              (
-                                                (user?.role === 'admin' || user?.role === 'superadmin') ||
-                                                (user?.role === 'user' &&
-                                                  allowUserDesignPlanColorMark &&
-                                                  String(d.name || '').trim() === String(user.name || '').trim())
-                                              )
-                                            );
-                                            return (
-                                              <SortableTask
-                                                key={item.id}
-                                                item={item}
-                                                designerId={d.id}
-                                                date={day.fullDate}
-                                                taskColWidth={taskColWidth}
-                                                isAdmin={canEditTasks}
-                                                canMarkColor={canMarkColor}
-                                                canMoveUp={canEditTasks && items.length > 1 && itemIndex > 0}
-                                                canMoveDown={canEditTasks && items.length > 1 && itemIndex < items.length - 1}
-                                                onTaskClick={onTaskClick}
-                                                onDeleteGun={onDeleteGun}
-                                                onMoveGun={onMoveGun}
-                                                onMoveTask={onMoveTask}
-                                                onDeleteTask={onDeleteTask}
-                                                onMarkColor={handleUserDesignPlanColorMark}
-                                                onMarkGunColor={handleGunColorMark}
-                                                selectedTasks={selectedTasks}
-                                                metadataTitle={buildTaskMetadataTitle(item)}
-                                                gunDropTarget={gunDropTarget && !gunDropTarget.isSelf && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate && gunDropTarget.itemId === item.id ? (gunDropTarget.invalid ? 'invalid' : 'valid') : null}
-                                                taskInsertMarker={cellTaskDrop && cellTaskDrop.itemId === item.id ? (cellTaskDrop.duplicate ? 'invalid' : 'valid') : null}
-                                                editingMarkSession={cellSessions.find(s => s.userId !== user?.id && s.itemId === item.id && (canViewEditingUser || s.mode === 'colorMark')) || null}
-                                                // 刚安排好的任务定位后闪一圈高亮（2.8s 后自动清除）
-                                                locateFlash={locateFlashKey === `${d.id}|${day.fullDate}|${item.id}`}
-                                                // 同一天的第 2 条主任务起画分界线，区分「同一人同一天的不同主任务」
-                                                showTopSeparator={itemIndex > 0}
-                                                onSelectTask={(itemId, designerId, date, append) => {
-                                                  if (!canEditTasks) return;
-                                                  if (warnIfCellLocked(designerId, date, itemId)) return;
-                                                  handleSelectTask(itemId, designerId, date, append);
-                                                  setSelectedCell(null);
-                                                  startEditingCell(designerId, date, itemId);
-                                                }}
-                                              />
-                                            );
-                                          })}
-                                          {/* 主任务拖拽扫过本单元格但未命中任何主任务：最下方显示追加位置标记线 */}
-                                          {showAppendMarker && (
-                                            <div
-                                              className="pointer-events-none"
-                                              style={{
-                                                height: 4,
-                                                margin: '0 2px',
-                                                borderRadius: 2,
-                                                backgroundColor: cellTaskDrop?.duplicate ? '#ef4444' : '#16a34a',
-                                                boxShadow: cellTaskDrop?.duplicate
-                                                  ? '0 0 0 1px rgba(239,68,68,0.55), 0 1px 4px rgba(239,68,68,0.5)'
-                                                  : '0 0 0 1px rgba(22,163,74,0.55), 0 1px 4px rgba(22,163,74,0.5)',
-                                              }}
-                                            />
-                                          )}
-                                          {/* 加号区：默认隐藏，仅当指针停在本格空白处时显形（见 index.css 的 .task-cell-plus 规则）；
-                                              指针停在已有任务行上时不显示。data-cell-plus 供枪名拖拽命中判定：
-                                              拖到加号上松手 → 按源主任务名称在本格最下面新建主任务 */}
-                                          {canEditTasks && (
-                                            // 单击 → 选中该格等待 Ctrl+V 粘贴（加号常亮）；双击 → 直接新增任务。
-                                            // 加号的 title 固定不变：随选中状态改动 title 会让浏览器反复重建悬浮提示，看起来像加号在闪。
-                                            <div
-                                              data-cell-plus="1"
-                                              className={`task-cell-plus min-h-[24px] flex items-start justify-center pt-[3px] rounded transition-colors ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer'}${isCellSelected ? ' task-cell-plus--selected' : ''}${isGunCreatePlus ? ' ring-2 ring-inset ring-emerald-500 !opacity-100 bg-emerald-50' : ''}`}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                // 新增主任务不受他人主任务级编辑影响，仅旧版整格会话会拦截
-                                                if (warnIfCellLocked(d.id, day.fullDate)) return;
-                                                setSelectedCell({ designerId: d.id, date: day.fullDate });
-                                                setSelectedTasks([]);
-                                              }}
-                                              onDoubleClick={(e) => {
-                                                e.stopPropagation();
-                                                if (warnIfCellLocked(d.id, day.fullDate)) return;
-                                                openModal(d.id, day.fullDate, true);
-                                              }}
-                                              // 焦点离开加号就取消「已选中」高亮：此时 Ctrl+V 已不再粘到本格，常亮只会误导
-                                              onBlur={() => {
-                                                if (isCellSelected) setSelectedCell(null);
-                                              }}
-                                              onKeyDown={(e) => {
-                                                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
-                                                  e.preventDefault();
-                                                  e.stopPropagation();
-                                                  // 实现粘贴功能
-                                                  if (clipboardRef.current && clipboardRef.current.length > 0) {
-                                                    handlePaste(d.id, day.fullDate);
-                                                  }
-                                                }
-                                              }}
-                                              tabIndex={0}
-                                              title="单击选中此单元格（双击空格可直接新增任务，可 Ctrl+V 粘贴），双击新增任务"
-                                            >
-                                              <span
-                                                className={`inline-flex items-center justify-center h-[18px] w-[18px] rounded-full ring-1 shadow-sm transition-colors ${isCellLocked
-                                                  ? 'bg-gray-100 text-gray-400 ring-gray-300'
-                                                  : isGunCreatePlus
-                                                    ? 'bg-emerald-600 text-white ring-emerald-700 shadow-md'
-                                                    : isCellSelected
-                                                      ? 'bg-blue-600 text-white ring-blue-700 shadow-md'
-                                                      : 'bg-blue-100 text-blue-600 ring-blue-400 hover:bg-blue-600 hover:text-white hover:ring-blue-700 hover:shadow-md'
-                                                  }`}
-                                              >
-                                                <Plus size={12} strokeWidth={3.5} />
-                                              </span>
-                                            </div>
-                                          )}
-                                          {/* 整格红色罩层仅保留给旧版整格会话；主任务级会话在对应任务行内显示标记 */}
-                                          {user && legacyCellSession && (canViewEditingUser || legacyCellSession.mode === 'colorMark') && (
-                                            <div className="absolute inset-0 bg-red-200/85 flex items-center justify-center z-10">
-                                              <span className="text-xs font-bold text-white bg-red-600 px-2 py-1 rounded border border-red-700 shadow-sm">
-                                                {legacyCellSession.name || legacyCellSession.username} {legacyCellSession.mode === 'colorMark' ? '正在修改任务完成状态' : '正在编辑'}
-                                              </span>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </SortableContext>
-                                    </DroppableCell>
-                                  );
-                                })}
-                                {/* 月总工时：字号与「当日合计」一档（14px）；
-                                    行的 align-top 只管任务格，这一格单独 align-middle 让数字在整行高度里上下居中 */}
-                                <td className="sticky right-0 z-20 bg-[#f8f9fa] border border-gray-300 px-2 py-2 min-w-[6rem] text-[14px] font-bold text-center align-middle tabular-nums text-green-700 shadow-[-1px_0_0_0_#d1d5db] group-hover/row:bg-green-50">
-                                  {calculateMonthlyTotal(d.id).toFixed(1)}
-                                </td>
-                              </tr>
-                              {/* 当日合计行：行高对齐上方枪名行（枪名行 = 内容 11px×1.5 + py-1.5 + 1px 上边框 ≈ 29.5px）。
-                                  这里不再靠 padding + 行高凑数，而是给单元格写死高度 27.5px（表格单元格的 height 即最小高度）
-                                  + 上下各 1px 边框 = 29.5px，与枪名行严格等高；这样数字想放多大都不会把行撑高。
-                                  数值 14px 特粗 + 深蓝 + 等宽数字，与「月总工时」同字号但更重、更醒目 */}
-                              <tr className="bg-pink-50">
-                                <td className="sticky left-0 z-20 bg-pink-50 border border-gray-300 h-[27.5px] px-2 py-0 min-w-[6rem] text-[11px] font-bold text-gray-500 text-center align-middle whitespace-nowrap shadow-[1px_0_0_0_#d1d5db]">
-                                  当日合计
-                                </td>
-                                {days.map(day => (
-                                  <td key={`total-${d.id}-${day.fullDate}`} colSpan={2} className={`border border-gray-300 h-[27.5px] px-1 py-0 text-center align-middle ${day.isWeekend ? 'bg-pink-100' : 'bg-pink-50'}`}>
-                                    <span className="inline-block text-[14px] leading-none font-extrabold tabular-nums tracking-tight text-blue-700">
-                                      {calculateDailyTotal(d.id, day.fullDate)}
-                                    </span>
-                                  </td>
-                                ))}
-                                <td className="sticky right-0 z-20 bg-pink-50 border border-gray-300 min-w-[6rem] shadow-[-1px_0_0_0_#d1d5db]"></td>
-                              </tr>
-                        </tbody>
-                      );
-                    })
-                  )}
-                </React.Fragment>
-              ))}
+              <TaskTable
+                sortedGroups={sortedGroups}
+                designersByGroup={designersByGroup}
+                collapsedGroups={collapsedGroups}
+                days={days}
+                sheetByDesignerId={sheetByDesignerId}
+                editingSessions={editingSessions}
+                selectedCell={selectedCell}
+                selectedTasks={selectedTasks}
+                taskDropTarget={taskDropTarget}
+                gunDropTarget={gunDropTarget}
+                locateFlashKey={locateFlashKey}
+                taskColWidth={taskColWidth}
+                dayColWidth={dayColWidth}
+                canEditTasks={canEditTasks}
+                canViewEditingUser={canViewEditingUser}
+                isOfflineMode={isOfflineMode}
+                allowUserDesignPlanColorMark={allowUserDesignPlanColorMark}
+                hasToken={Boolean(token)}
+                user={user}
+                handlersRef={taskTableHandlersRef}
+              />
               </table>
             </div>
             </div>
@@ -5474,20 +5368,23 @@ const Dashboard = () => {
                                                 changeNo: nextNo,
                                               },
                                             }));
-                                            handleItemChange(
-                                              modalDesignerId,
-                                              modalDate,
-                                              currentItem.id,
-                                              'taskName',
-                                              composeDesignChangeName(base, nextNo, itemNameDeadline)
-                                            );
+                                            // 与任务名/枪名同一节奏：输入时只更新草稿，停顿后才写回表格数据，
+                                            // 否则每敲一个字都会 setSheets 让整张表重渲，输入框明显卡顿
+                                            scheduleEditDraftSave({
+                                              designerId: modalDesignerId,
+                                              date: modalDate,
+                                              itemId: currentItem.id,
+                                              field: 'taskName',
+                                              value: composeDesignChangeName(base, nextNo, itemNameDeadline),
+                                            });
                                           }}
-                                          // 失焦时把输入框内容与任务名对齐（去掉多余的空白）
+                                          // 失焦时只把草稿去掉多余空白（不能用 currentItem.taskName 反推：
+                                          // 草稿还没落库时读到的是旧任务名，会把刚输入的单号弹回原值）
                                           onBlur={() => setTaskTypeDrafts(prev => ({
                                             ...prev,
                                             [currentItem.id]: {
                                               ...(prev[currentItem.id] || {}),
-                                              changeNo: parseDesignChangeName(currentItem.taskName).changeNo,
+                                              changeNo: String(prev[currentItem.id]?.changeNo ?? itemChangeNo).trim(),
                                             },
                                           }))}
                                           placeholder={CHANGE_NOTICE_PLACEHOLDER}
@@ -5503,11 +5400,13 @@ const Dashboard = () => {
                                 <input
                                   ref={el => inputRefs.current[`task-${currentItem.id}`] = el}
                                   className="flex-1 min-w-0 h-10 px-3 bg-gray-50 border-2 border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white transition"
-                                  value={itemBaseName}
+                                  value={taskNameDraft && taskNameDraft.itemId === currentItem.id ? taskNameDraft.value : itemBaseName}
                                   onChange={(e) => {
                                     // 末尾直接输入「暂停」：自动勾选「暂停/取消」（复选框互斥，不再叠加其它任务内容），
                                     // 并把这两字从任务名里去掉——后缀统一由复选框写成「暂停/取消」
                                     const { text: typedName, pausedTyped } = splitTypedPausedSuffix(e.target.value);
+                                    // 先更新本地草稿：字符立刻上屏，表格数据等停顿后（自适应阈值）再同步
+                                    setTaskNameDraft({ itemId: currentItem.id, value: typedName });
                                     const deadlineMatch = currentItem.taskName.match(/(\[\d+\/\d+\])$/);
                                     let deadline = deadlineMatch ? ` ${deadlineMatch[1]}` : '';
                                     // 如果已勾选显示纳期，但新的任务名中无法提取指定位数仕样号，自动取消勾选并移除纳期后缀
@@ -5524,7 +5423,7 @@ const Dashboard = () => {
                                       // 暂停任务不支持加急：有加急标记时顺手清掉
                                       if (urgentDraft) handleUrgentToggle(false);
                                       void applyPausedState(currentItem.id, true);
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', pausedName);
+                                      scheduleEditDraftSave({ designerId: modalDesignerId, date: modalDate, itemId: currentItem.id, field: 'taskName', value: pausedName });
                                       return;
                                     }
                                     // 「设计变更」带更改通知单号：只改主体，后缀和单号原样接在后面
@@ -5534,7 +5433,7 @@ const Dashboard = () => {
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: typedName, designGuns: currentItem.guns || [], taskType: 'designChange' }
                                       }));
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                      scheduleEditDraftSave({ designerId: modalDesignerId, date: modalDate, itemId: currentItem.id, field: 'taskName', value: newName });
                                       return;
                                     }
                                     const typeMatch = currentItem.taskName.match(/(\s+(确认图|设计|确认图修改|设计变更|既制审图|暂停\/取消))?\s*(\[\d+\/\d+\])?$/);
@@ -5544,7 +5443,7 @@ const Dashboard = () => {
                                       ...prev,
                                       [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: typedName, designGuns: currentItem.guns || [] }
                                     }));
-                                    handleItemChange(modalDesignerId, modalDate, currentItem.id, 'taskName', newName);
+                                    scheduleEditDraftSave({ designerId: modalDesignerId, date: modalDate, itemId: currentItem.id, field: 'taskName', value: newName });
                                   }}
                                   placeholder={`输入完整任务名称或者${specNumberDigits}位数仕样号自动对应`}
                                 />
@@ -5708,7 +5607,10 @@ const Dashboard = () => {
                                   </button>
                                   <button
                                     onClick={() => {
-                                      const newGuns = [...(currentItem.guns || []), { id: `gun-${Date.now()}`, name: '', hours: '' }];
+                                      // 新增枪名行是即时操作：以草稿为基底追加，写库后清掉草稿
+                                      const baseGuns = gunDraft && gunDraft.itemId === currentItem.id ? gunDraft.guns : (currentItem.guns || []);
+                                      const newGuns = [...baseGuns, { id: `gun-${Date.now()}`, name: '', hours: '' }];
+                                      setGunDraft(null);
                                       setTaskTypeDrafts(prev => ({
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
@@ -5802,30 +5704,35 @@ const Dashboard = () => {
                                   )}
                                 </div>
                               )}
-                              {(currentItem.guns || []).map((gun, gIdx) => {
+                              {(() => {
+                                // 有枪名/工时的本地草稿时以草稿为准（打字即时显示），否则用表格数据
+                                const renderGuns = gunDraft && gunDraft.itemId === currentItem.id ? gunDraft.guns : (currentItem.guns || []);
+                                return renderGuns.map((gun, gIdx) => {
                                 // 与其他枪名重复（非空）时标红并禁用保存
                                 const trimmedName = String(gun.name || '').trim();
-                                const isDuplicateName = trimmedName !== '' && (currentItem.guns || []).some((g, i) => i !== gIdx && String(g?.name || '').trim() === trimmedName);
+                                const isDuplicateName = trimmedName !== '' && renderGuns.some((g, i) => i !== gIdx && String(g?.name || '').trim() === trimmedName);
                                 return (
                                 <div key={gun.id} className="flex items-center gap-2 bg-gray-50/50 p-2 rounded-lg group/gun">
                                   <input
                                     ref={el => inputRefs.current[`gun-${currentItem.id}-${gIdx}`] = el}
                                     className={`flex-1 h-8 px-2 bg-transparent border-b-2 outline-none text-xs transition ${isDuplicateName ? 'border-red-400 focus:border-red-500 text-red-600' : 'border-gray-200 focus:border-blue-400'}`}
-                                    value={gun.name}
+                                    value={gunDraft && gunDraft.itemId === currentItem.id ? (gunDraft.guns[gIdx]?.name ?? '') : gun.name}
                                     placeholder="枪名..."
                                     title={isDuplicateName ? '枪名重复，请修改后再保存' : undefined}
                                     onChange={(e) => {
-                                      const newGuns = [...(currentItem.guns || [])];
+                                      const baseGuns = gunDraft && gunDraft.itemId === currentItem.id ? gunDraft.guns : (currentItem.guns || []);
+                                      const newGuns = [...baseGuns];
                                       newGuns[gIdx] = fillHoursForGunName(
                                         newGuns[gIdx],
                                         e.target.value,
                                         getTaskTypeFromName(currentItem.taskName)
                                       );
+                                      setGunDraft({ itemId: currentItem.id, guns: newGuns });
                                       setTaskTypeDrafts(prev => ({
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
                                       }));
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
+                                      scheduleEditDraftSave({ designerId: modalDesignerId, date: modalDate, itemId: currentItem.id, field: 'guns', value: newGuns });
                                     }}
                                   />
                                   <input 
@@ -5834,22 +5741,27 @@ const Dashboard = () => {
                                     step="0.5"
                                     min="0"
                                     className="w-16 h-8 text-center bg-transparent border-b-2 border-gray-200 focus:border-blue-400 outline-none text-xs font-bold text-blue-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:opacity-50"
-                                    value={gun.hours || ''}
+                                    value={gunDraft && gunDraft.itemId === currentItem.id ? (gunDraft.guns[gIdx]?.hours ?? '') : (gun.hours || '')}
                                     placeholder="工时"
                                     title={itemPaused ? '「暂停/取消」任务工时沿用当前值，0 也能保存；不为 0 时计入工时统计' : undefined}
                                     onChange={(e) => {
-                                      const newGuns = [...(currentItem.guns || [])];
+                                      const baseGuns = gunDraft && gunDraft.itemId === currentItem.id ? gunDraft.guns : (currentItem.guns || []);
+                                      const newGuns = [...baseGuns];
                                       newGuns[gIdx] = { ...newGuns[gIdx], hours: e.target.value };
+                                      setGunDraft({ itemId: currentItem.id, guns: newGuns });
                                       setTaskTypeDrafts(prev => ({
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
                                       }));
-                                      handleItemChange(modalDesignerId, modalDate, currentItem.id, 'guns', newGuns);
+                                      scheduleEditDraftSave({ designerId: modalDesignerId, date: modalDate, itemId: currentItem.id, field: 'guns', value: newGuns });
                                     }}
                                   />
                                   <button 
                                     onClick={() => {
-                                      const newGuns = (currentItem.guns || []).filter((_, i) => i !== gIdx);
+                                      // 删除是即时操作：以当前草稿为基底，删完就落库并清掉草稿
+                                      const baseGuns = gunDraft && gunDraft.itemId === currentItem.id ? gunDraft.guns : (currentItem.guns || []);
+                                      const newGuns = baseGuns.filter((_, i) => i !== gIdx);
+                                      setGunDraft(null);
                                       setTaskTypeDrafts(prev => ({
                                         ...prev,
                                         [currentItem.id]: { ...(prev[currentItem.id] || {}), designName: currentItem.taskName || '', designGuns: newGuns }
@@ -5862,7 +5774,8 @@ const Dashboard = () => {
                                   </button>
                                 </div>
                                 );
-                              })}
+                                });
+                              })()}
                             </div>
                             )}
 
@@ -6115,6 +6028,14 @@ const Dashboard = () => {
                         const currentFocusTarget = focusTarget;
                         if (!currentFocusTarget) return;
 
+                        // 还没等到自适应定时器的输入草稿要一并纳入本次保存：
+                        // 直接读 pendingChanges 的话（闭包旧值）会漏掉最后几个字符
+                        const draftChanges = takeEditDrafts();
+                        const changesToSave = [
+                          ...pendingChanges.filter(change => !draftChanges.some(draft => draft.itemId === change.itemId && draft.field === change.field)),
+                          ...draftChanges
+                        ];
+
                         // 先更新本地 sheets 状态
                         setSheets(prev => {
                           const next = prev.map(sheet => {
@@ -6124,7 +6045,7 @@ const Dashboard = () => {
                             if (itemIndex === -1) return sheet;
                             
                             // 应用所有 pendingChanges 到这个 item
-                            const itemChanges = pendingChanges.filter(change => change.itemId === currentFocusTarget.itemId);
+                            const itemChanges = changesToSave.filter(change => change.itemId === currentFocusTarget.itemId);
                             const updatedItem = { ...dayItems[itemIndex] };
                             itemChanges.forEach(change => {
                               (updatedItem as any)[change.field] = change.value;
@@ -6144,7 +6065,7 @@ const Dashboard = () => {
                             .filter(item => isTaskPaused(item))
                             .map(item => item.id)
                         );
-                        for (const change of pendingChanges) {
+                        for (const change of changesToSave) {
                           await saveItem(change.designerId, change.date, change.itemId, change.field, change.value, {
                             allowZeroGunHours: pausedItemIds.has(change.itemId),
                           });
