@@ -478,6 +478,7 @@ npm run dev
 - 显示最近数据库备份、最近任务导出、最近编号台账导出、年度永久归档、最近断网备份各 5 个文件。
 - **磁盘占用与压缩**：数据库信息除 `data.db` / `-wal` / `-shm` 体积外，还会显示「空闲页」体积（已删除但尚未归还给操作系统的空间）。SQLite 的删除只把页放进空闲页链表，不压缩的话文件大小不会变化——所以清理任务数据后会**自动执行一次压缩**（`VACUUM` + WAL 截断），存在可回收空间时页面也会提示「有 xx MB 是已删除数据留下的空闲页」，并提供「压缩数据库」按钮（需二次确认；压缩期间数据库被独占重建，通常只需数秒）。
 - **主文件体积构成**（`GET /api/system/maintenance` 返回的 `database.breakdown`）：借 `dbstat` 按表实测页占用、把索引归并到所属表，再按「审计日志 / 业务数据 / 任务数据 / 运行监测 / 登录日志 / 库结构」归组，各项之和等于数据页总量；`kv_store` 还会给出各集合的 JSON 内容体积，空闲页与「已提交但仍在 WAL 里」的部分（`pendingBytes`）单独列出。只给一个「主文件 1.59 MB」无法回答「到底是谁占的」——同样体积可能全是审计日志、也可能全是任务数据，处理方式完全不同。`dbstat` 不可用时该字段为 `null`，页面只显示总体积，不编造数字。
+- **体积数字走缓存，不是每次都重扫**：`dbstat` 要逐页走完整库，网络盘上单次约 3 秒，整套体积测量约 4 秒。因此「数据管理」的体积构成与「状态监测」的各表体积都是**先给缓存（即便已过期）、过期只在后台补算**，请求路径不等它；只有点本页「刷新」（前端传 `force=1`）或刚做完维护操作（如压缩数据库）才同步重算。所以刚 `VACUUM` 完立刻看可能还是旧值，点一次「刷新」即可。缓存时长与启动预热延迟可用 `DBSTAT_CACHE_TTL_MS` / `DBSTAT_WARMUP_DELAY_MS` / `MAINTENANCE_MEASURE_TTL_MS` / `MAINTENANCE_MEASURE_WARMUP_DELAY_MS` 调整（见[环境变量](#环境变量)）。另外这份维护状态不参与系统设置首屏的加载判定：打开页面时几张体积卡片稍后自己回填，不会为了等它把整页卡住数秒。
 - 年度清理会先将待删除数据永久归档；断网备份在服务器关闭时（Ctrl+C、SIGTERM）自动触发。
 - **运维工具**（仅超级管理员）：列出 `yearlyArchiveDir` 下的年度归档 JSON，解析出每张工作表的设计员、年月与条目数，与库内现状比对后标记「新增 / 已存在 / 结构异常」；支持**预演**（只校验不写库）与**恢复**（默认跳过已存在的月份、默认先备份整库，勾选后才覆盖）。归档只含任务工作表，状态跟踪与焊枪台账需靠数据库备份恢复。
 - **数据库备份为单地址**：手动「立即备份数据库」与每日定时备份均只写入配置的数据库备份目录（默认 `backups/database/`），不再复制到任何网络共享地址；如需异地留存，请由运维侧对备份目录做独立的同步/归档。
@@ -679,7 +680,7 @@ npm run docs:check
 | `node tests/color-sync-relational.js` | 仅跑主任务改色联动测试，**会写入数据**，需自备副本（`set SMOKE_DB_PATH=%CD%\data-smoke.db`） |
 | `node tests/gun-search-relational.js` | 仅跑枪名搜索/快速添加测试，**会写入数据**，同样需自备副本 |
 
-单元测试（`tests/unit/`，基于 `node:test`）覆盖鉴权中间件的纯函数（会话校验、访问设置归一化、失效原因文案）、操作日志的记录范围判定（`shouldAudit`：写操作、敏感读取、静默路径、只读 `POST`）、文件上传安全（Excel 类型校验、公式注入转义）与工作日工具（周末判断、覆盖规则）。
+单元测试（`backend/tests/unit/`，基于 `node:test`，共 16 个文件）覆盖：鉴权中间件的纯函数（会话校验、访问设置归一化、失效原因文案）、密码策略（自主改密开关、强制改密死锁例外）、操作日志（记录范围 `shouldAudit`：写操作、敏感读取、静默路径、只读 `POST`；以及动作文案 `getTaskItemUpdateDisplay` 对完成状态/工时/枪名的细分）、文件上传安全（Excel 类型校验、公式注入转义）、工作日工具（周末判断、覆盖规则）、大日程同步比对（`buildSyncPlan` 只算变更不写库）、仕样号查找与 PDF 文本线程池、UNC 凭据解析、焊枪序号↔编号强绑定、两处仕样自愈的条目构造、共享路径探测的分类与缓存、Socket 房间权限收敛、看门狗强杀证据解析。
 
 关系表冒烟测试（`backend/tests/smoke-relational.js`，验证 `taskStore` 与独立日志表的读写）现在由 `npm test` 自动调度：入口脚本会先用 `VACUUM INTO` 为生产库生成**只读快照副本**（用 `VACUUM INTO` 而非直接复制文件，避免 WAL 模式下丢掉未 checkpoint 的提交或拷到写一半的中间状态），在副本上跑冒烟测试，结束后清理 `backend/tests/.tmp/`，全程不触碰生产 `data.db`。同一份快照随后还会被下面两个用例复用，三者互不干扰的顺序由入口脚本固定。
 
@@ -778,6 +779,10 @@ node --check backend\routes\tasks.js
 | `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 | `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
+| `DBSTAT_CACHE_TTL_MS` | `600000`（10 分钟） | `dbstat` 聚合结果（各表体积）缓存时长（毫秒，最小 60000）。`dbstat` 要逐页扫描整个库文件、网络盘上实测 2.6~3.2 秒，所以「数据管理」的体积构成与「状态监测」的各表体积都读这份缓存：命中即返回（即便已过期），过期只在后台补算；只有点「刷新」或维护操作才同步重扫。体积数字最多滞后一个 TTL 是预期行为 |
+| `DBSTAT_WARMUP_DELAY_MS` | `8000` | `dbstat` 缓存的启动预热延迟（毫秒，最小 0）：延后这么久在后台先扫一次，让第一个打开相关页面的人直接命中内存；排在启动自愈、调度器、共享盘预热之后，避免一起抢事件循环。`0` = 关闭预热（仅排查用） |
+| `MAINTENANCE_MEASURE_TTL_MS` | `60000`（1 分钟） | 「数据管理」整块体积测量的缓存时长（毫秒，最小 5000）。测量含库文件与 WAL/SHM、任务条目 JSON 长度、`dbstat`、5 个维护目录的 `readdir`，生产环境合计约 4 秒且只用于展示，因此整块缓存、过期后台补算、请求路径不等待 |
+| `MAINTENANCE_MEASURE_WARMUP_DELAY_MS` | `10000` | 体积测量的启动预热延迟（毫秒，最小 0）。默认刻意晚于 `DBSTAT_WARMUP_DELAY_MS`：提前跑会因 `dbstat` 缓存未命中触发 3 秒全库扫描，把预热变成提前占用事件循环。`0` = 关闭预热（仅排查用） |
 | `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先覆盖 `SQLITE_DB_PATH`，让测试写入数据库副本而非生产库；`npm test`（`backend/tests/run-all.js`）会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
 
 > 修改 `.env` 后必须重启后端服务才能生效。
@@ -991,19 +996,22 @@ obara-task-manager/
 │   │   ├── smoke-relational.js   # 关系表存储（taskStore/独立日志表）冒烟测试
 │   │   ├── color-sync-relational.js # 主任务改色子枪名联动测试
 │   │   ├── gun-search-relational.js # 枪名搜索（含归属）与确认图修改快速添加测试
-│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / auditScope / uploadSecurity / workday / scheduleSync / specInfoLookup / pdfTextPool / uncShare / gunLedgerSerial（序号↔编号强绑定）/ shareStatus（共享路径探测的分类与缓存）/ socketRooms（房间广播与带原因断连）/ systemMonitorWatchdog（看门狗强杀证据解析）
+│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / passwordPolicy（自主改密策略与死锁例外）/ auditScope / auditActionDisplay（审计动作文案）/ uploadSecurity / workday / scheduleSync / specInfoLookup / pdfTextPool / uncShare / gunLedgerSerial（序号↔编号强绑定）/ gunHealEntry / specHealEntry（自愈条目与任务名差异）/ shareStatus（共享路径探测的分类与缓存）/ socketRooms（房间广播与带原因断连）/ systemMonitorWatchdog（看门狗强杀证据解析）
 │   ├── utils/
 │   │   ├── auditLogDisplay.js
 │   │   ├── dbMaintenance.js
+│   │   ├── dbStatCache.js        # dbstat 表体积聚合的共用缓存层（数据管理与状态监测两条路径共用，过期后台补算、启动预热）
 │   │   ├── designDelivery.js     # 设计纳期天数动态计算（纳期 - 今天），状态追踪路由与同步服务共用同一口径
 │   │   ├── exportWorkbook.js
 │   │   ├── fileUploadSecurity.js
+│   │   ├── gunHealEntry.js       # 台账仕样自愈的比对结果构造（只回样本枪名 + 涉及表，行数仍全量统计）
 │   │   ├── gunLedgerExport.js
 │   │   ├── gunTableLocks.js
 │   │   ├── ipBlacklist.js        # IP 黑名单规则解析/匹配/拦截中间件
 │   │   ├── leaderRules.js        # 组长规则默认值与匹配（营业担当 → 组长，未命中返回空串不兜底）
 │   │   ├── logFiles.js           # 日志文件占用统计（只 stat 不读内容）与超阈值就地截断，配置读 settings.system.logAutoTrimEnabled / logMaxSizeMb
 │   │   ├── offlineBackupToken.js # 断网备份接口的一次性令牌（启动写入 logs/offline-backup.token，校验后轮换，供 stop.bat 调用）
+│   │   ├── passwordPolicy.js     # 「允许用户自主改密」的唯一判定口径（含强制改密流程的死锁例外）
 │   │   ├── pdfText.js            # PDF 文本提取（带 Node 垫片），供 specInfoLookup 复用
 │   │   ├── pdfTextPool.js        # PDF 解析线程池（worker_threads），把 CPU 密集的 getText 移出主线程
 │   │   ├── pdfTextWorker.js      # 线程池的 worker 入口：文件路径 → 全文文本
@@ -1014,12 +1022,14 @@ obara-task-manager/
 │   │   ├── shareStatus.js        # 共享路径访问探测（SPEC_SHARE_PATH / PRODUCTION_SCHEDULE_PATH）：先探 445/139 端口再 stat（端口 EACCES 或已有 net use 会话时仍以访问结果为准），硬时限 + 成功/失败分级缓存
 │   │   ├── simpleZip.js
 │   │   ├── socketRooms.js        # Socket 广播的页面级权限收敛（page:gunLedger / page:statusTracking 房间）与带原因断连
+│   │   ├── specHealEntry.js      # 主页面仕样自愈的判定与条目构造（有枪名行才改写客户名与纳期，占位任务跳过）
 │   │   ├── specInfoLookup.js     # 仕样号 → 最新版仕样书 PDF → 营业担当（目录索引与解析结果带缓存）
 │   │   ├── specPdfParser.js      # 仕样书 PDF 解析（文本提取与机型/纳期等规则）
 │   │   ├── statusTrackingLocks.js # 状态追踪行锁进程内单例（Socket 事件与 HTTP 写接口共享同一份锁状态）
 │   │   ├── systemMonitor.js      # 状态监测：心跳样本/流量聚合/生命周期事件采集，断开判定与原因取证，monitor_* 表自建
 │   │   ├── taskColors.js         # 任务内容配色体系后端副本（供派生 color 与导出着色）
 │   │   ├── taskExportWorkbook.js
+│   │   ├── uncShare.js           # Session 0 下读共享的兜底：按凭据 net use 后重试一次（凭据优先级：显式参数 → 通用映射 → 环境变量）
 │   │   ├── weknora.js
 │   │   └── workday.js
 │   └── vendor/                    # 本地 vendor 依赖（随仓库分发，离线可装）
@@ -1047,6 +1057,7 @@ obara-task-manager/
 ├── docs/
 │   ├── README.md                 # 文档中心：索引 + 按角色阅读路径 + 文档边界 + 一致性自检说明
 │   ├── API.md                    # REST 接口与 Socket.IO 事件全量参考
+│   ├── CHANGELOG.md              # 按提交日期汇总的变更记录（由 git log 生成，不手工维护）
 │   ├── DEPLOYMENT.md             # Windows 部署、环境变量、备份恢复、升级与排障
 │   ├── DEVELOPMENT.md            # 开发环境、编码约定、改动 checklist
 │   ├── TOOLS.md                  # 运维诊断工具（backend-report）的用法与报告判读
@@ -1073,6 +1084,8 @@ obara-task-manager/
 │       ├── main.tsx
 │       ├── vite-env.d.ts
 │       ├── components/
+│       │   ├── ColumnFilterDropdown.tsx # 表头列筛选下拉（按列取值的多选 + 计数，门户渲染，表格与报表共用）
+│       │   ├── GunLedgerSelfHealModal.tsx # 焊枪台账「仕样自愈」弹窗（按月校准客户名与纳期）
 │       │   ├── LoadingScreen.tsx     # 全站统一加载态：中心动画卡片 + 可选骨架屏
 │       │   ├── LoadingSkeleton.tsx   # 7 个页面的骨架屏组件与 SkeletonKind 映射
 │       │   ├── LogoutButton.tsx      # 统一退出入口（light / onDark / icon 三种外观），离线时禁用并提示
@@ -1096,7 +1109,7 @@ obara-task-manager/
 │       │   │   ├── gunDragState.ts   # 枪名拖拽的模块级尺寸暂存
 │       │   │   ├── types.ts          # 主页面专用类型
 │       │   │   ├── utils.ts          # 任务/枪名纯函数（取仕样号、内容比对、工时等）
-│       │   │   ├── components/       # SortableTask、GunDragHandle、GunNameCopyButton（复制枪名，所有登录用户可用）、DroppableCell、QuickConfirmModifyModal
+│       │   │   ├── components/       # TaskTable（表格主体，React.memo）、SortableTask、GunDragHandle、GunNameCopyButton（复制枪名，所有登录用户可用）、DroppableCell、QuickConfirmModifyModal、SpecSelfHealModal
 │       │   │   └── hooks/            # useGunDragDrop、useTaskHistory、useEditingSessions
 │       │   ├── DesignStandards.tsx
 │       │   ├── GunLedger.tsx
@@ -1116,8 +1129,11 @@ obara-task-manager/
 │           ├── documentTitle.ts   # 浏览器标签页标题映射（主页面系统全称，其余 OTM-<页面功能>）
 │           ├── groupFilter.ts     # 「分组」下拉公共定义（本组优先、未分组回落「全部人员」），分配类弹窗与台账/工时页共用
 │           ├── gunHoursRules.ts   # 默认工时解析（表级专用 → 机型 C/X → 兜底）与内置规则镜像
+│           ├── gunUsage.ts        # 枪名「已被主任务使用」的唯一判定口径（按编号边界比对，后缀/备注/多枪拼接一律忽略）
 │           ├── loginLogs.ts
+│           ├── modalStyles.ts     # 弹窗遮罩统一样式令牌（同页弹窗压暗程度一致，禁止各写一套）
 │           ├── offlineSheetsCache.ts  # 主页面工时表离线缓存 key 收口（清理任务数据时同步作废，避免离线渲染已删数据）
+│           ├── pageZoom.ts        # 主页面等比缩放（Ctrl+滚轮 / Ctrl+±）、倍率持久化与范围常量
 │           ├── passwordFieldStyles.ts # 改密输入框/按钮样式令牌与密码强度评分（主页面弹窗、改密页共用）
 │           ├── redirect.ts
 │           ├── socketClient.ts    # 共享 Socket.IO 单例（引用计数 + 快照事件回放）
@@ -1141,6 +1157,7 @@ obara-task-manager/
 ├── tools/                       # 运维诊断工具（启动项目用不到，随时可跑）
 │   ├── backend-report.bat       # 双击运行：按你输入的时长生成后端断开分析报告
 │   ├── backend-report.ps1       # 报告逻辑：端口采样 + 看门狗/退出/崩溃日志交叉核对
+│   ├── docs-check.js            # 文档一致性自检：链接锚点 / 接口清单 / 环境变量 / 页面路由 / 引用路径（npm run docs:check）
 │   └── trim-logs.js             # 启动前轮转超限日志（start.bat 自动调用，阈值读系统设置；支持 --max-mb / --all / --dry-run）
 ├── .gitignore
 ├── .npmrc                       # ignore-scripts=true：跳过 install 脚本，免安装 VS C++ 生成工具
@@ -1498,4 +1515,4 @@ MIT License
 
 ---
 
-最后更新：2026-11-09
+最后更新：2026-11-24

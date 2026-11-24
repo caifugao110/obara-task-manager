@@ -3549,7 +3549,7 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 
 `GET /api/system/monitor/storage`
 
-权限：`admin` / `superadmin`（只读）。默认走 30 秒缓存（汇总接口会跟页面自动刷新一起被调用），`?force=1` 强制重新统计。
+权限：`admin` / `superadmin`（只读）。默认走 30 秒缓存（汇总接口会跟页面自动刷新一起被调用），`?force=1` 强制重新统计（同时穿透 `dbstat` 表体积缓存，各表体积与「数据管理」共用同一份结果）。
 
 监测数据与业务数据同库（`data.db`），所以这里同时回答两个问题：监测数据占了多少、整个库有没有可以回收的空间。
 
@@ -3801,6 +3801,8 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
 `GET /api/system/maintenance`
 
 权限：仅 `superadmin`
+
+查询参数：`?force=1` 穿透两层体积缓存同步重算（`dbstat` 表体积缓存 + 整体测量缓存），页面「刷新」按钮与维护操作后的自动刷新都带它。不带时命中缓存即返回（**即使已过期**），过期只在后台补算——`dbstat` 要逐页扫描整个库文件，网络盘上单次 2~5 秒，不能让每次打开「数据管理」都付这个代价。缓存时长见 `DBSTAT_CACHE_TTL_MS` / `MAINTENANCE_MEASURE_TTL_MS`。
 
 响应：
 
@@ -5649,6 +5651,11 @@ socket.emit('task_updated', {
 | `PRODUCTION_SCHEDULE_UNC_USER` | 空 | 访问大日程共享目录的账号。后端以服务/计划任务开机自启时运行在 Session 0，没有登录用户的共享认证；配置后读取失败会自动 `net use` 再重试 |
 | `PRODUCTION_SCHEDULE_UNC_PASSWORD` | 空 | 与 `PRODUCTION_SCHEDULE_UNC_USER` 配套的密码；仅用于建立共享连接，不写入日志 |
 | `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号或换行分隔；用于生产大日程等 UNC 共享读取的凭据兜底（Session 0 下自动 `net use` 后重试）。数据库备份只写本地备份目录，不使用该凭据 |
+| `SHARE_STATUS_PROBE_TIMEOUT_MS` | `2500` | `GET /api/system/monitor/shares` 单次探测的硬超时（毫秒，最小 500）。超过即该路径记 `state=timeout`，不再等待 |
+| `SHARE_STATUS_HOST_TIMEOUT_MS` | `1500` | 探测前测共享主机 445/139 端口连通性的超时（毫秒，最小 300）。端口给出明确不可达错误码且本机无该主机 `net use` 连接时，直接返回 `state=unreachable` 并跳过 UNC 调用；`EACCES` / `EPERM` 不算不可达 |
+| `SHARE_STATUS_ENSURE_EVIDENCE_MS` | `900000` | 「最近一次 `net use` 成功」作为可达证据的有效期（毫秒，最小 60000）。端口不通但证据在有效期内时仍做一次 `stat`，以访问结果为准 |
+| `SHARE_STATUS_OK_TTL_MS` | `30000` | `state=ok` 的缓存时长（毫秒，最小 1000）；监测页 30 秒自动刷新，命中缓存不访问共享盘 |
+| `SHARE_STATUS_FAIL_TTL_MS` | `10000` | 失败态（`fail` / `timeout` / `unreachable`）的缓存时长（毫秒，最小 1000），比成功态短以便恢复后尽快反映 |
 | `LOG_LEVEL` | `info` | 预留变量：当前版本代码未读取，设置后不生效 |
 | `CRASH_EXIT_ON_UNCAUGHT` | 空（记录但不退出） | 进程级兜底开关。`uncaughtException` / `unhandledRejection` 默认**只记录不退出**：完整堆栈追加到 `logs/backend-crash.log` 并打到控制台，进程继续提供服务（代价是可能有请求卡在半途）；设为 `1` 时记录后 `process.exit(1)`，便于 nodemon 之类按崩溃重启。生产环境保持默认——直接退出会让 5000 端口消失、前端所有请求变成 `ECONNREFUSED`，而日志里只剩 nodemon 的一句 `app crashed` |
 | `WEKNORA_ENABLED` | `false` | 是否启用设计规范知识库接入 |
@@ -5657,6 +5664,10 @@ socket.emit('task_updated', {
 | `WEKNORA_EXTRA_API_KEYS` | 空 | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 | `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
+| `DBSTAT_CACHE_TTL_MS` | `600000` | `utils/dbStatCache.js` 的 `dbstat` 聚合结果缓存时长（毫秒，最小 60000）。`GET /api/system/maintenance` 的 `database.breakdown` 与 `GET /api/system/monitor/storage` 的各表体积共用这份缓存：命中即返回（即使已过期），过期只在后台补算；`force=1` 时才同步重扫。`dbstat` 全库扫描在网络盘上约 2.6~3.2 秒，这是请求路径上唯一会阻塞事件循环的查询 |
+| `DBSTAT_WARMUP_DELAY_MS` | `8000` | `dbstat` 缓存启动预热延迟（毫秒，最小 0），`0` = 关闭预热（仅排查用）。排在启动自愈、调度器、共享盘预热之后执行 |
+| `MAINTENANCE_MEASURE_TTL_MS` | `60000` | `GET /api/system/maintenance` 整块体积测量（库文件 + WAL/SHM + 任务条目 JSON 长度 + `dbstat` + 维护目录遍历）的缓存时长（毫秒，最小 5000）。过期的缓存照常返回并触发后台补算；`settings` / `paths` / `scheduler` 不缓存 |
+| `MAINTENANCE_MEASURE_WARMUP_DELAY_MS` | `10000` | 体积测量的启动预热延迟（毫秒，最小 0），`0` = 关闭预热（仅排查用）。必须晚于 `DBSTAT_WARMUP_DELAY_MS`，否则预热会因 `dbstat` 未命中而触发全库扫描 |
 | `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先用它覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；`npm test`（`backend/tests/run-all.js`）会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
 
 ### CORS 配置示例
@@ -5701,4 +5712,4 @@ GITEE_REPO_NAME=obara-task-manager
 | `schedule.filePath` | 各产品大日程 Excel 路径（`PRODUCTION_SCHEDULE_PATH`；未配置时代码回退到内置地址 `\\192.168.160.70\各产品大日程\各产品大日程.xls`） |
 | `schedule.cacheMs` | 大日程解析结果缓存时长（`PRODUCTION_SCHEDULE_CACHE_MS`，默认 `300000`） |
 
-最后更新：2026-11-09
+最后更新：2026-11-24

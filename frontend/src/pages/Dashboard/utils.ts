@@ -270,6 +270,20 @@ export const getTaskHours = (item: TaskItem) => {
   return item.guns && item.guns.length > 0 ? gunsHours : mainHours;
 };
 
+/**
+ * 工时数值展示：最多两位小数，并去掉小数末尾多余的 0（9.049999999999999 → 9.05、2 → 2、1.5 → 1.5）。
+ * 工时是逐条累加出来的浮点数，直接渲染原始值会出现 9.049999999999999 这类尾差，
+ * 所以在展示层统一收口；不要在 JSX 里直接输出 sum 原值。
+ */
+export const formatHoursValue = (value: number | string | null | undefined) => {
+  const numericValue = typeof value === 'number' ? value : parseFloat(String(value ?? ''));
+  if (!Number.isFinite(numericValue)) return '0';
+  // ×100 后先 toPrecision(12) 抹掉浮点尾差（9.05 会存成 904.9999999999999），再四舍五入，
+  // 否则 1.005 这类落在 .xx4999999 上的值会少进一位；最后 Number() 把 "9.05"/"2.00" 归一成 9.05/2
+  const rounded = Math.round(Number((numericValue * 100).toPrecision(12))) / 100;
+  return String(Number(rounded.toFixed(2)));
+};
+
 export const formatTaskMetaTime = (value?: string) => {
   if (!value) return '暂无记录';
   const date = new Date(value);

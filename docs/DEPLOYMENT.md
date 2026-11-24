@@ -321,6 +321,12 @@ RATE_LIMIT_MAX=20
 LOGIN_IP_RATE_LIMIT_MAX=300
 # 全局 API 限流：每 IP 15 分钟最大请求数（默认 3000，OPTIONS 预检与本机环回不计）
 # API_RATE_LIMIT_MAX=3000
+# 数据库体积统计缓存（一般无需改动）：dbstat 扫描在网络盘上约 3 秒，两条展示路径都走缓存，
+# 过期只在后台补算，页面上的体积数字最多滞后一个 TTL；0 = 关闭预热（仅排查用）
+# DBSTAT_CACHE_TTL_MS=600000
+# DBSTAT_WARMUP_DELAY_MS=8000
+# MAINTENANCE_MEASURE_TTL_MS=60000
+# MAINTENANCE_MEASURE_WARMUP_DELAY_MS=10000
 # LOG_LEVEL 为预留变量，当前版本代码未读取，设置后不生效
 ```
 
@@ -343,6 +349,14 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS` | `20000` | 共享盘读取子进程的硬超时（毫秒，最小 5000）。共享盘的 `stat` / `readFile` / `readdir` 与 XLSX 解析都在 `backend/utils/productionScheduleWorker.js` 子进程执行，超时立即杀掉子进程并计一次失败——挂死的内核调用随子进程消失，主进程的线程池与事件循环不受影响。共享盘长期很慢时可适当调大，但越大单次坏请求占用越久 |
 | `PRODUCTION_SCHEDULE_BREAKER_THRESHOLD` | `3` | 熔断阈值（最小 1）：10 分钟窗口内连续失败达到该次数后暂停访问共享盘。熔断期间普通查询返回最后一次成功解析的缓存（没有缓存才返回「不可用」），不再向共享盘发起新调用 |
 | `PRODUCTION_SCHEDULE_BREAKER_COOLDOWN_MS` | `3600000` | 熔断冷却时长（毫秒，最小 60000）。冷却到期后下一次查询做半开探测：成功则清空计数并恢复实时读取，失败则重新计时。熔断中可用 `GET /api/system/schedule-probe` 强制读一次确认是否恢复，恢复后无需重启后端 |
+| `PRODUCTION_SCHEDULE_UNC_USER` | 空 | 读取大日程共享目录所用账号。后端以服务/计划任务**开机自启**时运行在 Session 0，没有登录用户的共享认证（读共享文件报 `EPERM`）；配置该项后读取失败会自动 `net use` 再重试。不配也可，前提是给运行后端的账户在共享服务器上授了读权限 |
+| `PRODUCTION_SCHEDULE_UNC_PASSWORD` | 空 | 与 `PRODUCTION_SCHEDULE_UNC_USER` 配套的密码；只用于建立共享连接，不写入日志 |
+| `UNC_CREDENTIALS` | 空 | 通用共享凭据映射，格式 `\\server\share=用户名:密码`，多项用英文分号或换行分隔。与上面两项的区别是**按共享路径匹配**：任何走 UNC 的读取都适用，不限于大日程。数据库备份只写本地备份目录，不使用该凭据 |
+| `SHARE_STATUS_PROBE_TIMEOUT_MS` | `2500` | 状态监测「共享路径访问」单次探测的硬超时（毫秒，最小 500）。超过即记「访问超时」——共享主机有响应但 SMB 读写卡住时，等下去只会拖住页面 |
+| `SHARE_STATUS_HOST_TIMEOUT_MS` | `1500` | 探测前先测共享主机 445/139 端口连通性的超时（毫秒，最小 300）。端口给出明确不可达错误码**且本机没有到该主机的 `net use` 连接**时跳过 UNC 调用：共享服务器掉线时一次 SMB `stat` 要等 Windows 自身 30 秒超时，还会占住一个线程池线程。`EACCES` / `EPERM` 不算主机不可达（那是本地防火墙拦了这条 TCP），仍会继续访问 |
+| `SHARE_STATUS_ENSURE_EVIDENCE_MS` | `900000` | 「最近一次 `net use` 成功」当作可达证据的有效期（毫秒，最小 60000）。端口探测不通但有效期内有成功的 `net use` 记录时，照常做一次 `stat` 并以访问结果为准——`net use` 提示已建立连接本身就是可达证据，不能被报成「主机不可达」 |
+| `SHARE_STATUS_OK_TTL_MS` | `30000` | 可访问状态的缓存时长（毫秒，最小 1000）。监测页每 30 秒自动刷新一次，命中缓存不再访问共享盘 |
+| `SHARE_STATUS_FAIL_TTL_MS` | `10000` | 不可访问状态的缓存时长（毫秒，最小 1000）。比成功态短，共享恢复后能较快反映真实状态 |
 | `RATE_LIMIT_WINDOW_MS` | `900000` | 限流窗口配置（毫秒）；登录/改密独立限流器使用硬编码阈值（登录 15 分钟 20 次、改密 15 分钟 5 次），未读取此变量 |
 | `RATE_LIMIT_MAX` | `20` | 限流最大次数配置，同上，当前未被独立限流器使用 |
 | `LOGIN_IP_RATE_LIMIT_MAX` | `300` | 登录接口按 IP 的第一层限流阈值：15 分钟内每 IP 最大登录请求数，用于堵住「IP+用户名」细粒度限流的密码喷洒缺口；共用出口 IP 的内网环境若早高峰误触发可适当调大 |
@@ -357,6 +371,10 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `WEKNORA_EXTRA_API_KEYS` | - | 其他工作空间 API Key，多个用英文逗号分隔 |
 | `WEKNORA_TIMEOUT_MS` | `60000` | WeKnora 普通请求超时（毫秒） |
 | `WEKNORA_KNOWLEDGE_BASE_IDS` | 空 | 预留兜底知识库 ID（逗号分隔）；当前页面始终显式传入选中的知识库 ID，该变量实际不参与检索/问答 |
+| `DBSTAT_CACHE_TTL_MS` | `600000` | `dbstat` 聚合结果（各表体积，含已归并的索引）的缓存时长（毫秒，最小 60000）。`dbstat` 会把整个库文件逐页走一遍，网络盘上单次实测 2.6~3.2 秒，因此「数据管理 → 主文件体积构成」和「状态监测 → 各表体积」都读这份缓存：有缓存就直接返回（**即使已过期**），过期只在后台补算；只有用户点「刷新」或维护操作后才同步重扫。所以体积数字最多滞后一个 TTL，属预期行为 |
+| `DBSTAT_WARMUP_DELAY_MS` | `8000` | `dbstat` 缓存启动预热延迟（毫秒，最小 0）。进程启动后延后这么久在后台先扫一次，让第一个打开相关页面的人直接命中内存；必须排在启动自愈、调度器、共享盘预热之后，避免一起抢事件循环。设为 `0` 关闭预热（仅排查用） |
+| `MAINTENANCE_MEASURE_TTL_MS` | `60000` | 「数据管理」整块体积测量（库文件 + WAL/SHM + 任务条目 JSON 长度 + `dbstat` + 5 个维护目录 `readdir`）的缓存时长（毫秒，最小 5000）。生产环境合计约 4 秒，全部只用于体积展示，没有业务判定依赖，所以整块缓存、过期后台补算、请求不等待 |
+| `MAINTENANCE_MEASURE_WARMUP_DELAY_MS` | `10000` | 体积测量的启动预热延迟（毫秒，最小 0）。默认值刻意晚于 `DBSTAT_WARMUP_DELAY_MS`（8 秒）：提前跑会因 `dbstat` 缓存未命中而触发一次 3 秒全库扫描，把预热变成「提前占用事件循环」。设为 `0` 关闭预热（仅排查用） |
 | `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；`npm test` 会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
 
 ## 设计规范知识库（WeKnora）
@@ -1143,4 +1161,4 @@ backend/
 6. **检查备份目录可写性**：确认服务账号对 `backups/database/`、`backups/task-exports/`、`backups/offline/` 等维护目录有写权限，并关注磁盘剩余空间；备份失败会写入后端日志
 7. **测试恢复流程**：定期测试从备份恢复数据的流程
 
-最后更新：2026-11-09
+最后更新：2026-11-24

@@ -3,7 +3,7 @@ import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { ChevronDown, ChevronRight, ChevronUp, Plus } from 'lucide-react';
 import SortableTask from './SortableTask';
 import DroppableCell from './DroppableCell';
-import { buildTaskMetadataTitle, getTaskHours, isMeaningfulTask } from '../utils';
+import { buildTaskMetadataTitle, formatHoursValue, getTaskHours, isMeaningfulTask } from '../utils';
 import type {
   Designer,
   EditingSession,
@@ -406,7 +406,9 @@ const TaskTable: React.FC<TaskTableProps> = ({
                     {days.map(day => (
                       <td key={`total-${d.id}-${day.fullDate}`} colSpan={2} className={`border border-gray-300 h-[27.5px] px-1 py-0 text-center align-middle ${day.isWeekend ? 'bg-pink-100' : 'bg-pink-50'}`}>
                         <span className="inline-block text-[14px] leading-none font-extrabold tabular-nums tracking-tight text-blue-700">
-                          {tableData.dailyTotalByCell.get(cellKey(d.id, day.fullDate)) ?? 0}
+                          {/* 工时是逐条累加出来的浮点数，直接输出会带出 9.049999999999999 这类尾差，
+                              统一走 formatHoursValue：最多两位小数、去掉末尾的 0 */}
+                          {formatHoursValue(tableData.dailyTotalByCell.get(cellKey(d.id, day.fullDate)))}
                         </span>
                       </td>
                     ))}

@@ -704,11 +704,13 @@ const SystemSettings = () => {
 
 
 
-  const fetchMaintenanceStatus = useCallback(async () => {
+  // force=true 时绕过后端 dbstat 体积缓存重新统计（用户点「刷新」/维护操作后）
+  const fetchMaintenanceStatus = useCallback(async (force = false) => {
     if (!isSuperAdmin || !token) return;
     setMaintenanceLoading(true);
     try {
-      const res = await axios.get('/api/system/maintenance', authHeader);
+      const url = force ? '/api/system/maintenance?force=1' : '/api/system/maintenance';
+      const res = await axios.get(url, authHeader);
       setMaintenanceStatus(res.data);
       setMaintenanceSettings({ ...defaultMaintenanceSettings, ...res.data.settings });
     } catch (err) {
@@ -722,7 +724,11 @@ const SystemSettings = () => {
   useEffect(() => {
     const init = async () => {
       await Promise.all([fetchSettings(), fetchAccessSettings()]);
-      await Promise.all([fetchLoginLogs(), fetchIpBlacklist(), fetchMaintenanceStatus(), fetchGunLedgerCats()]);
+      await Promise.all([fetchLoginLogs(), fetchIpBlacklist(), fetchGunLedgerCats()]);
+      // 数据库维护状态要跑一次 dbstat 全库页扫描（数据目录在网络盘上，实测 2~5 秒），
+      // 而它只影响「数据管理」标签里的几张卡片。它不参与 loading 判定：
+      // 首屏不再被它挡住，接口回来自己填卡片（maintenanceLoading 已在调用处同步置位）。
+      void fetchMaintenanceStatus();
       setLoading(false);
     };
     init();
@@ -1176,7 +1182,8 @@ const SystemSettings = () => {
     setMaintenanceLoading(true);
     try {
       const res = await axios.post(url, body, authHeader);
-      await fetchMaintenanceStatus();
+      // 维护操作可能改变库体积（清理/压缩），必须穿透缓存重新统计
+      await fetchMaintenanceStatus(true);
       return res.data;
     } catch (err: any) {
       addToast(err.response?.data?.message || '操作失败', 'error');
@@ -1318,8 +1325,8 @@ const SystemSettings = () => {
               : '没有可清空的监测数据',
             'success'
           );
-          // 主文件体积与构成都会变，重新拉一次维护状态
-          fetchMaintenanceStatus();
+          // 主文件体积与构成都会变，重新拉一次维护状态（穿透缓存）
+          fetchMaintenanceStatus(true);
         } catch (err: any) {
           addToast(err.response?.data?.message || '清空监测数据失败', 'error');
         } finally {
@@ -1365,8 +1372,8 @@ const SystemSettings = () => {
 
       setShowCleanupTasksModal(false);
       setCleanupTasksConfirming(false);
-      // 刷新数据库占用（压缩后体积会变化）
-      fetchMaintenanceStatus();
+      // 刷新数据库占用（压缩后体积会变化，穿透缓存）
+      fetchMaintenanceStatus(true);
     } catch (err: any) {
       addToast(err.response?.data?.message || '清理任务数据失败', 'error');
     } finally {
@@ -2248,7 +2255,7 @@ const SystemSettings = () => {
                   <p className="text-sm text-gray-500 mt-1">每日 {(maintenanceSettings.scheduleTimes || []).join('、') || '—'} 自动执行已开启的备份与导出任务、状态跟踪同步，并清理过期文件。</p>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={fetchMaintenanceStatus} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 font-bold rounded-lg transition">
+                  <button onClick={() => fetchMaintenanceStatus(true)} disabled={maintenanceLoading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 font-bold rounded-lg transition">
                     <RefreshCw size={16} className={maintenanceLoading ? 'animate-spin' : ''} />刷新
                   </button>
                   <button onClick={saveMaintenanceSettings} disabled={maintenanceSaving} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-lg transition">

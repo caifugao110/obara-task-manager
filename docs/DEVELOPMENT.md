@@ -175,6 +175,7 @@ getCurrentSocket()?.emit('task_updated', {
 - 请求只走 `axiosInstance`；它已统一处理「后端不可达」「账号禁用」「会话失效」三类情况，页面不要重复写这些判断。
 - 路由切换后需要刷新数据的，用 `socket` 事件 + `getSnapshot()` 补初始状态，不要新起轮询。
 - 页面体量控制：主页面已因过大拆成 `pages/Dashboard/` 目录（容器 + `components/` + `hooks/` + 纯函数 `utils.ts`）。新页面接近千行时照此拆分。
+- **主页面的表格渲染是性能红线**：表格主体在 `pages/Dashboard/components/TaskTable.tsx`，用 `React.memo` 包住。`Dashboard` 是几千行的单组件，任务编辑弹窗里每个输入框的 state 都挂在它上面，**每次按键都会让 Dashboard 整棵子树重渲**。所以凡是传给 `TaskTable` 的 props 必须引用稳定：数据类走 `useMemo`、交互态走 `useState`、回调统一塞进 `handlersRef`（每次渲染只 `Object.assign` 换字段，不换对象）。往里加内联函数/内联对象/内联数组，`memo` 立刻失效，输入卡顿就会回来；同理，给 `TaskTable` 供数据的 `useMemo` 依赖里不能放「每次渲染新建的对象」（典型：`startOfMonth(currentDate)`），否则整条 memo 链一起失效。
 
 ### 注释与文档同步
 
@@ -281,6 +282,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | 台账取号一直 `409 取号冲突`，或同一张表里「序号 4 的行挂着 0201 的编号」 | 历史数据序号与名字里的编号错位（旧版占位行按任意序号提升），`serialNumber` 与编号不再一一对应，取号算出的「下一个编号」与存量行撞名 | 后端已改为**序号 ↔ 编号强绑定**：写入、取号、改规则、读取时都会把序号压实为 `1..N` 并按规则校正名字里的编号（前缀/后缀保留，校正后若会与其它行重名则保留原名）。**不要再加「编号不符就 400 拒绝整表保存」的校验**——那会让一张已经错位的表永远存不进去。纯函数在 `backend/routes/gunLedger.js` 的 `enforceSerialNumberBinding`，单测见 `backend/tests/unit/gunLedgerSerial.test.js` |
 | 日志文件清不掉、提示 `EBUSY`，或 `logs/` 涨到几百 MB | `backend.log` / `frontend.log` 等被隐藏 cmd 窗口的重定向句柄占用，Windows 上删除与写入都会失败；node/nodemon 自身不会截断 | 用「系统设置 → 日志文件管理」或 `node tools/trim-logs.js`（就地截断，不删文件），被占用的文件由 `start.bat` 在下次启动前轮转。不要为了清空间去删 `.pid` / `.token` / `backend-health-probe.gen` |
 | 状态监测里冒出一串「无证据的断开」，同时页面加载很慢、健康探针报超时 | 启动阶段的同步操作（如 `net use` 共享预热、同步读大文件）把事件循环占住，端口在监听但请求排队，探针 5 秒超时判假死 | 启动回调里的慢操作一律异步化（`ensureShareReady()` 已是 `async`）。开发期 nodemon 重启造成的断开可在监测页用「排除代码热重载」开关剔除，不要为此放宽判定口径 |
+| 任务编辑弹窗每输入一个字都卡、整页闪一下 | 传给 `TaskTable` 的 props 每次渲染都是新引用（内联回调/对象/数组，或 `useMemo` 依赖里有 `startOfMonth(...)` 这类新建对象），`React.memo` 直接失效，几千行的 Dashboard 整棵子树重渲 | 回调走 `handlersRef`、数据走 `useMemo` 且依赖保持稳定，见「前端」编码约定；改完用 React DevTools 的 Highlight updates 确认只有输入框在重渲 |
 
 ## 相关文档
 

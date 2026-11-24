@@ -9,6 +9,7 @@ const { sanitizeAoaRows } = require('./fileUploadSecurity');
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
 const gunExport = require('./gunLedgerExport');
 const scheduleSyncService = require('./scheduleSyncService');
+const dbStatCache = require('./dbStatCache');
 
 // 备份最终化：rawDb.backup() 生成的备份文件继承源库的 WAL 模式，
 // 会在备份目录留下 .db-wal / .db-shm 伴随文件，导致前端列表出现多条记录。
@@ -934,6 +935,10 @@ const compactDatabase = () => {
   const after = measure();
   const freedBytes = Math.max(0, before.totalDiskSize - after.totalDiskSize);
 
+  // VACUUM 之后页布局已完全改变，体积缓存必须作废，否则「压缩后仍显示旧体积」
+  dbStatCache.invalidate();
+  invalidateMeasurementCache();
+
   if (removedOrphans > 0 || freedBytes > 0) {
     console.log(`[maintenance] 数据库压缩完成：回收 ${(freedBytes / 1048576).toFixed(2)} MB，清理孤儿条目 ${removedOrphans} 条`);
   }
@@ -975,30 +980,13 @@ const KV_KEY_LABELS = {
 
 /**
  * 按表汇总 dbstat 页占用，索引体积归并到所属表（否则索引会单独成行，看不出归属）。
+ *
+ * 这一步是整库逐页扫描：data.db 数十 MB、约 7000 个页，数据目录又在网络盘上，
+ * 单次实测 2~5 秒。因此统一走 dbStatCache——与状态监测页共用同一份结果，
+ * 同一个页面不再扫两遍；force=true（用户点「刷新」）才重新扫。
  * dbstat 未启用时返回 null，前端降级为只显示主文件体积，不编造数字。
  */
-const readTableBytes = (raw) => {
-  let rows;
-  try {
-    rows = raw.prepare('SELECT name, SUM(pgsize) AS bytes FROM dbstat GROUP BY name').all();
-  } catch {
-    return null;
-  }
-  let indexRows = [];
-  try {
-    indexRows = raw.prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IS NOT NULL").all();
-  } catch {
-    indexRows = [];
-  }
-  const tableOfObject = new Map(indexRows.map((row) => [String(row.name), String(row.tbl_name)]));
-  const sizes = new Map();
-  for (const row of rows) {
-    const objectName = String(row.name);
-    const table = tableOfObject.get(objectName) || objectName;
-    sizes.set(table, (sizes.get(table) || 0) + (Number(row.bytes) || 0));
-  }
-  return sizes;
-};
+const readTableBytes = (raw, { force = false } = {}) => dbStatCache.getTableSizes(raw, { force });
 
 const safeCount = (raw, table) => {
   try {
@@ -1021,8 +1009,8 @@ const readKvKeyDetails = (raw) => {
     .filter((item) => item.bytes > 0);
 };
 
-const buildDbBreakdown = (raw, { dbFileSize, freelistBytes, pageSize, pageCount, tasksCount, taskItemsCount }) => {
-  const sizes = readTableBytes(raw);
+const buildDbBreakdown = (raw, { dbFileSize, freelistBytes, pageSize, pageCount, tasksCount, taskItemsCount, force = false }) => {
+  const sizes = readTableBytes(raw, { force });
   if (!sizes) return null;
 
   const grouped = new Map();
@@ -1100,9 +1088,21 @@ const buildDbBreakdown = (raw, { dbFileSize, freelistBytes, pageSize, pageCount,
   };
 };
 
-const getMaintenanceStatus = () => {
-  const { settings } = getMaintenanceSettings();
+// ---------------------------------------------------------------------------
+// 数据库体积测量缓存
+//
+// 这段测量（stat 库文件 + 3 个 pragma + 任务条目 JSON 长度 + dbstat 全库扫描 +
+// 5 个维护目录的 readdir/stat）在生产环境合计约 4 秒，其中 dbstat 占 3 秒左右。
+// 它们全部只用于「体积展示」，没有任何业务判定依赖，因此整块缓存：
+//   - 常态：直接返回上一次结果（即使过期），过期只在后台补算，请求路径不等待；
+//   - force=true（用户点「刷新」或维护操作之后）：同步重算，保证看到的是最新值。
+// settings / paths / scheduler 三块不缓存：路径随设置变化、调度状态必须实时。
+// ---------------------------------------------------------------------------
+const MEASURE_TTL_MS = Math.max(5000, Number(process.env.MAINTENANCE_MEASURE_TTL_MS) || 60 * 1000);
+let measureCache = { at: 0, data: null };
+let measureRefreshQueued = false;
 
+const collectDatabaseMeasurement = ({ force = false } = {}) => {
   // 数据库物理文件大小（data.db + WAL + SHM）
   const dbPath = getDbPath();
   const walPath = `${dbPath}-wal`;
@@ -1133,25 +1133,17 @@ const getMaintenanceStatus = () => {
       pageSize,
       pageCount,
       tasksCount,
-      taskItemsCount
+      taskItemsCount,
+      force
     });
   } catch {
     freelistBytes = 0;
     dbBreakdown = null;
   }
 
-  const nextRunAtIso = lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTimes).toISOString();
+  const { settings } = getMaintenanceSettings();
 
   return {
-    settings,
-    paths: {
-      database: dbPath,
-      backupDir: resolveManagedDir(settings.backupDir),
-      taskExportDir: resolveManagedDir(settings.taskExportDir),
-      gunLedgerExportDir: resolveManagedDir(settings.gunLedgerExportDir),
-      yearlyArchiveDir: resolveManagedDir(settings.yearlyArchiveDir),
-      offlineBackupDir: resolveManagedDir(settings.offlineBackupDir)
-    },
     database: {
       dbFileSize,
       walSize,
@@ -1172,7 +1164,102 @@ const getMaintenanceStatus = () => {
       gunLedgerExports: listManagedFiles(resolveManagedDir(settings.gunLedgerExportDir)).slice(0, 5),
       yearlyArchives: listManagedFiles(resolveManagedDir(settings.yearlyArchiveDir)).slice(0, 5),
       offlineBackups: listManagedFiles(resolveManagedDir(settings.offlineBackupDir)).slice(0, 5)
+    }
+  };
+};
+
+/** 过期后只在后台补算：响应已经写出，补算不占本次请求的耗时 */
+const scheduleMeasureRefresh = () => {
+  if (measureRefreshQueued) return;
+  measureRefreshQueued = true;
+  const handle = setImmediate(() => {
+    measureRefreshQueued = false;
+    try {
+      measureCache = { at: Date.now(), data: collectDatabaseMeasurement() };
+    } catch {
+      // 后台补算失败保留旧值，下次访问再试
+    }
+  });
+  if (handle && typeof handle.unref === 'function') handle.unref();
+};
+
+const measureDatabase = ({ force = false } = {}) => {
+  const now = Date.now();
+  if (force) {
+    const data = collectDatabaseMeasurement({ force: true });
+    measureCache = { at: now, data };
+    return data;
+  }
+  if (measureCache.data) {
+    if (now - measureCache.at >= MEASURE_TTL_MS) scheduleMeasureRefresh();
+    return measureCache.data;
+  }
+  // 冷启动：同步算一次，避免首屏体积卡片全是 "-"；有启动预热后这条路径很少走
+  const data = collectDatabaseMeasurement();
+  measureCache = { at: now, data };
+  return data;
+};
+
+// 启动预热延迟：必须晚于 dbStatCache.warmUp（默认 8s）——否则这里的 collectDatabaseMeasurement
+// 会因 dbstat 缓存未命中而触发 3 秒全库扫描，把预热变成「提前占用事件循环」。
+// 设为 0 可关闭预热（仅排查用）。可用 MAINTENANCE_MEASURE_WARMUP_DELAY_MS 覆盖。
+const MEASURE_WARMUP_DELAY_MS = (() => {
+  const raw = process.env.MAINTENANCE_MEASURE_WARMUP_DELAY_MS;
+  if (raw === undefined || raw === '') return 10000;
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.max(0, value) : 10000;
+})();
+let measureWarmUpScheduled = false;
+
+/**
+ * 启动预热：延迟一段时间后在后台测一次，让第一个访问「数据管理」页的用户直接命中内存，
+ * 不再因为 measureCache 为空而在请求路径上同步测量（网络盘上仍有数百毫秒到 1 秒）。
+ * 不传入 raw：collectDatabaseMeasurement 内部自己取连接，与 dbStatCache.warmUp 保持一致。
+ * @param {{ delayMs?: number }} [options]
+ * @returns {boolean} 是否已排入（重复调用只排一次）
+ */
+const warmUpMeasurement = ({ delayMs } = {}) => {
+  if (measureWarmUpScheduled) return false;
+  // 环境变量设为 0 = 关闭预热（仅排查用）；显式传 delayMs 时以参数为准
+  if (!Number.isFinite(delayMs) && MEASURE_WARMUP_DELAY_MS === 0) return false;
+  measureWarmUpScheduled = true;
+  const delay = Number.isFinite(delayMs) ? Math.max(0, delayMs) : MEASURE_WARMUP_DELAY_MS;
+  const timer = setTimeout(() => {
+    // 已有数据（请求抢先填充）就不重复占用事件循环
+    if (measureCache.data) return;
+    try {
+      measureCache = { at: Date.now(), data: collectDatabaseMeasurement() };
+    } catch {
+      // 预热失败不影响请求路径：measureDatabase 的冷启动分支会兜底同步算一次
+    }
+  }, delay);
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  return true;
+};
+
+/** 测量结果已确定变化（VACUUM / 改了维护目录路径等）后调用，让下次读取重算 */
+const invalidateMeasurementCache = () => {
+  measureCache = { at: 0, data: null };
+};
+
+const getMaintenanceStatus = ({ force = false } = {}) => {
+  const { settings } = getMaintenanceSettings();
+  const measured = measureDatabase({ force });
+
+  const nextRunAtIso = lastSchedulerState?.nextRunAt || getNextRunAt(settings.scheduleTimes).toISOString();
+
+  return {
+    settings,
+    paths: {
+      database: getDbPath(),
+      backupDir: resolveManagedDir(settings.backupDir),
+      taskExportDir: resolveManagedDir(settings.taskExportDir),
+      gunLedgerExportDir: resolveManagedDir(settings.gunLedgerExportDir),
+      yearlyArchiveDir: resolveManagedDir(settings.yearlyArchiveDir),
+      offlineBackupDir: resolveManagedDir(settings.offlineBackupDir)
     },
+    database: measured.database,
+    files: measured.files,
     scheduler: {
       running: schedulerRunning,
       // 计划时间以服务器本地时区为准；这里同时给出本地字符串，避免前端/接口
@@ -1191,6 +1278,8 @@ module.exports = {
   formatLocalDateTime,
   getTimezoneLabel,
   getMaintenanceStatus,
+  warmUpMeasurement,
+  invalidateMeasurementCache,
   compactDatabase,
   createDatabaseBackup,
   createOfflineBackup,

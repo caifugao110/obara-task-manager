@@ -204,6 +204,8 @@ const taskStore = require('./taskStore');
 const productionSchedule = require('./utils/productionSchedule');
 const logFiles = require('./utils/logFiles');
 const systemMonitor = require('./utils/systemMonitor');
+const dbStatCache = require('./utils/dbStatCache');
+const dbMaintenance = require('./utils/dbMaintenance');
 
 // Middleware
 const { auditLogMiddleware } = require('./middleware/auditLog');
@@ -945,5 +947,17 @@ server.listen(securityConfig.server.port, async () => {
     logFiles.startAutoTrim();
   } catch (err) {
     console.error('[logFiles] 自动截断调度启动失败:', err && err.message ? err.message : err);
+  }
+  // 体积统计预热：dbstat 是全库逐页扫描（网络盘上 3 秒左右），若留给请求路径，
+  // 第一次打开数据管理 / 状态监测页仍要等它。这里在启动后延迟几秒在后台算一次，
+  // 之后常态都是内存命中；延迟是为了避开上面的自愈、共享盘预热与调度器。
+  // 不 await：预热本身是同步阻塞的，串在这里会推迟上面几件事。
+  try {
+    dbStatCache.warmUp(db.getRawDb());
+    // measureCache（数据管理页的整体体积测量）也要预热：它在 dbStatCache 之后延迟更久，
+    // 确保 dbstat 已命中缓存，避免预热时再触发一次 3 秒全库扫描。
+    dbMaintenance.warmUpMeasurement();
+  } catch (err) {
+    console.error('[maintenance] 体积统计预热失败:', err && err.message ? err.message : err);
   }
 });

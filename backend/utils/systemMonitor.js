@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const db = require('../db');
+const dbStatCache = require('./dbStatCache');
 
 const LOG_DIR = path.join(__dirname, '..', '..', 'logs');
 const CRASH_LOG_PATH = path.join(LOG_DIR, 'backend-crash.log');
@@ -1872,28 +1873,13 @@ const fileSizeOf = (filePath) => {
 
 /**
  * 用 dbstat 虚拟表取每张表（含其索引）实际占用的字节。
- * 比「行数 × 估算行宽」准确，且能看出索引占了多少。未启用 dbstat 时返回 null，前端降级为只显示行数。
+ * 比「行数 × 估算行宽」准确，且能看出索引占了多少；未启用 dbstat 时返回 null，前端降级为只显示行数。
+ *
+ * 注意：这是整库逐页扫描（数十 MB / 约 7000 页，数据目录在网络盘上，单次 2~5 秒），
+ * 所以与「数据管理」页的主文件体积构成共用 dbStatCache 的同一份结果，
+ * 不再各扫一遍；只有 force=true（用户点刷新）才穿透缓存。
  */
-const readTableSizes = (raw) => {
-  let rows;
-  try {
-    rows = raw.prepare('SELECT name, SUM(pgsize) AS bytes FROM dbstat GROUP BY name').all();
-  } catch {
-    return null;
-  }
-  const indexRows = raw
-    .prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IS NOT NULL")
-    .all();
-  const tableOfObject = new Map(indexRows.map((row) => [String(row.name), String(row.tbl_name)]));
-  const sizes = new Map();
-  for (const row of rows) {
-    const objectName = String(row.name);
-    // dbstat 里索引以自身名字出现，这里归并到所属表，避免把索引体积漏算
-    const table = tableOfObject.get(objectName) || objectName;
-    sizes.set(table, (sizes.get(table) || 0) + (Number(row.bytes) || 0));
-  }
-  return sizes;
-};
+const readTableSizes = (raw, { force = false } = {}) => dbStatCache.getTableSizes(raw, { force });
 
 const readDbFootprint = (raw) => {
   const dbPath = db.getDbPath();
@@ -1921,10 +1907,10 @@ const readDbFootprint = (raw) => {
 let storageCache = { at: 0, data: null };
 const STORAGE_CACHE_TTL = 30 * 1000;
 
-const collectStorage = () => {
+const collectStorage = ({ force = false } = {}) => {
   const raw = ensureTables();
   const footprint = readDbFootprint(raw);
-  const sizes = readTableSizes(raw);
+  const sizes = readTableSizes(raw, { force });
 
   const tables = [...MONITOR_TABLES, MONITOR_EVENTS_TABLE].map((item) => {
     let rows = 0;
@@ -2011,7 +1997,8 @@ const collectStorage = () => {
 const getStorage = ({ force = false } = {}) => {
   const now = nowMs();
   if (!force && now - storageCache.at < STORAGE_CACHE_TTL && storageCache.data) return storageCache.data;
-  const data = collectStorage();
+  // force 也要穿透 dbstat 缓存：用户点「刷新」时看到旧体积同样会被当成没生效
+  const data = collectStorage({ force });
   storageCache = { at: now, data };
   return data;
 };
@@ -2113,8 +2100,9 @@ const runCleanup = ({ mode = 'retention', days = 0, vacuum = false, includeEvent
     writeMeta('lastVacuumFreedBytes', freedBytes);
   }
 
-  // 体积已变化，缓存必须作废
+  // 体积已变化，缓存必须作废（含共用的 dbstat 表体积缓存）
   storageCache = { at: 0, data: null };
+  dbStatCache.invalidate();
 
   return {
     mode,

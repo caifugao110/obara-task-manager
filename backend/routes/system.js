@@ -1272,7 +1272,10 @@ router.put('/settings', [authMiddleware, superAdminMiddleware], asyncHandler(asy
 }));
 
 router.get('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(async (req, res) => {
-  res.json(maintenance.getMaintenanceStatus());
+  // 体积构成来自 dbstat 全库扫描（网络盘上 2~5 秒）：dbstat 表体积走 dbStatCache
+  // （默认 10 分钟，过期只在后台补算），整体测量走 measureCache（默认 60 秒），
+  // 两层都不在请求路径上同步重扫；用户点「刷新」时前端传 force=1 穿透两层缓存。
+  res.json(maintenance.getMaintenanceStatus({ force: String(req.query.force || '') === '1' }));
 }));
 
 // 共享盘排障：状态跟踪「同步生产大日程」读不到「各产品大日程.xls」时，
@@ -1299,6 +1302,9 @@ router.put('/maintenance', [authMiddleware, superAdminMiddleware], asyncHandler(
   });
   await db.writeDb(data);
   maintenance.scheduleNextRun();
+  // 保存设置可能改了维护目录路径，files 列表必须重读；失效测量缓存即可，
+  // 不传 force——避免触发 dbstat 全库重扫（3 秒），dbstat 走缓存不影响目录文件列表。
+  maintenance.invalidateMeasurementCache();
   res.json(maintenance.getMaintenanceStatus());
 }));
 
