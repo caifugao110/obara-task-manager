@@ -29,9 +29,6 @@ const EXIT_LOG_PATH = path.join(LOG_DIR, 'backend-exit.log');
 // 后端标准输出（start.bat 重定向）。nodemon 的重启提示只写在这里，且不带时间戳，
 // 但仍可作为「确实是 nodemon 主动重启」的直接书面证据。
 const BACKEND_LOG_PATH = path.join(LOG_DIR, 'backend.log');
-// 假死探测脚本（backend-health-probe.bat）的日志：连续 N 次探测失败后会 taskkill 整棵树。
-// 进程被强杀时不会执行退出钩子，是唯一能证明「这次断开是看门狗干的」的书面证据。
-const WATCHDOG_LOG_PATH = path.join(LOG_DIR, 'backend-watchdog.log');
 // 手动停止标记：stop.bat 在 taskkill /F 之前写入。
 // taskkill /F 直接终止进程树，SIGINT/SIGTERM 处理器不会执行，进程既写不了 graceful_stop
 // 也写不了退出码与崩溃堆栈；没有这份标记时，一次人为停机只能被判成「进程被外部强制结束」，
@@ -57,7 +54,6 @@ const GAP_THRESHOLD_MS = 90 * 1000;
 const SLOW_MS = 1500;
 // 读取日志尾部字节数上限：backend-crash.log 历史上曾膨胀到数百 MB，
 // 只读尾部既能覆盖最近中断，也不会把整份文件读进内存。
-const LOG_TAIL_BYTES = 2 * 1024 * 1024;
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -137,143 +133,7 @@ const formatSpan = (sec) => {
 // ---------------------------------------------------------------------------
 // 表结构
 // ---------------------------------------------------------------------------
-let tablesReady = false;
-
-const ensureTables = () => {
-  if (tablesReady) return db.getRawDb();
-  const raw = db.getRawDb();
-  raw.exec(`
-    CREATE TABLE IF NOT EXISTS monitor_samples (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ts_ms INTEGER NOT NULL,
-      ts TEXT NOT NULL,
-      boot_id TEXT,
-      uptime_sec INTEGER,
-      rss_mb REAL,
-      heap_mb REAL,
-      lag_ms REAL,
-      db_ms REAL,
-      sockets INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_monitor_samples_ms ON monitor_samples(ts_ms);
-
-    CREATE TABLE IF NOT EXISTS monitor_events (
-      id TEXT PRIMARY KEY,
-      ts_ms INTEGER NOT NULL,
-      ts TEXT NOT NULL,
-      type TEXT NOT NULL,
-      boot_id TEXT,
-      detail TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_monitor_events_ms ON monitor_events(ts_ms);
-
-    CREATE TABLE IF NOT EXISTS monitor_traffic_min (
-      bucket_ms INTEGER PRIMARY KEY,
-      requests INTEGER NOT NULL DEFAULT 0,
-      errors INTEGER NOT NULL DEFAULT 0,
-      slow INTEGER NOT NULL DEFAULT 0,
-      duration_sum INTEGER NOT NULL DEFAULT 0,
-      duration_max INTEGER NOT NULL DEFAULT 0,
-      clients INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS monitor_traffic_path (
-      hour_ms INTEGER NOT NULL,
-      path TEXT NOT NULL,
-      method TEXT NOT NULL,
-      requests INTEGER NOT NULL DEFAULT 0,
-      errors INTEGER NOT NULL DEFAULT 0,
-      duration_sum INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (hour_ms, path, method)
-    );
-    CREATE INDEX IF NOT EXISTS idx_monitor_traffic_path_ms ON monitor_traffic_path(hour_ms);
-
-    CREATE TABLE IF NOT EXISTS monitor_meta (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-
-    -- 小时级汇总：图表只读这张表，避免「近半年」查询扫描 50 万行原始样本。
-    -- 每 30 秒一次 upsert（累加），代价与写一条采样相当。
-    CREATE TABLE IF NOT EXISTS monitor_samples_hour (
-      hour_ms INTEGER PRIMARY KEY,
-      samples INTEGER NOT NULL DEFAULT 0,
-      rss_sum REAL NOT NULL DEFAULT 0,
-      rss_max REAL NOT NULL DEFAULT 0,
-      heap_sum REAL NOT NULL DEFAULT 0,
-      lag_sum REAL NOT NULL DEFAULT 0,
-      lag_max REAL NOT NULL DEFAULT 0,
-      db_sum REAL NOT NULL DEFAULT 0,
-      sockets_max INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS monitor_traffic_hour (
-      hour_ms INTEGER PRIMARY KEY,
-      requests INTEGER NOT NULL DEFAULT 0,
-      errors INTEGER NOT NULL DEFAULT 0,
-      slow INTEGER NOT NULL DEFAULT 0,
-      duration_sum INTEGER NOT NULL DEFAULT 0,
-      duration_max INTEGER NOT NULL DEFAULT 0,
-      clients INTEGER NOT NULL DEFAULT 0
-    );
-  `);
-  tablesReady = true;
-  backfillHourRollups(raw);
-  return raw;
-};
-
-/**
- * 一次性把已有的分钟/样本数据汇总进小时表。
- * 只在升级后的首次启动执行一次（marker 写入 monitor_meta）。
- */
-const backfillHourRollups = (raw) => {
-  try {
-    const done = raw.prepare("SELECT value FROM monitor_meta WHERE key = 'hourRollupBackfilled'").get();
-    if (done) return;
-    raw.exec(`
-      INSERT INTO monitor_samples_hour (hour_ms, samples, rss_sum, rss_max, heap_sum, lag_sum, lag_max, db_sum, sockets_max)
-      SELECT (ts_ms / 3600000) * 3600000 AS h, COUNT(*), SUM(rss_mb), MAX(rss_mb), SUM(heap_mb),
-             SUM(lag_ms), MAX(lag_ms), SUM(db_ms), MAX(sockets)
-      FROM monitor_samples GROUP BY h
-      ON CONFLICT(hour_ms) DO UPDATE SET
-        samples = excluded.samples, rss_sum = excluded.rss_sum, rss_max = excluded.rss_max,
-        heap_sum = excluded.heap_sum, lag_sum = excluded.lag_sum, lag_max = excluded.lag_max,
-        db_sum = excluded.db_sum, sockets_max = excluded.sockets_max;
-
-      INSERT INTO monitor_traffic_hour (hour_ms, requests, errors, slow, duration_sum, duration_max, clients)
-      SELECT (bucket_ms / 3600000) * 3600000 AS h, SUM(requests), SUM(errors), SUM(slow),
-             SUM(duration_sum), MAX(duration_max), MAX(clients)
-      FROM monitor_traffic_min GROUP BY h
-      ON CONFLICT(hour_ms) DO UPDATE SET
-        requests = excluded.requests, errors = excluded.errors, slow = excluded.slow,
-        duration_sum = excluded.duration_sum, duration_max = excluded.duration_max, clients = excluded.clients;
-    `);
-    raw.prepare("INSERT INTO monitor_meta (key, value) VALUES ('hourRollupBackfilled', ?) ON CONFLICT(key) DO NOTHING")
-      .run(String(nowMs()));
-  } catch (error) {
-    // 回填失败不影响新数据（新数据会实时写入小时表），下次启动再试
-    tablesReady = true;
-  }
-};
-
-const readMeta = (key) => {
-  try {
-    const row = ensureTables().prepare('SELECT value FROM monitor_meta WHERE key = ?').get(key);
-    return row ? row.value : null;
-  } catch {
-    return null;
-  }
-};
-
-const writeMeta = (key, value) => {
-  try {
-    ensureTables()
-      .prepare('INSERT INTO monitor_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-      .run(key, String(value));
-  } catch {
-    // 元数据写入失败不影响主流程
-  }
-};
+const { ensureTables, readMeta, writeMeta } = require('./monitorStore');
 
 // ---------------------------------------------------------------------------
 // 运行时状态
@@ -308,138 +168,8 @@ const recordEvent = (type, detail) => {
   }
 };
 
-// ---------------------------------------------------------------------------
-// 日志取证
-// ---------------------------------------------------------------------------
-// 只读文件尾部，按行解析时间戳。返回 [{ tsMs, raw }]，按时间升序。
-const readLogTail = (filePath) => {
-  try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size === 0) return [];
-    const start = Math.max(0, stat.size - LOG_TAIL_BYTES);
-    const length = stat.size - start;
-    const fd = fs.openSync(filePath, 'r');
-    const buffer = Buffer.alloc(length);
-    try {
-      fs.readSync(fd, buffer, 0, length, start);
-    } finally {
-      fs.closeSync(fd);
-    }
-    let text = buffer.toString('utf8');
-    if (start > 0) {
-      // 丢弃被截断的首行
-      const firstBreak = text.indexOf('\n');
-      text = firstBreak >= 0 ? text.slice(firstBreak + 1) : '';
-    }
-    const lines = [];
-    for (const raw of text.split(/\r?\n/)) {
-      if (!raw.trim()) continue;
-      const match = /^\[([^\]]+)\]/.exec(raw);
-      if (!match) continue;
-      const tsMs = new Date(match[1]).getTime();
-      if (!Number.isFinite(tsMs)) continue;
-      lines.push({ tsMs, raw: raw.slice(0, 400) });
-    }
-    lines.sort((a, b) => a.tsMs - b.tsMs);
-    return lines;
-  } catch {
-    return [];
-  }
-};
+const { readLogTail, readLogTailText, parseWindowsLogTimestamp, clockOf, readWatchdogKills } = require('./monitorLogEvidence');
 
-/** 只取文件尾部原始文本（不解析时间戳），用于识别 nodemon 这类无时间戳的输出 */
-const readLogTailText = (filePath) => {
-  try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size === 0) return '';
-    const start = Math.max(0, stat.size - LOG_TAIL_BYTES);
-    const length = stat.size - start;
-    const fd = fs.openSync(filePath, 'r');
-    const buffer = Buffer.alloc(length);
-    try {
-      fs.readSync(fd, buffer, 0, length, start);
-    } finally {
-      fs.closeSync(fd);
-    }
-    let text = buffer.toString('utf8');
-    if (start > 0) {
-      const firstBreak = text.indexOf('\n');
-      text = firstBreak >= 0 ? text.slice(firstBreak + 1) : '';
-    }
-    return text;
-  } catch {
-    return '';
-  }
-};
-
-// ---------------------------------------------------------------------------
-// 看门狗取证
-// ---------------------------------------------------------------------------
-// backend-health-probe.bat 写的是 Windows 的 %date% %time%：
-//   [周三 2026/11/11 23:09:23.08] [probe] [FATAL] backend unresponsive 3 consecutive probes ...
-// 前面可能带本地化的星期，年份在前，小数部分是「百分秒」（两位，不是毫秒），
-// new Date() 解析不了这种串，只能按字段自己拼。
-// 若某台机器的区域设置把 %date% 输出成「11/11/2026」（月在前），这里匹配不到「年份在前」的
-// 形式会返回 null —— 结果只是少一条证据、退回原有判定，不会因此误判。
-const WIN_LOG_TS = /^\[[^\]]*?(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d{1,3}))?\]/;
-
-const parseWindowsLogTimestamp = (raw) => {
-  const match = WIN_LOG_TS.exec(raw);
-  if (!match) return null;
-  const fracText = match[7] || '';
-  // 两位 = 百分秒，三位 = 毫秒
-  const fracMs = fracText ? Number(fracText.length === 2 ? `${fracText}0` : fracText.padEnd(3, '0')) : 0;
-  const ms = new Date(
-    Number(match[1]),
-    Number(match[2]) - 1,
-    Number(match[3]),
-    Number(match[4]),
-    Number(match[5]),
-    Number(match[6]),
-    fracMs
-  ).getTime();
-  return Number.isFinite(ms) ? ms : null;
-};
-
-/** 时刻 -> 「23:09:23」，用于证据文案 */
-const clockOf = (ms) => {
-  const date = new Date(ms);
-  const pad = (value) => String(value).padStart(2, '0');
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-};
-
-// 结果缓存 5 秒：一次总览查询会对每条断开记录都问一次，没必要反复读同一份文件
-let watchdogCache = { at: 0, items: [] };
-const WATCHDOG_CACHE_TTL = 5000;
-
-/**
- * 看门狗强杀记录（只取 FATAL 行），按时间升序。
- * @returns {{ tsMs: number, fails: number|null, pid: string, port: string, raw: string }[]}
- */
-const readWatchdogKills = () => {
-  const now = nowMs();
-  if (now - watchdogCache.at < WATCHDOG_CACHE_TTL) return watchdogCache.items;
-
-  const items = [];
-  for (const raw of readLogTailText(WATCHDOG_LOG_PATH).split(/\r?\n/)) {
-    if (!raw.includes('killing process tree')) continue;
-    const tsMs = parseWindowsLogTimestamp(raw);
-    if (tsMs === null) continue;
-    const fails = /(\d+)\s+consecutive probes/.exec(raw);
-    const pid = /\(PID (\d+)\)/.exec(raw);
-    const port = /on port (\d+)/.exec(raw);
-    items.push({
-      tsMs,
-      fails: fails ? Number(fails[1]) : null,
-      pid: pid ? pid[1] : '',
-      port: port ? port[1] : '',
-      raw: raw.slice(0, 400)
-    });
-  }
-  items.sort((a, b) => a.tsMs - b.tsMs);
-  watchdogCache = { at: now, items };
-  return items;
-};
 
 /**
  * 读取 stop.bat 落下的手动停止标记。

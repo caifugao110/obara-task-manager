@@ -14,7 +14,6 @@ import { getEffectiveIsWeekend, normalizeWorkdayOverrides, WorkdayOverrides, Wor
 import { resolveAutoFillHours, GunLocation } from '../../utils/gunHoursRules';
 import { createGunUsageChecker } from '../../utils/gunUsage';
 import { PWD_INPUT_CLASS, PWD_EYE_BTN_CLASS, PWD_STRENGTH_META, scorePassword } from '../../utils/passwordFieldStyles';
-import { copyTaskTableToClipboard } from '../../utils/taskCopy';
 import {
   detectTaskContentType,
   getTaskBaseColor,
@@ -49,6 +48,9 @@ import { stopGunDragPointerTracking } from './gunDragState';
 import { MODAL_OVERLAY } from '../../utils/modalStyles';
 import { useTaskHistory } from './hooks/useTaskHistory';
 import { useGunDragDrop } from './hooks/useGunDragDrop';
+import { useTaskClipboard, useTaskTableCopy } from './hooks/useTaskClipboard';
+import { useTaskDeletion, useTaskSelection } from './hooks/useTaskSelection';
+import { useTaskFind } from './hooks/useTaskFind';
 import { defaultAccessSettings } from './constants';
 import {
   taskSelectionKey,
@@ -82,7 +84,6 @@ import type {
   PendingChange,
   EditingSession,
   BatchReplaceMatch,
-  SelectedTask,
   Toast,
 } from './types';
 
@@ -177,71 +178,6 @@ const GunLookupTag = ({ text }: { text: string }) => (
   </span>
 );
 
-/**
- * 实测某条主任务在页面上「任务名文本」真正可用的宽度（px），口径统一为**普通用户看到的样子**。
- *
- * 为什么不能直接用列宽：任务内容列的宽度是随视口反算的（见 VISIBLE_DAY_COLUMNS 附近），
- * 主任务行里除了任务名，前面还固定有一个「完成状态标记」按钮
- * （完成 / 未完成二选一，hover 才显形，平时 opacity-0 但照样占 18px + 4px 间距），
- * 所以文字实际可用宽度比列宽窄（列宽 288 时约 251px）。
- * 管理员还会额外多出「上移 / 下移」按钮（普通用户没有），这里**不把它们算回去**，
- * 保证不管谁复制，粘出来的表格都按「普通用户看到的宽度」断行。
- */
-const measureTaskNameWidth = (taskId: string): number | undefined => {
-  try {
-    const root = document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`);
-    const nameEl = root?.querySelector<HTMLElement>('.task-name');
-    if (!nameEl) return undefined;
-
-    const nameStyle = window.getComputedStyle(nameEl);
-    const ownPadding = (parseFloat(nameStyle.paddingLeft) || 0) + (parseFloat(nameStyle.paddingRight) || 0);
-    const flex = nameEl.parentElement;
-    // 行内可用宽度：取任务名所在的 flex 容器内容宽度（无 padding，含两侧按钮）
-    const flexWidth = flex ? flex.clientWidth : nameEl.getBoundingClientRect().width;
-
-    // 扣掉前面的「完成状态标记」按钮（普通用户固定 1 个：18px + margin-right 4px）。
-    // 排在任务名后面的「上移 / 下移」是管理员才有的，**故意不加回去**，这样谁复制宽度都一样。
-    let leadingButtonsWidth = 0;
-    const markGroup = nameEl.previousElementSibling as HTMLElement | null;
-    if (markGroup) {
-      const markStyle = window.getComputedStyle(markGroup);
-      if (markStyle.position !== 'absolute') {
-        // clientWidth 是布局 px，getBoundingClientRect 是屏幕 px：主页面缩放后两者差一个倍率，统一成本地 px
-        leadingButtonsWidth = screenToLocal(markGroup.getBoundingClientRect().width) + (parseFloat(markStyle.marginRight) || 0);
-      }
-    }
-
-    const width = flexWidth - leadingButtonsWidth - ownPadding;
-    return width > 60 ? Math.round(width) : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-/**
- * 多选时定一个列宽：同一张表只能有一个宽度，但选中行的排版形态可能不一样——
- * 带枪名的行文字排在按钮之间（≈251px），没有枪名的单行是居中排版、两侧各留 48px（≈177px）。
- * 这里取**出现次数最多**的那个宽度（并列时取先选中的那一行），
- * 让多数行的断行与屏幕一致，且同样的选择每次复制结果都相同。
- */
-const pickNameContentWidth = (items: TaskItem[]): number | undefined => {
-  const widths = items
-    .map(item => measureTaskNameWidth(item.id))
-    .filter((width): width is number => typeof width === 'number');
-  if (widths.length === 0) return undefined;
-  const counts = new Map<number, number>();
-  widths.forEach(width => counts.set(width, (counts.get(width) || 0) + 1));
-  let best = widths[0];
-  let bestCount = 0;
-  counts.forEach((count, width) => {
-    if (count > bestCount) {
-      best = width;
-      bestCount = count;
-    }
-  });
-  return best;
-};
-
 /* ---------- 主表格列宽 ---------- */
 // 一天在横向上占两列：「任务内容」+「工时」。
 // 100% 缩放时要求横向正好显示 4 天，所以「任务内容」列的宽度由视口宽度反算（见表格列宽那个 effect 的注释）；
@@ -328,22 +264,21 @@ const Dashboard = () => {
     dragging: taskModalDragging,
     headerProps: taskModalHeaderProps,
   } = useModalDrag(modalOpen, `${modalDesignerId ?? ''}|${modalDate ?? ''}`);
-  const [clipboard, setClipboard] = useState<TaskItem[] | null>(null);
-  const clipboardRef = useRef<TaskItem[] | null>(null);
-  useEffect(() => {
-    clipboardRef.current = clipboard;
-  }, [clipboard]);
+  // 剪贴板状态（复制/剪切/粘贴）已收进 hooks/useTaskClipboard.ts，
+  // 与它的三个使用点放在一起，避免「状态在页面顶部、读写的却是另一个旧闭包」
   const [focusTarget, setFocusTarget] = useState<{itemId: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number} | null>(null);
-  const [selectedTasks, setSelectedTasks] = useState<SelectedTask[]>([]);
-  const selectedTasksRef = useRef<SelectedTask[]>([]);
-  useEffect(() => {
-    selectedTasksRef.current = selectedTasks;
-  }, [selectedTasks]);
-  const [selectedCell, setSelectedCell] = useState<{designerId: string, date: string} | null>(null);
-  const selectedCellRef = useRef<{designerId: string, date: string} | null>(null);
-  useEffect(() => {
-    selectedCellRef.current = selectedCell;
-  }, [selectedCell]);
+  // 选中态（主任务多选 + 加号单元格）收进 hooks/useTaskSelection.ts：
+  // state 与它对应的 ref 必须成对维护，散在页面里迟早出现「快捷键读到过期选中」的问题
+  const {
+    selectedTasks,
+    setSelectedTasks,
+    selectedTasksRef,
+    selectedCell,
+    setSelectedCell,
+    selectedCellRef,
+    handleSelectTask,
+    clearSelection,
+  } = useTaskSelection();
   // 连按两次空格的快捷动作：选中加号 → 新增任务；选中单条主任务 → 编辑该主任务。
   // 这里只存一个「当前能不能快捷操作」的回调，真正的判定逻辑在选中状态变化时写入（见下方 effect），
   // 空格监听本身注册得早，靠 ref 拿最新值，避免闭包读到旧的选中状态。
@@ -379,14 +314,28 @@ const Dashboard = () => {
   const [quickGunTakeNonce, setQuickGunTakeNonce] = useState(0);
   // 仕样自愈弹窗（底部「就绪」右侧入口，仅管理员）：检测并按仕样书校准当月客户名与纳期
   const [specSelfHealOpen, setSpecSelfHealOpen] = useState(false);
-  // 查找弹窗（底部状态栏入口，所有登录用户可用）：按关键字查找任务名/枪名并定位到表格
-  const [batchReplaceOpen, setBatchReplaceOpen] = useState(false);
-  const [batchFindText, setBatchFindText] = useState('');
-  const [batchReplaceAllTable, setBatchReplaceAllTable] = useState(false);
-  const [batchSearchLoading, setBatchSearchLoading] = useState(false);
-  const [batchMatches, setBatchMatches] = useState<BatchReplaceMatch[]>([]);
-  const [batchMatchCount, setBatchMatchCount] = useState(0);
-  const [batchSearchDone, setBatchSearchDone] = useState(false);
+  // 查找弹窗（底部状态栏入口，所有登录用户可用）：状态、请求与高亮都在 hooks/useTaskFind.tsx，
+  // 页面这边只保留「点结果定位到表格」（要碰月份切换/分组折叠/人员筛选，耦合度高）
+  const {
+    open: batchReplaceOpen,
+    setOpen: setBatchReplaceOpen,
+    findText: batchFindText,
+    setFindText: setBatchFindText,
+    allTable: batchReplaceAllTable,
+    setAllTable: setBatchReplaceAllTable,
+    loading: batchSearchLoading,
+    matches: batchMatches,
+    matchCount: batchMatchCount,
+    searchDone: batchSearchDone,
+    resetResults: resetBatchSearchResults,
+    resetAll: resetBatchFindAll,
+    search: runBatchSearch,
+    highlight: highlightMatch,
+  } = useTaskFind({
+    addToast,
+    currentMonth: currentDate.getMonth() + 1,
+    currentYear: currentDate.getFullYear(),
+  });
   // 查找结果的日期筛选（多选，空数组 = 全部日期）：与 /leaderboard「仕样进度管理」的日期筛选同口径，
   // 只对已命中的结果做二次筛选，不改变查找范围，也不影响后端返回的命中数
   const [batchDateFilters, setBatchDateFilters] = useState<string[]>([]);
@@ -521,7 +470,6 @@ const Dashboard = () => {
   // 关闭查找弹窗时把这一次的查找整条清掉：日历收起、关键字清空、结果与二次筛选复位。
   // 查找记录不做留存——下次打开必须是空白输入框（用户要求：不带上一次的查找记录）。
   // 放在「关闭时」而不是「打开时」清，避免重新打开瞬间先渲染出旧关键字再被 effect 抹掉。
-  const batchSearchReqRef = useRef(0);
   const batchFindWasOpenRef = useRef(false);
   useEffect(() => {
     if (batchReplaceOpen) {
@@ -532,13 +480,8 @@ const Dashboard = () => {
     if (!batchFindWasOpenRef.current) return;
     batchFindWasOpenRef.current = false;
     // 作废还在路上的查找响应，防止关掉弹窗后迟到的结果又写回 state
-    batchSearchReqRef.current += 1;
+    resetBatchFindAll();
     setBatchDateOpen(false);
-    setBatchFindText('');
-    setBatchMatches([]);
-    setBatchMatchCount(0);
-    setBatchSearchDone(false);
-    setBatchSearchLoading(false);
     setBatchDateFilters([]);
     setBatchCalendarMonth('');
     setBatchCompletionFilters(['done', 'todo']);
@@ -634,6 +577,8 @@ const Dashboard = () => {
   const canTakeGunNumber = isAdmin
     && (user?.role === 'superadmin' || (gunLedgerAccess.enabled && gunLedgerAccess.allowAdmins));
   const isOfflineMode = !isOnline || offlineCacheUsed;
+  // 查找入口：离线态在调用时传给 hook（原因见 useTaskFind 的参数说明）
+  const handleBatchSearch = () => runBatchSearch(isOfflineMode);
   const canEditTasks = isAdmin && !isOfflineMode;
   // 经 ref 暴露给 socket 监听使用：该监听所在 effect 不能把 canEditTasks 放进依赖
   // （会导致 socket 反复解绑重绑），用 ref 避免闭包捕获到过期值。
@@ -1189,68 +1134,16 @@ const Dashboard = () => {
     helpGuideOpen, batchReplaceOpen, changePasswordOpen,
   ]);
 
-  // 复制选中主任务（连按两次 C 触发）：把主任务行 + 全部枪名写成一张 HTML 表格放进剪贴板，
-  // 表里只有任务名/枪名一列（不带工时）；items 必须来自同一个人同一天，按表格里的先后顺序传入
-  const copyTaskAsTable = useCallback(async (items: TaskItem[]) => {
-    if (!isAdmin) {
-      addToast('仅管理员可复制主任务表格', 'error');
-      return;
-    }
-    if (items.length === 0) return;
-    try {
-      // 实测页面上任务名的文本可用宽度：完成/上下移按钮虽然淡出不可见，但仍然占着宽度，
-      // 只有按实测宽度排版，粘出来的断行位置才和屏幕上（普通用户看到的）一致
-      const result = await copyTaskTableToClipboard({
-        items,
-        config: systemSettings.taskColorConfig,
-        nameContentWidth: pickNameContentWidth(items),
-      });
-      if (result === 'rich') {
-        addToast('已复制为表格，可直接进行粘贴', 'success');
-      } else if (result === 'plain') {
-        addToast('已复制为纯文本（当前浏览器不允许写带格式剪贴板）', 'success');
-      } else {
-        addToast('复制失败，请重试', 'error');
-      }
-    } catch (error) {
-      console.error('主任务复制失败:', error);
-      addToast('复制失败，请重试', 'error');
-    }
-  }, [isAdmin, systemSettings.taskColorConfig, addToast]);
-
-  // 支持多选，但**只能选同一个人同一天**（跨单元格复制出来没法排成一张表）。
-  // trigger 只影响提示文案：shortcut = 连按两次 C（默认），button = 页脚「复制任务为表格」按钮
-  const copySelectedTaskAsTable = useCallback(async (trigger: 'shortcut' | 'button' = 'shortcut') => {
-    if (!isAdmin) {
-      addToast('仅管理员可复制主任务表格', 'error');
-      return;
-    }
-    const selections = selectedTasksRef.current;
-    if (selections.length === 0) {
-      addToast(
-        trigger === 'button'
-          ? '请先选中主任务，再点击「复制任务为表格」'
-          : '请先选中主任务，再连按两次 C 复制',
-        'error',
-      );
-      return;
-    }
-    const { designerId, date } = selections[0];
-    if (selections.some(selection => selection.designerId !== designerId || selection.date !== date)) {
-      addToast('只能复制同一个人同一天的主任务，请重新选择', 'error');
-      return;
-    }
-    const sheet = sheets.find(s => s.designerId === designerId);
-    const dayItems = sheet && Array.isArray(sheet.days?.[date]) ? sheet.days[date] : [];
-    const selectedIds = new Set(selections.map(selection => selection.itemId));
-    // 按表格里的实际顺序取任务，而不是用户点击的先后顺序，保证粘出来与屏幕顺序一致
-    const items = dayItems.filter(task => selectedIds.has(task.id));
-    if (items.length !== selections.length) {
-      addToast('部分主任务已不存在，请刷新后重试', 'error');
-      return;
-    }
-    await copyTaskAsTable(items);
-  }, [isAdmin, sheets, copyTaskAsTable, addToast]);
+  // 「复制为表格」（连按两次 C / 页脚按钮）的宽度实测与多选校验在 hooks/useTaskClipboard.ts 的
+  // useTaskTableCopy 里。它只需要「是否管理员 / 配色 / toast / 选中列表 / 当月表格」五样输入，
+  // 所以能在快捷键注册之前调用；依赖更多（写库、历史、socket）的复制/剪切/粘贴见页面中段的 useTaskClipboard。
+  const { copySelectedTaskAsTable } = useTaskTableCopy({
+    isAdmin,
+    colorConfig: systemSettings.taskColorConfig,
+    addToast,
+    selectedTasksRef,
+    sheets,
+  });
 
   // 复制：连按两次 C（间隔 400ms 内）= 把当前选中的主任务复制成表格。
   // C 是字母键：Ctrl+C / Cmd+C（浏览器复制）必须整体让行，Shift+C 视作录入字符也不参与判定；
@@ -2410,8 +2303,7 @@ const Dashboard = () => {
       if (isEditableKeyboardTarget(e.target)) return;
       if (selectedTasksRef.current.length === 0 && !selectedCellRef.current) return;
 
-      setSelectedTasks([]);
-      setSelectedCell(null);
+      clearSelection();
     };
 
     window.addEventListener('keydown', handleEsc);
@@ -2579,8 +2471,7 @@ const Dashboard = () => {
           ...prev,
           [editingSessionKey(data.designerId, data.date, data.itemId)]: data
         }));
-        setSelectedCell(null);
-        setSelectedTasks([]);
+        clearSelection();
         setModalOpen(false);
         const blockedTarget = data.itemId ? '该任务' : '该区域';
         addToast(`${data.name || data.username} ${data.mode === 'colorMark' ? `正在修改${blockedTarget}的完成状态` : `正在编辑${blockedTarget}`}，暂无法操作`, 'error');
@@ -2692,89 +2583,24 @@ const Dashboard = () => {
   }, [loading, isOnline, sheets, loadSheetsFromLocalStorage]);
 
 
-  useEffect(() => {
-    const handleTaskCopy = (e: Event) => {
-      const customEvent = e as CustomEvent;
-      const { item, designerId, date } = customEvent.detail;
-      const payloads = getSelectedTaskPayloads({ item, designerId, date });
-      setClipboard(payloads.map(payload => payload.item));
-      addToast('粘贴已准备', 'success');
-    };
-
-    const handleTaskCut = async (e: Event) => {
-      const customEvent = e as CustomEvent;
-      const { item, designerId, date } = customEvent.detail;
-      if (warnIfOfflineEdit()) return;
-      if (!user) return;
-      const payloads = getSelectedTaskPayloads({ item, designerId, date });
-      if (payloads.length === 0) return;
-      if (payloads.some(payload => warnIfCellLocked(payload.designerId, payload.date, payload.item.id))) return;
-      
-      setClipboard(payloads.map(payload => payload.item));
-      addToast('剪切已准备', 'success');
-      
-      try {
-        for (const payload of payloads) {
-          await axiosInstance.delete('/tasks/item', { data: { designerId: payload.designerId, date: payload.date, itemId: payload.item.id } });
-        }
-        addToHistory('batchDelete', {
-          items: payloads.map(payload => ({ designerId: payload.designerId, date: payload.date, item: payload.item }))
-        });
-        fetchSheets();
-        socketRef.current?.emit('task_updated');
-        stopEditingCell();
-        setSelectedTasks([]);
-        setSelectedCell(null);
-      } catch (err) {
-        addToast('剪切失败', 'error');
-      }
-    };
-
-    const handleTaskPaste = async (e: Event) => {
-      const customEvent = e as CustomEvent;
-      const { designerId, date } = customEvent.detail;
-      if (warnIfOfflineEdit()) return;
-      if (!user) return;
-      if (!clipboardRef.current || clipboardRef.current.length === 0) {
-        addToast('请先复制任务', 'error');
-        return;
-      }
-      if (warnIfCellLocked(designerId, date)) return;
-      addToast('任务已复制', 'success');
-      try {
-        const res = await axiosInstance.post('/tasks/item/batch', { 
-          designerId, 
-          date, 
-          items: clipboardRef.current
-        });
-        addToHistory('batchAdd', {
-          items: (res.data.items || []).map((created: TaskItem, idx: number) => ({ 
-            designerId, 
-            date, 
-            itemId: created.id,
-            item: clipboardRef.current?.[idx]
-          }))
-        });
-        upsertSheet(res.data.sheet);
-        emitTaskUpdated(designerId);
-        stopEditingCell(designerId, date);
-        setSelectedTasks([]);
-        setSelectedCell(null);
-      } catch (err) {
-        addToast('粘贴失败', 'error');
-      }
-    };
-
-    window.addEventListener('task-copy', handleTaskCopy);
-    window.addEventListener('task-cut', handleTaskCut);
-    window.addEventListener('task-paste', handleTaskPaste);
-
-    return () => {
-      window.removeEventListener('task-copy', handleTaskCopy);
-      window.removeEventListener('task-cut', handleTaskCut);
-      window.removeEventListener('task-paste', handleTaskPaste);
-    };
-  }, [clipboard, user, token, fetchSheets, upsertSheet, sheets, canEditTasks, isOfflineMode]);
+  // 任务行的复制 / 剪切 / 粘贴（含 task-copy|cut|paste 三个窗口事件）收进 useTaskClipboard：
+  // 状态与它的三个使用点放在一起，页面只负责把「写库、历史、socket、编辑会话」这些依赖传进去。
+  // 位置放在 addToHistory / upsertSheet / emitTaskUpdated 之后是必须的（它们都还没就绪时不能注册）。
+  const { clipboardRef, handlePaste } = useTaskClipboard({
+    hasUser: Boolean(user),
+    warnIfOfflineEdit,
+    warnIfCellLocked,
+    getSelectedTaskPayloads,
+    addToast,
+    addToHistory,
+    fetchSheets,
+    upsertSheet,
+    emitTaskUpdated,
+    stopEditingCell,
+    setSelectedTasks,
+    setSelectedCell,
+    socketRef,
+  });
 
   const sheetByDesignerId = useMemo(() => {
     const map: Record<string, TaskSheet | undefined> = {};
@@ -2899,8 +2725,7 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (!isOfflineMode) return;
-    setSelectedCell(null);
-    setSelectedTasks([]);
+    clearSelection();
     setActiveTask(null);
     setActiveGun(null);
     setIsDragging(false);
@@ -2915,81 +2740,26 @@ const Dashboard = () => {
   }, [isOfflineMode, modalOpen, modalDesignerId, modalDate, stopEditingCell]);
 
 
-  const deleteSelectedTasks = useCallback(async (fallback?: { item: TaskItem; designerId: string; date: string }) => {
-    if (!canEditTasks) {
-      if (isOfflineMode) addToast('当前离线，禁止编辑', 'error');
-      return;
-    }
-    if (warnIfOfflineEdit()) return;
-
-    const selections = fallback
-      ? getSelectedTaskPayloads(fallback)
-      : selectedTasksRef.current
-          .map(selection => {
-            const item = getAllItems(selection.designerId, selection.date).find(task => task.id === selection.itemId);
-            return item ? { item, designerId: selection.designerId, date: selection.date } : null;
-          })
-          .filter(Boolean) as { item: TaskItem; designerId: string; date: string }[];
-
-    if (selections.length === 0) return;
-    if (selections.some(selection => warnIfCellLocked(selection.designerId, selection.date, selection.item.id))) return;
-
-    try {
-      for (const selection of selections) {
-        await axiosInstance.delete('/tasks/item', { data: { designerId: selection.designerId, date: selection.date, itemId: selection.item.id }
-        });
-      }
-
-      if (selections.length === 1) {
-        const [selection] = selections;
-        addToHistory('delete', { designerId: selection.designerId, date: selection.date, item: selection.item });
-      } else {
-        addToHistory('batchDelete', {
-          items: selections.map(selection => ({ designerId: selection.designerId, date: selection.date, item: selection.item }))
-        });
-      }
-
-      fetchSheets();
-      socketRef.current?.emit('task_updated');
-      stopEditingCell();
-      setSelectedTasks([]);
-      setSelectedCell(null);
-      addToast(selections.length === 1 ? '任务已删除' : `已删除 ${selections.length} 个任务`, 'success');
-    } catch (err) {
-      addToast('删除任务失败', 'error');
-    }
-  }, [canEditTasks, isOfflineMode, token, fetchSheets, stopEditingCell, warnIfCellLocked, sheets]);
-
-  useEffect(() => {
-    const handleSelectedTasksDelete = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete') return;
-      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-      if (modalOpen || batchReplaceOpen || isEditableKeyboardTarget(e.target)) return;
-      if (selectedTasksRef.current.length === 0) return;
-
-      e.preventDefault();
-      deleteSelectedTasks();
-    };
-
-    window.addEventListener('keydown', handleSelectedTasksDelete);
-    return () => window.removeEventListener('keydown', handleSelectedTasksDelete);
-  }, [deleteSelectedTasks, modalOpen, batchReplaceOpen]);
-
-  const handleSelectTask = (itemId: string, designerId: string, date: string, append: boolean) => {
-    const nextSelection = { itemId, designerId, date };
-    if (!append) {
-      setSelectedTasks([nextSelection]);
-      return;
-    }
-
-    setSelectedTasks(prev => {
-      const key = taskSelectionKey(nextSelection);
-      if (prev.some(selection => taskSelectionKey(selection) === key)) {
-        return prev.filter(selection => taskSelectionKey(selection) !== key);
-      }
-      return [...prev, nextSelection];
-    });
-  };
+  // 批量删除（Delete 键 / 右键菜单 / 页脚按钮共用）：逐条删库、登记撤销历史。
+  // 依赖写库与历史，所以只能在页面中段（addToHistory / fetchSheets 就绪后）调用。
+  const { deleteSelectedTasks } = useTaskDeletion({
+    canEditTasks,
+    isOfflineMode,
+    addToast,
+    warnIfOfflineEdit,
+    warnIfCellLocked,
+    getSelectedTaskPayloads,
+    getAllItems,
+    addToHistory,
+    fetchSheets,
+    stopEditingCell,
+    socketRef,
+    selectedTasksRef,
+    setSelectedTasks,
+    setSelectedCell,
+    // 弹窗打开时 Delete 不应该删到背后的任务
+    isHotkeyBlocked: modalOpen || batchReplaceOpen,
+  });
 
   // 双击空格的快捷目标（每次选中状态 / 任务数据变化都重算，保证闭包里是最新的锁定判断和任务内容）：
   //   · 选中加号（单元格）→ 新增任务；· 选中单条主任务 → 编辑该主任务
@@ -3216,60 +2986,6 @@ const Dashboard = () => {
   // 存储待保存的任务更改
   const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
 
-  const resetBatchSearchResults = () => {
-    setBatchMatches([]);
-    setBatchMatchCount(0);
-    setBatchSearchDone(false);
-  };
-
-  // 查找请求体：查找只读，不再带替换文本（替换入口已移除，仅保留查找与定位）
-  const getBatchSearchPayload = () => ({
-    // 前后空格不参与匹配：用户从别处粘过来常带空格，留着会把结果搜成 0 条
-    findText: batchFindText.trim(),
-    allTable: batchReplaceAllTable,
-    month: currentDate.getMonth() + 1,
-    year: currentDate.getFullYear()
-  });
-
-  const getRequestErrorMessage = (err: any, fallback: string) => {
-    if (err.response?.data?.message) return err.response.data.message;
-    if (err.response?.status === 404) return `${fallback}：接口不存在，请重启后端服务后重试`;
-    if (err.message) return `${fallback}：${err.message}`;
-    return fallback;
-  };
-
-  // 查找结果里的关键字高亮：按字面量切分（与后端 equals/like 的字面量匹配口径一致）
-  // 命中文字高亮：与后端同口径——英文不区分大小写，中文按字面；
-  // 高亮片段用原文切片（保留任务名里原有的大小写），不把关键字直接写进 mark
-  const highlightMatch = (text: string) => {
-    const source = String(text);
-    const keyword = batchFindText.trim();
-    if (!keyword) return source;
-    const haystack = source.toLowerCase();
-    const needle = keyword.toLowerCase();
-    const nodes: React.ReactNode[] = [];
-    let from = 0;
-    let key = 0;
-    for (;;) {
-      const index = haystack.indexOf(needle, from);
-      if (index === -1) break;
-      if (index > from) {
-        nodes.push(<React.Fragment key={`t${key++}`}>{source.slice(from, index)}</React.Fragment>);
-      }
-      nodes.push(
-        <mark key={`m${key++}`} className="bg-amber-200/80 text-amber-900 rounded px-0.5">
-          {source.slice(index, index + keyword.length)}
-        </mark>
-      );
-      from = index + keyword.length;
-    }
-    if (nodes.length === 0) return source;
-    if (from < source.length) {
-      nodes.push(<React.Fragment key={`t${key++}`}>{source.slice(from)}</React.Fragment>);
-    }
-    return <React.Fragment>{nodes}</React.Fragment>;
-  };
-
   // 左下角「查找」入口：只做查找与定位（替换功能已移除），不再牵动任务弹窗与待保存改动
   const openFindDialog = () => {
     setBatchReplaceOpen(true);
@@ -3288,33 +3004,6 @@ const Dashboard = () => {
         ? 'border-gray-300 bg-gray-100 text-gray-400 opacity-60 cursor-not-allowed'
         : onlineClasses
     }`;
-
-  const handleBatchSearch = async () => {
-    if (isOfflineMode) {
-      addToast('当前离线，无法查找任务', 'error');
-      return;
-    }
-    if (!batchFindText.trim()) {
-      addToast('请输入查找关键字', 'error');
-      return;
-    }
-
-    setBatchSearchLoading(true);
-    const reqId = ++batchSearchReqRef.current;
-    try {
-      const res = await axiosInstance.post('/tasks/batch-replace/search', getBatchSearchPayload());
-      // 弹窗已关闭（或又发起了新的一次查找）时丢弃这次响应，避免旧结果被写回空白窗口
-      if (reqId !== batchSearchReqRef.current) return;
-      setBatchMatches(Array.isArray(res.data.matches) ? res.data.matches : []);
-      setBatchMatchCount(res.data.matchCount || 0);
-      setBatchSearchDone(true);
-    } catch (err: any) {
-      if (reqId !== batchSearchReqRef.current) return;
-      addToast(getRequestErrorMessage(err, '查找失败'), 'error');
-    } finally {
-      if (reqId === batchSearchReqRef.current) setBatchSearchLoading(false);
-    }
-  };
 
   // 点击查找结果时定位到底部表格中的目标任务：
   // 先选中（蓝色边框留作当前选中态），再走与新增/安排成功后完全相同的定位链路：
@@ -3651,36 +3340,6 @@ const Dashboard = () => {
 
   if (!systemSettingsLoaded || loading) return <LoadingScreen skeleton />;
 
-
-  const handlePaste = async (designerId: string, date: string) => {
-    if (warnIfOfflineEdit()) return;
-    if (!clipboard || !user) return;
-    if (warnIfCellLocked(designerId, date)) return;
-    addToast('任务已复制', 'success');
-    try {
-      const res = await axiosInstance.post('/tasks/item/batch', { 
-        designerId, 
-        date, 
-        items: clipboard 
-      });
-      
-      upsertSheet(res.data.sheet);
-      addToHistory('batchAdd', {
-        items: (res.data.items || []).map((created: TaskItem, idx: number) => ({ 
-          designerId, 
-          date, 
-          itemId: created.id,
-          item: clipboard?.[idx]
-        }))
-      });
-      emitTaskUpdated(designerId);
-      stopEditingCell(designerId, date);
-      setSelectedTasks([]);
-      setSelectedCell(null);
-    } catch (err) {
-      addToast('粘贴失败', 'error');
-    }
-  };
 
   const isSuperAdmin = user?.role === 'superadmin';
 

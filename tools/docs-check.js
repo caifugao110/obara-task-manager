@@ -138,13 +138,20 @@ function realRoutes() {
 
   const routes = new Set();
   for (const file of walk('backend/routes', (f) => f.endsWith('.js'))) {
-    const base = norm(path.posix.basename(file, '.js'));
+    // 支持子路由目录（如 backend/routes/system/info.js）：挂载前缀按 **第一段目录名** 取，
+    // 因为它们最终都挂在 server.js 的同一个 app.use('/api/system', …) 下。
+    const rel = path.posix.relative('backend/routes', file);
+    const segments = rel.split('/');
+    const base = norm(segments.length > 1 ? segments[0] : path.posix.basename(file, '.js'));
+    const src = read(file);
+    // 纯逻辑模块（settings schema、导入导出引擎、版本计算）没有 router.xxx，不参与接口清单比对，
+    // 否则会误报「找不到对应的 app.use 挂载」
+    if (!/router\.(get|post|put|patch|delete)\(/.test(src)) continue;
     const prefix = byFile.get(base);
     if (!prefix) {
       fail('api', `${file}: 在 server.js 里找不到对应的 app.use 挂载`);
       continue;
     }
-    const src = read(file);
     const re = /router\.(get|post|put|patch|delete)\(\s*['"]([^'"]*)['"]/g;
     let r;
     while ((r = re.exec(src))) {

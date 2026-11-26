@@ -49,7 +49,7 @@ let lastWarnAt = 0;
 let lastGoodCache = null;
 
 // 熔断器状态：failures 是窗口期内的连续失败次数，openedAt 是熔断开启时刻。
-let breaker = {
+const breaker = {
   failures: 0,
   openedAt: 0,
   lastFailureAt: 0,
@@ -59,7 +59,7 @@ let breaker = {
 // 读取失败的详细信息：前端只显示一句「请确认共享目录可访问」会掩盖真实原因
 // （Session 0 的服务进程读不到共享 vs 文件被 Excel 独占，处理方式完全不同），
 // 这里保留错误码与建议，供同步接口、诊断接口和日志使用。
-let runtime = {
+const runtime = {
   lastError: null,
   lastSuccessAt: ''
 };

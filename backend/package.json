@@ -8,11 +8,15 @@
     "dev": "nodemon --ignore tests server.js",
     "test": "node tests/run-all.js",
     "test:unit": "node --test tests/unit/*.test.js",
-    "test:smoke": "node tests/smoke-relational.js"
+    "test:smoke": "node tests/smoke-relational.js",
+    "lint": "eslint . --ext js --max-warnings 0"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "engines": {
+    "node": ">=22.3.0"
+  },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^13.0.3",
@@ -31,5 +35,8 @@
     "pdf-parse": "^2.4.5",
     "socket.io": "^4.8.3",
     "xlsx": "file:vendor/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.1"
   }
 }

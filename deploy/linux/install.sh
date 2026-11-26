@@ -64,8 +64,9 @@ apt-get update
 apt-get -y --fix-broken install
 apt-get install -y nodejs npm nginx cifs-utils
 
-node -e "const major=Number(process.versions.node.split('.')[0]); if (major < 22) process.exit(1)" \
-  || fail 'Node.js 版本必须不低于 22。'
+# 版本下限统一由 tools/check-node-version.js 判定（22.3，取依赖交集），避免三处规则各写一遍走味。
+node "${PROJECT_ROOT}/tools/check-node-version.js" --quiet \
+  || fail 'Node.js 版本必须不低于 22.3（详见上方提示）。'
 npm -v >/dev/null
 
 if ! id -u "$APP_USER" >/dev/null 2>&1; then

@@ -92,8 +92,11 @@ npm run dev:frontend   :: 只起前端 :5173（Vite）
      // 1. Joi 校验  2. 读数据（窄读接口优先）  3. 写库  4. 返回
    }));
    ```
+   系统域（`/api/system/*`）已按「系统信息 / 数据维护 / 日志审计」拆成 `backend/routes/system/` 下的三个子路由：**加到对应的子文件里，不要写回 `routes/system.js`**（那个文件只做挂载）。纯逻辑（校验 schema、格式转换）放 `shared.js`；导入导出引擎按「公共工具 / HTML 导出 / Excel XML 导出 / 导入反解」拆在 `excelShared.js` / `excelHtml.js` / `excelXml.js` / `excelImport.js`，统一从 `excel.js` 这个聚合出口引用。路由里只留「取参 → 调 lib → 响应」。
 2. 权限选对层级：登录即可 → `authMiddleware`（多数路由文件已在 `router.use()` 统一挂了）；管理员 → `adminMiddleware`；仅超管 → `superAdminMiddleware`；页面开关 → `accessSettingsMiddleware('<key>')`。
 3. 读数据优先用窄读接口：`readSettings()` / `readGunLedger()` / `readDesigners()` / `findUserById()`。**只有确实需要多个集合时才用 `readDb()`**——它深拷贝整个缓存，是热路径上最贵的调用。
+
+> **集合放哪张表也有讲究**：变更频繁或体积大的集合不能进 `kv_store`（一个 key 一整段 JSON，改一条要序列化整份快照）。现状：`tasks` → `task_sheets` / `task_entries`（`taskStore.js`），日志 → `audit_logs` / `login_logs`，焊枪台账 → `gun_ledger_tables` / `gun_ledger_meta`（表级行存储），状态跟踪 → `status_tracking_items`，用户/设计员 → `users` / `designers`（`rowCollectionStore.js` 工厂，一维数组共用一套实现），系统设置 → `settings_entries`（按顶层键分行）。**`kv_store` 已不再承载任何集合**，只在老库升级时被读一次。新增集合时先问一句「它会不会被频繁单条改写」，会的话在 `relocatedCollections.js` 里加一行、用 `rowCollectionStore` 建表：一维数组用一张表就够，像台账那样的两层结构才需要额外的元数据表。
 4. 写数据走 `writeDb()`（组装完整快照）或 `taskStore` 的方法，不要直接改 `_cache`。
 5. `docs/API.md` 补接口文档（请求/响应/权限/错误码），这是硬要求，不是可选项。
 
@@ -135,14 +138,14 @@ getCurrentSocket()?.emit('task_updated', {
 ### 4.4 新增一个系统设置项
 
 1. 字段加到 `backend/db.js` 的 `getInitialDb().settings.system`（或对应开关集合）与 `applySettingsDefaults()` 兜底。
-2. `backend/routes/system.js`（或 `settings.js`）的 `GET/PUT` 校验（Joi schema）里放行该字段。
+2. `backend/routes/system/shared.js`（或 `settings.js`）的 `GET/PUT` 校验（Joi schema）里放行该字段。
 3. `frontend/src/context/SystemSettingsContext.tsx` 的 `SystemSettingsData` 加类型与 `defaultSettings` 默认值。
 4. `SystemSettings.tsx` 加 UI 控件。
 5. `README.md` 的「数据存储」表 + `DEPLOYMENT.md` 的数据集合表补一行。
 
 > 注意区分两个 `settings`：`settings.system` 是**系统级配置**（多设备登录、工时规则、配色等），`settings.<页面名>` 是**页面访问开关**三元组。别放错地方。
 
-**带数值阈值的配置要兜两遍**：`db.js` 的 `applySettingsDefaults()` 管落库前的回填，`routes/system.js` 的 `normalizeSystemSettings()` 管接口读取时的归一化。两处都要做范围校验，否则一个 `0` 或空串会让运行期逻辑异常——例如磁盘日志的 `logMaxSizeMb` 若被当成 0，「超过阈值就截断」会退化成「每轮检查都把日志清空」。前端 `SystemSettingsContext` 也要按同一范围回退默认值，三处口径必须一致。
+**带数值阈值的配置要兜两遍**：`db.js` 的 `applySettingsDefaults()` 管落库前的回填，`routes/system/shared.js` 的 `normalizeSystemSettings()` 管接口读取时的归一化。两处都要做范围校验，否则一个 `0` 或空串会让运行期逻辑异常——例如磁盘日志的 `logMaxSizeMb` 若被当成 0，「超过阈值就截断」会退化成「每轮检查都把日志清空」。前端 `SystemSettingsContext` 也要按同一范围回退默认值，三处口径必须一致。
 
 ### 4.5 新增一个导出
 
@@ -187,6 +190,14 @@ getCurrentSocket()?.emit('task_updated', {
 - 请求只走 `axiosInstance`；它已统一处理「后端不可达」「账号禁用」「会话失效」三类情况，页面不要重复写这些判断。
 - 路由切换后需要刷新数据的，用 `socket` 事件 + `getSnapshot()` 补初始状态，不要新起轮询。
 - 页面体量控制：主页面已因过大拆成 `pages/Dashboard/` 目录（容器 + `components/` + `hooks/` + 纯函数 `utils.ts`）。新页面接近千行时照此拆分。
+- **巨石文件只降不升（硬约束）**：`tools/check-file-size.js` 把现有超 400 行的文件登记在 `tools/file-size-baseline.json`，作为该文件的当前上限。往里加行会直接失败（`npm run check:size`，CI 也跑）。规则：
+  - **新功能只进新的子组件或自定义 hook**，不要继续加进 `Dashboard/index.tsx`（6700 行）、`GunLedger.tsx`（4600 行）、`SystemSettings.tsx`（3400 行）；
+  - 新文件超过 500 行先拆再提交；
+  - 拆完文件跑 `npm run check:size:update` 把基线改小，锁定成果（否则下次又能加回来）；
+  - 确实必须增长（补注释、补类型）时用 `--update` 更新基线，并在提交信息里写明原因。
+  - 已知待继续拆分的一块：`frontend/src/components/LoadingSkeleton.tsx`（1671 行，大量并列骨架屏，可直接按页面拆文件）。它已登记进基线，**只降不升**。
+- **抽 hook 的模式**（以 `pages/Dashboard/hooks/useTaskClipboard.ts` 为样板）：hook 只接收显式参数（开关、配置、toast、ref、数据），只返回回调，**不读 Context、不碰全局**。这样它既能被单测，也能在页面里整体替换而不惊动别的逻辑。反过来，凡是需要 sheet 写回、socket 广播、乐观更新的逻辑，拆之前先把依赖列清楚——牵一发动全身的那种留在页面里更安全。
+- **依赖就绪时机不同就拆成两个 hook，不要硬凑一个**：同一个功能里，若一部分只依赖配置、另一部分要等写库/历史/socket 就位，合成一个 hook 会逼着页面为了「调用顺序」搬动大段代码。`useTaskTableCopy`（复制为表格，早调用）与 `useTaskClipboard`（复制/剪切/粘贴，晚调用）、`useTaskSelection`（选中态，早调用）与 `useTaskDeletion`（删库 + 历史，晚调用）都是按这条拆的，两个 hook 放在同一个文件里，读者仍能一眼看全整块功能。
 - **主页面的表格渲染是性能红线**：表格主体在 `pages/Dashboard/components/TaskTable.tsx`，用 `React.memo` 包住。`Dashboard` 是几千行的单组件，任务编辑弹窗里每个输入框的 state 都挂在它上面，**每次按键都会让 Dashboard 整棵子树重渲**。所以凡是传给 `TaskTable` 的 props 必须引用稳定：数据类走 `useMemo`、交互态走 `useState`、回调统一塞进 `handlersRef`（每次渲染只 `Object.assign` 换字段，不换对象）。往里加内联函数/内联对象/内联数组，`memo` 立刻失效，输入卡顿就会回来；同理，给 `TaskTable` 供数据的 `useMemo` 依赖里不能放「每次渲染新建的对象」（典型：`startOfMonth(currentDate)`），否则整条 memo 链一起失效。
 
 ### 注释与文档同步
@@ -213,8 +224,9 @@ getCurrentSocket()?.emit('task_updated', {
 
 ```bat
 cd frontend && npx tsc --noEmit      :: 类型检查
-cd frontend && npm run lint          :: ESLint（--max-warnings 0）
-npm test                             :: 后端测试：单元 + 三段冒烟
+npm run lint                         :: ESLint：前端 + 后端（都是 --max-warnings 0）
+cd frontend && npm test              :: 前端单测（Vitest）
+npm test                             :: 后端测试（单元 + 三段冒烟）+ 前端单测
 npm run build                        :: 前端构建
 node tools/docs-check.js             :: 文档与代码一致性（链接/接口/环境变量/页面清单）
 ```
@@ -223,7 +235,9 @@ node tools/docs-check.js             :: 文档与代码一致性（链接/接口
 
 | 命令 | 内容 |
 |---|---|
-| `npm test`（根目录） | 等同 `cd backend && npm test`，调 `tests/run-all.js` |
+| `npm test`（根目录） | 先 `test:backend` 再 `test:frontend`，任一失败即非 0 退出 |
+| `npm run test:backend`（根目录） | 等同 `cd backend && npm test`，调 `tests/run-all.js` |
+| `npm run test:frontend`（根目录） | 等同 `cd frontend && npm test`，调 `vitest run` |
 | `npm run test:unit`（`backend/` 下） | 纯函数单元测试（`node:test`），不依赖数据库与外网 |
 | `npm run test:smoke`（`backend/` 下） | 关系表存储冒烟，**会写数据**，须先设 `SMOKE_DB_PATH` 指向副本；根目录没有同名脚本 |
 
@@ -231,7 +245,15 @@ node tools/docs-check.js             :: 文档与代码一致性（链接/接口
 
 > 冒烟测试会写入数据，**绝不要把 `SMOKE_DB_PATH` 指向 `backend/data.db`**。
 
+前端单测的约定（`frontend/vitest.config.ts`，用例放 `frontend/src/utils/__tests__/`）：
+
+- 只测**纯函数与工具层**，不测 6000+ 行的页面组件；页面里的业务规则先抽到 `utils/` 或 `hooks/` 再测。
+- 现状：`gunHoursRules.ts`（工时取值优先级，算错直接影响工资）、`workdayOverrides.ts`（调休覆盖）、`taskCopy.ts`（复制成表格的行序/转义/配色/四条剪贴板兜底）、`Dashboard/utils.ts` 的 `buildBatchAddHistoryItems`（粘贴后撤销栈的下标对应关系），剪贴板 hook 的 10 个交互用例（复制/剪切/粘贴的写库与历史登记），选中/批量删除的 11 个交互用例（选中切换、ref 同步、delete 与 batchDelete 的区分、Delete 键的三个拦截条件），以及台账枪号规则的 14 个用例（编号与序号的强绑定），共 93 个用例。
+- 覆盖率只统计 `src/utils`（`npm run test:coverage`），避免用整站分母得出「永远很难看」的数字而让人放弃维护。
+
 ESLint 的规则集是按「当前代码库能过」裁剪的（见 `frontend/.eslintrc.cjs` 注释）：`no-explicit-any`、`exhaustive-deps` 属于既有技术债被显式关闭。**不要为了过 lint 去放宽规则**，也不要顺手大规模修技术债——那是独立工程，会污染 diff。
+
+后端同样有 ESLint（`backend/.eslintrc.cjs`，ESLint 8 + CommonJS），2026-11 才补上：此前后端只有测试、没有静态检查，拼错变量名这类问题要等跑到那条分支才暴露（补 lint 的第一天它就抓到一次「同名变量在另一处被改名」的笔误）。规则同样按现状裁剪：`no-var` / `no-redeclare` 只在仕样 PDF 老代码里豁免，其余文件一律生效。
 
 ## 7. 提交与发版
 
@@ -252,7 +274,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 
 ### 版本号
 
-系统版本不是手工写的：`GET /api/system/version` 每次请求动态计算（30 秒 TTL 缓存），取 **最后一次 Git 提交的日期** + **当日提交计数** 组成 `YY-MM-DD[-VN]`，所以 `git pull` 后不重启也能反映新 HEAD。因此**本地未提交的改动不会影响版本号**——版本号跟随的是提交历史。完整规则见 [DEPLOYMENT.md 版本检查](DEPLOYMENT.md#版本检查)。
+系统版本不是手工写的，**格式与比较规则只在 [部署指南 · 版本检查](DEPLOYMENT.md#版本检查) 维护**，本节不复述。开发只需要记住一条结论：版本号跟随 **提交历史**，所以 `git pull` 后不重启也能反映新 HEAD，而**本地未提交的改动不会改变版本号**——这也是"改完看到版本号没变"的正常原因。
 
 控制台 EXE 的版本由 MSBuild 在构建时按日期生成到 `control/Properties/GeneratedVersion.cs`，这个文件**不要手工编辑**。
 
@@ -263,7 +285,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 1. 构建控制台 EXE 并发布 Release；
 2. 把 `README.md` 与 `docs/` 部署到 GitHub Pages。
 
-推送前本地跑一遍第 6 节的检查，CI 只做构建不做测试。
+`.github/workflows/test.yml` 是质量闸门，在 `main` 推送与任意 PR 上触发，依次跑 Node 版本自检 → 后端测试 → 前端单测 → `tsc + vite build`。**不要以为本地没跑就没关系**：这条流水线失败会直接显示在 PR 上，提交前最好本地先按第 6 节跑一遍。
 
 ---
 

@@ -563,7 +563,7 @@ io.on('connection', (socket) => {
   // stop_editing 事件：验证用户身份
   socket.on('stop_editing', (data) => {
     try {
-      const authenticatedUser = requireSocketAuth(socket);
+      requireSocketAuth(socket); // 仅做鉴权校验（未通过会抛错），此分支不需要用户对象
       
       let removedSessions = [];
       if (data?.designerId && data?.date) {

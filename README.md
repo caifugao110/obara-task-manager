@@ -110,7 +110,7 @@ npm run dev
 ```
 
 > 仓库同时镜像在 GitHub：`https://github.com/caifugao110/obara-task-manager.git`，可任选其一。GitHub 版本会触发 CI 自动构建控制台 EXE 并部署文档到 GitHub Pages。
-> 根目录 `package.json` 的 `engines` 字段仍声明 `node>=18`，仅供兼容提示；实际依赖（`better-sqlite3@13`、`joi@18`、`pdf-parse@2.4`）要求 **Node.js 22+**，请以 22+ 为准（`start.bat` 会强制校验，低于 22 直接报错退出）。
+> Node.js 版本要求为 **22.3 及以上**，且在三个地方硬性拦截：`package.json` 的 `engines` 已声明 `>=22.3.0`（根目录与 `backend`、`frontend` 同步）；根目录 `.npmrc` 开启了 `engine-strict=true`，版本不足时 `npm install` 直接失败而不是只打 warning；`start.bat` 与 `deploy/linux/install.sh` 在启动/安装前各自再校验一次。下限取依赖交集：`better-sqlite3@13` 要 Node 22+、`joi@18` 要 20+、`pdf-parse@2.4` 要 20.16+ 或 22.3+。手工核对可用 `npm run check:node`。
 
 ## 主要页面
 
@@ -488,7 +488,7 @@ npm run dev
 - 运行状态显示调度器下次执行时间（取多个时间点中最近的一次）、数据库与各备份目录绝对路径。
 - 显示最近数据库备份、最近任务导出、最近编号台账导出、年度永久归档、最近断网备份各 5 个文件。
 - **磁盘占用与压缩**：数据库信息除 `data.db` / `-wal` / `-shm` 体积外，还会显示「空闲页」体积（已删除但尚未归还给操作系统的空间）。SQLite 的删除只把页放进空闲页链表，不压缩的话文件大小不会变化——所以清理任务数据后会**自动执行一次压缩**（`VACUUM` + WAL 截断），存在可回收空间时页面也会提示「有 xx MB 是已删除数据留下的空闲页」，并提供「压缩数据库」按钮（需二次确认；压缩期间数据库被独占重建，通常只需数秒）。
-- **主文件体积构成**（`GET /api/system/maintenance` 返回的 `database.breakdown`）：借 `dbstat` 按表实测页占用、把索引归并到所属表，再按「审计日志 / 业务数据 / 任务数据 / 运行监测 / 登录日志 / 库结构」归组，各项之和等于数据页总量；`kv_store` 还会给出各集合的 JSON 内容体积，空闲页与「已提交但仍在 WAL 里」的部分（`pendingBytes`）单独列出。只给一个「主文件 1.59 MB」无法回答「到底是谁占的」——同样体积可能全是审计日志、也可能全是任务数据，处理方式完全不同。`dbstat` 不可用时该字段为 `null`，页面只显示总体积，不编造数字。
+- **主文件体积构成**（`GET /api/system/maintenance` 返回的 `database.breakdown`）：借 `dbstat` 按表实测页占用、把索引归并到所属表，再按「审计日志 / 账号与人员 / 系统设置 / 编号台账 / 状态跟踪 / 任务数据 / 运行监测 / 登录日志 / 自愈日志 / 库结构 / 键值残留」归组，各项之和等于数据页总量；账号与人员、系统设置、编号台账、状态跟踪各自单独成组并显示条数或表数，空闲页与「已提交但仍在 WAL 里」的部分（`pendingBytes`）单独列出。只给一个「主文件 1.59 MB」无法回答「到底是谁占的」——同样体积可能全是审计日志、也可能全是任务数据，处理方式完全不同。`dbstat` 不可用时该字段为 `null`，页面只显示总体积，不编造数字。
 - **体积数字走缓存，不是每次都重扫**：`dbstat` 要逐页走完整库，网络盘上单次约 3 秒，整套体积测量约 4 秒。因此「数据管理」的体积构成与「状态监测」的各表体积都是**先给缓存（即便已过期）、过期只在后台补算**，请求路径不等它；只有点本页「刷新」（前端传 `force=1`）或刚做完维护操作（如压缩数据库）才同步重算。所以刚 `VACUUM` 完立刻看可能还是旧值，点一次「刷新」即可。缓存时长与启动预热延迟可用 `DBSTAT_CACHE_TTL_MS` / `DBSTAT_WARMUP_DELAY_MS` / `MAINTENANCE_MEASURE_TTL_MS` / `MAINTENANCE_MEASURE_WARMUP_DELAY_MS` 调整（见[环境变量](#环境变量)）。另外这份维护状态不参与系统设置首屏的加载判定：打开页面时几张体积卡片稍后自己回填，不会为了等它把整页卡住数秒。
 - 年度清理会先将待删除数据永久归档；断网备份在服务器关闭时（Ctrl+C、SIGTERM）自动触发。
 - **运维工具**（仅超级管理员）：列出 `yearlyArchiveDir` 下的年度归档 JSON，解析出每张工作表的设计员、年月与条目数，与库内现状比对后标记「新增 / 已存在 / 结构异常」；支持**预演**（只校验不写库）与**恢复**（默认跳过已存在的月份、默认先备份整库，勾选后才覆盖）。归档只含任务工作表，状态跟踪与焊枪台账需靠数据库备份恢复。
@@ -498,7 +498,7 @@ npm run dev
 
 - 可配置多设备同时在线、「允许登录用户修改本人设计计划完成状态」与「允许用户自主改密」三个开关。该完成状态标记开关默认开启；开启后，普通登录用户可在本人同名设计员的设计计划任务上标记任务完成/未完成。
 - 「允许用户自主改密」（`allowUserChangePassword`）默认**开启**：登录用户可点击右上角用户姓名自行修改密码（仍需输入当前密码，5 次/15 分钟限流）。管理员可在「系统设置 → 登录管理」关闭：关闭后所有用户调用 `POST /api/auth/change-password` 均返回 `403`（「系统已禁用自主修改密码，请联系管理员」），主页面右上角的用户姓名改密入口也不再显示，改密需由超级管理员在管理后台重置。**两个例外**：①处于强制改密流程（`forcePasswordChange`）的账号即使开关关闭也能改密——否则「必须先改密」与「禁止改密」互斥会把账号锁死在改密页（全新库首次启动的超级管理员正是这种处境）；②开关关闭时新建账号与管理员重置密码不再置强制改密，避免制造同类死锁。
-- **IP 黑名单**：拦截异常来源访问。支持精确 IP（`192.168.1.100`）、CIDR 网段（`10.0.0.0/24`）和 IPv4 通配符（`192.168.*.*`）三种规则格式，可一次粘贴多条（`backend/routes/system.js` 按 `[\s,;，；]+` 切分，即逗号、分号、空白均可，全角标点同样识别；单次最多 50 条，总量上限 500 条），可附备注；界面会列出最近登录失败的 IP（排除已封禁的）供快捷填入。启用后命中规则的 IP 访问任何接口都会收到 403，其登录尝试会以「IP 已被列入黑名单」记录在登录日志中；本机回环地址（localhost）永不拦截，规则修改后立即生效。
+- **IP 黑名单**：拦截异常来源访问。支持精确 IP（`192.168.1.100`）、CIDR 网段（`10.0.0.0/24`）和 IPv4 通配符（`192.168.*.*`）三种规则格式，可一次粘贴多条（`backend/routes/system/logs.js` 按 `[\s,;，；]+` 切分，即逗号、分号、空白均可，全角标点同样识别；单次最多 50 条，总量上限 500 条），可附备注；界面会列出最近登录失败的 IP（排除已封禁的）供快捷填入。启用后命中规则的 IP 访问任何接口都会收到 403，其登录尝试会以「IP 已被列入黑名单」记录在登录日志中；本机回环地址（localhost）永不拦截，规则修改后立即生效。
 
 #### 日志文件管理 / 操作日志（仅超级管理员）
 
@@ -631,13 +631,21 @@ npm run dev
 | `task_sheets` / `task_entries` | 任务工时表：每张工时表一行（`designer_id + year + month` 唯一索引），任务条目按行存放（条目级 JSON），写入只重写受影响的单张表；对外接口的 sheet 数据形状不变 |
 | `login_logs` | 登录日志独立表，最多保留 2000 条（超限自动清理最旧记录） |
 | `audit_logs` | 操作日志独立表，默认最多保留 5000 条（超限自动清理最旧记录；保留条数可在系统设置 → 操作日志中调整） |
+| `gun_ledger_tables` / `gun_ledger_meta` | 焊枪台账的表级行存储：每张台账表一行（`key = 分类 + 表 id`），分类顺序与默认负责人名单等附加字段在元数据表；改一个枪名只重写那一张表，不再整本台账序列化写回（见 `backend/gunLedgerStore.js`） |
+| `status_tracking_items` | 状态跟踪明细的行级存储：每条跟踪记录一行（`key = 记录 id`，`position` 维护展示顺序）；改一个确认数量只重写那一行，不再整份数组序列化写回（见 `backend/statusTrackingStore.js`） |
 | `monitor_samples` / `monitor_samples_hour` | 状态监测的心跳样本（30 秒一条）与小时汇总，可用率与资源曲线的数据源 |
 | `monitor_traffic_min` / `monitor_traffic_hour` | 前端流量分钟明细（仅 35 天）与小时汇总，曲线、热力图、Top 接口的数据源 |
 | `monitor_traffic_path` | 接口路径聚合（按小时 × 路径），行数随「接口数 × 小时数」增长，通常是监测表里最大的一张 |
 | `monitor_events` | 进程生命周期事件（`boot` / `graceful_stop` / `exit`），数量极少、长期保留，用于追溯历史断开 |
 | `monitor_meta` | 监测自身的元信息（如采集起始时间），用于区分「没采集」与「采了但为 0」 |
 
-物理层面共 **12 张表**（`backend/db.js` 与 `backend/utils/systemMonitor.js` 启动时按需建表）：4 张业务关系表（`task_sheets` / `task_entries` / `login_logs` / `audit_logs`）+ `kv_store` + 7 张 `monitor_*` 监测表。**「集合」表中的所有键值都存放在 `kv_store` 里**（`key` 为集合名、`value` 为整份 JSON 快照、`updated_at` 为写入时间），所以新增一个键值集合不需要改表结构；代价是写入要序列化整份快照——这也是 `task_sheets` / `login_logs` / `audit_logs` 被拆成独立表的直接原因（写放大）。监测数据另立独立表而不是塞进 `kv_store`，同样是为了避开「每次心跳都重写整份快照」的写放大。
+物理层面共 **18 张表**（`backend/db.js` 与 `backend/utils/systemMonitor.js` 启动时按需建表）：4 张业务关系表（`task_sheets` / `task_entries` / `login_logs` / `audit_logs`）+ 2 张台账表（`gun_ledger_tables` / `gun_ledger_meta`）+ `status_tracking_items` + `users` / `designers` + `settings_entries` + 7 张 `monitor_*` 监测表（`kv_store` 仅作为老库升级时的迁移来源保留）。
+
+**`kv_store` 已不再承载任何业务集合**（`key` 为集合名、`value` 为整份 JSON 快照的那套做法已经全部退役）。它现在只在老库升级时被读一次：把残留的旧 JSON 逐个迁到行表然后删除。表本身保留（老版本数据要靠它读出来），新库启动时它是空的。
+
+被搬走的几类都是**写放大**的直接受害者：`task_sheets` / `login_logs` / `audit_logs` 各自独立成表；`gunLedger` 改为表级行存储（改一个枪名只重写一张表）；`statusTrackingItems` 改为行级存储（线上 268 条 / 167 KB，原先改一个确认数量就要整体重写 167 KB，现在只写那一行）；`users` / `designers` 改为行级存储（登录时写 `lastLoginAt`、改密轮换会话令牌都只写那一行，不再重写整个账号数组）；`settings` 改为**按顶层键分行**（系统设置页一次保存通常只改几个开关，现在只写变化的那几行）。监测数据另立独立表而不是塞进 `kv_store`，同样是这个理由。
+
+被搬走的三类则都是**写放大**的直接受害者：`task_sheets` / `login_logs` / `audit_logs` 各自独立成表，`gunLedger` 改为表级行存储——改一个枪名只重写受影响的那一张表，而不是把整本台账序列化后整段写回。监测数据另立独立表而不是塞进 `kv_store`，同样是这个理由（每次心跳都重写整份快照）。
 
 建议定期通过 `POST /api/system/maintenance/backup` 备份数据库，也可以通过系统设置导出 `.xls` 作为任务数据的补充备份。
 
@@ -675,11 +683,15 @@ npm run docs:check
 | `npm start` | 启动后端生产服务（等同 `start:backend`，调用 `node server.js`） |
 | `npm run start:backend` | 使用 `node server.js` 启动后端 |
 | `npm run start:frontend` | 预览前端构建产物（`vite preview`） |
-| `npm run lint` | 运行前端 ESLint 检查（等同 `lint:frontend`） |
+| `npm run lint` | 依次运行前端与后端 ESLint（两者都是 `--max-warnings 0`，CI 同样跑这一步） |
 | `npm run lint:frontend` | 对 `frontend` 目录下的 `ts/tsx` 文件运行 ESLint（脚本为 `eslint . --ext ts,tsx`，作用范围为 frontend 整个目录而非仅 `src`），配置见 `frontend/.eslintrc.cjs`，未使用变量等告警阈值为 0 |
-| `npm test` | 后端测试总入口（等同 `test:backend`，调用 `backend/tests/run-all.js`） |
+| `npm run lint:backend` | 对后端 `.js` 运行 ESLint（`eslint . --ext js --max-warnings 0`），配置见 `backend/.eslintrc.cjs`：启用 `no-undef`/`no-dupe-keys`/`eqeqeq` 等能抓真缺陷的规则，`var` 与重复声明只在仕样 PDF 老代码里豁免 |
+| `npm test` | 前后端测试总入口：先 `test:backend` 再 `test:frontend`，任一失败即非 0 退出 |
 | `npm run test:backend` | 后端测试总入口，依次执行单元测试与三段快照冒烟测试（关系表存储 / 主任务改色联动 / 枪名搜索） |
+| `npm run test:frontend` | 前端单元测试（`frontend` 下的 `vitest run`），纯函数级，不依赖后端与浏览器 |
 | `npm run docs:check` | 文档一致性自检（等同 `node tools/docs-check.js`）：校验链接与锚点、接口清单、环境变量、页面路由是否与代码一致；只查一项可加参数，如 `node tools/docs-check.js api`，详见 [运维工具说明](docs/TOOLS.md#四docs-check文档一致性自检) |
+| `npm run check:size` | 文件体量棘轮：巨石文件基线只降不升，新文件超过 500 行直接失败；拆完文件用 `npm run check:size:update` 重写基线 |
+| `npm run check:node` | 校验当前 Node 版本 >= 22.3（取依赖 engines 交集），给出人话报错 |
 
 后端测试的细分命令（需在 `backend` 目录下执行）：
 
@@ -691,7 +703,7 @@ npm run docs:check
 | `node tests/color-sync-relational.js` | 仅跑主任务改色联动测试，**会写入数据**，需自备副本（`set SMOKE_DB_PATH=%CD%\data-smoke.db`） |
 | `node tests/gun-search-relational.js` | 仅跑枪名搜索/快速添加测试，**会写入数据**，同样需自备副本 |
 
-单元测试（`backend/tests/unit/`，基于 `node:test`，共 16 个文件）覆盖：鉴权中间件的纯函数（会话校验、访问设置归一化、失效原因文案）、密码策略（自主改密开关、强制改密死锁例外）、操作日志（记录范围 `shouldAudit`：写操作、敏感读取、静默路径、只读 `POST`；以及动作文案 `getTaskItemUpdateDisplay` 对完成状态/工时/枪名的细分）、文件上传安全（Excel 类型校验、公式注入转义）、工作日工具（周末判断、覆盖规则）、大日程同步比对（`buildSyncPlan` 只算变更不写库）、仕样号查找与 PDF 文本线程池、UNC 凭据解析、焊枪序号↔编号强绑定、两处仕样自愈的条目构造、共享路径探测的分类与缓存、Socket 房间权限收敛、看门狗强杀证据解析。
+单元测试（`backend/tests/unit/`，基于 `node:test`，共 20 个文件）覆盖：鉴权中间件的纯函数（会话校验、访问设置归一化、失效原因文案）、密码策略（自主改密开关、强制改密死锁例外）、操作日志（记录范围 `shouldAudit`：写操作、敏感读取、静默路径、只读 `POST`；以及动作文案 `getTaskItemUpdateDisplay` 对完成状态/工时/枪名的细分）、文件上传安全（Excel 类型校验、公式注入转义）、工作日工具（周末判断、覆盖规则）、大日程同步比对（`buildSyncPlan` 只算变更不写库）、仕样号查找与 PDF 文本线程池、UNC 凭据解析、焊枪序号↔编号强绑定、两处仕样自愈的条目构造、共享路径探测的分类与缓存、Socket 房间权限收敛、看门狗强杀证据解析、台账表级行存储（迁移前后内容一致、改一张表只写一行、删表真删行、迁移失败不丢数据）、一维数组集合的行存储工厂（行级脏检查、位置变化、删除、迁移失败保留旧数据）、系统设置的按键存储（键顺序保留、改一个键只写一行）。
 
 关系表冒烟测试（`backend/tests/smoke-relational.js`，验证 `taskStore` 与独立日志表的读写）现在由 `npm test` 自动调度：入口脚本会先用 `VACUUM INTO` 为生产库生成**只读快照副本**（用 `VACUUM INTO` 而非直接复制文件，避免 WAL 模式下丢掉未 checkpoint 的提交或拷到写一半的中间状态），在副本上跑冒烟测试，结束后清理 `backend/tests/.tmp/`，全程不触碰生产 `data.db`。同一份快照随后还会被下面两个用例复用，三者互不干扰的顺序由入口脚本固定。
 
@@ -717,11 +729,36 @@ node tests\gun-search-relational.js
 
 > 关系表测试（冒烟 / 颜色联动 / 枪名搜索）都会写入并删除测试数据，因此**必须在数据库副本上运行**：`npm test` 会自动生成快照；手工执行时 `smoke-relational.js` 若未设置 `SMOKE_DB_PATH` 会退化为使用 `SQLITE_DB_PATH`（即生产库），请勿对生产库执行；两个新增用例则在缺少 `SMOKE_DB_PATH` 时直接退出，不做退化。
 
+#### 前端单元测试（Vitest）
+
+前端此前完全没有测试，而撤销/复制粘贴/离线缓存/工时规则这些最容易算错、又最难靠肉眼回归的逻辑恰好都在前端。测试栈是 **Vitest + jsdom + Testing Library**，配置文件为 `frontend/vitest.config.ts`（与 `vite.config.ts` 分开，避免构建配置与测试环境互相牵制），环境初始化在 `frontend/src/test/setup.ts`。
+
+```bat
+cd frontend
+npm test              :: vitest run，一次跑完
+npm run test:watch    :: 开发时监听
+npm run test:coverage :: 带覆盖率（只统计 src/utils，不把 6000+ 行的 Dashboard 算进分母）
+```
+
+覆盖的七个模块（`frontend/src/utils/__tests__/`、`frontend/src/pages/Dashboard/__tests__/`、`frontend/src/pages/gunLedger/__tests__/`，共 93 个用例）：
+
+| 测试文件 | 锁住的行为 |
+|------|------|
+| `gunHoursRules.test.ts` | 工时取值优先级「表专用规则 → C/X 机型回退 → 固定兜底」；加急/暂停/设计变更等非自动填充任务返回 `null`；内置表每个单元格都是有限正数（防止新增分类时漏填）；配置半截非法时回退内置值而非凑数 |
+| `workdayOverrides.test.ts` | 覆盖表脏数据（日期格式错、取值不在枚举）一律丢弃；调休后工作日/周末判定与自然星期解耦 |
+| `taskCopy.test.ts` | 复制成表格的行序（主任务行 → 枪名行）、请假/出差文案拼法、HTML 转义、三种配色状态（普通/加急红字/暂停红底白底）、宽度等比放大 4/3、四条剪贴板兜底路径（异步 API → copy 事件桥 → 可编辑容器 → 纯文本 → 失败） |
+| `Dashboard/__tests__/utils.test.ts` | 粘贴后写进撤销栈的 batchAdd 记录：新 id 与原始任务内容的**下标对应关系**（错位会让撤销恢复成别的任务）；接口没返回 items 时的空数组兜底 |
+| `Dashboard/__tests__/useTaskClipboard.test.tsx` | 剪贴板 hook 的交互：task-copy 只进内存不写库、task-cut 才删库并登记 batchDelete、task-paste 与单元格粘贴走同一条写库 + batchAdd 路径、空剪贴板/离线/被锁/接口失败四种拦截、卸载后监听被移除 |
+| `Dashboard/__tests__/useTaskSelection.test.tsx` | 选中态与批量删除：点击替换 / Ctrl 点击切换、ref 与 state 同步（快捷键不能读到过期选中）、单条走 `delete` 多选走 `batchDelete`、被锁与无权限时整批不删、Delete 键在弹窗/输入框/空选中下不触发 |
+| `gunLedger/__tests__/rules.test.ts` | 焊枪编号规则：编号由「起始号 + 序号」决定、改前缀/后缀不能改掉编号、编号被删空时补回、`applyContiguousSerials` 不排序只写回位置、序号已连续时返回同一引用（避免无意义重渲染） |
+
+**新增前端逻辑时优先写纯函数测试**：Dashboard 这类 6000+ 行的页面组件不适合作为第一个测试对象（一次改动就要 mock 掉十几个 ref 与 socket），把它内部的规则抽成 `utils/` 或 `hooks/` 再测，成本低一个数量级。CI 里 `.github/workflows/test.yml` 会跑后端测试、前端测试与 `tsc + vite build`（`tsc` 连测试文件一起类型检查）。
+
 其他脚本：
 
 | 脚本 | 说明 |
 |------|------|
-| `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器）；启动前自动检查 Node.js 22+、检查并释放端口、按需安装依赖。**不会自动执行 `git pull`**（供应链风险已移除），代码更新需人工确认后手动拉取。后端由 `backend-watchdog.bat` 托管，**崩溃后自动拉起** |
+| `start.bat` | Windows 一键启动前后端（隐藏窗口运行，日志输出到 `logs/` 目录，不打开浏览器）；启动前自动检查 Node.js 22.3+、检查并释放端口、按需安装依赖。**不会自动执行 `git pull`**（供应链风险已移除），代码更新需人工确认后手动拉取。后端由 `backend-watchdog.bat` 托管，**崩溃后自动拉起** |
 | `start-hidden.vbs` | 后台静默启动（不显示命令行窗口） |
 | `start-process-hidden.vbs` | 进程隐藏启动辅助脚本 |
 | `backend-watchdog.bat` | 后端守护循环，由 `start.bat` 调用。后端进程一旦结束就重新拉起（默认 10 秒，连续快速崩溃退避到 30/60 秒），把每次启动/退出/重启写入 `logs/backend-watchdog.log`；以 `npm run dev -- --exitcrash` 启动，使 nodemon 在崩溃时真正退出而不是停在 `app crashed` 空转。`OBARA_RESTART_DELAY` 调等待秒数，`OBARA_BACKEND_CMD` 可换成 `node server.js`（只守护、不监听文件变化）。每次拉起后端时同时启动一个假死探测器（见下一行） |
@@ -971,11 +1008,21 @@ node --check backend\routes\tasks.js
 ```text
 obara-task-manager/
 ├── .github/workflows/
-│   └── build-and-deploy.yml      # EXE 构建 + GitHub Pages 部署
+│   ├── build-and-deploy.yml      # EXE 构建 + GitHub Pages 部署
+│   └── test.yml                  # 质量闸门：后端测试 + 前端单测 + 前端构建
 ├── backend/
 │   ├── .env.example
 │   ├── db.js
 │   ├── taskStore.js              # 任务工时表关系型存储层（task_sheets/task_entries）
+│   ├── gunLedgerStore.js         # 焊枪台账表级行存储（gun_ledger_tables/gun_ledger_meta，含 kv_store 旧数据迁移）
+│   ├── statusTrackingStore.js    # 状态跟踪行级存储（status_tracking_items，含 kv_store 旧数据迁移）
+│   ├── relocatedCollections.js   # 已迁出 kv_store 的集合清单与读写接线（新增一个集合只加一行）
+│   ├── rowCollectionStore.js     # 一维数组集合的通用行存储工厂（users / designers / statusTrackingItems 共用）
+│   ├── usersStore.js             # 用户账号行级存储（users 表）
+│   ├── designersStore.js         # 设计人员行级存储（designers 表）
+│   ├── settingsStore.js          # 系统设置按键行存储（settings_entries 表）
+│   ├── .eslintrc.cjs             # 后端 ESLint 配置（ESLint 8，CommonJS；规则按现有代码裁剪）
+│   ├── utils/dbBreakdownGroups.js # 维护页「体积构成」的分组配置（新增表在这里登记归属）
 │   ├── nodemon.json
 │   ├── package.json
 │   ├── package-lock.json
@@ -995,7 +1042,19 @@ obara-task-manager/
 │   │   ├── settings.js
 │   │   ├── spec.js
 │   │   ├── statusTracking.js
-│   │   ├── system.js
+│   │   ├── system.js             # 系统域总装：只做挂载，不含路由实现
+│   │   ├── system/               # 系统域子路由（挂在同一个 /api/system 前缀下）
+│   │   │   ├── info.js           # 延迟探测 / 设置读写 / 版本检查 / 数据库体积
+│   │   │   ├── maintenance.js    # 备份归档清理 / 大日程探测 / 任务表导入导出
+│   │   │   ├── logs.js           # 登录日志 / 操作日志 / 日志文件 / IP 黑名单
+│   │   │   ├── shared.js         # 设置默认值 + Joi schema + 归一化（被上面三个复用）
+│   │   │   ├── excel.js          # 导入导出引擎的统一出口（只做 re-export）
+│   │   │   ├── excelShared.js    # 共用的时间/工作表/工时小工具与表头行高
+│   │   │   ├── excelHtml.js      # HTML 版导出（另存为 .xls 的 HTML 表格）
+│   │   │   ├── excelXml.js       # Excel XML（SpreadsheetML）版导出
+│   │   │   ├── excelImport.js    # 导出文件的反解析（导回系统）
+│   │   │   ├── version.js        # 版本号计算与远端比对
+│   │   │   └── auditLogs.js      # 操作日志内存筛选与分页钳制
 │   │   ├── tasks.js
 │   │   ├── users.js
 │   │   └── workHours.js
@@ -1008,9 +1067,13 @@ obara-task-manager/
 │   │   ├── smoke-relational.js   # 关系表存储（taskStore/独立日志表）冒烟测试
 │   │   ├── color-sync-relational.js # 主任务改色子枪名联动测试
 │   │   ├── gun-search-relational.js # 枪名搜索（含归属）与确认图修改快速添加测试
-│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / passwordPolicy（自主改密策略与死锁例外）/ auditScope / auditActionDisplay（审计动作文案）/ uploadSecurity / workday / scheduleSync / specInfoLookup / pdfTextPool / uncShare / gunLedgerSerial（序号↔编号强绑定）/ gunHealEntry / specHealEntry（自愈条目与任务名差异）/ shareStatus（共享路径探测的分类与缓存）/ socketRooms（房间广播与带原因断连）/ systemMonitorWatchdog（看门狗强杀证据解析）
+│   │   └── unit/                 # 纯函数单元测试（node:test）：auth / passwordPolicy（自主改密策略与死锁例外）/ auditScope / auditActionDisplay（审计动作文案）/ uploadSecurity / workday / scheduleSync / specInfoLookup / pdfTextPool / uncShare / gunLedgerSerial（序号↔编号强绑定）/ gunHealEntry / specHealEntry（自愈条目与任务名差异）/ shareStatus（共享路径探测的分类与缓存）/ socketRooms（房间广播与带原因断连）/ systemMonitorWatchdog（看门狗强杀证据解析）/ gunLedgerStore（台账行级存储与迁移）
 │   ├── utils/
 │   │   ├── auditLogDisplay.js
+│   │   ├── specSource.js         # 仕样书文件定位与读取（共享盘探测 / 路径构造 / PDF 文本提取）
+│   │   ├── gunLedgerRules.js     # 焊枪台账校验与命名规则（Joi schema / 编号生成与强绑定）
+│   │   ├── monitorLogEvidence.js # 监测模块的日志取证（读日志尾 / 解析批处理时间戳 / 强杀记录）
+│   │   ├── monitorStore.js       # 监测建表与 monitor_meta 读写（幂等建表 + 小时表回填）
 │   │   ├── dbMaintenance.js
 │   │   ├── dbStatCache.js        # dbstat 表体积聚合的共用缓存层（数据管理与状态监测两条路径共用，过期后台补算、启动预热）
 │   │   ├── designDelivery.js     # 设计纳期天数动态计算（纳期 - 今天），状态追踪路由与同步服务共用同一口径
@@ -1105,7 +1168,9 @@ obara-task-manager/
 │       │   ├── ColumnFilterDropdown.tsx # 表头列筛选下拉（按列取值的多选 + 计数，门户渲染，表格与报表共用）
 │       │   ├── GunLedgerSelfHealModal.tsx # 焊枪台账「仕样自愈」弹窗（按月校准客户名与纳期）
 │       │   ├── LoadingScreen.tsx     # 全站统一加载态：中心动画卡片 + 可选骨架屏
-│       │   ├── LoadingSkeleton.tsx   # 7 个页面的骨架屏组件与 SkeletonKind 映射
+│       │   ├── gunLedger/            # 台账页拆出的类型与规则：types.ts（数据类型）/ rules.ts（分类常量、枪号规则与序号归一化）
+│       │   ├── LoadingSkeleton.tsx   # 骨架屏聚合出口：SkeletonKind 映射 + 默认导出（实现见 skeletons/）
+│       │   ├── skeletons/            # 各页面骨架屏（primitives / dashboard / leaderboard / workHours / statusTracking / designStandards / gunLedger / systemSettings / systemMonitorTab）
 │       │   ├── LogoutButton.tsx      # 统一退出入口（light / onDark / icon 三种外观），离线时禁用并提示
 │       │   ├── OperationLogPanel.tsx # 操作日志明细面板（筛选/导出/列表/分页），系统设置「操作日志」标签页使用
 │       │   ├── OpsToolsPanel.tsx     # 运维工具标签页：年度归档列表/预览/预演/恢复（仅超级管理员，系统设置内嵌）
@@ -1128,7 +1193,7 @@ obara-task-manager/
 │       │   │   ├── types.ts          # 主页面专用类型
 │       │   │   ├── utils.ts          # 任务/枪名纯函数（取仕样号、内容比对、工时等）
 │       │   │   ├── components/       # TaskTable（表格主体，React.memo）、SortableTask、GunDragHandle、GunNameCopyButton（复制枪名，所有登录用户可用）、DroppableCell、QuickConfirmModifyModal、SpecSelfHealModal
-│       │   │   └── hooks/            # useGunDragDrop、useTaskHistory、useEditingSessions
+│       │   │   └── hooks/            # useGunDragDrop、useTaskHistory、useEditingSessions、useTaskClipboard（useTaskTableCopy + useTaskClipboard）、useTaskSelection（useTaskSelection + useTaskDeletion）
 │       │   ├── DesignStandards.tsx
 │       │   ├── GunLedger.tsx
 │       │   ├── Leaderboard.tsx
@@ -1230,6 +1295,8 @@ obara-task-manager/
 | 构建版本生成 | `control/ObaraServiceController.csproj` | MSBuild 编译前自动生成 `Properties/GeneratedVersion.cs`，版本号按构建日期生成，无需手工维护 |
 | 控制台主题 | `control/Utils/ThemeColors.cs` | 暗色科技风 UI 配色与渐变定义 |
 | CI/CD | `.github/workflows/build-and-deploy.yml` | 自动构建控制台 EXE 并发布 Release，同时把 README 与 docs/ 部署到 GitHub Pages |
+| CI 测试闸门 | `.github/workflows/test.yml` | 推送与 PR 时跑后端测试、前端 Vitest 单测与前端构建，任一失败即失败 |
+| 前端单测 | `frontend/vitest.config.ts` | Vitest + jsdom + Testing Library 配置，与构建配置分离；用例在 `frontend/src/utils/__tests__/` |
 | 测试入口 | `backend/tests/run-all.js` | `npm test` 调度脚本：先跑 `tests/unit/*.test.js` 单元测试（`node:test`），再用 `VACUUM INTO` 生成生产库只读快照，在副本上依次跑关系表冒烟测试、主任务改色联动测试与枪名搜索测试，结束清理 `tests/.tmp/`，任一部分失败返回非 0 退出码 |
 | 前端静态检查 | `frontend/.eslintrc.cjs` | ESLint 8 配置，规则按「当前代码库能通过」裁剪：关闭 `no-explicit-any`、`exhaustive-deps` 等既有技术债规则，开启未使用变量、`no-empty`、`no-var` 等能真实反映缺陷的规则，使 `--max-warnings 0` 可长期通过 |
 
@@ -1503,7 +1570,18 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 
 ## CI/CD
 
-项目通过 `.github/workflows/build-and-deploy.yml` 实现自动构建与文档部署：先运行变更检测任务（按改动路径过滤），再按需条件执行 EXE 构建和文档部署两个任务。
+项目通过两个 workflow 分工：`.github/workflows/build-and-deploy.yml` 负责**交付**（自动构建控制台 EXE、发布 Release、部署文档），`.github/workflows/test.yml` 负责**质量闸门**（后端测试 + 前端单测 + 前端构建）。
+
+### 质量闸门：test.yml
+
+- 触发：推送到 `main`、任意 Pull Request、手动触发；同一分支连推多次只保留最新一次（`concurrency` 取消进行中的旧任务）。
+- 运行环境：`ubuntu-latest` + `node-version: 22.22.2`，`npm ci` 走根目录 `.npmrc`（`ignore-scripts=true` 不触发 node-gyp，`engine-strict=true` 让 Node 版本不符直接失败）。
+- 依次执行：Node 版本自检（`npm run check:node`）→ 后端测试（`npm run test:backend`）→ 前端单测（`npm run test:frontend`）→ `tsc + vite build`（`npm run build:frontend`，连测试文件的类型一起检查）。
+- 任何一步失败即整条流水线失败。此前只有本地跑过 `npm test`，「测试全绿」无法被 CI 证明。
+
+### 交付流水线：build-and-deploy.yml
+
+先运行变更检测任务（按改动路径过滤），再按需条件执行 EXE 构建和文档部署两个任务。
 
 ### 触发条件
 
@@ -1514,7 +1592,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 ### 任务一：构建控制台 EXE
 
 - 运行环境：`windows-latest`。
-- 自动生成动态版本号：tag 推送时使用 tag 名；常规推送时生成 `vYYYY.MM.DD-beta-N` 形式的版本号，避免重复。
+- 自动生成动态版本号（tag 推送用 tag 名，常规推送生成当日递增的 beta 号），**规则只在下方「版本号规则」一处维护**。
 - 自动生成变更日志：取当前提交的提交信息（单条），作为 Release 说明。
 - 使用系统自带的 .NET Framework 4.8 MSBuild 构建 `ObaraServiceController.csproj`，并自动写入 `AssemblyInfo.cs` 的版本字段（`AssemblyInformationalVersion` 不带 `v` 前缀）。
 - 构建完成后清理 `obj/` 中间产物，并将 `bin/Release/` 打包为 `Obara-Task-Management-Service-Console_<version>.zip`，以 Release Assets 附件形式发布。
@@ -1537,7 +1615,9 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe ObaraServiceControll
 
 > 推送到 `main` 时若当日多次提交，`N` 会自动递增，避免 tag 冲突。
 >
-> **注意区分两套版本号**：本节是**控制台 EXE / GitHub Release** 的版本号；系统页面里显示的、以及 `GET /api/system/version` 返回的**系统版本**是另一套 `YY-MM-DD[-VN]` 格式（由最后一次 Git 提交日期生成），规则见[部署指南「版本检查」](docs/DEPLOYMENT.md#版本检查)。
+> **两套版本号，各有一处唯一定义，别在别处再抄一遍**：
+> - **本节的 `vYYYY.MM.DD-beta-N`**：控制台 EXE 与 GitHub Release 的版本，定义就在上面的表格；
+> - **`GET /api/system/version` 返回的系统版本**（`YY-MM-DD[-VN]`）：规则、比较方式与接口示例全部在[部署指南「版本检查」](docs/DEPLOYMENT.md#版本检查)。
 
 ## License
 

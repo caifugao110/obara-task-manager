@@ -3,9 +3,8 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const db = require('../db');
 const taskStore = require('../taskStore');
-const XLSX = require('xlsx');
-const { getEffectiveIsWeekend, normalizeWorkdayOverrides } = require('./workday');
-const { sanitizeAoaRows } = require('./fileUploadSecurity');
+const { normalizeWorkdayOverrides } = require('./workday');
+
 const { buildTaskExportBuffer } = require('./taskExportWorkbook');
 const gunExport = require('./gunLedgerExport');
 const scheduleSyncService = require('./scheduleSyncService');
@@ -174,80 +173,6 @@ const countTaskItems = (tasks = []) => tasks.reduce((total, sheet) => {
   return total + dayItems;
 }, 0);
 
-const getDaysInMonth = (year, month) => new Date(year, month, 0).getDate();
-
-const getTaskHours = (item = {}) => {
-  if (Array.isArray(item.guns) && item.guns.length > 0) {
-    return item.guns.reduce((sum, gun) => sum + (parseFloat(gun?.hours) || 0), 0);
-  }
-  return parseFloat(item.hours) || 0;
-};
-
-const getTaskName = (item = {}) => {
-  if (item.leaveType === 'sick') return '\u4e8b\u5047';
-  if (item.leaveType === 'vacation') return '\u4f11\u5047';
-  if (item.leaveType === 'illness') return '\u75c5\u5047';
-  if (item.leaveType === 'trip') {
-    const name = String(item.taskName || '').trim();
-    return name ? (name.endsWith('\u51fa\u5dee') ? name : `${name}\u51fa\u5dee`) : '\u51fa\u5dee';
-  }
-  return item.taskName || '';
-};
-
-const buildTaskExportWorkbook = (sheets, designers, workdayOverrides = {}) => {
-  const workbook = XLSX.utils.book_new();
-  const designerMap = new Map((designers || []).map(designer => [designer.id, designer]));
-  const monthGroups = new Map();
-
-  sheets.forEach(sheet => {
-    const key = `${sheet.year}-${pad(sheet.month)}`;
-    if (!monthGroups.has(key)) monthGroups.set(key, []);
-    monthGroups.get(key).push(sheet);
-  });
-
-  [...monthGroups.keys()].sort().forEach(key => {
-    const [year, month] = key.split('-').map(Number);
-    const daysInMonth = getDaysInMonth(year, month);
-    const header = ['\u8bbe\u8ba1\u5458'];
-    for (let day = 1; day <= daysInMonth; day += 1) {
-      const dateKey = `${year}-${pad(month)}-${pad(day)}`;
-      const weekendMark = getEffectiveIsWeekend(dateKey, workdayOverrides) ? '\uff08\u4f11\uff09' : '';
-      header.push(`${day}\u65e5${weekendMark} \u4efb\u52a1\u5185\u5bb9`, `${day}\u65e5 \u5de5\u65f6`);
-    }
-    header.push('\u6708\u603b\u5de5\u65f6');
-
-    const rows = [header];
-    monthGroups.get(key).forEach(sheet => {
-      const designer = designerMap.get(sheet.designerId) || designerMap.get(sheet.userId) || {};
-      const maxRows = Math.max(1, ...Array.from({ length: daysInMonth }, (_, index) => {
-        const dateKey = `${year}-${pad(month)}-${pad(index + 1)}`;
-        return Array.isArray(sheet.days?.[dateKey]) ? sheet.days[dateKey].length : 0;
-      }));
-      const monthlyTotal = Array.from({ length: daysInMonth }, (_, index) => {
-        const dateKey = `${year}-${pad(month)}-${pad(index + 1)}`;
-        return (sheet.days?.[dateKey] || []).reduce((sum, item) => sum + getTaskHours(item), 0);
-      }).reduce((sum, hours) => sum + hours, 0);
-
-      for (let rowIndex = 0; rowIndex < maxRows; rowIndex += 1) {
-        const row = [rowIndex === 0 ? (designer.name || sheet.designerName || sheet.designerId || '') : ''];
-        for (let day = 1; day <= daysInMonth; day += 1) {
-          const dateKey = `${year}-${pad(month)}-${pad(day)}`;
-          const item = sheet.days?.[dateKey]?.[rowIndex];
-          row.push(item ? getTaskName(item) : '', item ? getTaskHours(item) : '');
-        }
-        row.push(rowIndex === 0 ? monthlyTotal : '');
-        rows.push(row);
-      }
-    });
-
-    const worksheet = XLSX.utils.aoa_to_sheet(sanitizeAoaRows(rows));
-    worksheet['!cols'] = [{ wch: 12 }, ...Array.from({ length: daysInMonth }, () => [{ wch: 28 }, { wch: 8 }]).flat(), { wch: 10 }];
-    XLSX.utils.book_append_sheet(workbook, worksheet, key);
-  });
-
-  return XLSX.write(workbook, { type: 'buffer', bookType: 'xls' });
-};
-
 const listManagedFiles = (dirPath, predicate = () => true) => {
   if (!fs.existsSync(dirPath)) return [];
   return fs.readdirSync(dirPath, { withFileTypes: true })
@@ -260,6 +185,8 @@ const listManagedFiles = (dirPath, predicate = () => true) => {
     .filter(predicate)
     .sort((first, second) => second.mtime.getTime() - first.mtime.getTime());
 };
+
+
 
 // 使用 SQLite 在线备份 API 生成一致性快照（即使数据库正在写入也安全）
 const createDatabaseBackup = async (options = {}) => {
@@ -960,14 +887,8 @@ const compactDatabase = () => {
 // （索引归并到所属表）的真实页占用，再按业务类型归组，各项之和等于主文件体积。
 // 注意：dbstat 不统计 freelist（空闲页），所以空闲页要单独补一项。
 // ---------------------------------------------------------------------------
-const DB_BREAKDOWN_GROUPS = [
-  { key: 'audit', label: '审计日志', note: '账号与数据变更留痕', tables: ['audit_logs'] },
-  { key: 'kv', label: '业务数据', note: '用户、设置、编号台账、状态跟踪等集合', tables: ['kv_store'] },
-  { key: 'tasks', label: '任务数据', note: '工作表与任务条目', tables: ['task_sheets', 'task_entries'] },
-  { key: 'monitor', label: '运行监测', note: '心跳样本、流量聚合、生命周期事件', prefixes: ['monitor_'] },
-  { key: 'login', label: '登录日志', note: '登录成功与失败记录', tables: ['login_logs'] },
-  { key: 'schema', label: '库结构', note: '表定义、自增序列等系统目录', tables: ['sqlite_schema', 'sqlite_sequence'] }
-];
+// 分组配置与「条数怎么显示」的规则见 utils/dbBreakdownGroups.js（新增表只需改那个文件）
+const { DB_BREAKDOWN_GROUPS, BREAKDOWN_NOTES } = require('./dbBreakdownGroups');
 
 // kv_store 里各集合的展示名，新增集合未登记时直接显示原始 key，不隐藏
 const KV_KEY_LABELS = {
@@ -1036,20 +957,20 @@ const buildDbBreakdown = (raw, { dbFileSize, freelistBytes, pageSize, pageCount,
 
   const items = [...grouped.values()].filter((item) => item.bytes > 0);
 
-  // 任务数与 kv 明细挂到对应分组，避免前端再拼接口
+  // 各分组的「说明文字」由 BREAKDOWN_NOTES 决定（任务数、表数、条数各有各的口径），
+  // 未登记的组沿用分组自带的 note；kv 组额外给出各旧集合的 JSON 体积明细，
+  // 老库升级前后对比时能看出「迁移到底搬走了多少」
   for (const item of items) {
-    if (item.key === 'tasks') {
-      item.note = `${tasksCount} 个工作表，${taskItemsCount} 条任务记录`;
-      item.details = null;
-    } else if (item.key === 'kv') {
-      item.details = readKvKeyDetails(raw);
-    } else if (item.key === 'login') {
-      item.note = `${item.rows} 条记录`;
-    } else if (item.key === 'audit') {
-      item.note = `${item.rows} 条记录`;
-    } else if (item.key === 'monitor') {
-      item.note = `${item.rows} 行样本与聚合`;
+    const noteFn = BREAKDOWN_NOTES[item.key];
+    if (noteFn) {
+      const note = noteFn(item, {
+        tasksCount,
+        taskItemsCount,
+        safeCount: (table) => safeCount(raw, table),
+      });
+      if (note) item.note = note;
     }
+    item.details = item.key === 'kv' ? readKvKeyDetails(raw) : null;
   }
 
   // 统计基数是「数据页总量」而不是文件字节数：WAL 模式下已提交但尚未落盘的页

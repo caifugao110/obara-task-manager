@@ -1109,6 +1109,9 @@ SQLite 采用 WAL 模式和事务写入，正常情况下不会因进程崩溃�
 
 ## 版本检查
 
+> 本节是**系统版本**（`GET /api/system/version` 返回的 `YY-MM-DD[-VN]`）的唯一定义处：格式、比较规则、接口响应都只在这里维护，其它文档只做引用。
+> 控制台 EXE / GitHub Release 用的是另一套 `vYYYY.MM.DD-beta-N`，规则见 [README · 版本号规则](../README.md#版本号规则)。
+
 系统内置版本检查功能，通过 Gitee API 获取远程仓库最新提交信息。
 
 ### 版本号格式

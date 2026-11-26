@@ -301,3 +301,25 @@ export const buildTaskMetadataTitle = (item: TaskItem) => {
     `最后修改时间：${formatTaskMetaTime(item.updatedAt)}`
   ].join('\n');
 };
+
+/**
+ * 批量新增（粘贴 / 复制到其他格子）后要登记给撤销栈的数据。
+ *
+ * 为什么单独提出来：这段映射原先在「单元格粘贴」和「task-paste 事件」两处各写了一遍，
+ * 两边的字段顺序、`clipboard?.[idx]` 的取值口径必须完全一致，否则撤销回去的内容会错位。
+ * 抽成纯函数后只保留一份实现，也能直接单测（不需要渲染页面、不需要 mock 接口）。
+ *
+ * @param createdItems 接口返回的新建任务（至少要有 id），顺序与提交顺序一致
+ * @param clipboard 当时提交的任务内容快照，按同一下标对应回原始任务
+ */
+export const buildBatchAddHistoryItems = (
+  createdItems: { id: string }[] | null | undefined,
+  clipboard: TaskItem[] | null | undefined,
+  designerId: string,
+  date: string,
+) => (createdItems || []).map((created, idx) => ({
+  designerId,
+  date,
+  itemId: created.id,
+  item: clipboard?.[idx],
+}));

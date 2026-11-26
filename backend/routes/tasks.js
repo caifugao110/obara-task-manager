@@ -290,11 +290,6 @@ const countLiteralInsensitive = (value, findText) => {
 // 替换口径：仍按字面精确匹配（区分大小写）。
 // 查找放宽到大小写不敏感是为了「输入 srtc 也能找到 SRTC」，但替换是写操作，
 // 用不区分大小写去改写会把用户没打算动的 `SRTC`/`srtc` 一起改掉，风险更大。
-const countLiteral = (value, findText) => {
-  if (typeof value !== 'string' || !value.includes(findText)) return 0;
-  return value.split(findText).length - 1;
-};
-
 // 批量替换的目标表：LIKE 预筛出含匹配文本的候选表再完整装配，
 // 不再扫描全部任务数据，数据量多大都只加载命中部分
 const getBatchReplaceTargetSheets = (findText, allTable, month, year) => {

@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const securityConfig = require('./config/security');
 const { DEFAULT_LEADER_RULES } = require('./utils/leaderRules');
 const { shouldForcePasswordChange } = require('./utils/passwordPolicy');
+const { loadRelocated, persistRelocated, relocatedRowCount } = require('./relocatedCollections');
 
 const sqlitePath = path.resolve(__dirname, securityConfig.database.sqlitePath);
 
@@ -18,18 +19,6 @@ let _db = null;
 let isWriting = false;
 const writeQueue = [];
 
-const safeJsonStringify = (data) => {
-  const seen = new WeakSet();
-  return JSON.stringify(data, (key, value) => {
-    if (typeof value === 'object' && value !== null) {
-      if (seen.has(value)) {
-        return '[Circular Reference]';
-      }
-      seen.add(value);
-    }
-    return value;
-  });
-};
 
 // 深拷贝（Node 17+ 原生 structuredClone，数据中无函数/BigInt 等不支持类型）
 const deepClone = (obj) => {
@@ -391,56 +380,39 @@ const clearLoginLogs = () => {
   return Number(database.prepare('DELETE FROM login_logs').run().changes);
 };
 
-// 将缓存中的顶层集合持久化到 kv_store（事务）。
-// 脏检查：每个集合序列化后与上次落库内容比较，仅 UPSERT 真正变化的集合，
-// 避免一次小改动引发全部集合的磁盘写入与 WAL 膨胀。
-// 注意：tasks（taskStore 关系表）、auditLogs / loginLogs（独立表）均已迁出 kv_store。
-let _lastPersistedJson = {};
-
+// 将缓存持久化（事务）。
+// 所有集合都已迁出 kv_store，各自走行存储（用户/设计员/设置/台账/状态跟踪），
+// 每个 store 内部做行级脏检查，只写真正变化的行；kv_store 不再被写入，
+// 只作为老库升级时的迁移来源保留。
 const persistCache = () => {
   if (!_cache) return;
   const db = openDatabase();
-  const upsert = db.prepare(
-    `INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.value`
-  );
-  const topLevelKeys = ['users', 'designers', 'settings', 'statusTrackingItems', 'gunLedger'];
   const tx = db.transaction(() => {
-    for (const key of topLevelKeys) {
-      if (Object.prototype.hasOwnProperty.call(_cache, key)) {
-        const serialized = safeJsonStringify(_cache[key]);
-        if (_lastPersistedJson[key] === serialized) continue;
-        upsert.run(key, serialized);
-        _lastPersistedJson[key] = serialized;
-      }
-    }
+    persistRelocated(db, _cache);
   });
   tx();
 };
 
-// 从 kv_store 加载所有数据到缓存
+// 从数据库加载所有数据到缓存。
+// 老库（升级前）的数据还在 kv_store 里，先原样读出来交给各 store 判断：有行表就读行表，
+// 没有就迁移；迁移失败时 store 不改 kvData，本次启动继续用旧值。
 const loadFromDb = () => {
   const db = openDatabase();
   const rows = db.prepare('SELECT key, value FROM kv_store').all();
   const data = {};
-  _lastPersistedJson = {};
   for (const row of rows) {
     try {
       data[row.key] = JSON.parse(row.value);
-      _lastPersistedJson[row.key] = row.value;
     } catch (e) {
       console.error(`[db] Failed to parse key ${row.key}:`, e.message);
       data[row.key] = row.key === 'settings' ? {} : [];
     }
   }
+
+  loadRelocated(db, data);
+
   return data;
 };
-
-const buildDefaultGunTable = (name) => ({
-  id: `gun-tbl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-  name,
-  rows: []
-});
 
 const buildDefaultGunLedger = () => {
   const now = Date.now().toString(36);
@@ -777,9 +749,15 @@ const init = () => {
   if (_cache) return;
   openDatabase();
   const rows = _db.prepare('SELECT COUNT(*) as c FROM kv_store').get().c;
+  // 判断「库是空的」不能只看 kv_store：集合都已迁到行表，kv 里本来就该是空的。
+  // 只看 kv 会把「已迁移的库」误判成新库，直接用默认数据覆盖掉全部业务数据。
+  const relocatedRows = relocatedRowCount(_db);
   let gunSerialNeedPersist = false;
-  if (rows === 0) {
+  if (rows === 0 && relocatedRows === 0) {
     _cache = getInitialDb();
+    // 空库也要先补齐默认配置再落库：否则首次安装只写进 10 个配置块，
+    // 第二次启动才补齐到 14 个，中间这段时间「库里有什么」与「内存里有什么」不一致
+    applySettingsDefaults(_cache);
     persistCache();
   } else {
     _cache = loadFromDb();
@@ -793,10 +771,7 @@ const init = () => {
   }
   // tasks 由 taskStore 关系表承载，不进入内存缓存，
   // readDb 的整库深拷贝与 persistCache 都不包含任务数据
-  if (_cache.tasks !== undefined) {
-    delete _cache.tasks;
-    delete _lastPersistedJson.tasks;
-  }
+  if (_cache.tasks !== undefined) delete _cache.tasks;
 };
 
 const readDb = () => {

@@ -97,6 +97,14 @@ if %NODE_MAJOR% LSS 22 (
     echo [HINT]  Install Node.js 22 LTS from https://nodejs.org, then run start.bat again.
     exit /b 1
 )
+rem Node 22.0~22.2 passes the major check above but is below pdf-parse 2.4's
+rem engines floor (22.3). Delegate the minor-version check to the node script so
+rem the rule lives in exactly one place instead of being duplicated in batch.
+node tools\check-node-version.js --quiet
+if errorlevel 1 (
+    echo [ERROR] Node.js %NODE_VERSION% is below the minimum (22.3). See above.
+    exit /b 1
+)
 exit /b 0
 
 :check_ports

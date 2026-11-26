@@ -36,6 +36,9 @@
 | `tools/trim-logs.js` | `start.bat`（启动前自动调用）/ 人工 | 按系统设置里的阈值轮转 `logs/` 下超限的日志文件；支持 `--max-mb N`、`--all`、`--dry-run` | 日志目录涨到几百 MB、或需要立刻清空日志时（见第六节） |
 | 状态监测页 | 后端自动采集 | 页面化的长期取证：可用率、断开记录与原因、前端流量、资源趋势、进程生命周期 | 想知道「近半年断过几次、每次多久」时（见第五节，比翻日志快） |
 | `tools/docs-check.js` | 人工 / CI（`npm run docs:check`） | 校验文档与代码是否一致：链接与锚点、接口清单、环境变量、页面路由、引用路径 | 改完代码或文档后（见第四节） |
+| `backend/.eslintrc.cjs`（`npm run lint:backend`） | 人工 / CI | 后端 JS 静态检查：`no-undef`、`no-dupe-keys`、`eqeqeq`、未使用变量（`--max-warnings 0`） | 改完后端代码后；CI 与前端 lint 一起跑 |
+| `tools/check-file-size.js` | 人工 / CI（`npm run check:size`） | 文件体量棘轮：现有巨石文件登记为「只降不升」的基线，新文件超过 500 行直接失败；`--update` 重写基线、`--list` 只看超标清单 | 拆完文件后用 `--update` 锁定成果；想继续往大文件里加功能时会被它拦住 |
+| `tools/check-node-version.js` | `start.bat` / `deploy/linux/install.sh` / 人工（`npm run check:node`） | 校验 Node >= 22.3（取 better-sqlite3 / joi / pdf-parse 的交集），给出人话报错 | 换机器、装 Node 后自查 |
 | `weknora/start.bat`、`weknora/start.sh` | 人工 | 知识库服务的一键部署：生成 `.env` → `docker compose up -d` → 初始化脚本 | 首次部署或重建知识库环境，见 [WeKnora 部署指南](../weknora/README.md) |
 | `weknora/scripts/gen-env.js` | `weknora/start.*` | 从 `.env.example` 生成 `.env`，自动填随机 `JWT_SECRET` / `SYSTEM_AES_KEY`；已存在则跳过 | 需要重置 `.env` 时手动跑（`--force` 覆盖） |
 | `weknora/scripts/setup.js` | `weknora/start.*` | 幂等初始化：建管理员 → 配 DeepSeek/智谱模型 → 建 API Key → 把 `WEKNORA_*` 写进 `backend/.env` | 更换模型 Key、迁移服务器时 |

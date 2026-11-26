@@ -1,0 +1,58 @@
+name: Test
+
+# 之前的 CI 只在 control/** 与 docs/** 变化时构建 EXE 和部署文档，
+# 从来没人跑过 npm test —— 后端 3004 行测试「全绿」实际上只是本地结论。
+# 这个 workflow 补上真正的质量闸门：后端测试 + 前端单测 + 前端构建（tsc）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # 同一分支连推多次时只跑最新一次，避免排队浪费
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Backend + Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+
+      # npm ci 走根目录 .npmrc：ignore-scripts=true（不触发 node-gyp）、
+      # engine-strict=true（Node 版本不符直接失败，与本地行为一致）
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check Node version guard
+        run: npm run check:node
+
+      # 后端此前没有任何静态检查：拼错变量名、重复键这类问题只能靠跑测试碰运气
+      - name: Lint (frontend + backend)
+        run: npm run lint
+
+      - name: Backend tests
+        run: npm run test:backend
+
+      - name: Frontend unit tests
+        run: npm run test:frontend
+
+      # 拦住「继续往 6000 行巨石里加功能」：基线只降不升，新文件超过 500 行直接失败
+      - name: File size ratchet
+        run: npm run check:size
+
+      # tsc 会连测试文件的类型一起检，构建过了才说明类型没漂
+      - name: Frontend type-check and build
+        run: npm run build:frontend

@@ -45,7 +45,7 @@ function validateFileType(filename, mimetype) {
 function sanitizeCellValue(value) {
   if (typeof value !== 'string') return value;
   
-  let sanitized = value.trim();
+  const sanitized = value.trim();
   
   if (MALICIOUS_FORMULA_PATTERNS.some(pattern => pattern.test(sanitized))) {
     return "'" + sanitized;
@@ -94,7 +94,6 @@ function validateWorkbookStructure(workbook) {
     return { valid: false, error: `工作表数量超过限制（最大 ${MAX_SHEETS} 个）` };
   }
   
-  let totalRows = 0;
   
   for (const sheetName of workbook.SheetNames) {
     const worksheet = workbook.Sheets[sheetName];
@@ -107,8 +106,7 @@ function validateWorkbookStructure(workbook) {
       return { valid: false, error: `工作表 ${sheetName} 的行数超过限制（最大 ${MAX_ROWS} 行）` };
     }
     
-    totalRows += rowCount;
-    
+    // 只按单表行数校验：历史上这里还累加过 totalRows，但从未参与任何判断，已删除
     const colCount = range.e.c + 1;
     if (colCount > MAX_CELLS_PER_ROW) {
       return { valid: false, error: `工作表 ${sheetName} 的列数超过限制（最大 ${MAX_CELLS_PER_ROW} 列）` };

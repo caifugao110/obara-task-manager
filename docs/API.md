@@ -1270,6 +1270,17 @@ Token 过期时返回 `401`（`code=TOKEN_EXPIRED`，消息 `登录状态已失�
 - 四个权限配置的 `GET` 接口（`/settings/leaderboard`、`/settings/work-hours`、`/settings/status-tracking`、`/settings/system-settings`）均需携带有效 JWT；`PUT` 接口均仅 `superadmin`。
 - 焊枪台账（`/settings/gun-ledger`）和设计规范知识库（`/settings/design-standards`）权限配置同样遵循上述规则；其中 `gunLedger.allowViewers=true` 仅放行普通用户只读访问焊枪台账（GET 接口），所有写接口（分类/表/行增删改、规则配置、初始化、导入）仍要求 `admin`/`superadmin`，焊枪台账相关 Socket 锁事件同样仅管理员可用。
 
+### 主页面启动聚合读取（系统设置 + 页面权限）
+
+`GET /api/settings/bootstrap`
+
+权限：有效 JWT。一次 `readDb()` 返回主页面启动所需的全部配置，把原来 7 个并发请求压成 1 个（HTTP/1.1 同域并发上限为 6，第 7 个必然排队），返回字段：
+
+| 字段 | 说明 |
+|------|------|
+| `system` | 系统设置，归一化规则与系统设置读取接口（`/settings/system-settings` 同组）一致 |
+| `leaderboard` / `workHours` / `statusTracking` / `systemSettings` / `designStandards` / `gunLedger` | 各页面访问权限，归一化规则与对应的页面权限 `GET` 接口完全一致 |
+
 ### 获取任务报表权限设置
 
 `GET /api/settings/leaderboard`
@@ -2695,7 +2706,7 @@ PUT 请求：
 说明：
 
 - 响应头带 `Cache-Control: no-store`，避免被浏览器或代理缓存后测出 0ms。
-- 由 `backend/routes/system.js` 直接返回，**不进审计日志**、不涉及任何业务数据；仍受全局限流（3000 次 / 15 分钟）约束，10 秒一次远低于上限。
+- 由 `backend/routes/system/info.js` 直接返回，**不进审计日志**、不涉及任何业务数据；仍受全局限流（3000 次 / 15 分钟）约束，10 秒一次远低于上限。
 - 前端只在页面可见时测量（切到后台挂起），失败即把延迟置空并保持状态点颜色不变。
 
 ### 获取系统设置
@@ -3857,7 +3868,8 @@ node tools/trim-logs.js --dry-run    # 只报告不修改
       "freeBytes": 0,
       "items": [
         { "key": "audit", "label": "审计日志", "note": "1832 条记录", "bytes": 421888, "rows": 1832, "tables": ["audit_logs"], "details": null },
-        { "key": "kv", "label": "业务数据", "note": "用户、设置、编号台账、状态跟踪等集合", "bytes": 393216, "rows": 5, "tables": ["kv_store"], "details": [{ "label": "状态跟踪数据", "bytes": 174080 }, { "label": "编号台账", "bytes": 32768 }] },
+        { "key": "kv", "label": "业务数据", "note": "用户、设置、状态跟踪等集合", "bytes": 393216, "rows": 4, "tables": ["kv_store"], "details": [{ "label": "状态跟踪数据", "bytes": 174080 }, { "label": "系统设置", "bytes": 11904 }] },
+        { "key": "ledger", "label": "编号台账", "note": "焊枪台账 57 张表", "bytes": 65536, "rows": 59, "tables": ["gun_ledger_meta", "gun_ledger_tables"], "details": null },
         { "key": "tasks", "label": "任务数据", "note": "240 个工作表，5000 条任务记录", "bytes": 86016, "rows": 5240, "tables": ["task_entries", "task_sheets"], "details": null },
         { "key": "schema", "label": "库结构", "note": "表定义、自增序列等系统目录", "bytes": 24576, "rows": null, "tables": ["sqlite_schema", "sqlite_sequence"], "details": null }
       ]
@@ -5594,11 +5606,12 @@ socket.emit('task_updated', {
 
 系统使用 SQLite 数据库（`backend/data.db`，WAL 模式）作为唯一数据源，启动时自动执行以下初始化：
 
-1. **建表**：`kv_store`（键值集合）、`task_sheets` / `task_entries`（任务工时关系表）、`login_logs`（登录日志）、`audit_logs`（操作日志）不存在时自动创建
-2. **空库初始化**：`kv_store` 为空时写入初始数据（空用户/设计员集合、默认焊枪台账、默认设置）
-3. **配置自动补齐**：每次启动及每次写库时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`maintenance`、`workdayOverrides`、`system`、`ipBlacklist` 等）
-4. **焊枪台账序号校验**：启动时检测台账序号跳号/乱序，自动修复为连续自然序号 1..N
-5. **初始管理员**：不存在超级管理员时自动创建，密码取 `DEFAULT_ADMIN_PASSWORD`，留空则随机生成并仅在控制台显示一次
+1. **建表**：`users` / `designers`（账号与人员行存储）、`settings_entries`（系统设置按键存储）、`gun_ledger_tables` / `gun_ledger_meta`（焊枪台账表级行存储）、`status_tracking_items`（状态跟踪行级存储）、`task_sheets` / `task_entries`（任务工时关系表）、`login_logs`（登录日志）、`audit_logs`（操作日志）不存在时自动创建；`kv_store` 仍会建，但只作为老库升级时的迁移来源
+2. **空库初始化**：`kv_store` 与所有行表**都为空**时才写入初始数据（空用户/设计员集合、默认焊枪台账、默认设置）；只看 `kv_store` 会在「数据已迁到行表、kv 本来就是空的」时误判成新库并覆盖全部业务数据。空库初始化后也会先补齐默认配置再落库，避免首次安装只写半份设置
+3. **行存储迁移**：首次启动时若发现 `kv_store` 里还存着旧版本集合（`users` / `designers` / `settings` / `gunLedger` / `statusTrackingItems`），自动写入对应行表并删除旧 key；迁移前逐个备份到 `backend/backups/database/<集合名>-before-migration-<时间>.json`，迁移失败时保留旧数据，下次启动重试
+4. **配置自动补齐**：每次启动及每次写库时，自动补齐缺失的默认配置（含 `leaderboard`、`workHours`、`statusTracking`、`systemSettings`、`maintenance`、`workdayOverrides`、`system`、`ipBlacklist` 等）
+5. **焊枪台账序号校验**：启动时检测台账序号跳号/乱序，自动修复为连续自然序号 1..N
+6. **初始管理员**：不存在超级管理员时自动创建，密码取 `DEFAULT_ADMIN_PASSWORD`，留空则随机生成并仅在控制台显示一次
 
 系统不再提供从遗留 JSON 文件或旧版数据结构的数据迁移。
 
