@@ -192,13 +192,15 @@ const AppRoutes = () => {
   );
 };
 
-const basename = process.env.NODE_ENV === 'production' ? '/obara-task-manager' : '';
+// 路由 basename 与 vite 的 base 同源，避免两处各写一份：
+// Windows 子路径部署得到 '/obara-task-manager'，Linux 根路径部署得到 ''（按无 basename 处理）。
+const basename = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 function App() {
   return (
     <AuthProvider>
       <SystemSettingsProvider>
-        <Router basename={basename}>
+        <Router basename={basename || undefined}>
           <DocumentTitle />
           <AppRoutes />
         </Router>

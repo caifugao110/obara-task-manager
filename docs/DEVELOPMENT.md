@@ -2,11 +2,11 @@
 
 面向要在这个仓库里改代码的人：怎么把环境跑起来、代码该写在哪、新增功能要动哪些文件、提交前要过什么检查。
 
-> 其他文档：[文档中心](README.md) · [README](../README.md)（功能与使用） · [使用手册](USER-GUIDE.md) · [API 文档](API.md) · [Windows 部署指南](DEPLOYMENT.md) · [运维工具说明](TOOLS.md)
+> 其他文档：[文档中心](README.md) · [README](../README.md)（功能与使用） · [使用手册](USER-GUIDE.md) · [API 文档](API.md) · [部署指南](DEPLOYMENT.md) · [运维工具说明](TOOLS.md)
 
 - 系统怎么分层、模块在哪：看 [README 项目结构](../README.md#项目结构) 与 [核心模块说明](../README.md#核心模块说明)
 - 某个接口的字段和错误码：看 [API 文档](API.md)
-- 部署与排障：看 [Windows 部署指南](DEPLOYMENT.md)
+- 部署与排障：看 [部署指南](DEPLOYMENT.md)
 
 ---
 
@@ -15,7 +15,7 @@
 - [1. 环境准备](#1-环境准备)
 - [2. 启动与日常开发](#2-启动与日常开发)
 - [3. 代码该写在哪](#3-代码该写在哪)
-- [4. 五类常见改动的 checklist](#4-五类常见改动的-checklist)
+- [4. 六类常见改动的 checklist](#4-六类常见改动的-checklist)
 - [5. 编码约定](#5-编码约定)
 - [6. 提交前的检查](#6-提交前的检查)
 - [7. 提交与发版](#7-提交与发版)
@@ -74,7 +74,7 @@ npm run dev:frontend   :: 只起前端 :5173（Vite）
 | Socket 连接 | 一律 `utils/socketClient.ts` 的 `acquireSocket()`，不自己 `io()` |
 | 页面 | `frontend/src/pages/*.tsx`；主页面因体量大已拆成 `pages/Dashboard/` 目录 |
 
-## 4. 五类常见改动的 checklist
+## 4. 六类常见改动的 checklist
 
 ### 4.1 新增一个页面
 
@@ -150,6 +150,18 @@ getCurrentSocket()?.emit('task_updated', {
 
 导出接口的审计日志会被 `shouldAudit()` 的「敏感读」规则捕获（`GET` 导出也记），不需要额外埋点。
 
+### 4.6 新增一处平台差异（Windows / Linux）
+
+系统同时兼容 Windows（主力）与 Linux，业务代码只有一份。**能写成平台无关的就不要分叉**，确实必须分叉时按下面几条走：
+
+1. **优先用配置而不是 `process.platform`**：监听地址用 `OBARA_HOST`，数据库位置用 `SQLITE_DB_PATH`，共享目录用 `SPEC_SHARE_PATH` / `PRODUCTION_SCHEDULE_PATH`。代码里出现 `if (process.platform === 'win32')` 之前，先确认能不能靠环境变量解决。
+2. **路径分隔与大小写**：Windows 不区分大小写、分隔符是 `\`。拼接路径一律 `path.join()`，比较路径前先 `path.resolve()`；不要写死 `\\` 或 `C:\`。
+3. **共享盘访问**：Windows 走 UNC + `net use`，Linux 走 CIFS 挂载点。读共享仍必须经 `backend/utils/productionScheduleWorker.js` 子进程 + 硬超时，**不要因为 Linux 上「本地挂载应该很快」就在主进程同步读**——挂载卡死同样会占满线程池。
+4. **外部命令**：`net use`、`taskkill`、PowerShell 仅 Windows 可用。需要跨平台时先判断命令是否存在，找不到就跳过并记一条日志，不要让整个请求 500。
+5. **前端 `base`**：两台主机都是根路径 `/`。要改默认值或用 `VITE_BASE` 子路径部署，必须同时确认 Windows 与 Linux 的访问路径，否则资源前缀错位、页面整片 404。
+6. **同步文档**：`docs/DEPLOYMENT.md` 的「平台选择」与「Linux 兼容部署」、`README.md`「快速开始」；若新增环境变量，按上表同时改 `README.md`、`docs/API.md`、`backend/.env.example`。
+7. **验证两边**：Windows 上 `start.bat` 能起、Linux 上 `deploy/linux/install.sh` 能装完并通过健康检查；只在一端验证过的新增平台分支，不要合并。
+
 ---
 
 ## 5. 编码约定
@@ -189,6 +201,7 @@ getCurrentSocket()?.emit('task_updated', {
 | 环境变量增删 | `README.md`、`DEPLOYMENT.md`、`docs/API.md`、`backend/.env.example` |
 | 权限开关、角色规则 | `README.md` 权限模型 + `docs/API.md` 权限速查 |
 | 部署方式、启动脚本 | `DEPLOYMENT.md` |
+| 平台相关行为（监听地址、路径、共享盘访问、前端 `base`） | `DEPLOYMENT.md`（平台选择 / Linux 兼容部署）、`README.md`（快速开始）、`deploy/linux/` 下的脚本与配置 |
 | 守护/自愈机制、探针、日志判读 | `README.md`（脚本与维护建议）、`docs/DEPLOYMENT.md`（排障）、`docs/TOOLS.md`（日志怎么读、状态监测怎么判读） |
 | 监测采集口径、断开原因判定、日志截断策略 | `README.md`（状态监测 / 日志文件管理）、`docs/API.md`（`monitor` 与 `log-files` 接口）、`docs/USER-GUIDE.md`（9.4 / 9.7）、`docs/TOOLS.md`（第五、六节） |
 | 数据结构、模块划分 | `README.md` 数据存储 / 项目结构 |
@@ -292,7 +305,7 @@ docs: 更新部署、README 和 API 文档，补充功能说明
 | [使用手册](USER-GUIDE.md) | 面向使用者的操作说明、判定规则与提示语速查 |
 | [API 文档](API.md) | REST 接口与 Socket.IO 事件全量参考 |
 | [README](../README.md) | 功能、权限、数据结构、项目结构、命令 |
-| [Windows 部署指南](DEPLOYMENT.md) | 部署、备份、排障 |
+| [部署指南](DEPLOYMENT.md) | 部署、备份、排障 |
 | [运维工具说明](TOOLS.md) | 运维/守护脚本的分工，`tools/backend-report.bat` 断开分析报告，以及看门狗 / 假死探针日志的判读 |
 | [WeKnora 部署指南](../weknora/README.md) | 知识库服务的 Docker 部署与运维 |
 | [变更记录](CHANGELOG.md) | 按日期汇总的提交历史（由 `git log` 生成，不手工维护） |

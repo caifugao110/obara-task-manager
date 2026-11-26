@@ -56,6 +56,7 @@ const securityConfig = {
     repoName: process.env.GITEE_REPO_NAME || ''
   },
   server: {
+    host: process.env.OBARA_HOST || undefined,
     port: parseInt(process.env.PORT) || 5000,
     environment: process.env.NODE_ENV || 'development'
   },

@@ -1,6 +1,6 @@
 # 变更记录
 
-> 其他文档：[README](../README.md) · [文档中心](README.md) · [开发者指南](DEVELOPMENT.md) · [Windows 部署指南](DEPLOYMENT.md)
+> 其他文档：[README](../README.md) · [文档中心](README.md) · [开发者指南](DEVELOPMENT.md) · [部署指南](DEPLOYMENT.md)
 
 本文件由 **git 提交历史**汇总生成（`git log --date=short --pretty=format:'%ad|%s'`），不是手工维护的流水账：
 
@@ -12,6 +12,10 @@
 ---
 
 ## 2026-11
+
+### 2026-11-24
+
+- feat(backend): 新增数据库体积统计缓存模块
 
 ### 2026-11-19
 

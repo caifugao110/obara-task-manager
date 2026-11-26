@@ -909,8 +909,10 @@ process.on('SIGUSR2', () => {
 // 启动前初始化数据库（加载缓存到内存）
 db.init();
 
-server.listen(securityConfig.server.port, async () => {
-  console.log(`Server running on port ${securityConfig.server.port}`);
+const onListening = async () => {
+  console.log(
+    `Server running on ${securityConfig.server.host || '0.0.0.0'}:${securityConfig.server.port}`
+  );
   // 状态监测：登记本次启动，并判定上一轮是正常停止还是异常中断
   try {
     systemMonitor.recordBoot();
@@ -960,4 +962,15 @@ server.listen(securityConfig.server.port, async () => {
   } catch (err) {
     console.error('[maintenance] 体积统计预热失败:', err && err.message ? err.message : err);
   }
-});
+};
+
+// 监听地址：未配置 OBARA_HOST 时保持改造前的两参调用形态（只传端口）。
+// 不同 Node 版本对 listen(port, undefined, callback) 的实参解析并不一致，
+// 个别版本会把 undefined 当成位置占位而丢掉回调，导致上面的启动登记、
+// 台账自愈、调度器、日志截断全部不执行（进程活着但初始化缺失）。
+// 显式分支可以保证 Windows（不配 OBARA_HOST）与 Linux（配 127.0.0.1）行为确定。
+if (securityConfig.server.host) {
+  server.listen(securityConfig.server.port, securityConfig.server.host, onListening);
+} else {
+  server.listen(securityConfig.server.port, onListening);
+}

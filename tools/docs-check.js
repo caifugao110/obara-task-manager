@@ -8,6 +8,7 @@
  *   node tools/docs-check.js api      # 只查接口清单
  *   node tools/docs-check.js env      # 只查环境变量
  *   node tools/docs-check.js pages    # 只查页面清单
+ *   node tools/docs-check.js paths    # 只查引用的仓库路径
  *
  * 做五件事：
  *   1. links  相对链接指向的文件是否存在、锚点是否与标题匹配（按 GitHub 的 slug 规则）
@@ -40,7 +41,19 @@ function walk(dir, filter) {
   const out = [];
   const abs = path.join(ROOT, dir);
   if (!fs.existsSync(abs)) return out;
-  for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = fs.readdirSync(abs, { withFileTypes: true });
+  } catch (err) {
+    // 备份目录、运行时数据目录可能因权限或正在写入而不可读，跳过即可，
+    // 不要因为一个目录读不了就让整份文档校验失败
+    if (err && (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EBUSY')) {
+      report.push(`walk    跳过不可读目录 ${dir}（${err.code}）`);
+      return out;
+    }
+    throw err;
+  }
+  for (const entry of entries) {
     const rel = path.posix.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name === 'vendor') continue;
@@ -216,7 +229,19 @@ const PATH_PREFIXES = ['backend/', 'frontend/', 'docs/', 'tools/', 'weknora/', '
 // 运行时才生成或作为示例的路径，不做存在性校验
 // backend/tests/.tmp/：只是 `npm test` 跑测试时用 VACUUM INTO 生成快照、跑完即删的临时目录，
 // 平时并不存在；以前它「碰巧」被上一次测试残留下来，检查才能通过，清理后就会误报。
-const PATH_ALLOW = ['logs/', 'backend/tests/.tmp/', 'frontend/src/pages/NewPage.tsx'];
+// control/Properties/GeneratedVersion.cs：MSBuild 在每次编译前用 GenerateVersionFile 目标生成，
+// 仓库里刻意不存（见 control/.gitignore），只有构建过才有。
+// control/bin/、control/obj/：构建产物目录，同样不进版本库。
+// weknora/.env：由 weknora/.env.example 复制并填入模型 Key 后生成，含密钥，不入库。
+const PATH_ALLOW = [
+  'logs/',
+  'backend/tests/.tmp/',
+  'frontend/src/pages/NewPage.tsx',
+  'control/Properties/GeneratedVersion.cs',
+  'control/bin/',
+  'control/obj/',
+  'weknora/.env'
+];
 
 function checkPaths() {
   let checked = 0;

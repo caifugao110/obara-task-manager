@@ -1,6 +1,6 @@
 # Obara 任务管理系统
 
-![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20跨平台-lightgrey) ![Socket.IO](https://img.shields.io/badge/实时协作-Socket.IO-010101?logo=socket.io&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20Linux-lightgrey) ![Socket.IO](https://img.shields.io/badge/实时协作-Socket.IO-010101?logo=socket.io&logoColor=white)
 
 Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管理工具，集成任务录入、工时统计、状态追踪、焊枪台账、设计规范知识库检索与问答、报表查询、权限控制与数据导入导出等能力，支持多人实时协作、离线浏览与操作审计。
 
@@ -11,9 +11,9 @@ Obara 任务管理系统是一款本地部署的 Excel 风格任务与工时管�
 | [**文档中心**](docs/README.md) | **所有人** | **文档索引、按角色的阅读路径、一致性自检命令（`node tools/docs-check.js`）、新增文档的约定** |
 | [**使用手册**](docs/USER-GUIDE.md) | **日常使用者**（设计员、班组长、管理员） | **逐步操作说明、判定规则、拦截原因与提示语速查；不含技术细节** |
 | 本文档 | 维护者、想了解全貌的人 | 功能概览、快速启动、页面说明、权限模型、数据结构和常用命令 |
-| [开发者指南](docs/DEVELOPMENT.md) | 开发者 | 开发环境、代码归属、五类改动的 checklist、编码约定、测试与发版 |
+| [开发者指南](docs/DEVELOPMENT.md) | 开发者 | 开发环境、代码归属、六类改动的 checklist、编码约定、测试与发版 |
 | [API 文档](docs/API.md) | 前后端开发者 | REST API、Socket.IO 事件、权限要求、错误码和环境变量 |
-| [Windows 部署指南](docs/DEPLOYMENT.md) | 部署和维护人员 | Windows 启动方式、环境变量、备份恢复、升级、排障和安全建议 |
+| [部署指南](docs/DEPLOYMENT.md) | 部署和维护人员 | Windows 一键启动与守护链；Linux 兼容部署（systemd + Nginx）；环境变量、备份恢复、升级回滚、排障 |
 | [运维工具说明](docs/TOOLS.md) | 运维、排障人员 | 全部运维/守护脚本的分工，`tools/backend-report.bat` 断开分析报告，看门狗 / 假死探针日志判读，状态监测的判定口径与日志文件轮转 |
 | [WeKnora 知识库部署指南](weknora/README.md) | 部署和维护人员 | 设计规范知识库（WeKnora）的 Docker 部署、初始化与故障处理 |
 | [变更记录](docs/CHANGELOG.md) | 所有人 | 按日期汇总的提交历史，用于回答「哪天改的、改了什么」 |
@@ -79,6 +79,17 @@ start.bat
 
 > `start.bat` 强制要求 Node.js 22+（better-sqlite3 13、joi 18、pdf-parse 2.4 在更低版本上无法运行），版本过低时会直接报错退出。
 > 首次部署可通过环境变量 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 配置默认管理员账号，启动时自动创建超级管理员（仅当不存在超级管理员时生效）。未设置 `DEFAULT_ADMIN_PASSWORD` 时，首次启动会自动生成随机密码并**仅在后端控制台输出一次**（`start.bat` 隐藏窗口运行时输出在 `logs/backend.log`，丢失后可按 [DEPLOYMENT.md](docs/DEPLOYMENT.md) 的「忘记超级管理员密码」FAQ 处理），请立即记录并登录修改（该账号同时被标记为需强制修改密码）。
+
+### Linux 兼容部署
+
+同一份代码可直接运行在 Linux 上，作为 Windows 之外的第二个运行平台（不是移植分支，无需单独维护）。部署物料在 `deploy/linux/`，装好 Node.js 22+ 后一条命令完成依赖安装、测试、构建、数据库迁移与服务注册：
+
+```bash
+cd /opt/obara/obara-task-manager
+sudo bash deploy/linux/install.sh
+```
+
+后端由 systemd 托管、只监听 `127.0.0.1:5000`，前端静态产物由 Nginx 在 `:5173` 托管并反代 `/api` 与 `/socket.io`，访问地址与 Windows 一致。目录约定、`OBARA_HOST`、沙箱可写目录、升级回滚与排障见 [部署指南 · Linux 兼容部署](docs/DEPLOYMENT.md#linux-兼容部署)。
 
 ### 首次部署检查清单
 
@@ -952,7 +963,7 @@ node --check backend\routes\tasks.js
 - **Excel 依赖本地化**：Excel 解析使用随仓库分发的 SheetJS `xlsx@0.20.3`（`backend/vendor/xlsx-0.20.3.tgz`，以 `file:` 协议安装），修复旧版 0.18.5 的原型污染（CVE-2023-30533）与正则拒绝服务（CVE-2024-22363）漏洞，且内网安装无需再从 npm 拉取该包。
 - **Socket.IO 认证与角色校验**：WebSocket 连接建立时强制验证 JWT Token，支持从 `socket.handshake.auth.token` 或 `Authorization` 请求头获取令牌，验证失败则拒绝连接。焊枪台账的表级锁申请（`gun_ledger_lock_table`）、行取号（`gun_ledger_start_edit`）与锁心跳（`gun_ledger_table_heartbeat`）事件额外要求 `admin`/`superadmin` 角色，防止普通用户构造客户端抢占编辑锁阻断管理员。同时支持单设备登录限制，当 `allowMultiDevice=false` 时，已登录用户在其他设备登录会使旧连接失效。**建连通过不等于一直有效**：每个业务事件处理前都会重读用户库复核存在性、禁用、强制改密、令牌过期与会话有效性，失败时先下发 `session_invalidated`（带 `reason`/`code`）再断开，另有 60 秒巡检覆盖只收广播的静默连接——否则被禁用或被顶号的客户端只要不断线就能一直收到业务数据。**广播也按页面权限收敛**：连接建立时按页面开关进入 `page:gunLedger` / `page:statusTracking` 房间，台账与状态追踪的实时广播、行锁/表锁快照只发给房间内连接，权限被收回后立即退出房间。
 
-详细的环境变量配置、版本检查机制和安全加固建议，请参考 [Windows 部署指南](docs/DEPLOYMENT.md)。
+详细的环境变量配置、版本检查机制和安全加固建议，请参考 [部署指南](docs/DEPLOYMENT.md)。
 
 ## 项目结构
 
@@ -1054,11 +1065,17 @@ obara-task-manager/
 │       ├── PortChecker.cs
 │       ├── ProcessManager.cs
 │       └── ThemeColors.cs
+├── deploy/
+│   └── linux/                    # Linux 兼容部署物料：systemd + Nginx，与 Windows 共用同一份代码
+│       ├── install.sh            # 一键安装：依赖、账号/目录、测试构建、环境文件、数据库迁移、服务注册
+│       ├── nginx.conf            # 站点配置：静态产物 + /api 与 /socket.io 反代（:5173）
+│       ├── obara-task-manager.service
+│       └── obara.env.example     # /etc/obara-task-manager/obara.env 的示例
 ├── docs/
 │   ├── README.md                 # 文档中心：索引 + 按角色阅读路径 + 文档边界 + 一致性自检说明
 │   ├── API.md                    # REST 接口与 Socket.IO 事件全量参考
 │   ├── CHANGELOG.md              # 按提交日期汇总的变更记录（由 git log 生成，不手工维护）
-│   ├── DEPLOYMENT.md             # Windows 部署、环境变量、备份恢复、升级与排障
+│   ├── DEPLOYMENT.md             # Windows / Linux 部署、环境变量、备份恢复、升级与排障
 │   ├── DEVELOPMENT.md            # 开发环境、编码约定、改动 checklist
 │   ├── TOOLS.md                  # 运维诊断工具（backend-report）的用法与报告判读
 │   └── USER-GUIDE.md             # 最终用户逐步操作手册（判定规则、提示语速查）

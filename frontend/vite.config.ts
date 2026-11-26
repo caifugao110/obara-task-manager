@@ -9,9 +9,17 @@ import react from '@vitejs/plugin-react'
 const frontendRoot = fileURLToPath(new URL('.', import.meta.url))
 const workspaceNodeModules = fileURLToPath(new URL('../node_modules', import.meta.url))
 
+// 部署基础路径（base）。两台主机都是根路径部署：
+// - Windows：start.bat 以 `npm run dev` 拉起 Vite dev server（192.168.160.10:5173），恒为 '/'
+// - Linux：nginx 托管构建产物在站点根目录（:5173），构建时也是 '/'
+// base 是构建期常量，会写进产物的每个 script/link 与路由。默认值固定为 '/'，
+// 两台主机构建结果一致；若将来需要子路径部署，用 VITE_BASE=/xxx/ 覆盖，
+// 不要直接改这里的默认值——那会让另一台主机的资源前缀错位、整片 404。
+const base = process.env.VITE_BASE || '/';
+
 export default defineConfig({
   plugins: [react()],
-  base: process.env.NODE_ENV === 'production' ? '/obara-task-manager/' : '/',
+  base,
   build: {
     // 按路由懒加载后页面 chunk 体积普遍偏大，放宽告警阈值避免噪音
     chunkSizeWarningLimit: 1200,

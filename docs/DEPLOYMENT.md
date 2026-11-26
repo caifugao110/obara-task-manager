@@ -1,17 +1,19 @@
-# Windows 部署指南
+# 部署指南（Windows / Linux）
 
-本文档说明 Obara 任务管理系统在 Windows 环境下的启动、部署、备份和排障方式。
+本文档说明 Obara 任务管理系统的部署、运维、备份与排障。**Windows 是主力部署平台**（`start.bat` 一键启动，看门狗 + 假死探针常驻）；同一套代码同时**兼容 Linux**（systemd + nginx，物料在 `deploy/linux/`）。两边共用业务代码、接口、数据库结构与绝大多数环境变量，差异只在三处：后端监听地址、静态文件由谁托管、共享盘怎么访问。
 
 > 其他文档：[README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md) · [API 文档](API.md) · [使用手册](USER-GUIDE.md) · [运维工具说明](TOOLS.md) · [WeKnora 部署指南](../weknora/README.md)
 
 ## 目录
 
+- [平台选择](#平台选择)
 - [环境要求](#环境要求)
 - [一键启动](#一键启动)
 - [部署方式选择](#部署方式选择)
 - [手动启动](#手动启动)
 - [生产运行建议](#生产运行建议)
 - [环境变量](#环境变量)
+- [Linux 兼容部署](#linux-兼容部署)
 - [设计规范知识库（WeKnora）](#设计规范知识库weknora)
 - [数据文件](#数据文件)
 - [权限开关联动](#权限开关联动)
@@ -25,6 +27,22 @@
 - [性能优化建议](#性能优化建议)
 - [数据库维护](#数据库维护)
 
+## 平台选择
+
+| 维度 | Windows（主力） | Linux（兼容） |
+|------|-----------------|---------------|
+| 进程管理 | `start.bat` + `backend-watchdog.bat` + 假死探针 | systemd 单元 `obara-task-manager.service`（`Restart=on-failure`） |
+| 前端托管 | Vite dev server，`http://<host>:5173/` | nginx 托管 `frontend/dist`，`http://<host>:5173/` |
+| 后端监听 | 默认全部网卡 `:5000` | `OBARA_HOST=127.0.0.1`，只允许本机 nginx 反代 |
+| 数据库 | `backend/data.db` | `/var/lib/obara-task-manager/data.db` |
+| 共享盘 | UNC 路径（`\\server\share`），`net use` 建立凭据 | CIFS 挂载到 `/mnt/obara/spec`、`/mnt/obara/schedule` |
+| 前端构建 `base` | `/` | `/`（两边一致，见「构建前端」） |
+| 运维工具 | `tools/backend-report.ps1`、状态监测 | 状态监测 + `journalctl`，PowerShell 脚本不可用 |
+
+选哪边：现场已有 Windows 服务器就继续用 Windows，不要为了 Linux 而换——`start.bat` 的守护链在 Windows 上是现成的。Linux 适用于已有 Linux 服务器、需要与其它服务共用主机、或希望用 systemd/nginx 统一管理的场景。
+
+**Linux 是兼容支持，不是移植分支**：升级时 Windows 与 Linux 拉同一份代码即可，不存在需要单独维护的平台分支。
+
 ## 环境要求
 
 | 软件 | 版本 | 说明 |
@@ -33,6 +51,8 @@
 | Node.js | 22+（推荐 22 LTS） | 安装时勾选加入 PATH；`start.bat` 会强制校验主版本号，低于 22 直接报错退出（better-sqlite3 13、joi 18、pdf-parse 2.4 均要求 Node.js 22+） |
 | npm | 10+ | 随 Node.js 安装 |
 | Git | 较新版本 | 用于人工拉取代码更新；`start.bat` **不会**自动执行 `git pull`（供应链风险，已移除） |
+
+Linux 另需 systemd、Nginx、`cifs-utils`、`python3`，且 Node.js 同样要求 22+；完整清单见 [Linux 兼容部署](#linux-兼容部署)。
 
 ## 一键启动
 
@@ -112,7 +132,8 @@ npm run build
 
 构建产物位于 `frontend/dist/`。
 
-> 注意：生产构建的 `base` 路径为 /obara-task-manager/（配置在 `frontend/vite.config.ts`）。如果前端静态文件部署在网站根目录而非子路径下，请将 `base` 改为 `/` 或按实际路径调整。
+> 注意：前端 `base` 为 `/`（配置在 `frontend/vite.config.ts`）。Windows 由 `start.bat` 以 `npm run dev` 启动（`http://192.168.160.10:5173/`）、Linux 由 nginx 托管构建产物，两台主机都是根路径访问，产物资源前缀一致。
+> `base` 是构建期常量，如需子路径部署可用环境变量 `VITE_BASE=/xxx/` 构建；修改默认值前必须先确认另一台主机的实际访问路径，否则资源前缀错位会导致页面整片 404。
 
 产物由多个 chunk 组成（依赖按 `vendor-react` / `vendor-utils` / `vendor-dnd` / `vendor-socket` / `vendor-icons` 分包，除主页面和登录页外的页面按路由懒加载，详见 README 的「前端加载与构建产物」）。部署时必须完整拷贝 `frontend/dist/assets/` 下的**全部**文件，静态服务器需允许匿名访问该目录并按 `.js` 返回 `application/javascript`；只拷贝入口 `index-*.js` 会导致打开子页面时报 chunk 加载失败。
 
@@ -219,7 +240,7 @@ nssm remove ObaraTaskManager
 
 ### 上线前检查清单
 
-1. `backend/.env` 已存在，`JWT_SECRET` 必须配置（缺失将导致服务无法启动）。
+1. 环境文件已存在且 `JWT_SECRET` 必须配置（缺失将导致服务无法启动）：Windows 为 `backend/.env`，Linux 为 `/etc/obara-task-manager/obara.env`。
 2. `CORS_ORIGIN` 只包含实际允许访问的前端地址。
 3. `backend/data.db` 已存在并已配置超级管理员，或已通过环境变量配置默认管理员账号（首次启动自动创建；未设置 `DEFAULT_ADMIN_PASSWORD` 时随机密码仅在启动控制台显示一次，务必当场记录）。
 4. `backend/data.db` 已完成一次备份（通过 `POST /api/system/maintenance/backup`）。
@@ -230,6 +251,7 @@ nssm remove ObaraTaskManager
 9. 如果使用仕样 PDF 搜索，运行后端的 Windows 用户能访问 `SPEC_SHARE_PATH` 配置的共享目录。
 10. 如果启用「各产品大日程」取值（状态追踪的数量/纳期/已发图），运行后端的 Windows 用户能读取 `PRODUCTION_SCHEDULE_PATH` 指向的 Excel；文件不可读时接口会自动回退 PDF，不报错但表格数据不生效——可在后端日志中搜 `[productionSchedule]` 确认是否读取失败。
 11. 长期无人值守部署确认守护链生效：用 `start.bat` 启动后，`logs/backend-watchdog.log` 应出现 `[probe] health probe started (gen …)`，说明假死探针已就位；若改用 PM2 / Windows 服务，需自行提供「进程未退出但不再响应」的存活探测（见「后端假死」）。
+12. Linux 额外确认：`systemctl is-enabled obara-task-manager` 为 `enabled`；`curl -fsS http://127.0.0.1:5000/api/system/ping` 与 `http://127.0.0.1:5173/api/system/ping` 都返回 `{"ok":true,…}`；需要共享盘的功能已 `mount` 且 `sudo -u obara ls` 可读；`journalctl -u obara-task-manager` 无 `EROFS` / `EACCES`。
 
 ### 健康检查
 
@@ -275,6 +297,8 @@ GET http://localhost:5000/api/system/version    # 需要登录，匿名返回 40
 
 ```env
 PORT=5000
+# 监听地址：留空/不配时监听全部网卡（Windows 默认行为）；Linux 生产建议 127.0.0.1，只让本机 nginx 反代进来
+OBARA_HOST=
 NODE_ENV=production
 JWT_SECRET=your-secret-key-change-in-production-2026
 JWT_EXPIRES_IN=3d
@@ -333,6 +357,7 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
 | `PORT` | `5000` | 后端服务端口 |
+| `OBARA_HOST` | 空（监听全部网卡） | 后端绑定地址。留空时沿用 Node 默认行为（所有网卡），与原 Windows 部署一致；设为 `127.0.0.1` 时只接受本机连接，外部必须经 Nginx 等反向代理访问，避免绕过代理直连 5000。启动日志会打印实际监听地址；**Linux 的 systemd 单元默认配 `127.0.0.1`**，改绑其它地址前先确认防火墙与反代配置 |
 | `NODE_ENV` | `development` | 开发/生产环境，生产环境错误响应不包含堆栈信息 |
 | `JWT_SECRET` | **必填** | JWT 签名密钥，缺失将导致服务无法启动，生产环境**必须**修改为随机字符串 |
 | `JWT_EXPIRES_IN` | `3d` | JWT Token 过期时间（默认 3 天；登出/改密/禁用会通过服务端会话吊销立即失效，与有效期长短解耦） |
@@ -376,6 +401,155 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `MAINTENANCE_MEASURE_TTL_MS` | `60000` | 「数据管理」整块体积测量（库文件 + WAL/SHM + 任务条目 JSON 长度 + `dbstat` + 5 个维护目录 `readdir`）的缓存时长（毫秒，最小 5000）。生产环境合计约 4 秒，全部只用于体积展示，没有业务判定依赖，所以整块缓存、过期后台补算、请求不等待 |
 | `MAINTENANCE_MEASURE_WARMUP_DELAY_MS` | `10000` | 体积测量的启动预热延迟（毫秒，最小 0）。默认值刻意晚于 `DBSTAT_WARMUP_DELAY_MS`（8 秒）：提前跑会因 `dbstat` 缓存未命中而触发一次 3 秒全库扫描，把预热变成「提前占用事件循环」。设为 `0` 关闭预热（仅排查用） |
 | `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；`npm test` 会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
+
+## Linux 兼容部署
+
+Linux 侧的目标是「同一份代码换一种进程与托管方式」，不引入平台分支。部署物料都在 `deploy/linux/`：
+
+| 文件 | 作用 |
+|------|------|
+| `deploy/linux/install.sh` | 一键安装：装依赖、建账号与目录、跑测试与构建、生成环境文件、迁移数据库、写挂载与 systemd/Nginx、健康检查 |
+| `deploy/linux/obara-task-manager.service` | systemd 单元（`User=obara`、`Restart=on-failure`、只允许写三个目录） |
+| `deploy/linux/nginx.conf` | 站点配置：静态文件 + `/api/` 与 `/socket.io/` 反向代理，监听 5173 |
+| `deploy/linux/obara.env.example` | 环境文件示例（真实文件在 `/etc/obara-task-manager/obara.env`） |
+
+### 前置条件与目录约定
+
+| 项 | 约定值 | 说明 |
+|----|--------|------|
+| 操作系统 | Ubuntu / Debian（带 systemd） | 脚本用 `apt-get` 装 `nodejs`/`npm`/`nginx`/`cifs-utils` |
+| Node.js | 22+ | 脚本装完后校验主版本，低于 22 直接失败；发行版源自带的 Node 常常是 18/20，需先用 NodeSource 等源装好 22 |
+| 权限 | root（`sudo`） | 脚本会写 `/etc`、`/var`、`/etc/fstab` |
+| 项目路径 | `/opt/obara/obara-task-manager` | 脚本开头的 `EXPECTED_ROOT` 已固定，换路径必须先改脚本 |
+| 服务账号 | `obara`（系统账号，`nologin`） | 已存在则复用 |
+| 数据库 | `/var/lib/obara-task-manager/data.db` | 目录属主 `obara`，权限 `0750` |
+| 日志 | `/opt/obara/obara-task-manager/logs` | 与 Windows 同一套日志逻辑 |
+| 备份 | `/opt/obara/obara-task-manager/backend/backups` | 定时备份 / 手动备份 / 断网备份都写这里 |
+| 环境文件 | `/etc/obara-task-manager/obara.env` | `root:obara 0640`，含 JWT 密钥 |
+| 共享凭据 | `/etc/obara-task-manager/smb.credentials` | `root:root 0600` |
+| 前端产物 | `/var/www/obara-task-manager` | nginx 站点根目录 |
+| 共享挂载 | `/mnt/obara/spec`、`/mnt/obara/schedule` | 分别对应 `SPEC_SHARE_PATH`、`PRODUCTION_SCHEDULE_PATH` |
+| 访问地址 | `http://<host>:5173/` | 与 Windows 前端同端口，现场书签不用改 |
+
+脚本会检查项目根下必须有 `backend/.env` 与 `backend/data.db`：前者是环境基线，后者是初始数据快照。全新安装时也要先准备一份可用的 `backend/data.db`（例如把 Windows 上用备份接口生成的 `.db` 拷过来），否则脚本在中途直接失败。
+
+### 一键安装
+
+```bash
+cd /opt/obara/obara-task-manager
+sudo bash deploy/linux/install.sh
+```
+
+脚本是**幂等**的：数据库已存在就跳过迁移、`obara.env` 已存在就保留用户改动，重复执行只会刷新代码依赖、前端产物、systemd 与 Nginx 配置。升级也用它，见 [Linux 升级与回滚](#linux-升级与回滚)。
+
+成功时最后一行是部署地址，并伴随两次健康检查通过（`http://127.0.0.1:5000/api/system/ping` 与 `http://127.0.0.1:5173/api/system/ping`）。失败时会打印 `journalctl -u obara-task-manager -n 30` 的尾部并退出。
+
+### 安装脚本做了什么
+
+按执行顺序，便于出问题时定位停在哪一步：
+
+1. **前置校验**：非 root、项目不在 `EXPECTED_ROOT`、缺 `backend/.env` / `backend/data.db` / systemd / nginx 模板、5000 或 5173 被其它进程占用，任一不满足立即失败。
+2. **装依赖**：`apt-get install nodejs npm nginx cifs-utils`，再校验 Node 主版本 ≥ 22。
+3. **建账号与目录**：不存在则创建 `obara` 系统账号；按上表建目录并设权限。
+4. **测试与构建**：以项目属主（脚本中固定为 `gaojian`）执行 `npm ci` → 校验 `better-sqlite3` 能加载 → `npm test` → `eslint --max-warnings 2` → `npm run build`；构建后还会检查 `index.html` 引用的是 `/assets/`，确保 `base` 仍是根路径（防止将来被改成子路径导致整片 404）。
+5. **生成环境文件**（仅当不存在）：从 `backend/.env` 继承非平台相关项，重写 `NODE_ENV`、`OBARA_HOST=127.0.0.1`、`PORT`、`TZ=Asia/Shanghai`、`SQLITE_DB_PATH`、`CORS_ORIGIN`、`SPEC_SHARE_PATH`、`PRODUCTION_SCHEDULE_PATH`，并生成新的 `JWT_SECRET`；随后补 `GIT_CONFIG_*` 三项（见 [版本检查](#版本检查) 的 dubious ownership 说明）。
+6. **生成 SMB 凭据**：从 `backend/.env` 的 `PRODUCTION_SCHEDULE_UNC_USER` / `PRODUCTION_SCHEDULE_UNC_PASSWORD` 取账号密码写入 `smb.credentials`，不回显；缺这两项直接失败。
+7. **迁移数据库**（仅当目标不存在）：`PRAGMA integrity_check` → SQLite 在线备份 API → 目标库再校验一次，权限 `0640`、属主 `obara`。
+8. **写 fstab**：在 `# BEGIN OBARA TASK MANAGER LINUX` 标记块内写两条 CIFS 只读挂载，带 `noauto`（安装时不挂载）。
+9. **装服务与站点**：写 systemd 单元与 nginx 站点、启用并重启，最后做极限 30 秒的健康检查。
+
+### 按现场修改的固定值
+
+脚本是照当前现场（`192.168.160.x` 网段、Ubuntu/Debian、项目属主 `gaojian`）写死的，换机器前先改这几处，否则会装到错误的位置或用错账号：
+
+| 位置 | 固定值 | 改成什么 |
+|------|--------|----------|
+| `install.sh` 顶部 | `EXPECTED_ROOT=/opt/obara/obara-task-manager` | 实际项目路径 |
+| `install.sh` 中 `runuser -u gaojian` | 构建用普通账号 | 本机拥有仓库与 `node_modules` 的账号 |
+| `install.sh` 的 `CORS_ORIGIN` | `http://192.168.160.42:5173` | 实际对外访问地址 |
+| `install.sh` 的 fstab 两行 | `//192.168.160.6/仕样书$`、`//192.168.160.70/各产品大日程` | 实际共享地址；中文共享名可保留，fstab 支持 UTF-8 |
+| `nginx.conf` 的 `listen 5173` | 5173 | 若与 Windows 前端同机冲突才需改，改后 `CORS_ORIGIN` 要同步 |
+
+### 环境文件与 systemd 沙箱
+
+`/etc/obara-task-manager/obara.env` 由 systemd 以 `EnvironmentFile=` 读取，**不是 shell 脚本**：值不要加引号、不支持 `$VAR` 展开，含空格或特殊字符的值容易解析异常。示例见 `deploy/linux/obara.env.example`。
+
+单元文件里有几处直接决定「能不能跑起来」：
+
+```ini
+User=obara
+WorkingDirectory=/opt/obara/obara-task-manager/backend
+EnvironmentFile=/etc/obara-task-manager/obara.env
+ProtectSystem=strict
+ReadWritePaths=/var/lib/obara-task-manager /opt/obara/obara-task-manager/logs /opt/obara/obara-task-manager/backend/backups
+```
+
+- `ProtectSystem=strict` 把整个文件系统按只读挂载，只有 `ReadWritePaths` 列出的三个目录可写。**把 `SQLITE_DB_PATH`、日志目录或备份目录改到这三处之外，会立刻写失败**，日志里表现为 `EROFS` 或 `EACCES`——这不是权限没给足，而是沙箱在拦。
+- `WorkingDirectory` 必须是 `backend/`：数据库默认路径、`backups/`、`logs/` 都按它解析相对路径。
+- `Restart=on-failure` + `RestartSec=5` 提供与 Windows 看门狗等价的「退出即拉起」；但它**不检测假死**，需要「进程活着但不响应」的保护时，用状态监测或外部探活。
+- `NoNewPrivileges`、`ProtectHome`、`PrivateTmp` 保持默认，不要为了省事关掉。
+
+### 反向代理与静态文件
+
+`deploy/linux/nginx.conf` 的三段各有原因：
+
+| 配置 | 为什么 |
+|------|--------|
+| `try_files $uri $uri/ /index.html` | 前端是单页应用，直接刷新 `/tasks` 这类子路由必须回落到 `index.html`，否则 404 |
+| `location /api/` + `proxy_pass http://127.0.0.1:5000` | 前后端同源，浏览器不再跨域；`X-Forwarded-For` / `X-Forwarded-Proto` 透传给后端，登录限流与 IP 黑名单才按真实客户端 IP 判定 |
+| `location /socket.io/` + `Upgrade` / `Connection` | 缺这两个头，WebSocket 握手失败，实时协作要么退化成长轮询要么直接断线 |
+| `client_max_body_size 25m` | 导入 Excel、上传 PDF 等请求体较大；后端自身限制为 20MB，这里留出余量 |
+| `proxy_read_timeout 65s`（API）/ `75s`（Socket） | 导出、WeKnora 问答等长请求需要时间；超时设得太短会在页面上表现为「偶发 504」 |
+
+静态文件由 nginx 直接读 `/var/www/obara-task-manager`，**后端不托管前端**（未挂载 `express.static`）。因此前端更新只需替换该目录内容；只拷入口 `index-*.js`、漏拷 `assets/` 下的 chunk，表现为打开子页面报 chunk 加载失败。
+
+### 共享目录挂载
+
+两条挂载带 `noauto`，安装时不会自动挂，也不会在共享不可达时拖慢开机。授权到位后手动挂载：
+
+```bash
+sudo mount /mnt/obara/spec
+sudo mount /mnt/obara/schedule
+findmnt /mnt/obara/spec /mnt/obara/schedule   # 确认挂载点与选项
+sudo -u obara ls /mnt/obara/spec | head       # 以服务账号验证读权限
+```
+
+- 凭据只有 root 可读（`0600`），`uid=obara,gid=obara` 保证服务账号能读；`ro` 保证只读，`noexec,nosuid,nodev` 降低风险。
+- 挂载卡住不会拖死后端：共享盘读取走子进程并有硬超时，超时计一次失败并可能触发熔断（见 `PRODUCTION_SCHEDULE_WORKER_TIMEOUT_MS` 与 `PRODUCTION_SCHEDULE_BREAKER_*`）。
+- 中文文件名需要 `iocharset=utf8`（已在 fstab 条目里）；共享名含 `$`（如 `仕样书$`）在 fstab 中直接写，不需要转义。
+- 共享服务器不可达时不要反复 `mount`：先 `ping`/`nc -z <host> 445` 确认网络与 SMB 端口。
+
+### Linux 升级与回滚
+
+升级与 Windows 同一套流程，只是换成脚本：
+
+```bash
+cd /opt/obara/obara-task-manager
+sudo git -c safe.directory=/opt/obara/obara-task-manager pull
+sudo bash deploy/linux/install.sh      # 重装依赖、重跑测试与构建、刷新服务配置，保留数据库与环境文件
+sudo systemctl status obara-task-manager
+```
+
+- 升级前先生成一次一致性备份（页面「系统设置」或 `POST /api/system/maintenance/backup`），**不要直接 `cp` 运行中的 `data.db`**。
+- `install.sh` 结尾会重启服务并做健康检查；只想重启后端不必重跑脚本，`sudo systemctl restart obara-task-manager` 即可。
+- 回滚：`git checkout <上一个版本>` → 重跑 `install.sh` → 用升级前备份替换 `/var/lib/obara-task-manager/data.db`（同时删除 `data.db-wal`、`data.db-shm`）→ `chown obara:obara` 后重启。
+- 回滚数据库后前端可能出现「数据比预期旧」，属正常：备份是某个时间点的快照。
+
+### Linux 排障
+
+| 现象 | 先查什么 | 常见原因 |
+|------|----------|----------|
+| 浏览器 502 / 504 | `systemctl status obara-task-manager`、`journalctl -u obara-task-manager -n 50`、`ss -ltnp \| grep 5000` | 后端没起来；`JWT_SECRET` 或 `CORS_ORIGIN` 缺失导致启动即退出；`OBARA_HOST` 绑错地址 |
+| 页面能开、接口全 401/403 | 环境文件里的 `CORS_ORIGIN` 是否包含实际访问地址 | 用 IP 访问但白名单只写了域名（或反之） |
+| 页面白屏、控制台 404 资源 | `ls /var/www/obara-task-manager/assets \| head` | 产物没拷全，或构建时被 `VITE_BASE` 改成了子路径 |
+| 刷新子页面 404 | nginx 是否缺 `try_files … /index.html` | 站点配置被覆盖回默认 |
+| 后端日志 `EROFS` / `EACCES` | `SQLITE_DB_PATH`、日志、备份是否都在 `ReadWritePaths` 内 | 改了路径但没同步沙箱白名单 |
+| 版本一直提示「有更新」、版本号「未知」 | `git -C /opt/obara/obara-task-manager log -1` 是否报 dubious ownership | 服务账号与仓库属主不同，按 [版本检查](#版本检查) 的 `GIT_CONFIG_*` 处理 |
+| 共享读取失败 `EPERM` / `EACCES` | `findmnt` 是否已挂载、`sudo -u obara ls` 是否可读 | 未 `mount`；凭据文件权限或共享授权不对 |
+| 中文文件名乱码 | 挂载选项是否含 `iocharset=utf8` | fstab 条目被手工改过 |
+| 服务反复重启 | `journalctl` 里的退出码与堆栈 | 端口被占、数据库文件属主不是 `obara`、`better-sqlite3` 与 Node 版本不匹配 |
+
+> Linux 上没有 `tools/backend-report.ps1`（PowerShell）。查断开原因用页面「系统设置 → 状态监测」，或 `journalctl -u obara-task-manager --since "2 hours ago"`。
 
 ## 设计规范知识库（WeKnora）
 
@@ -485,6 +659,8 @@ GITEE_REPO_NAME=obara-task-manager
 
 系统使用 **SQLite** 作为数据库，默认文件为 `backend/data.db`。运行时还会生成 `backend/data.db-wal`（WAL 日志）和 `backend/data.db-shm`（共享内存索引），**服务运行期间请勿删除这两个伴随文件**。
 
+Linux 上数据库不在仓库目录里，由 `SQLITE_DB_PATH` 指向 `/var/lib/obara-task-manager/data.db`（目录属主 `obara`），仓库内不再产生 `data.db`；备份目录仍是 `backend/backups`，日志仍是 `logs/`。下文所有「`backend/data.db`」在 Linux 上按该路径理解。
+
 数据库采用 WAL 模式，支持并发读取，写入通过事务持久化，进程崩溃不会损坏数据。
 
 ### 数据集合
@@ -584,6 +760,15 @@ POST /api/system/maintenance/backup
 ```bat
 :: 停止服务后复制
 copy backend\data.db backups\db-before-upgrade-20260705.db
+```
+
+Linux 同理，先停服务再复制，并保持属主不变：
+
+```bash
+sudo systemctl stop obara-task-manager
+sudo install -o obara -g obara -m 0640 /var/lib/obara-task-manager/data.db \
+  /opt/obara/obara-task-manager/backend/backups/db-before-upgrade-20260705.db
+sudo systemctl start obara-task-manager
 ```
 
 > 注意：不要直接复制运行中的 `data.db`，应通过系统的备份 API 生成一致性快照。
@@ -945,6 +1130,8 @@ GET /api/system/version
 - 如果未配置 Gitee 或无法访问 API，`hasUpdate` 返回 `false`，`latestVersion` 返回 `null`
 - API 调用超时时间为 5 秒，超时后自动降级为无更新状态
 - ⚠️ 未安装 Git 或目录不是 Git 仓库时，`currentVersion` 返回「未知」，而版本比较会把「未知」解析成 `0`——**此时只要 Gitee 可访问就会一直提示「有更新」**，不是误报逻辑出错，先确认服务器上有 `git` 命令且 `.git` 目录存在
+- Linux 以专用账号（如 `obara`）运行服务时，如果仓库属主与该账号不同，Git 2.35+ 会报 `detected dubious ownership` 并拒绝执行，同样表现为「未知」。此时无需改仓库属主，在服务的环境文件里声明例外即可：
+  `GIT_CONFIG_COUNT=1`、`GIT_CONFIG_KEY_0=safe.directory`、`GIT_CONFIG_VALUE_0=<项目绝对路径>`
 
 ## 日志查看
 

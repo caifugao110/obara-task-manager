@@ -12,7 +12,7 @@ http://localhost:5000/api
 Authorization: Bearer <token>
 ```
 
-> 其他文档：[文档中心](README.md) · [README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md)（新增接口的约定） · [Windows 部署指南](DEPLOYMENT.md) · [运维工具说明](TOOLS.md)
+> 其他文档：[文档中心](README.md) · [README](../README.md)（功能与使用） · [开发者指南](DEVELOPMENT.md)（新增接口的约定） · [部署指南](DEPLOYMENT.md) · [运维工具说明](TOOLS.md)
 
 > 改完接口请跑 `node tools/docs-check.js api`：它会把 `backend/routes/*.js` 的真实路由与本文件记录的端点做双向比对，漏写或多写都会报出来。
 
@@ -53,7 +53,7 @@ Authorization: Bearer <token>
 - 全部 `/api` 接口启用全局限流：默认每个 IP 15 分钟 3000 次（`OPTIONS` 预检与本机环回请求不计数，可用环境变量 `API_RATE_LIMIT_MAX` 调整），超限返回 HTTP `429`；登录、修改密码另有更严格的独立限流。
 - 超级管理员启用 IP 黑名单后，命中规则的来源 IP 访问任意 `/api` 接口返回 HTTP `403`（`code=IP_BANNED`）；`OPTIONS` 预检与本机回环地址不拦截（详见「IP 黑名单管理」）。
 - 本文中的“管理员”指 `admin` 或 `superadmin`；“仅超级管理员”只允许 `superadmin`。
-- 后端只提供 `/api/*` 接口和 Socket.IO 服务，**不托管前端静态文件**（未挂载 `express.static`），也没有 `/health` 健康检查接口；生产环境前端需独立部署（前端构建基础路径为 `/obara-task-manager/`）。
+- 后端只提供 `/api/*` 接口和 Socket.IO 服务，**不托管前端静态文件**（未挂载 `express.static`），也没有 `/health` 健康检查接口；生产环境前端需独立部署（前端构建基础路径为 `/`，Windows 与 Linux 均为根路径访问；如需子路径部署可用 `VITE_BASE` 覆盖）。
 
 ## 角色
 
@@ -5621,11 +5621,12 @@ socket.emit('task_updated', {
 
 ## 环境变量配置
 
-后端支持以下环境变量，通过 `backend/.env` 文件配置（参考 [backend/.env.example](../backend/.env.example)）：
+后端支持以下环境变量，通过 `backend/.env` 文件配置（参考 [backend/.env.example](../backend/.env.example)）。Linux 兼容部署由 systemd 从 `/etc/obara-task-manager/obara.env` 读取，变量名与含义完全相同，只是文件位置不同（见[部署指南 · Linux 兼容部署](DEPLOYMENT.md#linux-兼容部署)）：
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
 | `PORT` | `5000` | 后端服务端口 |
+| `OBARA_HOST` | 空（监听全部网卡） | 后端绑定地址。留空时沿用 Node 默认行为（所有网卡），与原有 Windows 部署一致；设为 `127.0.0.1` 时只接受本机连接，需由 Nginx 等反向代理转发。Linux 的 systemd 单元默认配 `127.0.0.1` |
 | `NODE_ENV` | `development` | 运行环境（`development` / `production`） |
 | `JWT_SECRET` | **必填** | JWT 签名密钥，缺失将导致服务无法启动，生产环境必须修改为随机字符串 |
 | `JWT_EXPIRES_IN` | `3d` | JWT Token 过期时间（默认 3 天；会话吊销独立于有效期生效） |

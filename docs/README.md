@@ -2,7 +2,7 @@
 
 本目录与仓库根目录的 `README.md` 共同构成全部项目文档。**从这里开始找**：先按角色选一条阅读路径，需要查具体内容时再看下面的清单。
 
-> 全量核对：2026-11-24（`node tools/docs-check.js` 全部通过：链接与锚点、152 个接口、46 个环境变量、9 条前端路由、235 处引用路径均与代码一致）
+> 全量核对：2026-11-26（`node tools/docs-check.js` 全部通过：链接与锚点、152 个接口、47 个环境变量、9 条前端路由、232 处引用路径均与代码一致）
 
 ---
 
@@ -25,9 +25,9 @@
 |------|------|----------|-----------|-------------|
 | [README.md](../README.md) | 约 1.5k 行 | 维护者、想了解全貌的人 | 第一次接触项目；想知道「有什么功能、为什么这么设计」 | 页面/功能/权限/数据结构变化 |
 | [USER-GUIDE.md](USER-GUIDE.md) | 约 1.0k 行 | 设计员、班组长、管理员 | 日常操作；被系统拦下想知道原因 | 用户可感知的操作方式、判定规则、提示语 |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | 约 1.1k 行 | 部署与运维人员 | 装机、升级、备份、故障救火 | 启动脚本、环境变量、备份策略、排障手段 |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | 约 1.35k 行 | 部署与运维人员 | 装机、升级、备份、故障救火；Windows 与 Linux 两条部署路径 | 启动脚本、`deploy/linux/`、环境变量、备份策略、排障手段 |
 | [API.md](API.md) | 约 5.7k 行 | 前后端开发者 | 写或调接口；查权限与错误码 | 接口增删改、Socket 事件与房间、错误码 |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | 约 300 行 | 开发者 | 动手改代码之前 | 代码归属、五类改动的 checklist、编码约定 |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | 约 310 行 | 开发者 | 动手改代码之前 | 代码归属、六类改动的 checklist、编码约定 |
 | [TOOLS.md](TOOLS.md) | 约 320 行 | 运维、排障人员 | 后端断开过、假死过、日志涨满了，要看证据 | 诊断脚本、守护机制、状态监测判读、日志轮转 |
 | [weknora/README.md](../weknora/README.md) | 约 320 行 | 部署与运维人员 | 部署设计规范知识库（Docker） | WeKnora 版本、compose、初始化脚本 |
 | [CHANGELOG.md](CHANGELOG.md) | 约 450 行 | 所有人 | 想知道某天改了什么 | 无需手工维护，由 `git log` 汇总生成 |
@@ -49,13 +49,14 @@
 4. [README · 维护建议](../README.md#维护建议) 与 [DEVELOPMENT · 已知坑位速查](DEVELOPMENT.md#8-已知坑位速查) —— 踩坑前先看一眼
 
 **部署 / 运维**
-1. [Windows 部署指南 · 一键启动](DEPLOYMENT.md#一键启动) —— 第一次装
-2. [Windows 部署指南 · 环境变量](DEPLOYMENT.md#环境变量) —— 按现场调参
-3. [运维工具说明](TOOLS.md) —— 后端断过/假死过怎么取证
-4. [运维工具说明 · 状态监测](TOOLS.md#五状态监测断过没有为什么断) —— 不翻日志，看半年的可用率与每次断开的原因
-5. [运维工具说明 · 日志文件占用与轮转](TOOLS.md#六日志文件占用与轮转) —— `logs/` 涨到几百 MB、文件占用了删不掉
-6. [Windows 部署指南 · 常见问题](DEPLOYMENT.md#常见问题) —— 出问题先在这里找
-7. [WeKnora 部署指南](../weknora/README.md) —— 需要知识库检索与问答时
+1. [部署指南 · 一键启动](DEPLOYMENT.md#一键启动) —— Windows 第一次装
+2. [部署指南 · 环境变量](DEPLOYMENT.md#环境变量) —— 按现场调参
+3. [部署指南 · Linux 兼容部署](DEPLOYMENT.md#linux-兼容部署) —— 在 Linux 服务器上装（systemd + Nginx），含目录约定、沙箱可写目录与升级回滚
+4. [运维工具说明](TOOLS.md) —— 后端断过/假死过怎么取证
+5. [运维工具说明 · 状态监测](TOOLS.md#五状态监测断过没有为什么断) —— 不翻日志，看半年的可用率与每次断开的原因
+6. [运维工具说明 · 日志文件占用与轮转](TOOLS.md#六日志文件占用与轮转) —— `logs/` 涨到几百 MB、文件占用了删不掉
+7. [部署指南 · 常见问题](DEPLOYMENT.md#常见问题) —— 出问题先在这里找（Linux 另见「Linux 排障」）
+8. [WeKnora 部署指南](../weknora/README.md) —— 需要知识库检索与问答时
 
 **新人第 1 天**：README 的[快速开始](../README.md#快速开始) → 跑起来 → [使用手册](USER-GUIDE.md) 走一遍主页面 → 需要动代码时进 [开发者指南](DEVELOPMENT.md)。
 
@@ -95,6 +96,8 @@ node tools/docs-check.js
 | `env` | 后端代码读取的 `process.env.*` 是否都在文档里出现过（`NODE_ENV`、`PORT` 等运行时注入的除外） |
 | `pages` | `frontend/src/App.tsx` 的路由是否都写进 README 的「主要页面」表 |
 | `paths` | 文档里用反引号标注的仓库路径（如 `backend/routes/tasks.js`、`tools/backend-report.ps1`）是否真的存在——文件被改名或删除时能立刻发现 |
+
+`paths` 会跳过**运行时生成或构建产物**路径：`logs/`、`control/Properties/GeneratedVersion.cs`（MSBuild 编译前生成）、`control/bin/`、`weknora/.env`（由 `.env.example` 复制并填 Key）等，这些文件本就不入库，不存在属正常。脚本遍历目录时遇到权限不足的目录（如 `backend/backups` 属主是服务账号）只打印一行 `walk 跳过不可读目录 …`，不会让整份检查失败。
 
 只查某一项：`node tools/docs-check.js links`（可选 `links` / `api` / `env` / `pages` / `paths`），也可以用 `npm run docs:check`。
 

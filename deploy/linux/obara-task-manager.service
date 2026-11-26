@@ -1,0 +1,30 @@
+[Unit]
+Description=Obara Task Manager Backend (Linux)
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/obara-task-manager
+
+[Service]
+Type=simple
+User=obara
+Group=obara
+WorkingDirectory=/opt/obara/obara-task-manager/backend
+EnvironmentFile=/etc/obara-task-manager/obara.env
+ExecStart=/usr/bin/node /opt/obara/obara-task-manager/backend/server.js
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=120
+UMask=0027
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/obara-task-manager /opt/obara/obara-task-manager/logs /opt/obara/obara-task-manager/backend/backups
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=obara-task-manager
+
+[Install]
+WantedBy=multi-user.target

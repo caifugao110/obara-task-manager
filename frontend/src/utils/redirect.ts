@@ -4,13 +4,22 @@
  * 登录（或强制改密）成功后返回原页面。
  */
 
-/** 获取当前页面完整路径（含查询参数与 hash） */
+const basename = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+/** 浏览器完整路径转 Router 内部路径，避免回跳时重复 basename。 */
+const stripBasename = (pathname: string): string => {
+  if (!basename) return pathname;
+  if (pathname === basename) return '/';
+  return pathname.startsWith(`${basename}/`) ? pathname.slice(basename.length) : pathname;
+};
+
+/** 获取当前页面的 Router 内部路径（含查询参数与 hash） */
 export const getCurrentPath = (): string =>
-  window.location.pathname + window.location.search + window.location.hash;
+  stripBasename(window.location.pathname) + window.location.search + window.location.hash;
 
 /** 构造登录页地址，并携带 redirect 回跳参数 */
 export const buildLoginUrl = (target: string = getCurrentPath()): string =>
-  `/login?redirect=${encodeURIComponent(target)}`;
+  `${basename}/login?redirect=${encodeURIComponent(target)}`;
 
 /**
  * 校验回跳地址，仅允许站内绝对路径，防止开放重定向：

@@ -3779,7 +3779,9 @@ const Dashboard = () => {
         
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5">
           <div className="flex shrink-0 items-center space-x-2">
-            <img src="/favicon.ico" alt="Obara" className="w-6 h-6" />
+            {/* 用 base 前缀而非硬编码根路径：Windows 子路径部署（/obara-task-manager/）
+                与 Linux 根路径部署都指向同一份 favicon，避免子路径下图标 404 */}
+            <img src={`${import.meta.env.BASE_URL}favicon.ico`} alt="Obara" className="w-6 h-6" />
             <a
               href="https://caifugao110.github.io/obara-task-manager/"
               target="_blank"

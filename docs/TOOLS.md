@@ -193,11 +193,13 @@ node tools/docs-check.js paths      :: 只查引用的仓库路径
 | `api` | `backend/routes/*.js` 的真实路由 ↔ `docs/API.md` 记录的端点 | **双向**比对：代码里有但文档没写、文档写了但代码里没有，都会报 |
 | `env` | 后端代码读取的 `process.env.*` ↔ 文档全文 | 代码读取但任何文档都没提到的变量即失败；`NODE_ENV`、`PORT`、`USERNAME`、`USERDOMAIN` 属运行时注入，跳过 |
 | `pages` | `frontend/src/App.tsx` 的路由 ↔ `README.md` 的「主要页面」表 | 路由没写进表里即失败 |
-| `paths` | 文档中用反引号标注的仓库路径（`backend/…`、`frontend/…`、`tools/…` 等） ↔ 磁盘实际文件 | 文件不存在即失败；`logs/` 下的运行时日志与示例路径不校验 |
+| `paths` | 文档中用反引号标注的仓库路径（`backend/…`、`frontend/…`、`tools/…` 等） ↔ 磁盘实际文件 | 文件不存在即失败；`logs/`、`control/Properties/GeneratedVersion.cs`、`control/bin/`、`weknora/.env` 等运行时生成或构建产物不校验 |
 
 输出末行是结论，退出码 0 通过、1 有差异，可直接串在提交前检查里。它**查不出**字段含义写错、示例值过期、判定规则描述过时——这些仍要看代码人工确认。
 
 > 改脚本本身时注意：`docs/API.md` 里 `GET /api/settings/*` 这类**通配**写法表示「整个前缀适用」，脚本会跳过；代码块与行内反引号里的 `[text](url)` 是示例，也不会被当成链接。
+>
+> 脚本遍历后端目录时会跳过不可读目录（`EACCES` / `EPERM` / `EBUSY`）：`backend/backups` 属主是服务账号 `obara`，以普通账号跑检查时读不了，会打印 `walk 跳过不可读目录 backend/backups（EACCES）` 并继续。这类行是提示，不是失败。**以普通账号跑时，`backend/backups` 里的文件不会被纳入环境变量与接口扫描**——正好不影响结论，因为那里只有备份数据。
 
 ---
 
@@ -316,5 +318,5 @@ node tools\trim-logs.js --dry-run    :: 只报告会清哪些文件，不动文�
 | 文档 | 内容 |
 |---|---|
 | [文档中心](README.md) | 全部文档的索引与阅读路径 |
-| [Windows 部署指南](DEPLOYMENT.md) | 启动方式、环境变量、备份恢复、故障排查 |
+| [部署指南](DEPLOYMENT.md) | Windows / Linux 启动方式、环境变量、备份恢复、故障排查 |
 | [README](../README.md) | 功能、权限、脚本与维护建议 |
