@@ -158,7 +158,7 @@ getCurrentSocket()?.emit('task_updated', {
 2. **路径分隔与大小写**：Windows 不区分大小写、分隔符是 `\`。拼接路径一律 `path.join()`，比较路径前先 `path.resolve()`；不要写死 `\\` 或 `C:\`。
 3. **共享盘访问**：Windows 走 UNC + `net use`，Linux 走 CIFS 挂载点。读共享仍必须经 `backend/utils/productionScheduleWorker.js` 子进程 + 硬超时，**不要因为 Linux 上「本地挂载应该很快」就在主进程同步读**——挂载卡死同样会占满线程池。
 4. **外部命令**：`net use`、`taskkill`、PowerShell 仅 Windows 可用。需要跨平台时先判断命令是否存在，找不到就跳过并记一条日志，不要让整个请求 500。
-5. **前端 `base`**：两台主机都是根路径 `/`。要改默认值或用 `VITE_BASE` 子路径部署，必须同时确认 Windows 与 Linux 的访问路径，否则资源前缀错位、页面整片 404。
+5. **前端 `base`**：`base` 默认 `/`（`frontend/vite.config.ts` 顶层读 `process.env.VITE_BASE`），是构建期常量，会写进产物里每个资源前缀与路由 basename。两台主机都是根路径访问，不要为了单台机器改默认值；确实要子路径部署时用行内环境变量构建，命令与校验见[部署指南 · 构建前端](DEPLOYMENT.md#构建前端)。两个高频坑：Git Bash 里必须加 `MSYS_NO_PATHCONV=1`（否则以 `/` 开头的值会被 MSYS 转成 `C:/Program Files/...`）；`frontend/.env*` 里写了不生效——Vite 加载 `.env` 在 `vite.config.ts` 执行之后，要支持就得改成 `loadEnv(mode, ...)` 写法。
 6. **同步文档**：`docs/DEPLOYMENT.md` 的「平台选择」与「Linux 兼容部署」、`README.md`「快速开始」；若新增环境变量，按上表同时改 `README.md`、`docs/API.md`、`backend/.env.example`。
 7. **验证两边**：Windows 上 `start.bat` 能起、Linux 上 `deploy/linux/install.sh` 能装完并通过健康检查；只在一端验证过的新增平台分支，不要合并。
 

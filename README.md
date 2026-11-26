@@ -1234,6 +1234,18 @@ obara-task-manager/
 
 ## 前端加载与构建产物
 
+### 部署基础路径
+
+`frontend/vite.config.ts` 的 `base` 默认 `/`，由构建期环境变量 `VITE_BASE` 覆盖。它决定产物里每个资源的 URL 前缀与路由 basename，是**构建期常量**：运行期改环境变量无效，换路径必须重新构建。
+
+Windows 由 Vite dev server 提供页面、Linux 由 nginx 托管 `frontend/dist`，两边都是根路径访问，默认值不需要动。只有把站点挂到子路径（例如 nginx `location /obara-task-manager/`）时才覆盖：
+
+```bash
+VITE_BASE=/obara-task-manager/ npm run build:frontend   # Git Bash 需前置 MSYS_NO_PATHCONV=1
+```
+
+`frontend/.env*` 里写 `VITE_BASE` **不生效**（Vite 加载 `.env` 晚于 `vite.config.ts` 执行，配置顶层读的是 `process.env`）。完整命令（cmd / PowerShell）、三条约束与构建后校验方式见[部署指南 · 构建前端](docs/DEPLOYMENT.md#构建前端)。
+
 ### 路由加载策略
 
 页面按访问频率分为两类，配置在 `frontend/src/App.tsx`：

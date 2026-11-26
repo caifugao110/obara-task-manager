@@ -125,15 +125,58 @@ npm run dev:frontend
 
 ### 构建前端
 
+Windows 与 Linux 的构建命令相同，都在 `frontend/` 下执行：
+
 ```bat
 cd frontend
 npm run build
 ```
 
-构建产物位于 `frontend/dist/`。
+构建产物位于 `frontend/dist/`。该目录不入版本库，是各机器自己的构建结果：部署前必须在本机按当前 `base` 重新构建，不要把另一台机器上的旧产物直接拷过去——旧产物的资源前缀可能与现在的部署路径不符，表现为页面白屏、控制台全是 404。
 
-> 注意：前端 `base` 为 `/`（配置在 `frontend/vite.config.ts`）。Windows 由 `start.bat` 以 `npm run dev` 启动（`http://192.168.160.10:5173/`）、Linux 由 nginx 托管构建产物，两台主机都是根路径访问，产物资源前缀一致。
-> `base` 是构建期常量，如需子路径部署可用环境变量 `VITE_BASE=/xxx/` 构建；修改默认值前必须先确认另一台主机的实际访问路径，否则资源前缀错位会导致页面整片 404。
+#### 部署基础路径
+
+前端 `base` 默认 `/`，来源是 `frontend/vite.config.ts` 里的 `process.env.VITE_BASE || '/'`。它是**构建期常量**：会写进产物里每一处 `<script src>` / `<link href>` 和路由 basename，运行期改环境变量无效，换路径只能重新构建。
+
+当前两台主机都是根路径访问，**不需要设置**：
+
+| 主机 | 前端由谁提供 | 实际 base |
+|------|--------------|-----------|
+| Windows | `start.bat` → `npm run dev`（Vite dev server） | `/` |
+| Linux | nginx 托管 `frontend/dist` | `/` |
+
+只有站点挂到子路径（例如 nginx `location /obara-task-manager/`）时才需要覆盖，**用行内环境变量，不要写进系统环境**：
+
+```bash
+# Linux / macOS（在仓库根目录执行）
+VITE_BASE=/obara-task-manager/ npm run build:frontend
+
+# Windows Git Bash —— 必须关掉 MSYS 的路径转换，否则以 / 开头的值会被改成
+# C:/Program Files/Git/obara-task-manager，产物前缀静默错掉
+MSYS_NO_PATHCONV=1 VITE_BASE=/obara-task-manager/ npm run build:frontend
+
+# Windows cmd
+set "VITE_BASE=/obara-task-manager/" && npm run build:frontend
+
+# PowerShell
+$env:VITE_BASE='/obara-task-manager/'; npm run build:frontend
+```
+
+三条硬约束：
+
+1. **首尾都写斜杠**：`/obara-task-manager/`。缺开头斜杠时 Vite 只打印一条警告并自行补上；缺结尾斜杠时，`index.html` 里的资源引用仍会被正确拼接，但代码里 `${import.meta.env.BASE_URL}xxx` 这类手工拼接（页脚 logo）会粘成 `/obara-task-managerfavicon.ico`，表现为该图标 404。统一带尾斜杠可以避免这类零散问题。
+2. **不能写进 `frontend/.env*`**：Vite 是先执行 `vite.config.ts`、后加载 `.env` 文件，而配置顶层读的是 `process.env`，所以文件里写的值读不到。要支持 `.env` 写法，需把配置改成 `defineConfig(({ mode }) => …)` 并在函数里用 `loadEnv(mode, ...)` 读取。
+3. **不要设成系统级变量**：Vite dev server 也用同一个 `base`，全局设置会让 Windows 上 `start.bat` 拉起的开发服务器也跑到子路径下，`http://<host>:5173/` 直接 404。
+
+构建后校验前缀（`deploy/linux/install.sh` 会做同样的检查，不匹配直接中断安装）：
+
+```bash
+grep -o 'src="[^"]*"' frontend/dist/index.html | head -3
+# 根路径：src="/assets/index-xxxx.js"
+# 子路径：src="/obara-task-manager/assets/index-xxxx.js"
+```
+
+前缀里出现 `C:/Program Files/...` 或 `PortableGit` 字样，说明是在 Git Bash 里构建且没加 `MSYS_NO_PATHCONV=1`；前缀是 `/obara-task-manager` 但缺尾斜杠，按上一条第 1 点补上再重建。
 
 产物由多个 chunk 组成（依赖按 `vendor-react` / `vendor-utils` / `vendor-dnd` / `vendor-socket` / `vendor-icons` 分包，除主页面和登录页外的页面按路由懒加载，详见 README 的「前端加载与构建产物」）。部署时必须完整拷贝 `frontend/dist/assets/` 下的**全部**文件，静态服务器需允许匿名访问该目录并按 `.js` 返回 `application/javascript`；只拷贝入口 `index-*.js` 会导致打开子页面时报 chunk 加载失败。
 
@@ -150,6 +193,8 @@ npm start
 cd frontend
 npm run preview
 ```
+
+预览地址跟随**构建时**的 `base`：根路径构建是 `http://localhost:4173/`，子路径构建则要访问 `http://localhost:4173/obara-task-manager/`，直接开根路径会白屏。`npm run preview` 只用于验收产物，不承担长期运行（它不做 gzip 与缓存头配置）。
 
 长期运行时，建议使用 Windows 服务、任务计划程序或 PM2 等进程管理工具。
 
@@ -401,6 +446,8 @@ LOGIN_IP_RATE_LIMIT_MAX=300
 | `MAINTENANCE_MEASURE_TTL_MS` | `60000` | 「数据管理」整块体积测量（库文件 + WAL/SHM + 任务条目 JSON 长度 + `dbstat` + 5 个维护目录 `readdir`）的缓存时长（毫秒，最小 5000）。生产环境合计约 4 秒，全部只用于体积展示，没有业务判定依赖，所以整块缓存、过期后台补算、请求不等待 |
 | `MAINTENANCE_MEASURE_WARMUP_DELAY_MS` | `10000` | 体积测量的启动预热延迟（毫秒，最小 0）。默认值刻意晚于 `DBSTAT_WARMUP_DELAY_MS`（8 秒）：提前跑会因 `dbstat` 缓存未命中而触发一次 3 秒全库扫描，把预热变成「提前占用事件循环」。设为 `0` 关闭预热（仅排查用） |
 | `SMOKE_DB_PATH` | 空 | 仅冒烟测试读取：优先覆盖 `SQLITE_DB_PATH`，使测试写入数据库副本而非生产库；`npm test` 会自动用 `VACUUM INTO` 生成快照并设置该变量，服务端运行时不读取 |
+
+> 本表只列**后端运行时**变量（Windows 的 `backend/.env`、Linux 的 `/etc/obara-task-manager/obara.env`）。前端构建还有一个 `VITE_BASE`，它不写进任何 `.env`、也不进后端环境，用法见[构建前端 · 部署基础路径](#构建前端)。
 
 ## Linux 兼容部署
 

@@ -53,7 +53,7 @@ Authorization: Bearer <token>
 - 全部 `/api` 接口启用全局限流：默认每个 IP 15 分钟 3000 次（`OPTIONS` 预检与本机环回请求不计数，可用环境变量 `API_RATE_LIMIT_MAX` 调整），超限返回 HTTP `429`；登录、修改密码另有更严格的独立限流。
 - 超级管理员启用 IP 黑名单后，命中规则的来源 IP 访问任意 `/api` 接口返回 HTTP `403`（`code=IP_BANNED`）；`OPTIONS` 预检与本机回环地址不拦截（详见「IP 黑名单管理」）。
 - 本文中的“管理员”指 `admin` 或 `superadmin`；“仅超级管理员”只允许 `superadmin`。
-- 后端只提供 `/api/*` 接口和 Socket.IO 服务，**不托管前端静态文件**（未挂载 `express.static`），也没有 `/health` 健康检查接口；生产环境前端需独立部署（前端构建基础路径为 `/`，Windows 与 Linux 均为根路径访问；如需子路径部署可用 `VITE_BASE` 覆盖）。
+- 后端只提供 `/api/*` 接口和 Socket.IO 服务，**不托管前端静态文件**（未挂载 `express.static`），也没有 `/health` 健康检查接口；生产环境前端需独立部署（前端构建基础路径默认 `/`，Windows 与 Linux 均为根路径访问；子路径部署用 `VITE_BASE` 覆盖，命令见[部署指南 · 构建前端](DEPLOYMENT.md#构建前端)）。
 
 ## 角色
 
