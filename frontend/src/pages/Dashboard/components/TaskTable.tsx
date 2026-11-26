@@ -24,8 +24,11 @@ import type {
  *
  * 抽成 memo 组件后，只要下面这些 props 的引用不变，输入字符时这一整块会被 React 直接跳过：
  * - 数据类：sheetByDesignerId / editingSessions / sortedGroups / designersByGroup / days
- * - 交互态：selectedCell / selectedTasks / taskDropTarget / gunDropTarget / locateFlashKey
+ * - 交互态：selectedCell / selectedTasks / locateFlashKey
  * - 回调：统一走 handlersRef（引用恒定，内容每次渲染刷新），避免内联函数把 memo 打破
+ *
+ * 拖拽落点（gunDropTarget / taskDropTarget）**刻意不在这里的 props 里**：
+ * 它们由 dragHighlight 直接写 DOM 属性、CSS 绘制，否则指针每跨一个边界都会让整表重渲。
  *
  * 注意：不要为了让某个回调「看起来更干净」而把函数直接写进 props——
  * 一旦 props 里出现每次渲染新建的函数/数组/对象，memo 就永久失效，卡顿会回来。
@@ -75,8 +78,6 @@ export type TaskTableProps = {
   editingSessions: Record<string, EditingSession>;
   selectedCell: { designerId: string; date: string } | null;
   selectedTasks: SelectedTask[];
-  taskDropTarget: { designerId: string; date: string; itemId: string | null; duplicate: boolean } | null;
-  gunDropTarget: { designerId: string; date: string; itemId: string; invalid: boolean; isSelf: boolean; noGuns?: boolean; create?: boolean; append?: boolean } | null;
   locateFlashKey: string | null;
   taskColWidth: number;
   dayColWidth: number;
@@ -101,8 +102,6 @@ const TaskTable: React.FC<TaskTableProps> = ({
   editingSessions,
   selectedCell,
   selectedTasks,
-  taskDropTarget,
-  gunDropTarget,
   locateFlashKey,
   taskColWidth,
   dayColWidth,
@@ -237,15 +236,8 @@ const TaskTable: React.FC<TaskTableProps> = ({
                       const isCellSelected = selectedCell?.designerId === d.id && selectedCell?.date === day.fullDate;
                       // 单元格内容一律顶部对齐：本格内容少、同行其他格子更高时，任务行贴着格子上沿排，
                       // 不做垂直居中（居中会让无任务内容的主任务悬在格子中间，与相邻格子的行位置错开）
-                      // 主任务拖拽扫过本单元格时的预插入位置：itemId 命中某条主任务 → 其上方显示标记线；
-                      // itemId 为 null → 最下方显示追加标记线；duplicate 时红色（复制内容重复）
-                      const cellTaskDrop = taskDropTarget && taskDropTarget.designerId === d.id && taskDropTarget.date === day.fullDate ? taskDropTarget : null;
-                      const showAppendMarker = Boolean(cellTaskDrop && cellTaskDrop.itemId === null);
-                      // 枪名拖拽扫过本单元格：整格无主任务 → 整格高亮（松手新建）；
-                      // 已有主任务但指针停在最下方加号上 → 只高亮加号（松手在该格最下面新建）
-                      const gunCreate = gunDropTarget?.create && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate;
-                      const isGunCreateCell = Boolean(gunCreate && !gunDropTarget?.append);
-                      const isGunCreatePlus = Boolean(gunCreate && gunDropTarget?.append);
+                      // 拖拽落点高亮由 dragHighlight 直接改 DOM 属性、CSS 绘制，不再经过这里渲染：
+                      // 落点每跨一个边界就重渲整张表（600+ 单元格、上千个拖拽节点）曾是拖拽卡顿的主因。
                       return (
                         <DroppableCell
                           key={`${d.id}-${day.fullDate}`}
@@ -253,7 +245,7 @@ const TaskTable: React.FC<TaskTableProps> = ({
                           date={day.fullDate}
                           colSpan={2}
                           style={{ minWidth: dayColWidth }}
-                          className={`border border-gray-300 p-0 align-top ${day.isWeekend && items.length === 0 ? 'bg-indigo-50' : ''} min-h-[40px] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}${isGunCreateCell ? ' ring-2 ring-inset ring-emerald-500 bg-emerald-50/50' : ''}`}
+                          className={`border border-gray-300 p-0 align-top ${day.isWeekend && items.length === 0 ? 'bg-indigo-50' : ''} min-h-[40px] relative group/cell task-cell${isCellLocked ? ' task-cell--locked' : ''}`}
                           onClick={(e: React.MouseEvent) => {
                             if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex') && !(e.target as HTMLElement).closest('[data-task-id]')) {
                               h.setSelectedTasks([]);
@@ -296,8 +288,6 @@ const TaskTable: React.FC<TaskTableProps> = ({
                                     onMarkGunColor={h.onMarkGunColor}
                                     selectedTasks={selectedTasks}
                                     metadataTitle={buildTaskMetadataTitle(item)}
-                                    gunDropTarget={gunDropTarget && !gunDropTarget.isSelf && gunDropTarget.designerId === d.id && gunDropTarget.date === day.fullDate && gunDropTarget.itemId === item.id ? (gunDropTarget.invalid ? 'invalid' : 'valid') : null}
-                                    taskInsertMarker={cellTaskDrop && cellTaskDrop.itemId === item.id ? (cellTaskDrop.duplicate ? 'invalid' : 'valid') : null}
                                     editingMarkSession={cellSessions.find(s => s.userId !== user?.id && s.itemId === item.id && (canViewEditingUser || s.mode === 'colorMark')) || null}
                                     // 刚安排好的任务定位后闪一圈高亮（2.8s 后自动清除）
                                     locateFlash={locateFlashKey === `${d.id}|${day.fullDate}|${item.id}`}
@@ -307,30 +297,18 @@ const TaskTable: React.FC<TaskTableProps> = ({
                                   />
                                 );
                               })}
-                              {/* 主任务拖拽扫过本单元格但未命中任何主任务：最下方显示追加位置标记线 */}
-                              {showAppendMarker && (
-                                <div
-                                  className="pointer-events-none"
-                                  style={{
-                                    height: 4,
-                                    margin: '0 2px',
-                                    borderRadius: 2,
-                                    backgroundColor: cellTaskDrop?.duplicate ? '#ef4444' : '#16a34a',
-                                    boxShadow: cellTaskDrop?.duplicate
-                                      ? '0 0 0 1px rgba(239,68,68,0.55), 0 1px 4px rgba(239,68,68,0.5)'
-                                      : '0 0 0 1px rgba(22,163,74,0.55), 0 1px 4px rgba(22,163,74,0.5)',
-                                  }}
-                                />
-                              )}
+                              {/* 主任务拖拽追加到本单元格最下方的标记线由 dragHighlight 的属性 + CSS 绘制 */}
                               {/* 加号区：默认隐藏，仅当指针停在本格空白处时显形（见 index.css 的 .task-cell-plus 规则）；
                                   指针停在已有任务行上时不显示。data-cell-plus 供枪名拖拽命中判定：
                                   拖到加号上松手 → 按源主任务名称在本格最下面新建主任务 */}
                               {canEditTasks && (
                                 // 单击 → 选中该格等待 Ctrl+V 粘贴（加号常亮）；双击 → 直接新增任务。
                                 // 加号的 title 固定不变：随选中状态改动 title 会让浏览器反复重建悬浮提示，看起来像加号在闪。
+                                // outline-none：这个 div 带 tabIndex，鼠标点一下再敲空格时浏览器会画一圈默认焦点框
+                                // （深色方框，横跨整格，很突兀），这里关掉它；键盘聚焦改用下方「空格×2」提示来表达状态。
                                 <div
                                   data-cell-plus="1"
-                                  className={`task-cell-plus min-h-[24px] flex items-start justify-center pt-[3px] rounded transition-colors ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer'}${isCellSelected ? ' task-cell-plus--selected' : ''}${isGunCreatePlus ? ' ring-2 ring-inset ring-emerald-500 !opacity-100 bg-emerald-50' : ''}`}
+                                  className={`task-cell-plus group/plus min-h-[24px] flex items-start justify-center gap-1 pt-[3px] rounded transition-colors outline-none focus:outline-none focus-visible:outline-none ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer'}${isCellSelected ? ' task-cell-plus--selected' : ''}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     // 双击「+」时浏览器先派发两次 click 再派发 dblclick。
@@ -367,15 +345,21 @@ const TaskTable: React.FC<TaskTableProps> = ({
                                   <span
                                     className={`inline-flex items-center justify-center h-[18px] w-[18px] rounded-full ring-1 shadow-sm transition-colors ${isCellLocked
                                       ? 'bg-gray-100 text-gray-400 ring-gray-300'
-                                      : isGunCreatePlus
-                                        ? 'bg-emerald-600 text-white ring-emerald-700 shadow-md'
-                                        : isCellSelected
-                                          ? 'bg-blue-600 text-white ring-blue-700 shadow-md'
-                                          : 'bg-blue-100 text-blue-600 ring-blue-400 hover:bg-blue-600 hover:text-white hover:ring-blue-700 hover:shadow-md'
+                                      : isCellSelected
+                                        ? 'bg-blue-600 text-white ring-blue-700 shadow-md'
+                                        : 'bg-blue-100 text-blue-600 ring-blue-400 hover:bg-blue-600 hover:text-white hover:ring-blue-700 hover:shadow-md'
                                       }`}
                                   >
                                     <Plus size={12} strokeWidth={3.5} />
                                   </span>
+                                  {/* 键盘聚焦到加号时（Tab 或点一下再敲空格）才显形的快捷键提示：
+                                      取代原来那圈浏览器默认焦点框，顺带告诉用户这里支持「连按两次空格」新增。
+                                      被他人锁定的格子不提示（此时双击只会弹「正在编辑」提示） */}
+                                  {!isCellLocked && (
+                                    <span className="pointer-events-none hidden group-focus-visible/plus:inline-flex items-center h-[16px] px-1 mt-[1px] rounded border border-blue-300 bg-blue-50 text-[10px] font-bold leading-none text-blue-700 whitespace-nowrap select-none">
+                                      连按空格×2 新增
+                                    </span>
+                                  )}
                                 </div>
                               )}
                               {/* 整格红色罩层仅保留给旧版整格会话；主任务级会话在对应任务行内显示标记 */}

@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { authMiddleware, superAdminMiddleware, adminMiddleware } = require('../middleware/auth');
 const { syncAllSocketRooms } = require('../utils/socketRooms');
+const { normalizeSystemSettings } = require('./system');
 const Joi = require('joi');
 const asyncHandler = require('express-async-handler');
 const weknora = require('../utils/weknora');
@@ -194,6 +195,28 @@ router.put('/system-settings', updateAccessSettings('systemSettings'));
 
 router.get('/gun-ledger', authMiddleware, getAccessSettings('gunLedger'));
 router.put('/gun-ledger', updateAccessSettings('gunLedger'));
+
+/* ==================== 首屏设置聚合 ====================
+ * 主页面启动时需要「系统设置 + 6 个页面访问权限」。原来前端并发发 7 个请求，
+ * HTTP/1.1 下同域名并发上限 6，第 7 个还要排队；每条请求又各自 readDb() 一次。
+ * 这里用同一次 readDb() 一次性返回，往返从 7 次降到 1 次。
+ * 只做读聚合，各字段的默认值与归一化逻辑与上面单独接口完全一致。
+ */
+router.get('/bootstrap', authMiddleware, asyncHandler(async (req, res) => {
+  const data = db.readDb();
+  const accessOf = (key) => (key === 'statusTracking'
+    ? normalizeStatusTrackingSettings(data.settings?.[key])
+    : normalizeAccessSettingsForKey(key, data.settings?.[key]));
+  res.json({
+    system: normalizeSystemSettings(data.settings?.system),
+    leaderboard: accessOf('leaderboard'),
+    workHours: accessOf('workHours'),
+    statusTracking: accessOf('statusTracking'),
+    systemSettings: accessOf('systemSettings'),
+    designStandards: accessOf('designStandards'),
+    gunLedger: accessOf('gunLedger')
+  });
+}));
 
 router.get('/workday-overrides', authMiddleware, asyncHandler(async (req, res) => {
   const data = db.readDb();

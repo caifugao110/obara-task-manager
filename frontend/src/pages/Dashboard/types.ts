@@ -96,9 +96,6 @@ export type BatchReplaceMatch = {
 
 export type SelectedTask = { itemId: string; designerId: string; date: string };
 
-// 枪名拖拽时目标主任务的预选中状态：'valid' 可放置（绿），'invalid' 存在同名枪名（红）
-export type GunDropTargetState = 'valid' | 'invalid' | null;
-
 export interface Toast {
   message: string;
   type: 'success' | 'error';

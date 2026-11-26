@@ -1,7 +1,7 @@
 import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { RefreshCw, ChevronUp, ChevronDown, Trash2 } from 'lucide-react';
-import type { EditingSession, GunDropTargetState, SelectedTask, TaskItem } from '../types';
+import type { EditingSession, SelectedTask, TaskItem } from '../types';
 import { hasStoredUserMarkColor, isWhiteTaskColor, taskSelectionKey } from '../utils';
 import { getLeaveRowColors, getTaskDisplayColors } from '../../../utils/taskColors';
 import { useSystemSettings } from '../../../context/SystemSettingsContext';
@@ -16,7 +16,7 @@ const formatHoursCell = (value: number | string | null | undefined) => {
   return Number.isFinite(numeric) && numeric > 0 ? value : '';
 };
 
-const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, taskColWidth = 288, gunDropTarget = null, taskInsertMarker = null, editingMarkSession = null, showTopSeparator = false, locateFlash = false }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, taskColWidth?: number, gunDropTarget?: GunDropTargetState, taskInsertMarker?: 'valid' | 'invalid' | null, editingMarkSession?: EditingSession | null, showTopSeparator?: boolean, locateFlash?: boolean }) => {
+const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp, canMoveDown, onTaskClick, onDeleteGun, onMoveGun, onMoveTask, onDeleteTask, onMarkColor, onMarkGunColor, selectedTasks, onSelectTask, metadataTitle, taskColWidth = 288, editingMarkSession = null, showTopSeparator = false, locateFlash = false }: { item: TaskItem, designerId: string, date: string, isAdmin: boolean, canMarkColor: boolean, canMoveUp: boolean, canMoveDown: boolean, onTaskClick: (item: TaskItem, designerId: string, date: string, type: 'task' | 'hours' | 'gun' | 'gunHours', gunIndex?: number) => void, onDeleteGun: (item: TaskItem, designerId: string, date: string, gunIndex: number) => void, onMoveGun: (item: TaskItem, designerId: string, date: string, gunIndex: number, direction: 'up' | 'down') => void, onMoveTask: (item: TaskItem, designerId: string, date: string, direction: 'up' | 'down') => void, onDeleteTask: (item: TaskItem, designerId: string, date: string) => void, onMarkColor: (item: TaskItem, designerId: string, date: string, action: 'white' | 'restore') => void, onMarkGunColor: (item: TaskItem, designerId: string, date: string, gunIndex: number, action: 'white' | 'restore') => void, selectedTasks: SelectedTask[], onSelectTask: (itemId: string, designerId: string, date: string, append: boolean) => void, metadataTitle: string, taskColWidth?: number, editingMarkSession?: EditingSession | null, showTopSeparator?: boolean, locateFlash?: boolean }) => {
   const { settings } = useSystemSettings();
   const currentSelection = { itemId: item.id, designerId, date };
   const isSelected = selectedTasks.some(selection => taskSelectionKey(selection) === taskSelectionKey(currentSelection));
@@ -190,35 +190,8 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
           }}
         />
       )}
-      {/* 枪名拖拽路径扫过时的预选中高亮：整条主任务描边变色（绿=可放置，红=重复不可放置） */}
-      {gunDropTarget && (
-        <div
-          className="absolute inset-0 z-20 pointer-events-none"
-          style={{
-            border: `2px solid ${gunDropTarget === 'invalid' ? '#ef4444' : '#16a34a'}`,
-            borderRadius: 3,
-            backgroundColor: gunDropTarget === 'invalid' ? 'rgba(239,68,68,0.16)' : 'rgba(22,163,74,0.14)',
-            boxShadow: gunDropTarget === 'invalid'
-              ? '0 0 0 1px rgba(239,68,68,0.45)'
-              : '0 0 0 1px rgba(22,163,74,0.45)',
-          }}
-        />
-      )}
-      {/* 主任务拖拽路径扫过时的预插入标记：顶部粗线表示将插入到该主任务上方（绿=可放置，红=复制内容重复） */}
-      {taskInsertMarker && (
-        <div
-          className="absolute left-0 right-0 z-20 pointer-events-none"
-          style={{
-            top: -2,
-            height: 4,
-            borderRadius: 2,
-            backgroundColor: taskInsertMarker === 'invalid' ? '#ef4444' : '#16a34a',
-            boxShadow: taskInsertMarker === 'invalid'
-              ? '0 0 0 1px rgba(239,68,68,0.55), 0 1px 4px rgba(239,68,68,0.5)'
-              : '0 0 0 1px rgba(22,163,74,0.55), 0 1px 4px rgba(22,163,74,0.5)',
-          }}
-        />
-      )}
+      {/* 枪名拖拽 / 主任务拖拽的落点高亮由 dragHighlight 直接写 data-* 属性 + index.css 绘制，
+          不再作为 props 参与渲染（避免落点每变化一次就把整张表重渲一遍） */}
       {/* Main Task Row */}
       <div
         className={`relative pl-2 pr-1.5 py-1.5 min-h-[28px] flex items-center break-all leading-relaxed text-[11px] font-medium hover:bg-blue-50/50 transition cursor-pointer ${isLeaveType ? 'border-r border-gray-300' : 'border-r border-gray-200'}`}

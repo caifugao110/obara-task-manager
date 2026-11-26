@@ -132,7 +132,7 @@ const TASK_COL = 288;
 const HOURS_COL = 48;
 
 /**
- * 主页面底部状态栏：左侧状态点 + 四个快捷胶囊 + 月度统计，
+ * 主页面底部状态栏：左侧状态点 + 六个快捷胶囊 + 月度统计，
  * 右侧上次登录 / IP / 浏览器 + 操作说明 + 缩放指示器 + 全屏。
  */
 function DashboardFooter() {
@@ -143,12 +143,14 @@ function DashboardFooter() {
           <span className="h-2 w-2 rounded-full bg-green-400" />
           <Bar className="h-2.5 w-7" />
         </div>
-        {/* 仕样自愈 / 快速取号 / 为今日取号安排确认图 / 查找 */}
+        {/* 仕样自愈 / 快速取号 / 为今日取号安排确认图 / 快速安排修改 / 查找 / 复制任务为表格 */}
         {[
           ['border-emerald-300 bg-white/70', 72],
           ['border-amber-300 bg-white/70', 72],
           ['border-violet-300 bg-white/70', 140],
+          ['border-rose-300 bg-white/70', 100],
           ['border-sky-300 bg-white/70', 52],
+          ['border-slate-300 bg-white/70', 120],
         ].map(([cls, w], i) => (
           <span key={i} className={`h-5 rounded-full border ${cls}`} style={{ width: w }} />
         ))}

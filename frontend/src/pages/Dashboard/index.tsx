@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { axiosInstance } from '../../services/api';
 import { isAxiosError } from 'axios';
 import type { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useSystemSettings } from '../../context/SystemSettingsContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Check, ShieldCheck, Trash2, FileSpreadsheet, ChevronDown, ChevronUp, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap, Wand2, Search, Loader2, Hash, CalendarDays } from 'lucide-react';
+import { UserCog, ChevronLeft, ChevronRight, AlertCircle, CheckCircle, Check, ShieldCheck, Trash2, FileSpreadsheet, ChevronDown, X, GripVertical, Clock, Settings, BookOpen, ClipboardList, Crosshair, Lock, Eye, EyeOff, Maximize2, Minimize2, HelpCircle, Keyboard, Move, MousePointerClick, Hand, Copy, Zap, Wand2, Wrench, Search, Loader2, Hash, CalendarDays } from 'lucide-react';
 import { format, getDaysInMonth, startOfMonth, addDays, isWeekend } from 'date-fns';
 import { useDebounce } from '../../utils/debounce';
 import { acquireSocket } from '../../utils/socketClient';
@@ -33,9 +33,11 @@ import {
 } from '@dnd-kit/sortable';
 import DashboardBoard, { type DashboardBoardHandlers } from './components/DashboardBoard';
 import type { TaskTableHandlers } from './components/TaskTable';
-import QuickConfirmModifyModal from './components/QuickConfirmModifyModal';
-import SpecSelfHealModal from './components/SpecSelfHealModal';
-import QuickGunTakeModal from '../../components/QuickGunTakeModal';
+// 三个弹窗只在用户交互后才出现：改为懒加载后，它们连同内部依赖不再进入首屏主 chunk，
+// 主页面首次可交互更快；普通用户（不满足 isAdmin / canTakeGunNumber）根本不会加载这些 chunk。
+const QuickConfirmModifyModal = lazy(() => import('./components/QuickConfirmModifyModal'));
+const SpecSelfHealModal = lazy(() => import('./components/SpecSelfHealModal'));
+const QuickGunTakeModal = lazy(() => import('../../components/QuickGunTakeModal'));
 import LogoutButton from '../../components/LogoutButton';
 import { useEditingSessions } from './hooks/useEditingSessions';
 import { useModalDrag } from '../../hooks/useModalDrag';
@@ -252,6 +254,10 @@ const FIXED_COL_WIDTH = 96;
 // 下限只在极窄窗口（< 1350px）才碰到，此时 4 天已放不下，宁可保持可读宽度、由横向滚动条补齐。
 const MIN_TASK_COL_WIDTH = 240;
 const DEFAULT_TASK_COL_WIDTH = 288;
+
+// 单元格查不到任务时统一返回同一个空数组：避免每次调用都新建 []，
+// 也让「无任务」的引用保持稳定（调用方只读，不会修改它）
+const EMPTY_ITEMS: TaskItem[] = [];
 
 const Dashboard = () => {
   const { user, token, login } = useAuth();
@@ -636,6 +642,12 @@ const Dashboard = () => {
   // 只读用户的延迟全量刷新：合并窗口计时器 + 页面在后台期间挂起的刷新标记
   const deferredRefreshTimerRef = useRef<number | null>(null);
   const pendingFullRefreshRef = useRef(false);
+  // 拖拽期间收到的 socket 刷新请求先挂起，松手后补刷一次：
+  // 拖拽中立即重拉会触发整表重渲，与拖拽自身的更新叠加，表现为明显掉帧。
+  const pendingRefreshAfterDragRef = useRef(false);
+  // 拖拽状态走 ref 供 socket 监听读取：监听所在 effect 不能把 isDragging 放进依赖，
+  // 否则每次起拖/落拖都会解绑重绑 socket 事件。
+  const isDraggingRef = useRef(false);
   const isOfflineModeRef = useRef(isOfflineMode);
 
   useEffect(() => {
@@ -2446,25 +2458,23 @@ const Dashboard = () => {
   }, [fetchSheets, fetchWorkdayOverrides, token, loadSheetsFromLocalStorage]);
 
   useEffect(() => {
-    Promise.all([
-      axiosInstance.get('/system/settings'),
-      axiosInstance.get('/settings/leaderboard'),
-      axiosInstance.get('/settings/work-hours'),
-      axiosInstance.get('/settings/status-tracking'),
-      axiosInstance.get('/settings/system-settings'),
-      axiosInstance.get('/settings/design-standards'),
-      axiosInstance.get('/settings/gun-ledger')
-    ])
-      .then(([systemRes, leaderboardRes, workHoursRes, statusTrackingRes, systemSettingsRes, designStandardsRes, gunLedgerRes]) => {
-        setAllowUserDesignPlanColorMark(systemRes.data.allowUserDesignPlanColorMark ?? systemRes.data.allowUserEditOwnTaskColor ?? true);
-        setAllowUserChangePassword(systemRes.data.allowUserChangePassword === true);
-        setLeaderboardAccess(leaderboardRes.data || defaultAccessSettings);
-        setWorkHoursAccess(workHoursRes.data || defaultAccessSettings);
-        setStatusTrackingAccess(statusTrackingRes.data || defaultAccessSettings);
-        setSystemSettingsAccess(systemSettingsRes.data || defaultAccessSettings);
-        setDesignStandardsAccess(designStandardsRes.data || defaultAccessSettings);
-        setGunLedgerAccess(gunLedgerRes.data || defaultAccessSettings);
+    // 首屏设置一次取回：原来这里并发发 7 个请求（system/settings + 6 个页面访问权限），
+    // HTTP/1.1 下同域名并发上限是 6，第 7 个还要排队，弱网/跨网访问时首屏明显被拖慢。
+    // 后端 /settings/bootstrap 用同一份 settings 数据一次返回，往返从 7 次降到 1 次。
+    axiosInstance.get('/settings/bootstrap')
+      .then(res => {
+        const data = res.data || {};
+        const system = data.system || {};
+        setAllowUserDesignPlanColorMark(system.allowUserDesignPlanColorMark ?? system.allowUserEditOwnTaskColor ?? true);
+        setAllowUserChangePassword(system.allowUserChangePassword === true);
+        setLeaderboardAccess(data.leaderboard || defaultAccessSettings);
+        setWorkHoursAccess(data.workHours || defaultAccessSettings);
+        setStatusTrackingAccess(data.statusTracking || defaultAccessSettings);
+        setSystemSettingsAccess(data.systemSettings || defaultAccessSettings);
+        setDesignStandardsAccess(data.designStandards || defaultAccessSettings);
+        setGunLedgerAccess(data.gunLedger || defaultAccessSettings);
       })
+      .catch(() => {})
       .finally(() => setSystemSettingsLoaded(true));
   }, [user]);
 
@@ -2496,6 +2506,11 @@ const Dashboard = () => {
         // 无范围信息（批量操作 / 工作日设置变更 / 数据维护）：需要全量刷新。
         // 只读用户占在线人数的大部分且不需要亚秒级实时性，合并到 3 秒刷新一次；
         // 页面在后台时直接跳过，切回前台再补刷一次。
+        // 正在拖拽时先挂起：立即重拉会整表重渲，和拖拽叠加成明显卡顿；松手后由上方 effect 补刷。
+        if (isDraggingRef.current) {
+          pendingRefreshAfterDragRef.current = true;
+          return;
+        }
         if (!canEditTasksRef.current) {
           if (document.visibilityState === 'hidden') {
             pendingFullRefreshRef.current = true;
@@ -2767,24 +2782,30 @@ const Dashboard = () => {
     return map;
   }, [sheets]);
 
-  const getItems = (designerId: string, date: string) => {
-    const sheet = sheetByDesignerId[designerId];
-    const items = sheet?.days?.[date];
-    const validItems = Array.isArray(items) ? items.filter(item => {
-      if (item.leaveType) return true;
-      const taskName = (item.taskName || '').trim();
-      const gunsEmpty = !item.guns || item.guns.length === 0 || item.guns.every((g: any) => !g.name || g.name.trim() === '未命名');
-      if (!taskName && gunsEmpty) return false;
-      return true;
-    }) : [];
-    return validItems;
-  };
+  // 单元格任务列表预索引：getItems / getAllItems 在拖拽的每次 pointermove 里都会被调用
+  // （落点查重、能否新建主任务）。原先每次现 filter 一遍并新建数组，现在随 sheets 变化
+  // 构建一次、之后直接复用同一引用，O(1) 命中。
+  const itemsIndex = useMemo(() => {
+    const all = new Map<string, TaskItem[]>();
+    const visible = new Map<string, TaskItem[]>();
+    for (const sheet of sheets) {
+      const days = sheet?.days || {};
+      for (const [date, rawItems] of Object.entries(days)) {
+        const key = `${sheet.designerId}|${date}`;
+        const list = Array.isArray(rawItems) ? (rawItems as TaskItem[]) : [];
+        all.set(key, list);
+        visible.set(key, list.filter(isMeaningfulTask));
+      }
+    }
+    return { all, visible };
+  }, [sheets]);
+
+  const getItems = (designerId: string, date: string) =>
+    itemsIndex.visible.get(`${designerId}|${date}`) || EMPTY_ITEMS;
 
   // 获取所有任务（包括空任务），用于编辑模态框
-  const getAllItems = (designerId: string, date: string) => {
-    const sheet = sheetByDesignerId[designerId];
-    return Array.isArray(sheet?.days?.[date]) ? sheet.days[date] : [];
-  };
+  const getAllItems = (designerId: string, date: string) =>
+    itemsIndex.all.get(`${designerId}|${date}`) || EMPTY_ITEMS;
 
   function getSelectedTaskPayloads(fallback: { item: TaskItem; designerId: string; date: string }) {
     const fallbackSelection = { itemId: fallback.item.id, designerId: fallback.designerId, date: fallback.date };
@@ -2816,6 +2837,7 @@ const Dashboard = () => {
     setActiveGun,
     gunDropTarget,
     taskDropTarget,
+    isDragging,
     setIsDragging,
     setIsOverDelete,
   } = useGunDragDrop({
@@ -2864,6 +2886,16 @@ const Dashboard = () => {
   const gunDropCreateCell = Boolean(gunDropTarget?.create);
   const gunDropCreateAppend = Boolean(gunDropTarget?.create && gunDropTarget?.append);
   const taskDropDuplicate = Boolean(taskDropTarget?.duplicate);
+
+  // 同步拖拽状态到 ref，并在松手后补上被挂起的 socket 刷新
+  useEffect(() => {
+    isDraggingRef.current = isDragging;
+    if (isDragging) return;
+    if (!pendingRefreshAfterDragRef.current) return;
+    pendingRefreshAfterDragRef.current = false;
+    fetchSheets();
+    fetchWorkdayOverrides();
+  }, [isDragging, fetchSheets, fetchWorkdayOverrides]);
 
   useEffect(() => {
     if (!isOfflineMode) return;
@@ -3069,12 +3101,6 @@ const Dashboard = () => {
 
       return sum + getTaskHours(it);
     }, 0);
-  };
-
-  const calculateMonthlyTotal = (designerId: string) => {
-    const sheet = sheetByDesignerId[designerId];
-    if (!sheet?.days) return 0;
-    return Object.entries(sheet.days).reduce((sum, [date]) => sum + calculateDailyTotal(designerId, date), 0);
   };
 
   const monthlyFooterStats = useMemo(() => {
@@ -3745,6 +3771,10 @@ const Dashboard = () => {
   // 拖拽回调统一刷新到同一个 ref 对象：DashboardBoard 被 memo 跳过渲染时，
   // 它手里握着的仍是这个对象，字段已经是最新闭包，不会拿到过期实现。
   const handleDragCancel = () => {
+    // 按 ESC / 浏览器取消拖拽时只走 onDragCancel，不会触发 onDragEnd，
+    // 这里必须自己复位 isDragging：否则 isDraggingRef 一直是 true，
+    // socket 全量刷新会被永久挂起（要等下一次拖拽结束才恢复实时数据）。
+    setIsDragging(false);
     setGunDropTargetState(null);
     setTaskDropTargetState(null);
     taskDragCtrlRef.current = false;
@@ -3989,8 +4019,6 @@ const Dashboard = () => {
         editingSessions={editingSessions}
         selectedCell={selectedCell}
         selectedTasks={selectedTasks}
-        taskDropTarget={taskDropTarget}
-        gunDropTarget={gunDropTarget}
         locateFlashKey={locateFlashKey}
         canEditTasks={canEditTasks}
         canViewEditingUser={canViewEditingUser}
@@ -4066,6 +4094,23 @@ const Dashboard = () => {
               <span>为今日取号安排确认图</span>
             </button>
           )}
+          {/* 快速安排修改：与「连按两次 Shift」完全同源，只是多一个鼠标入口（仅管理员，离线时与快捷键一并停用） */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                // 与 Shift×2 保持同一口径：已有其它弹窗打开时不叠加
+                if (quickModifyOpen || modalOpen || helpGuideOpen || batchReplaceOpen || changePasswordOpen) return;
+                setQuickModifyOpen(true);
+              }}
+              disabled={isOfflineMode}
+              title={isOfflineMode ? '当前离线，快速安排修改不可用' : '添加确认图修改（等同主页面连按两次 Shift）：搜枪名 → 选设计人员/日期 → 直接建任务并自动定位'}
+              className={footerActionChipClass('border-rose-300 bg-white/70 text-rose-700 cursor-pointer hover:bg-rose-600 hover:border-rose-600 hover:text-white focus:ring-2 focus:ring-rose-300/60')}
+            >
+              <Wrench size={11} strokeWidth={2.6} />
+              <span>快速安排修改</span>
+            </button>
+          )}
           {/* 查找：原「批量操作」入口，只保留查找与定位（所有登录用户可用） */}
           <button
             type="button"
@@ -4088,7 +4133,7 @@ const Dashboard = () => {
                   ? '当前离线，复制任务表格不可用'
                   : '把选中的主任务（含全部枪名）复制成表格，可直接粘贴到别处（等同连按两次 C，仅支持同一人同一天）'
               }
-              className={footerActionChipClass('border-indigo-300 bg-white/70 text-indigo-700 cursor-pointer hover:bg-indigo-600 hover:border-indigo-600 hover:text-white focus:ring-2 focus:ring-indigo-300/60')}
+              className={footerActionChipClass('border-slate-300 bg-white/70 text-slate-700 cursor-pointer hover:bg-slate-700 hover:border-slate-700 hover:text-white focus:ring-2 focus:ring-slate-300/60')}
             >
               <FileSpreadsheet size={11} strokeWidth={2.6} />
               <span>复制任务为表格</span>
@@ -4156,45 +4201,51 @@ const Dashboard = () => {
       </footer>
 
       {isAdmin && (
-        <QuickConfirmModifyModal
-          open={quickModifyOpen}
-          onClose={() => setQuickModifyOpen(false)}
-          designers={designers}
-          gunLocations={gunLocations}
-          addToast={addToast}
-          onCreated={handleQuickModifyCreated}
-        />
+        <Suspense fallback={null}>
+          <QuickConfirmModifyModal
+            open={quickModifyOpen}
+            onClose={() => setQuickModifyOpen(false)}
+            designers={designers}
+            gunLocations={gunLocations}
+            addToast={addToast}
+            onCreated={handleQuickModifyCreated}
+          />
+        </Suspense>
       )}
 
       {canTakeGunNumber && (
-        <QuickGunTakeModal
-          open={quickGunTakeOpen}
-          onClose={() => setQuickGunTakeOpen(false)}
-          addToast={addToast}
-          token={token}
-          currentUserId={user?.id}
-          offline={isOfflineMode}
-          designers={designers}
-          onTasksCreated={handleQuickAssignCreated}
-          entryView={quickGunTakeEntryView}
-          openNonce={quickGunTakeNonce}
-        />
+        <Suspense fallback={null}>
+          <QuickGunTakeModal
+            open={quickGunTakeOpen}
+            onClose={() => setQuickGunTakeOpen(false)}
+            addToast={addToast}
+            token={token}
+            currentUserId={user?.id}
+            offline={isOfflineMode}
+            designers={designers}
+            onTasksCreated={handleQuickAssignCreated}
+            entryView={quickGunTakeEntryView}
+            openNonce={quickGunTakeNonce}
+          />
+        </Suspense>
       )}
 
       {isAdmin && (
-        <SpecSelfHealModal
-          open={specSelfHealOpen}
-          onClose={() => setSpecSelfHealOpen(false)}
-          year={currentDate.getFullYear()}
-          month={currentDate.getMonth() + 1}
-          addToast={addToast}
-          isSuperAdmin={isSuperAdmin}
-          onApplied={() => {
-            // 更新跨多名设计员：直接重拉当月任务，并广播一次全量刷新给其他在线用户
-            void fetchSheets();
-            emitTaskUpdated();
-          }}
-        />
+        <Suspense fallback={null}>
+          <SpecSelfHealModal
+            open={specSelfHealOpen}
+            onClose={() => setSpecSelfHealOpen(false)}
+            year={currentDate.getFullYear()}
+            month={currentDate.getMonth() + 1}
+            addToast={addToast}
+            isSuperAdmin={isSuperAdmin}
+            onApplied={() => {
+              // 更新跨多名设计员：直接重拉当月任务，并广播一次全量刷新给其他在线用户
+              void fetchSheets();
+              emitTaskUpdated();
+            }}
+          />
+        </Suspense>
       )}
 
       {helpGuideOpen && (

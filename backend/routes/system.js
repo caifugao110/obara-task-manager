@@ -2307,4 +2307,7 @@ router.delete('/ip-blacklist/:id', [authMiddleware, superAdminMiddleware], async
 }));
 
 module.exports = router;
+// 供 settings.js 的首屏聚合接口（/settings/bootstrap）复用同一份归一化逻辑，
+// 避免「系统设置」在两处各写一套默认值推导
+module.exports.normalizeSystemSettings = normalizeSystemSettings;
 

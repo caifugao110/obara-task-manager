@@ -102,8 +102,6 @@ const DashboardBoard: React.FC<DashboardBoardProps> = ({
   editingSessions,
   selectedCell,
   selectedTasks,
-  taskDropTarget,
-  gunDropTarget,
   locateFlashKey,
   canEditTasks,
   canViewEditingUser,
@@ -194,8 +192,6 @@ const DashboardBoard: React.FC<DashboardBoardProps> = ({
                 editingSessions={editingSessions}
                 selectedCell={selectedCell}
                 selectedTasks={selectedTasks}
-                taskDropTarget={taskDropTarget}
-                gunDropTarget={gunDropTarget}
                 locateFlashKey={locateFlashKey}
                 taskColWidth={taskColWidth}
                 dayColWidth={dayColWidth}

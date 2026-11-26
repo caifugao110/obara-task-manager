@@ -15,6 +15,7 @@ import {
 } from '@dnd-kit/core';
 import { axiosInstance } from '../../../services/api';
 import { gunRowDragState, getGunDragPointer, startGunDragPointerTracking, stopGunDragPointerTracking } from '../gunDragState';
+import { applyGunDropHighlight, applyTaskDropHighlight, clearDragHighlight } from '../dragHighlight';
 import { isTaskContentIdentical } from '../utils';
 import type { GunItem, SelectedTask, TaskItem, TaskSheet } from '../types';
 
@@ -132,6 +133,8 @@ export const useGunDragDrop = ({
 
   const handleDragStart = (event: DragStartEvent) => {
     if (!canEditTasks) return;
+    // 上一次拖拽若被异常中断，可能留下高亮属性（DOM 不受 React 管理），开拖前先清一次
+    clearDragHighlight();
     const { active: { data } } = event;
     const data_current = data.current;
 
@@ -217,8 +220,13 @@ export const useGunDragDrop = ({
     }
   };
 
-  // 更新「指针扫过的目标主任务 + 是否可放置」：同步 ref/state，并切换禁止放置光标
-  const setGunDropTargetState = (next: { designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean, noGuns?: boolean, create?: boolean, append?: boolean } | null) => {
+  // 更新「指针扫过的目标主任务 + 是否可放置」：同步 ref/state，切换禁止放置光标，
+  // 并对命中的元素直接打高亮属性（不走 React，避免整表重渲）。
+  // els 只用于 DOM 高亮：state 仍保留给 DragOverlay 的提示浮层与光标判定。
+  const setGunDropTargetState = (
+    next: { designerId: string, date: string, itemId: string, invalid: boolean, isSelf: boolean, noGuns?: boolean, create?: boolean, append?: boolean } | null,
+    els?: { taskEl?: HTMLElement | null; cellEl?: HTMLElement | null; plusEl?: HTMLElement | null },
+  ) => {
     const key = next
       ? `${next.designerId}|${next.date}|${next.itemId}|${next.invalid ? '1' : '0'}|${next.isSelf ? '1' : '0'}|${next.noGuns ? '1' : '0'}|${next.create ? '1' : '0'}|${next.append ? '1' : '0'}`
       : '';
@@ -227,6 +235,20 @@ export const useGunDragDrop = ({
     setGunDropTarget(next);
     // 扫过自身主任务或目标重名时都禁止放置
     document.body.style.cursor = next && (next.invalid || next.isSelf) ? 'not-allowed' : '';
+    // 高亮口径与原来的渲染完全一致：
+    // - 扫过源主任务自身（isSelf）不描边；
+    // - 空白单元格（create 且非 append）整格高亮；
+    // - 已有任务单元格的加号（create 且 append）只高亮加号；
+    // - 命中主任务时整行描边（invalid 红 / valid 绿）
+    const createAppend = Boolean(next?.create && next?.append);
+    applyGunDropHighlight(next
+      ? {
+          taskEl: next.isSelf ? null : els?.taskEl,
+          taskKind: next.invalid ? 'invalid' : 'valid',
+          cellEl: next.create && !createAppend ? els?.cellEl : null,
+          plusEl: createAppend ? els?.plusEl : null,
+        }
+      : null);
   };
 
   // 枪名拖拽落点：一次性命中枪名行 / 主任务容器 / 单元格 / 单元格最下方加号区（每层取最外层匹配）
@@ -329,8 +351,11 @@ export const useGunDragDrop = ({
     return getAllItems(designerId, date).some(i => isTaskContentIdentical(i, sourceItem));
   };
 
-  // 更新「主任务拖拽指针扫过的目标位置」：同步 ref/state，并在复制重复时切换禁止放置光标
-  const setTaskDropTargetState = (next: { designerId: string, date: string, itemId: string | null, duplicate: boolean } | null) => {
+  // 更新「主任务拖拽指针扫过的目标位置」：同步 ref/state、切换光标，并直接打 DOM 高亮
+  const setTaskDropTargetState = (
+    next: { designerId: string, date: string, itemId: string | null, duplicate: boolean } | null,
+    els?: { taskEl?: HTMLElement | null; cellEl?: HTMLElement | null },
+  ) => {
     const key = next
       ? `${next.designerId}|${next.date}|${next.itemId ?? 'append'}|${next.duplicate ? '1' : '0'}`
       : '';
@@ -342,6 +367,15 @@ export const useGunDragDrop = ({
     taskDropTargetRef.current = next;
     setTaskDropTarget(next);
     document.body.style.cursor = next?.duplicate ? 'not-allowed' : '';
+    if (!next) {
+      applyTaskDropHighlight(null);
+      return;
+    }
+    const kind: 'valid' | 'invalid' = next.duplicate ? 'invalid' : 'valid';
+    // 命中主任务 → 在该任务上方画插入线；未命中 → 在该单元格最下方画追加线
+    applyTaskDropHighlight(next.itemId
+      ? { insertEl: els?.taskEl, insertKind: kind }
+      : { appendCellEl: els?.cellEl, appendKind: kind });
   };
 
   const handleDragMove = (event: DragMoveEvent) => {
@@ -379,7 +413,7 @@ export const useGunDragDrop = ({
       const duplicate = getSelectedTaskPayloads({ item: sourceData.item, designerId: sourceData.designerId, date: sourceData.date })
         .filter(payload => isCopyDrag || !(payload.designerId === designerId && payload.date === date))
         .some(payload => isTaskCopyDuplicate(designerId, date, payload.item));
-      setTaskDropTargetState({ designerId, date, itemId: overItemId, duplicate });
+      setTaskDropTargetState({ designerId, date, itemId: overItemId, duplicate }, { taskEl, cellEl });
       return;
     }
 
@@ -414,7 +448,7 @@ export const useGunDragDrop = ({
           isSelf: false,
           create: true,
           append: hasTasks,
-        });
+        }, { cellEl, plusEl: overPlus ? plusEl : null });
       } else {
         setGunDropTargetState(null);
       }
@@ -440,7 +474,7 @@ export const useGunDragDrop = ({
       invalid: isSelf ? false : (noGuns || isGunDropDuplicate(taskEl, sourceData)),
       isSelf,
       noGuns: isSelf ? false : noGuns,
-    });
+    }, { taskEl });
   };
 
   const handleDragOver = (event: DragOverEvent) => {
