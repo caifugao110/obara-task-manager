@@ -4379,8 +4379,12 @@ const Dashboard = () => {
         </div>
       )}
 
+      {/* 外层 wrapper 统一控制遮罩 + 弹窗的淡入节奏：
+          modalOpen=true 但 modalContentReady=false 时 opacity-0（看不见任何东西），
+          rAF 后 modalContentReady=true 整体淡入，
+          避免「遮罩先暗下去、弹窗后出来」的两步感 */}
       {modalOpen && modalDate && modalDesignerId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className={`fixed inset-0 z-50 flex items-center justify-center transition-opacity duration-120 ease-out ${modalContentReady ? 'opacity-100' : 'opacity-0'}`}>
           <div className={MODAL_OVERLAY} onClick={() => { setModalOpen(false); stopEditingCell(modalDesignerId, modalDate); }} />
           <div
             ref={taskModalRef}
@@ -4464,8 +4468,8 @@ const Dashboard = () => {
                 <X size={20} />
               </button>
             </div>
-            {modalContentReady && (
-              <>
+            {/* body 区域：modalContentReady=false 时用占位撑住高度，保证 frame 完整出现 */}
+            {modalContentReady ? (
             <div className="flex-1 overflow-auto p-4 bg-gray-100/50">
               {(() => {
                 if (isAddMode) {
@@ -5674,6 +5678,10 @@ const Dashboard = () => {
                   );
               })()}
             </div>
+            ) : (
+              <div className="flex-1 min-h-[360px]" />
+            )}
+            {/* footer 总是渲染，保证 modalContentReady=false 时 frame 就有完整高度 */}
             <div className="flex items-center justify-between px-4 py-3 border-t-2 border-gray-200 bg-gray-50 rounded-b-lg">
               <div className="flex items-center gap-2">
                 <div className="text-sm font-bold text-gray-600 ml-4">
@@ -5913,11 +5921,6 @@ const Dashboard = () => {
                 </button>
               </div>
             </div>
-              </>
-            )}
-            {!modalContentReady && (
-              <div className="flex-1 min-h-[360px] bg-gray-100/50" />
-            )}
           </div>
         </div>
       )}
