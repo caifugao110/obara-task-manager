@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 import type { Socket } from 'socket.io-client';
 import { editingSessionKey } from '../utils';
@@ -12,6 +12,10 @@ interface UseEditingSessionsParams {
 
 export const useEditingSessions = ({ user, socketRef, addToast }: UseEditingSessionsParams) => {
   const [editingSessions, setEditingSessions] = useState<Record<string, EditingSession>>({});
+  // 双击主任务时 click/click/dblclick 会连续三次请求开启同一个编辑会话。
+  // 每次 setEditingSessions 都会换引用，而 editingSessions 是整张表格的 props，
+  // 于是弹窗挂载前先被 2~3 次全表重渲 + socket 广播堵住。这里做短时幂等。
+  const lastStartedRef = useRef<{ key: string; at: number } | null>(null);
 
   // 返回指定单元格内的全部编辑会话（同一单元格可同时存在多人编辑不同主任务）
   const getCellSessions = useCallback(
@@ -50,6 +54,10 @@ export const useEditingSessions = ({ user, socketRef, addToast }: UseEditingSess
     (designerId: string, date: string, itemId?: string | null) => {
       if (!user) return;
       const key = editingSessionKey(designerId, date, itemId);
+      const now = Date.now();
+      const last = lastStartedRef.current;
+      if (last && last.key === key && now - last.at < 2000) return;
+      lastStartedRef.current = { key, at: now };
       setEditingSessions(prev => {
         const next = { ...prev };
         Object.entries(next).forEach(([k, session]) => {
@@ -74,6 +82,8 @@ export const useEditingSessions = ({ user, socketRef, addToast }: UseEditingSess
   );
 
   const stopEditingCell = useCallback((designerId?: string | null, date?: string | null) => {
+    // 关掉会话后允许再次开启同一单元格（例如关闭弹窗后立刻重新双击同一任务）
+    lastStartedRef.current = null;
     if (designerId && date) {
       socketRef.current?.emit('stop_editing', { designerId, date });
       return;

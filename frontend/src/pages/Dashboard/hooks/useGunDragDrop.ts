@@ -18,6 +18,35 @@ import { gunRowDragState, getGunDragPointer, startGunDragPointerTracking, stopGu
 import { isTaskContentIdentical } from '../utils';
 import type { GunItem, SelectedTask, TaskItem, TaskSheet } from '../types';
 
+/**
+ * useSensor 的 options 必须是**稳定引用**。
+ *
+ * 原来直接写 useSensor(PointerSensor, { activationConstraint: { distance: 8 } })，
+ * 内联对象每次渲染都是新的 → useSensor 的 useMemo([sensor, options]) 失效 →
+ * useSensors 返回新数组 → DndContext 的 sensors prop 变化 →
+ * useCombineActivators 重算 activators → InternalContext.Provider 的 value 换新 →
+ * 所有 useDraggable / useDroppable / useSortable 消费者被 context 强制重渲
+ * （React.memo 只挡 props，挡不住 context 更新）。主页面每敲一个字符就会
+ * 唤醒上千个拖拽节点，输入因此卡顿。
+ */
+const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 8 } };
+
+export type ActiveTaskState = {
+  item: TaskItem;
+  designerId: string;
+  date: string;
+  isCtrlDrag?: boolean;
+} | null;
+
+export type ActiveGunState = {
+  gun: GunItem;
+  item: TaskItem;
+  designerId: string;
+  date: string;
+  gunIndex: number;
+  dims?: { width: number; height: number; hoursWidth: number; offsetX?: number; offsetY?: number };
+} | null;
+
 interface UseGunDragDropParams {
   canEditTasks: boolean;
   warnIfCellLocked: (designerId: string, date: string, itemId?: string | null) => boolean;
@@ -69,9 +98,9 @@ export const useGunDragDrop = ({
   socketRef,
   currentDateRef,
 }: UseGunDragDropParams) => {
-  const [activeTask, setActiveTask] = useState<{item: TaskItem, designerId: string, date: string, isCtrlDrag?: boolean} | null>(null);
+  const [activeTask, setActiveTask] = useState<ActiveTaskState>(null);
   // 正在拖拽的枪名（十字箭头手柄按住不放触发）；dims 为原枪名行两格（枪名格+工时格）的实测尺寸，用于浮层等比复刻
-  const [activeGun, setActiveGun] = useState<{gun: GunItem, item: TaskItem, designerId: string, date: string, gunIndex: number, dims?: {width: number, height: number, hoursWidth: number, offsetX?: number, offsetY?: number}} | null>(null);
+  const [activeGun, setActiveGun] = useState<ActiveGunState>(null);
   // 枪名拖拽过程中，指针扫过的目标主任务（预选中反馈）：
   // invalid = 不可放置（红）——目标已有同名枪名（noGuns=false）或目标主任务没有任何枪名（noGuns=true）；
   // isSelf = 扫过的是源主任务自身（不预选中、禁止拖拽调整）；
@@ -92,11 +121,7 @@ export const useGunDragDrop = ({
   const lastOverIdRef = useRef<string | null>(null);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8,
-      },
-    })
+    useSensor(PointerSensor, POINTER_SENSOR_OPTIONS)
   );
 
   const collisionDetection: CollisionDetection = useCallback((args) => {

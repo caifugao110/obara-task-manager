@@ -146,6 +146,9 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
       }}
       onClick={(e) => {
         e.stopPropagation();
+        // 双击主任务时第二次 click 不再开一次编辑会话/改选中态，
+        // 避免 dblclick 打开弹窗前先被两次整表重渲阻塞（会话由 dblclick 统一开启）。
+        if (e.detail >= 2) return;
         if (isAdmin) {
           onSelectTask(item.id, designerId, date, e.ctrlKey || e.metaKey);
         }
@@ -426,4 +429,8 @@ const SortableTask = ({ item, designerId, date, isAdmin, canMarkColor, canMoveUp
   );
 };
 
-export default SortableTask;
+// 主表格每次因 sheets 变化重渲时，绝大多数主任务的 item 与回调引用都没变：
+// memo 挡掉这些行的重渲，只让真正被改动的那一条走一遍渲染。
+// 注意它同时是 dnd-kit 的 context 消费者，memo 挡不住 context 更新——
+// 那部分由 DashboardBoard 的 memo + 稳定的 sensors 处理。
+export default React.memo(SortableTask);

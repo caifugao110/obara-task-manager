@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { Move } from 'lucide-react';
 import type { GunItem, TaskItem } from '../types';
@@ -63,4 +64,4 @@ const GunDragHandle = ({ item, designerId, date, gunIndex, gun, disabled }: {
   );
 };
 
-export default GunDragHandle;
+export default memo(GunDragHandle);

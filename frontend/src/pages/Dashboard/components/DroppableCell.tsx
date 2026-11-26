@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { useDroppable } from '@dnd-kit/core';
 
 const DroppableCell = ({ designerId, date, children, className, ...props }: any) => {
@@ -17,4 +18,4 @@ const DroppableCell = ({ designerId, date, children, className, ...props }: any)
   );
 };
 
-export default DroppableCell;
+export default memo(DroppableCell);

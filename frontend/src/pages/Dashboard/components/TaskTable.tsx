@@ -303,9 +303,7 @@ const TaskTable: React.FC<TaskTableProps> = ({
                                     locateFlash={locateFlashKey === `${d.id}|${day.fullDate}|${item.id}`}
                                     // 同一天的第 2 条主任务起画分界线，区分「同一人同一天的不同主任务」
                                     showTopSeparator={itemIndex > 0}
-                                    onSelectTask={(itemId, designerId, date, append) => {
-                                      h.selectTask(itemId, designerId, date, append);
-                                    }}
+                                    onSelectTask={h.selectTask}
                                   />
                                 );
                               })}
@@ -335,6 +333,10 @@ const TaskTable: React.FC<TaskTableProps> = ({
                                   className={`task-cell-plus min-h-[24px] flex items-start justify-center pt-[3px] rounded transition-colors ${isCellLocked ? 'cursor-not-allowed' : 'cursor-pointer'}${isCellSelected ? ' task-cell-plus--selected' : ''}${isGunCreatePlus ? ' ring-2 ring-inset ring-emerald-500 !opacity-100 bg-emerald-50' : ''}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    // 双击「+」时浏览器先派发两次 click 再派发 dblclick。
+                                    // 第二次 click（detail>=2）不再提交选中态：否则两次整表重渲会
+                                    // 挤在弹窗挂载之前，双击后要等表格画完才看得到模态框。
+                                    if (e.detail >= 2) return;
                                     // 新增主任务不受他人主任务级编辑影响，仅旧版整格会话会拦截
                                     if (h.warnIfCellLocked(d.id, day.fullDate)) return;
                                     h.setSelectedCell({ designerId: d.id, date: day.fullDate });
